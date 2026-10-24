@@ -33,7 +33,7 @@ everywhere. Weaker models then drop some rules and copy others literally.
 
 1. A short, stable core that every planner turn obeys.
 2. Task-specific planning guidance chosen per request, not always present.
-3. Guidance that admins (and later users) can extend without a deploy.
+3. Guidance that admins and users can extend without a deploy.
 4. Explicit handling of missing information: ask, never guess.
 5. Measurable: the same scenarios pass on the executor-class model and on a
    stronger planner model.
@@ -100,12 +100,21 @@ fallback. This is an llm-agent change (draft PR when implementation starts).
 
 ### Layer 3: RAG-backed planner skills (hub, no deploy)
 
-A global collection `planner-skills` (admin write, everyone read, the same
-`canAccess` rules as other global collections). Each document is one skill in
-the `SKILL.md` format. The hub composes in-code planner skills and RAG skills
-with `CompositeSkillManager`; in-code skills win a name clash, matching the
-executor pool rule. Later, a user-scope collection can extend a user's own
-planner without affecting others.
+Planner skills can live in a `planner-skills` collection of any scope, with
+the access rules every collection of that scope already has:
+
+- **global**: admin write, everyone read; guidance for all users;
+- **user**: the user's own skills, for that user's sessions only;
+- **session**: skills for one session, for example added for one task.
+
+Each document is one skill in the `SKILL.md` format. The hub composes the
+in-code planner skills and every `planner-skills` collection the caller can
+read with `CompositeSkillManager`. On a name clash, in-code skills win
+(matching the executor pool rule); among collections the narrower scope wins
+(session over user over global), so a user can adapt a global skill for
+their own work without affecting others. Skills are guidance only: the core
+prompt (layer 1) and the plan invariants enforced in llm-agent apply whatever
+a skill says, so no skill can switch off consent, checks or the ask rule.
 
 Documents are vectorized like any RAG document; the planner skill query searches
 both stores. Changes take effect on the next planner turn without a deploy.
@@ -171,8 +180,10 @@ requirement:
    are stored with user scope, the checker verifies count and scope.
 3. Narrowing request: one formal `waiting_user` round, consent accepted.
 4. RAP object creation scenario (exercises a domain planning skill).
-5. A RAG planner skill added by an admin changes the plan on the next turn
-   without a deploy.
+5. A RAG planner skill changes the plan on the next turn without a deploy,
+   for each scope: a global skill (admin) for every user, a user skill only
+   for its user, a session skill only for its session; a user skill with the
+   name of a global one replaces it for that user only.
 
 Each scenario runs with the planner on the executor-class model (Sonnet 4.5)
 and on a stronger planner model (Opus 4.6), recording completion, user nudges,
@@ -184,11 +195,10 @@ time and token use.
    lines", no-match-no-skills option; release.
 2. Hub: planner skill pool and in-code skills; move hub rules out of the
    prompt; release; POC acceptance runs.
-3. Hub: RAG-backed planner skills collection; release; acceptance run 5.
+3. Hub: RAG-backed planner skills in global, user and session collections;
+   release; acceptance run 5.
 
 ## Open questions
 
-- Should RAG planner skills be global only (admin) at first, or user scope
-  from the start?
 - Should the 2-skill cap be configurable (for example
   `LLM_AGENT_PLANNER_SKILLS_K`)?
