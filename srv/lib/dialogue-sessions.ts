@@ -254,9 +254,8 @@ async function open(
   };
   const taskStates = new Map<string, TaskRecord['state']>();
   let lastPlan: DialoguePlan | undefined;
-  const emitPlan = () => {
-    if (!session) return;
-    const plan = dialoguePlan(session.snapshot());
+  const emitPlan = (state: DialogueState) => {
+    const plan = dialoguePlan(state);
     if (plan && JSON.stringify(plan) !== JSON.stringify(lastPlan))
       emit({ kind: 'plan', plan });
     lastPlan = plan;
@@ -402,7 +401,6 @@ async function open(
             );
           } finally {
             for (const task of session?.snapshot().tasks ?? []) emitTask(task);
-            emitPlan();
           }
         },
       },
@@ -417,6 +415,9 @@ async function open(
         },
         save: async (_id, state) => {
           savedState = state;
+          // turn() has recomputed plan status before persisting, including
+          // turns triggered by background task events.
+          emitPlan(state);
           await outbox.add(state.pending);
         },
         delete: async () => {},

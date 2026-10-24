@@ -656,6 +656,42 @@ test('creation listener waits for chat destination B and normal registry touch p
   }
 });
 
+test('restores a 9.0.x state with a long legacy text plan', async () => {
+  const plan = 'x'.repeat(50_000);
+  await getDialogueStoreBackend().save('alice', 'key', {
+    conversation: [{ role: 'user', content: 'Legacy conversation' }],
+    plan,
+    tasks: [],
+    pending: [],
+    savedAt: Date.now(),
+  });
+  const h = await dialogueFor('alice', 'key', 'TEST');
+  expect(h.session.snapshot().conversation).toContainEqual({
+    role: 'user',
+    content: 'Legacy conversation',
+  });
+  expect(dialoguePlan(h.session.snapshot())?.text).toBe(plan);
+});
+
+test('emits the finalized done status from the installed DialogueSession', async () => {
+  const { h } = await ready();
+  const events: DialogueEvent[] = [];
+  h.subscribe((event) => events.push(event));
+  mockPlan = {
+    steps: [{ id: 'one', goal: 'Read', state: 'done' }],
+    status: 'active',
+  };
+  await h.session.send('finish');
+  await h.session.send('unchanged');
+  const plans = events.filter((event) => event.kind === 'plan');
+  expect(plans).toHaveLength(1);
+  expect(plans[0]).toMatchObject({
+    kind: 'plan',
+    plan: { status: 'done', steps: [{ id: 'one', state: 'done' }] },
+  });
+  expect(dialoguePlan(h.session.snapshot())?.status).toBe('done');
+});
+
 test('plan events emit only when text or status changes after planner turns', async () => {
   const { h } = await ready();
   expect(dialoguePlan(h.session.snapshot())).toBeUndefined();

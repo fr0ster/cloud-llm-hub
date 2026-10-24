@@ -105,7 +105,8 @@ const structuredPlan = planSchema(
 );
 const schema = z.object({
   conversation: z.array(message).max(200),
-  plan: z.union([boundedText, structuredPlan]).optional(),
+  // Legacy text plans are bounded by the overall state byte limit only.
+  plan: z.union([str, structuredPlan]).optional(),
   planStatus: z.enum(['active', 'waiting_user', 'done']).optional(),
   taskSteps: z
     .record(id, id)
