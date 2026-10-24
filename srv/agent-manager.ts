@@ -880,6 +880,7 @@ let currentModel: string | null = null;
 /** Shared LLM instances (updated on model switch) */
 let sharedMainLlm: ReturnType<typeof makeHubLlm> | null = null;
 let sharedClassifierLlm: ReturnType<typeof makeHubLlm> | null = null;
+let sharedPlannerLlm: ReturnType<typeof makeHubLlm> | null = null;
 
 /** Check if at least one SmartAgent is initialized and ready */
 export function isAgentReady(): boolean {
@@ -889,6 +890,10 @@ export function isAgentReady(): boolean {
 /** Get the model name currently used by the agent */
 export function getCurrentModel(): string {
   return currentModel || getAgentConfig().llm.model;
+}
+
+export function getCurrentPlannerModel(): string {
+  return getAgentConfig().llm.plannerModel ?? getCurrentModel();
 }
 
 export function getCurrentClassifierModel(): string {
@@ -2772,7 +2777,25 @@ const plannerAgents = new Map<SmartAgent, { current: ILlm }>();
 export async function buildPlannerAgent(
   config: AgentConfig,
 ): Promise<SmartAgent> {
-  const llm = await getOrCreateSharedLlms(config).mainLlm;
+  if (config.llm.plannerModel && !sharedPlannerLlm) {
+    sharedPlannerLlm = makeHubLlm(
+      {
+        contextCapture: config.llm.contextCapture,
+        provider: config.llm.provider,
+        apiKey: config.llm.apiKey,
+        baseURL: config.llm.baseUrl,
+        component: 'chat',
+        model: config.llm.plannerModel,
+        maxTokens: config.llm.maxTokens,
+        resourceGroup: config.llm.resourceGroup,
+        whenThrottled: config.llm.whenThrottled,
+      },
+      config.llm.temperature,
+    ).then(trackedLlm);
+  }
+  const llm = await (config.llm.plannerModel && sharedPlannerLlm
+    ? sharedPlannerLlm
+    : getOrCreateSharedLlms(config).mainLlm);
   // Pipeline stages retain the LLM supplied at build time. A stable forwarding
   // client makes the existing getSmartAgent hot-swap reach those stages too.
   const model = { current: llm };
@@ -3170,7 +3193,9 @@ export async function getSmartAgent(
       // biome-ignore lint/suspicious/noExplicitAny: accessing internal deps for model hot-swap
       (handle.agent as any).deps.mainLlm = newLlm;
     }
-    for (const model of plannerAgents.values()) model.current = newLlm;
+    if (!config.llm.plannerModel) {
+      for (const model of plannerAgents.values()) model.current = newLlm;
+    }
     sharedMainLlm = newLlmPromise;
     currentModel = requestedModel;
 

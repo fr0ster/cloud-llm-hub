@@ -31,6 +31,7 @@ describe('agent config: settings read at the point of use before', () => {
       process.env = { ...saved };
       for (const k of [
         'LLM_AGENT_CLASSIFIER_MODEL',
+        'LLM_AGENT_PLANNER_MODEL',
         'LLM_AGENT_SKILL_RAG_K',
         'LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK',
         'DESTINATION_MAPPING',
@@ -45,6 +46,17 @@ describe('agent config: settings read at the point of use before', () => {
       process.env = saved;
       clearAgentConfig();
     });
+
+    it.each([undefined, '', '   ', ' planner-model '])(
+      'parses optional planner model %s',
+      (value) => {
+        if (value === undefined) delete process.env.LLM_AGENT_PLANNER_MODEL;
+        else process.env.LLM_AGENT_PLANNER_MODEL = value;
+        expect(loadAgentConfig().llm.plannerModel).toBe(
+          value?.trim() || undefined,
+        );
+      },
+    );
 
     it('classifier model falls back to the main model', () => {
       expect(loadAgentConfig().llm.classifierModel).toBe('main-model');

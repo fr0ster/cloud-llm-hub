@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- Optional independent dialogue planner model via `LLM_AGENT_PLANNER_MODEL`; when unset, the planner follows the WebUI model selector.
+
 ## [9.2.1] - 2026-10-24
 
 ### Changed

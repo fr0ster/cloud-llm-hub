@@ -4,6 +4,7 @@ import {
   SmartAgentBuilder,
 } from '@mcp-abap-adt/llm-agent-libs';
 import type { AgentConfig } from '../../srv/agent-config';
+import * as agentConfig from '../../srv/agent-config';
 import {
   buildAgentForDestination,
   buildExecutorWorker,
@@ -11,6 +12,7 @@ import {
   CHECKER_DESCRIPTION,
   EXECUTOR_DESCRIPTION,
   ExpositionFilteringRag,
+  getCurrentPlannerModel,
   getSmartAgent,
   HUB_DIALOGUE_PLANNER_SYSTEM,
   HUB_DIALOGUE_STORAGE_RULES,
@@ -174,6 +176,7 @@ test('hard planner sends all six control tools, hub prompt, and follows getSmart
     const swapped = await planner.process([{ role: 'user', content: 'again' }]);
     expect(swapped.ok && swapped.value.content).toBe('second');
     expect(second.tools.flat()).toContain('delegate_task');
+    expect(getCurrentPlannerModel()).toBe('second');
   } finally {
     releasePlannerAgent(planner);
   }
@@ -378,4 +381,64 @@ test('planner prompt allows skipping only with user agreement', () => {
   expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
     'A [check] note is not user agreement.',
   );
+});
+
+test('independent planner model survives request hot-swap and rebuilds', async () => {
+  const plannerModel = llm('independent-planner');
+  const mainModel = llm('independent-main');
+  const independentConfig: AgentConfig = {
+    ...config,
+    llm: { ...config.llm, plannerModel: 'independent-planner' },
+  };
+  const configSpy = jest
+    .spyOn(agentConfig, 'getAgentConfig')
+    .mockReturnValue(independentConfig);
+  jest.mocked(makeHubLlm).mockResolvedValue(plannerModel.agent);
+  const planner = await buildPlannerAgent(independentConfig);
+  let rebuilt: Awaited<ReturnType<typeof buildPlannerAgent>> | undefined;
+  try {
+    expect(makeHubLlm).toHaveBeenLastCalledWith(
+      {
+        contextCapture: config.llm.contextCapture,
+        provider: config.llm.provider,
+        apiKey: config.llm.apiKey,
+        baseURL: config.llm.baseUrl,
+        component: 'chat',
+        model: 'independent-planner',
+        maxTokens: config.llm.maxTokens,
+        resourceGroup: config.llm.resourceGroup,
+        whenThrottled: config.llm.whenThrottled,
+      },
+      config.llm.temperature,
+    );
+    expect(getCurrentPlannerModel()).toBe('independent-planner');
+    const first = await planner.process([{ role: 'user', content: 'hello' }]);
+    expect(first.ok && first.value.content).toBe('independent-planner');
+
+    jest.mocked(makeHubLlm).mockResolvedValue(mainModel.agent);
+    await getSmartAgent('independent-main');
+    expect(makeHubLlm).toHaveBeenLastCalledWith(
+      expect.objectContaining({ model: 'independent-main' }),
+      config.llm.temperature,
+    );
+    expect(getCurrentPlannerModel()).toBe('independent-planner');
+    const afterSwap = await planner.process([
+      { role: 'user', content: 'again' },
+    ]);
+    expect(afterSwap.ok && afterSwap.value.content).toBe('independent-planner');
+
+    const calls = jest.mocked(makeHubLlm).mock.calls.length;
+    rebuilt = await buildPlannerAgent(independentConfig);
+    expect(jest.mocked(makeHubLlm).mock.calls).toHaveLength(calls);
+    const afterRebuild = await rebuilt.process([
+      { role: 'user', content: 'hello' },
+    ]);
+    expect(afterRebuild.ok && afterRebuild.value.content).toBe(
+      'independent-planner',
+    );
+  } finally {
+    releasePlannerAgent(planner);
+    if (rebuilt) releasePlannerAgent(rebuilt);
+    configSpy.mockRestore();
+  }
 });

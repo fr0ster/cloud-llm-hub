@@ -178,6 +178,7 @@ export function agentManagerMock() {
     getCollectionRegistry: () => registry,
     getCurrentModel: () => 'm',
     getCurrentClassifierModel: () => 'm',
+    getCurrentPlannerModel: () => 'm',
     getDestinationStates: () => [],
     getSharedHistoryRag: () => undefined,
     getQueryEmbedder: () => harness.queryEmbedder,
