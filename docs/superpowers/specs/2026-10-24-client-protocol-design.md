@@ -172,8 +172,9 @@ sweep treats like an active request: it does not depend on events, so a
 worker waiting silently on SAP, the LLM or admission is covered. An open
 follow touches the session on every keep-alive, as the events channel does
 today. Once nothing is running or queued (the plan is idle, done or waiting
-for the user), the hold is released, the TTL counts from the last touch as
-today, and expiry closes the dialogue as today.
+for the user), the hold is released and the release touches the session, so
+the TTL counts from the end of the work, not from an older activity; expiry
+then closes the dialogue as today.
 
 At most one follow is open per session. A new request in the same session
 (a correction, a cancellation, a question) is admitted at once, because the
@@ -233,8 +234,8 @@ follow and ends as today.
   configurable with a start value of 15 s and is raised only where the path
   is known to allow more;
 - within the budget the reply is one message: the planner's turn text, then
-  the outbox messages, earlier progress in short form and the last message
-  in full;
+  every pending outbox message in full, in order. Nothing is shortened, so
+  every message the reply carries counts as delivered complete (section 5);
 - at the budget, the reply ends normally (OpenAI `finish_reason: "stop"`,
   Anthropic `stop_reason: "end_turn"`) with what is ready and a status line
   ("still running: N of M steps done; send any message for the result").
@@ -383,7 +384,8 @@ the run creates and removes.
     connection, including a task that waits silently (a slow SAP or LLM call,
     an admission wait) longer than the TTL: an open follow and, after a
     disconnect, the hold keep the session alive to the end of the plan; the
-    session expires one TTL after nothing is running or queued.
+    session expires one TTL after nothing is running or queued, and a request
+    just after a disconnected, silent run still gets its result.
 
 **Non-streaming**
 
@@ -415,6 +417,9 @@ the run creates and removes.
     reply completes before the ack arrives, for both response forms (the ack
     in a stream comment and in `x-clh-last-message`): the reply was never
     carried complete, so it is not confirmed.
+15b. Several pending progress messages, repeated non-streaming requests, and
+    an ack of the last id each time: every message arrives in full once and
+    the acknowledgement advances to the last id.
 16. Explicit acknowledgement mode, streaming and non-streaming: a response
     lost after the server finished it, then a request without the header,
     then one with an older ack: nothing is confirmed by the first, the second
