@@ -165,6 +165,14 @@ gap the hub works around.
    response stays open, waiting on the session outbox. It holds no lock and
    no connection lease.
 
+**Session lifetime.** Releasing admission must not let the session expire
+under live work. An open follow touches the session on every keep-alive, as
+the events channel does today on its heartbeats. Background work that runs
+with no follow and no events connection (the client disconnected or timed
+out) also keeps the session alive: each task start, progress and end touches
+it. Once the plan is idle, done or waiting for the user, the TTL counts from
+the last touch as today, and expiry closes the dialogue as today.
+
 At most one follow is open per session. A new request in the same session
 (a correction, a cancellation, a question) is admitted at once, because the
 follow holds no admission. It closes the previous follow, which ends with a
@@ -240,7 +248,10 @@ follow and ends as today.
 - one queued message per session: a further request while a message is
   already queued is refused with a status reply that names the waiting
   message ("a message is already waiting; send this again after it is
-  handled"). Repeated polls therefore never pile up instructions;
+  handled"). This only prevents piling up while the slot is taken. A request
+  that arrives when the slot is free is an ordinary user message: the
+  protocols have no separate poll, so "status?" is a message to the planner,
+  which answers it as a question and does not treat it as a new task;
 - a timeout or a disconnect never stops the background work;
 - the next request is any user message; the protocols have no empty turn.
   Its reply starts with every undelivered message, then the planner's answer
@@ -277,6 +288,13 @@ the hub can see:
     anything by arriving. A request without the header confirms nothing; a
     request whose ack names an older message confirms up to that message,
     and everything after it is delivered again;
+  - every confirmation, by ack or by arrival, moves a watermark over the
+    contiguous run of complete messages only. An incomplete message (a
+    planner reply still streaming) stops the watermark: an ack that names a
+    later complete message confirms nothing past the incomplete one, which
+    is delivered complete in a later response. This replaces today's
+    `DialogueOutbox.ack()`, which removes the whole prefix whatever its
+    state;
   - message ids reach both forms: a streaming response carries each id as an
     SSE comment before the message; a non-streaming response carries the id
     of its last message in the `x-clh-last-message` response header.
@@ -357,6 +375,10 @@ the run creates and removes.
    chunk or event and no success terminal.
 10. A disconnect in the middle of a stream: the work continues, and the next
     request receives the messages of the cut response.
+10a. A session TTL shorter than the run, with no `/v1/session/events`
+    connection: an open follow and, after a disconnect, the background work
+    keep the session alive to the end of the plan; the session expires one
+    TTL after the plan becomes idle.
 
 **Non-streaming**
 
@@ -368,9 +390,11 @@ the run creates and removes.
 13. A request while a turn of the session still runs: the "queued" status
     reply at the budget, never `SESSION_BUSY`; the message runs once after
     the turn.
-13a. A correction queued and timed out, then repeated polls: the correction
-    runs exactly once, each poll gets the "already waiting" reply, and no
-    poll text runs as an instruction.
+13a. A correction queued and timed out, then repeated polls across the
+    queued, running and completed states: the correction runs exactly once;
+    polls while it waits get the "already waiting" reply; polls after it
+    started reach the planner as ordinary messages, and a "status?" poll
+    starts no new work.
 
 **Delivery**
 
@@ -380,6 +404,9 @@ the run creates and removes.
     with the complete message rendered once.
 15. A stream cut after the last content delta but before `[DONE]` or
     `message_stop`: the messages are delivered again in the next response.
+15a. A planner reply still streaming while a background message completes,
+    and another tab acks the background message: the streaming reply is not
+    confirmed and arrives complete in a later response.
 16. Explicit acknowledgement mode, streaming and non-streaming: a response
     lost after the server finished it, then a request without the header,
     then one with an older ack: nothing is confirmed by the first, the second
