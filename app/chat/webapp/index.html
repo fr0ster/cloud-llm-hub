@@ -1506,6 +1506,8 @@
             try {
                 const resp = await hubFetch('/v1/models');
                 const data = await resp.json();
+                // The planner follows a hot-swapped main model unless it has its own.
+                if (data._meta?.planner_model) document.getElementById('planner-model').innerText = data._meta.planner_model;
                 const destinations = data._destinations || [];
                 const activeDest = data._active_destination || '';
                 if (destinations.length > 0) {
