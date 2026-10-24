@@ -456,6 +456,7 @@ it.each([
   [['NO_', 'MESSAGEish'], 'NO_MESSAGEish'],
   [['answer', ' NO_', 'MESSAGE', ' more'], 'answer NO_MESSAGE more'],
   [['answer', ' NO_MESSAGE ', 'NO_', 'MESSAGE  '], 'answer'],
+  [['answer', ' NO_MESSAGE N'], 'answer NO_MESSAGE N'],
   [['answer', '  '], 'answer  '],
 ])('filters streamed boundary sentinels %j', async (deltas, expected) => {
   subscribed = true;

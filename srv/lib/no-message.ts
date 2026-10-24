@@ -34,7 +34,10 @@ export class NoMessageFilter {
   }
 
   finish(): string {
-    const content = stripNoMessage(this.pending);
+    // Once text was emitted, the buffer is no longer the reply's beginning.
+    const content = this.leading
+      ? stripNoMessage(this.pending)
+      : this.pending.replace(/(?:\s+NO_MESSAGE)+\s*$/, '');
     this.pending = '';
     return content;
   }
