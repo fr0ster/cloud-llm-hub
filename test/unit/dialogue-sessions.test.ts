@@ -281,7 +281,11 @@ test('subscribers receive task events and messages; messages stay in outbox for 
     expect.arrayContaining([
       expect.objectContaining({
         kind: 'task',
-        task: expect.objectContaining({ state: 'running' }),
+        task: expect.objectContaining({
+          state: 'running',
+          createdAt: expect.any(Number),
+          startedAt: expect.any(Number),
+        }),
       }),
       expect.objectContaining({
         kind: 'task',

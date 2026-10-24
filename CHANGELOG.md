@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- **PLAN and TASKS start collapsed** in the WebUI and keep the user's choice;
+  a new session collapses them again.
+
+### Fixed
+
+- **Active subagents show their elapsed time**: task events and snapshots now
+  carry `createdAt` and `startedAt`.
+
 ## [9.2.0] - 2026-10-24
 
 ### Changed
