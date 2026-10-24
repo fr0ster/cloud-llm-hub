@@ -397,4 +397,38 @@ describe('LLM-only guard', () => {
       warn.mockRestore();
     }
   });
+
+  it('cancels the other part calls when one part fails', async () => {
+    const { chat, guarded, agent } = setup();
+    let siblingSignal: AbortSignal | undefined;
+    chat
+      .mockResolvedValueOnce({ ok: true, value: { content: 'not JSON' } })
+      .mockImplementationOnce(
+        (_m: Message[], _t: unknown, options: { signal: AbortSignal }) => {
+          siblingSignal = options.signal;
+          return new Promise(() => {});
+        },
+      );
+    const warn = jest
+      .spyOn(cds.log('llm-only-guard'), 'warn')
+      .mockImplementation(() => {});
+    try {
+      const result = await guarded.process([
+        { role: 'user', content: 'x'.repeat(16001) },
+      ]);
+      expect(result.ok && result.value.content).toContain(
+        'could not be classified',
+      );
+      expect(siblingSignal?.aborted).toBe(true);
+      expect(agent.process).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('aborts its decision calls after a successful decision too', async () => {
+    const { chat, guarded } = setup('{"action":false}');
+    await guarded.process(messages);
+    expect(chat.mock.calls[0][2].signal.aborted).toBe(true);
+  });
 });

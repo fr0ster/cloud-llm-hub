@@ -164,6 +164,9 @@ export function guardLlmOnlyAgent<T extends ISmartAgent>(
       clearTimeout(timer);
       opts?.signal?.removeEventListener('abort', abort);
       if (onAbort) controller.signal.removeEventListener('abort', onAbort);
+      // Calls still running (a sibling part after another failed) would keep
+      // the request's admission until they end; the decision is made.
+      controller.abort();
     }
   };
   const guarded: ISmartAgent = {
