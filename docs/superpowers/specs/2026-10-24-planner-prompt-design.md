@@ -108,10 +108,10 @@ Plan: stable step ids, result goals, dependsOn for order; always pass step_id
 when you delegate. The first plan covers the whole request. Every step that
 produces a result has a check.
 
-Missing information: if a step needs a fact that neither the request nor the
-[environment] note gives (scope, a full date, the target system, where to
-store, what counts as done), set waiting_user with one concrete question.
-Never assume a value. A worker result that reports a missing fact becomes
+Missing information: if a step needs a fact that neither the request, the
+[environment] note nor a stated default of a trusted skill gives (scope, a
+full date, the target system, where to store, what counts as done), set
+waiting_user with one concrete question. Never assume a value of your own. A worker result that reports a missing fact becomes
 such a question.
 
 Consent: skipping, removing or narrowing needs the user's answer to a
@@ -301,8 +301,13 @@ composing:
 - names are unique per collection. The admin endpoints use the skill name
   as the document id, so a second document cannot take a name. In user and
   session collections, written through the general routes with any document
-  id, duplicates are resolved deterministically: the most recently updated
-  document with that name is the skill, the others are ignored and logged.
+  id, duplicates are resolved deterministically: the document with the
+  highest revision is the skill, ties broken by the smaller document id; the
+  others are ignored and logged. The revision is server-owned and persisted:
+  every write path (add, update, the persistent update) sets `revision`
+  (a counter per collection) and `updatedAt` on the document. Today
+  `RagDocument` has only `createdAt`, and updates keep it, so this is a new
+  field; documents written before it count as revision 0.
   Every write or delete of a document reconciles its name: after a delete,
   a remaining document with the same name is indexed in its place; a rename
   re-indexes both the old and the new name;
@@ -436,9 +441,14 @@ user nudges, time and tokens over several runs.
 16. Two users and two sessions with skills of the same name, written and
     deleted concurrently: each sees only its own, and no write or clean-up
     removes another's index entry.
-17. Two documents with the same skill name in one user collection: the
-    newer one is the skill; deleting it makes the other one the skill on the
+17. Two documents with the same skill name in one user collection: the one
+    written last is the skill; updating the older one makes it the skill, also
+    after a restart; deleting the winner makes the other one the skill on the
     next turn; renaming one of them re-indexes both names.
+18. "Analyse these items and keep the results" without a storage scope: the
+    planner applies the stored-results default (user scope) from the trusted
+    skill without asking; a request without a needed fact that no default
+    covers still gets a question.
 
 ## Rollout
 
@@ -450,7 +460,7 @@ user nudges, time and tokens over several runs.
 3. Hub: the `MCP_Admin` role template, the hub-owned global
    `planner-skills` collection and `/v1/planner-skills`; `RagSkillManager`
    with eligible sources, keys and tiers for global, user and session
-   collections; release; validation 9–17.
+   collections; release; validation 9–18.
 
 ## Open questions
 
