@@ -1,5 +1,15 @@
 import type { PlannerMessage } from '@mcp-abap-adt/llm-agent';
 
+/** Remove boundary sentinel tokens before persistence or delivery. */
+function cleanMessages(messages: PlannerMessage[]): PlannerMessage[] {
+  return messages.flatMap((message) => {
+    const text = message.text
+      .replace(/^(?:\s*NO_MESSAGE(?=\s|$))+\s*/, '')
+      .replace(/(?:\s+NO_MESSAGE)+\s*$/, '');
+    return text.trim() ? [{ ...message, text }] : [];
+  });
+}
+
 /** Delivery ownership belongs to the hub, independently of library pending. */
 export class DialogueOutbox {
   private subscribers = new Set<{
@@ -37,8 +47,8 @@ export class DialogueOutbox {
     messages: PlannerMessage[],
     private persist: (messages: PlannerMessage[]) => Promise<void>,
   ) {
-    this.messages = messages.slice();
-    for (const message of messages) this.seen.add(message.id);
+    this.messages = cleanMessages(messages);
+    for (const message of this.messages) this.seen.add(message.id);
   }
   replay(after?: string): PlannerMessage[] {
     const index = after ? this.messages.findIndex((m) => m.id === after) : -1;
@@ -53,7 +63,7 @@ export class DialogueOutbox {
     return result;
   }
   add(messages: PlannerMessage[]): Promise<void> {
-    for (const message of messages) {
+    for (const message of cleanMessages(messages)) {
       if (!this.seen.has(message.id)) {
         this.messages.push(message);
         this.seen.add(message.id);

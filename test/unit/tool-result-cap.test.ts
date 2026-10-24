@@ -1,6 +1,9 @@
 import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
-import { parseToolResultMaxChars } from '../../srv/agent-config';
+import {
+  parseMaxToolCalls,
+  parseToolResultMaxChars,
+} from '../../srv/agent-config';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import {
   evaluateDeterministic,
@@ -187,4 +190,16 @@ test('honesty reviewer is told which portion was visible to the worker', () => {
   expect(messages[1].content).toContain(
     'result truncated: 5 of 6 characters shown to worker; omitted content is unknown',
   );
+});
+
+test('tool-call budget is optional and must be a positive integer', () => {
+  for (const raw of [undefined, '', '   '])
+    expect(
+      parseMaxToolCalls({ LLM_AGENT_MAX_TOOL_CALLS: raw }),
+    ).toBeUndefined();
+  expect(parseMaxToolCalls({ LLM_AGENT_MAX_TOOL_CALLS: ' 12 ' })).toBe(12);
+  for (const raw of ['0', '-1', '1.5', 'NaN', '1e2', '9007199254740992'])
+    expect(() => parseMaxToolCalls({ LLM_AGENT_MAX_TOOL_CALLS: raw })).toThrow(
+      'LLM_AGENT_MAX_TOOL_CALLS',
+    );
 });

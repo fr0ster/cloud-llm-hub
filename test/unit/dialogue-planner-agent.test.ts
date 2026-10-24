@@ -1,4 +1,5 @@
 import { type ILlm, InMemoryRag } from '@mcp-abap-adt/llm-agent';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import type { AgentConfig } from '../../srv/agent-config';
 import {
   buildAgentForDestination,
@@ -34,7 +35,7 @@ test('planner supports planner and checker verification', () => {
   expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain('For check.by planner');
 });
 
-test('planner prepares a complete brief and discloses narrowed scope', () => {
+test('planner prepares a complete brief and asks before narrowing scope', () => {
   for (const rule of [
     'Every delegate_task is a brief: goal says what to achieve in one or two sentences',
     'what not to touch, where results are stored, priority order, scope',
@@ -43,8 +44,12 @@ test('planner prepares a complete brief and discloses narrowed scope', () => {
     'The worker sees only the brief and its own tool results, not the dialogue',
     'Pass history only when',
     'when a step lists many items, split it',
-    'sampling, a subset, a different order',
-    'tell the user in your reply',
+    'Skip a step, drop items, sample',
+    'update_plan with status waiting_user and a question',
+    'keep waiting until the user answers, never decide it yourself',
+    'Prefer one item per step',
+    'number of stored records equals the number of items in the batch',
+    'fewer stored records fails the step',
   ])
     expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(rule);
 });
@@ -329,5 +334,27 @@ test.each(['adaptive', 'dialogue'] as const)(
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.join('\n')).toContain('[result truncated: 100 of');
     expect(seen.join('\n')).not.toContain('x'.repeat(101));
+  },
+);
+
+test.each([undefined, 7])(
+  'planner preserves or applies tool-call budget %s',
+  async (maxToolCalls) => {
+    const model = llm(`budget-${maxToolCalls}`);
+    jest.mocked(makeHubLlm).mockResolvedValue(model.agent);
+    const budgetConfig = {
+      ...config,
+      agent: { ...config.agent, maxToolCalls },
+    };
+    initProviders(await startProviders(budgetConfig));
+    const apply = jest.spyOn(SmartAgentBuilder.prototype, 'withMaxToolCalls');
+    const planner = await buildPlannerAgent(budgetConfig);
+    try {
+      if (maxToolCalls === undefined) expect(apply).not.toHaveBeenCalled();
+      else expect(apply).toHaveBeenCalledWith(maxToolCalls);
+    } finally {
+      releasePlannerAgent(planner);
+      apply.mockRestore();
+    }
   },
 );
