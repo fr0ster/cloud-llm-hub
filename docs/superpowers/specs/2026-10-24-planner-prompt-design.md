@@ -3,6 +3,8 @@
 Status: draft (design only, no code yet)
 Date: 2026-10-24
 
+<!-- docs-check:proposed-env: this design proposes LLM_AGENT_PLANNER_SKILLS_K, which does not exist yet -->
+
 ## Problem
 
 The dialogue planner leads every long session: it plans, delegates to
