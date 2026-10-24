@@ -79,3 +79,34 @@ test('delivers failed persistence prefixes in order with independent tab cursors
   await box.ack('b');
   expect(box.replay()).toEqual([]);
 });
+
+test.each([
+  ['NO_MESSAGE', undefined],
+  ['  NO_MESSAGE \n NO_MESSAGE  ', undefined],
+  ['Result\n\nNO_MESSAGE', 'Result'],
+  ['NO_MESSAGE\n\nResult', 'Result'],
+  ['NO_MESSAGE Result NO_MESSAGE', 'Result'],
+  ['MY_NO_MESSAGE NO_MESSAGE_suffix', 'MY_NO_MESSAGE NO_MESSAGE_suffix'],
+  ['Result NO_MESSAGE inside text', 'Result NO_MESSAGE inside text'],
+])(
+  'cleans boundary sentinels in %j before storage and delivery',
+  async (text, expected) => {
+    const message = {
+      id: 'one',
+      text,
+      createdAt: 1,
+      trigger: 'event' as const,
+    };
+    const persist = jest.fn(async () => {});
+    const outbox = new DialogueOutbox([], persist);
+    const delivered: string[] = [];
+    outbox.subscribe((m) => delivered.push(m.text));
+    await outbox.add([message]);
+    const texts = expected === undefined ? [] : [expected];
+    expect(delivered).toEqual(texts);
+    expect(outbox.replay().map((m) => m.text)).toEqual(texts);
+    expect(persist).toHaveBeenCalledWith(outbox.replay());
+    const restored = new DialogueOutbox([message], persist);
+    expect(restored.replay().map((m) => m.text)).toEqual(texts);
+  },
+);

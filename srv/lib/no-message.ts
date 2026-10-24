@@ -1,0 +1,49 @@
+const sentinel = 'NO_MESSAGE';
+const prefixes = Array.from({ length: sentinel.length }, (_, i) =>
+  sentinel.slice(0, i + 1),
+).join('|');
+const leadingCandidate = new RegExp(`^\\s*(?:${prefixes})?$`);
+const trailingCandidate = new RegExp(
+  `\\s+(?:NO_MESSAGE\\s+)*(?:${prefixes})?$`,
+);
+
+/** Remove standalone boundary sentinels, preserving mentions within text. */
+export function stripNoMessage(text: string): string {
+  return text
+    .replace(/^(?:\s*NO_MESSAGE(?=\s|$))+\s*/, '')
+    .replace(/(?:\s+NO_MESSAGE)+\s*$/, '');
+}
+
+/** Buffer only boundaries that could still turn into a sentinel. */
+export class NoMessageFilter {
+  private pending = '';
+  private leading = true;
+  private stripped = false;
+
+  push(delta: string): string {
+    this.pending += delta;
+    if (this.leading) {
+      const before = this.pending;
+      this.pending = this.pending.replace(/^(?:\s*NO_MESSAGE(?=\s))+\s*/, '');
+      if (this.pending !== before) this.stripped = true;
+      // Whitespace after a removed sentinel may arrive in later deltas.
+      if (this.stripped) this.pending = this.pending.trimStart();
+      if (leadingCandidate.test(this.pending)) return '';
+      this.leading = false;
+    }
+    const suffix = trailingCandidate.exec(this.pending);
+    const end = suffix?.index ?? this.pending.length;
+    const content = this.pending.slice(0, end);
+    this.pending = this.pending.slice(end);
+    return content;
+  }
+
+  finish(): string {
+    // Once text was emitted, the buffer is no longer the reply's beginning.
+    const content = this.leading
+      ? stripNoMessage(this.pending)
+      : this.pending.replace(/(?:\s+NO_MESSAGE)+\s*$/, '');
+    this.pending = '';
+    return content;
+  }
+}

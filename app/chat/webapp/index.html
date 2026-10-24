@@ -501,8 +501,8 @@
                         const ready = step.state === 'pending' && (step.dependsOn || []).every(id => plan.steps.some(other => other.id === id && other.state === 'done'));
                         const state = ready ? 'ready' : step.state;
                         return '<div class="dialogue-task"><span class="badge">' + escapeHtml(String(state)) + '</span> ' + escapeHtml(String(step.id)) + ': ' + escapeHtml(String(step.goal))
-                            + (step.workTaskId ? ' ? work: ' + escapeHtml(String(step.workTaskId)) : '')
-                            + (step.check?.taskId ? ' ? check: ' + escapeHtml(String(step.check.taskId)) : '') + '</div>';
+                            + (step.workTaskId ? ' \u00b7 work: ' + escapeHtml(String(step.workTaskId)) : '')
+                            + (step.check?.taskId ? ' \u00b7 check: ' + escapeHtml(String(step.check.taskId)) : '') + '</div>';
                     }).join('') + (plan.text ? markdownToHtml(plan.text) : '')
                     : markdownToHtml(plan.text);
             }

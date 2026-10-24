@@ -104,6 +104,45 @@ afterEach(() => {
 const visible = '**Planner:** one\n\n**Planner:** two\n\nanswer';
 for (const anthropic of [false, true])
   for (const stream of [false, true]) {
+    it(`sentinel-only reply finishes (anthropic=${anthropic}, stream=${stream})`, async () => {
+      subscribed = true;
+      send.mockImplementation(async (_text, opts) => {
+        opts.onPartial?.({ kind: 'content', delta: 'NO_' });
+        opts.onPartial?.({ kind: 'content', delta: 'MESSAGE' });
+        return { text: 'NO_MESSAGE' };
+      });
+      const req = fakeReq(
+        {
+          model: 'm',
+          max_tokens: 100,
+          stream,
+          messages: [{ role: 'user', content: 'hi' }],
+        },
+        session.key,
+      ) as unknown as Request & { longSession: LongSession };
+      req.longSession = session;
+      const res = fakeRes();
+      await (anthropic ? handleAnthropicMessages : handleChatCompletions)(
+        req,
+        res as unknown as Response,
+      );
+      expect(res.body).not.toContain('NO_');
+      if (stream)
+        expect(res.body).toContain(anthropic ? 'message_stop' : '[DONE]');
+      else if (!anthropic)
+        expect(JSON.parse(res.body).choices[0].message.content).toBe(
+          '(no response)',
+        );
+      else expect(JSON.parse(res.body).type).toBe('message');
+      expect(
+        getSessionHistory(session.key, 'alice').filter(
+          (m) => m.role === 'assistant',
+        ),
+      ).toEqual([]);
+    });
+  }
+for (const anthropic of [false, true])
+  for (const stream of [false, true]) {
     it(`${anthropic ? 'anthropic' : 'openai'} stream=${stream}: pending first, answer and history`, async () => {
       const req = fakeReq(
         {
@@ -384,3 +423,87 @@ for (const anthropic of [false, true])
       );
     });
   }
+
+it.each([
+  ['NO_MESSAGE', ''],
+  ['  NO_MESSAGE  ', ''],
+  ['NO_MESSAGE answer NO_MESSAGE', 'answer'],
+  [
+    'NO_MESSAGEish and inner NO_MESSAGE mention',
+    'NO_MESSAGEish and inner NO_MESSAGE mention',
+  ],
+])('cleans direct planner reply %j', async (text, expected) => {
+  subscribed = true;
+  send.mockResolvedValue({ text });
+  const { dialogueChat } = await import('../../srv/lib/dialogue-chat');
+  const agent = dialogueChat(
+    fakeReq({}, session.key) as unknown as Request,
+    'alice',
+    session,
+    'SAP',
+    'hi',
+    fakeRes() as unknown as Response,
+  );
+  const result = await agent.process([]);
+  expect(result.ok && result.value.content).toBe(expected);
+});
+
+it.each([
+  [['NO_', 'MESS', 'AGE'], ''],
+  [['  NO_', 'MESSAGE', '  '], ''],
+  [['NO_', 'MESSAGE ', 'answer', ' NO_', 'MESSAGE'], 'answer'],
+  [['answer', ' NO_', 'MESS'], 'answer NO_MESS'],
+  [['NO_', 'MESSAGEish'], 'NO_MESSAGEish'],
+  [['answer', ' NO_', 'MESSAGE', ' more'], 'answer NO_MESSAGE more'],
+  [['answer', ' NO_MESSAGE ', 'NO_', 'MESSAGE  '], 'answer'],
+  [['answer', ' NO_MESSAGE N'], 'answer NO_MESSAGE N'],
+  [['NO_MESSAGE\n', '    ', 'answer'], 'answer'],
+  [['answer', '  '], 'answer  '],
+])('filters streamed boundary sentinels %j', async (deltas, expected) => {
+  subscribed = true;
+  send.mockImplementation(async (_text, opts) => {
+    for (const delta of deltas) opts.onPartial({ kind: 'content', delta });
+    return { text: deltas.join('') };
+  });
+  const { dialogueChat } = await import('../../srv/lib/dialogue-chat');
+  const agent = dialogueChat(
+    fakeReq({}, session.key) as unknown as Request,
+    'alice',
+    session,
+    'SAP',
+    'hi',
+    fakeRes() as unknown as Response,
+  );
+  const contents: string[] = [];
+  let stopped = false;
+  for await (const chunk of agent.streamProcess([])) {
+    expect(chunk.ok).toBe(true);
+    if (chunk.ok) {
+      contents.push(chunk.value.content || '');
+      stopped ||= chunk.value.finishReason === 'stop';
+    }
+  }
+  expect(contents.join('')).toBe(expected);
+  expect(stopped).toBe(true);
+});
+
+it.each(['NO_MESSAGE', 'NO_MESSAGE answer NO_MESSAGE'])(
+  'cleans streaming fallback without partials %j',
+  async (text) => {
+    subscribed = true;
+    send.mockResolvedValue({ text });
+    const { dialogueChat } = await import('../../srv/lib/dialogue-chat');
+    const agent = dialogueChat(
+      fakeReq({}, session.key) as unknown as Request,
+      'alice',
+      session,
+      'SAP',
+      'hi',
+      fakeRes() as unknown as Response,
+    );
+    let content = '';
+    for await (const chunk of agent.streamProcess([]))
+      if (chunk.ok) content += chunk.value.content || '';
+    expect(content).toBe(text === 'NO_MESSAGE' ? '' : 'answer');
+  },
+);

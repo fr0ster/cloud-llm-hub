@@ -201,6 +201,7 @@ export interface AgentConfig {
     /** Maximum tool loop iterations */
     maxIterations: number;
     toolResultMaxChars?: number;
+    maxToolCalls?: number;
 
     /** RAG backend type */
     ragType: RagType;
@@ -630,6 +631,7 @@ export function loadAgentConfig(): AgentConfig {
       },
       maxIterations,
       toolResultMaxChars: parseToolResultMaxChars(),
+      maxToolCalls: parseMaxToolCalls(),
       ragType,
       historyRecencyWindow,
       ragQueryK,
@@ -665,6 +667,7 @@ export function loadAgentConfig(): AgentConfig {
     planBudget: config.agent.planBudget,
     maxIterations: config.agent.maxIterations,
     toolResultMaxChars: config.agent.toolResultMaxChars,
+    maxToolCalls: config.agent.maxToolCalls,
     ragType: config.agent.ragType,
     historyRecencyWindow: config.agent.historyRecencyWindow ?? 'unlimited',
     gatekeeper: describeGatekeeperConfig(gatekeeper),
@@ -824,6 +827,20 @@ export function parseToolResultMaxChars(
   if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value))
     throw new BuildValidationError(
       'Invalid LLM_AGENT_TOOL_RESULT_MAX_CHARS: expected an integer, 0 or more',
+    );
+  return value;
+}
+
+/** Per-run tool-call budget; unset preserves the library default. */
+export function parseMaxToolCalls(
+  env: NodeJS.ProcessEnv = process.env,
+): number | undefined {
+  const raw = env.LLM_AGENT_MAX_TOOL_CALLS?.trim();
+  if (!raw) return undefined;
+  const value = Number(raw);
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value < 1)
+    throw new BuildValidationError(
+      'Invalid LLM_AGENT_MAX_TOOL_CALLS: expected a positive integer',
     );
   return value;
 }

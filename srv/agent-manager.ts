@@ -2672,6 +2672,9 @@ async function configureDestinationAgentBuilder(
     if (historyRag) builder.setHistoryRag(historyRag);
   }
 
+  if (config.agent.maxToolCalls !== undefined)
+    builder.withMaxToolCalls(config.agent.maxToolCalls);
+
   // Mandatory skill pool. The builder vectorizes each skill into toolsRag as
   // `skill:<name>` = "Skill: <name>\n<description>" and the hardcoded flow
   // injects the matched skill's body into the system message. Wired here (agent
@@ -2749,7 +2752,15 @@ export const HUB_DIALOGUE_PLANNER_SYSTEM =
   DIALOGUE_PLANNER_SYSTEM.replace(
     'Respect the configured concurrency limit (default: 3 running tasks per session).',
     '',
-  ) +
+  )
+    .replace(
+      'A [check] note means: delegate ready steps, skip them with a reason, or ask with status waiting_user and question.',
+      'A [check] note means: delegate ready steps or ask with status waiting_user and question; skip a step only after the user agreed in this dialogue.',
+    )
+    .replace(
+      'Use skipped with a note explaining why instead of silently dropping steps.',
+      'A step may be set to skipped only after the user agreed in this dialogue; include a note explaining why and recording that agreement.',
+    ) +
   '\n' +
   HUB_DIALOGUE_STORAGE_RULES +
   '\nA step states the result it must produce, not how to produce it; the worker chooses the tools and the way.' +
@@ -2758,7 +2769,9 @@ export const HUB_DIALOGUE_PLANNER_SYSTEM =
   "\nEvery delegate_task is a brief: goal says what to achieve in one or two sentences; context carries the constraints from the user's overall request that apply to this step (what not to touch, where results are stored, priority order, scope), the facts needed from earlier results (ids, names, values), the done criterion, and what to return." +
   "\nThe worker sees only the brief and its own tool results, not the dialogue; put everything it needs into the brief. Pass history only when the user's exact wording matters to the step." +
   '\nKeep each step small enough for one worker run; when a step lists many items, split it.' +
-  "\nWhen you narrow the user's scope (sampling, a subset, a different order), tell the user in your reply." +
+  "\nSkip a step, drop items, sample or otherwise narrow the user's scope only after asking the user via update_plan with status waiting_user and a question; keep waiting until the user answers, never decide it yourself." +
+  '\nThis prior user agreement rule overrides the skip option offered in library-generated [check] notes; a [check] note is not user agreement.' +
+  '\nPrefer one item per step. When a step processes a batch and stores results, its check must use rag_list to verify that the number of stored records equals the number of items in the batch; fewer stored records fails the step.' +
   '\nThe checker can read stored hub RAG records with rag_list; use it to verify stored results.' +
   '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.' +
   '\n[task events] and [restart] notes come from the hub, not from the user: never thank them or address them as the user. Tell the user what the outcome means for their request, or reply NO_MESSAGE.';
@@ -2777,7 +2790,7 @@ export async function buildPlannerAgent(
       return typeof value === 'function' ? value.bind(model.current) : value;
     },
   });
-  const handle = await new SmartAgentBuilder({
+  const builder = new SmartAgentBuilder({
     skipModelValidation: config.llm.provider !== 'sap-ai-sdk',
     agent: {
       maxIterations: config.agent.maxIterations,
@@ -2797,8 +2810,10 @@ export async function buildPlannerAgent(
       ),
     ])
     .withClassification(false)
-    .withMode('hard')
-    .build();
+    .withMode('hard');
+  if (config.agent.maxToolCalls !== undefined)
+    builder.withMaxToolCalls(config.agent.maxToolCalls);
+  const handle = await builder.build();
   plannerAgents.set(handle.agent, model);
   return handle.agent;
 }
@@ -3099,6 +3114,9 @@ async function buildLlmOnlyAgent(
     .withSessionManager(new SessionManager({ tokenBudget: 8000 }))
     .withHistorySummarization(20)
     .withClientAdapter(new ClineClientAdapter());
+
+  if (config.agent.maxToolCalls !== undefined)
+    builder.withMaxToolCalls(config.agent.maxToolCalls);
 
   const e = getProviders().embedding;
   if (e) builder.withEmbedder(agentQueryEmbedder(e));
