@@ -32,10 +32,11 @@
         button:disabled, #user-input:disabled { opacity: 0.4; cursor: not-allowed; }
         .dialogue-task { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         #dialogue-plan-text .badge { display: inline-block; border: 1px solid #888; border-radius: 4px; padding: 0 4px; font-size: 10px; }
-        #dialogue-plan { font-size:12px; color:#aaa; border-left:2px solid #555; padding-left:8px; margin-bottom:6px; }
-        #dialogue-plan summary { cursor:pointer; }
+        #dialogue-plan, #dialogue-tasks-panel { font-size:12px; color:#aaa; border-left:2px solid #555; padding-left:8px; margin-bottom:6px; }
+        #dialogue-plan summary, #dialogue-tasks-panel summary { cursor:pointer; }
+        #dialogue-tasks { font-size:11px; color:#888; }
         .plan-status { font-size:11px; border:1px solid #555; padding:1px 5px; margin-left:6px; color:#ccc; }
-        #dialogue-plan-text { max-height:240px; overflow:auto; padding-top:5px; }
+        #dialogue-plan-text, #dialogue-tasks { max-height:240px; overflow:auto; padding-top:5px; }
         #clear-btn { color: #ff5555; border-color: #552222; padding: 0 15px; font-size: 13px; }
         #clear-btn:hover:not(:disabled) { background: #ff5555; color: #000; }
         #export-btn { color: #888; border-color: #333; padding: 0 10px; font-size: 11px; }
@@ -305,7 +306,7 @@
         </div>
         <div id="chat-window"></div>
         <details id="dialogue-plan" hidden><summary>PLAN <span id="dialogue-plan-status" class="plan-status"></span></summary><div id="dialogue-plan-text"></div></details>
-        <div id="dialogue-tasks" style="font-size:11px;color:#888;max-height:100px;overflow:auto"></div>
+        <details id="dialogue-tasks-panel" hidden><summary>TASKS <span id="dialogue-tasks-status" class="plan-status"></span></summary><div id="dialogue-tasks"></div></details>
         <div class="input-area">
             <input type="text" id="user-input" autocomplete="off" placeholder="root@cloud-llm-hub:~# TYPE YOUR MESSAGE" disabled autofocus
                    onkeydown="handleInputKeydown(event)">
@@ -474,6 +475,8 @@
         let dialogueSubscription = null;
         function stopDialogueEvents() {
             dialogueSubscription?.stop(); dialogueSubscription = null;
+            document.getElementById('dialogue-tasks-panel').hidden = true;
+            document.getElementById('dialogue-tasks-status').textContent = '';
             document.getElementById('dialogue-tasks').innerHTML = '';
             document.getElementById('dialogue-plan').hidden = true;
             document.getElementById('dialogue-plan-text').innerHTML = '';
@@ -489,6 +492,7 @@
             const rendered = new Set();
             let tasks = [];
             let hasPlan = false;
+            let hasTasks = false;
             function renderPlan(plan) {
                 if (!Array.isArray(plan.steps) && typeof plan.text !== 'string') return;
                 const panel = document.getElementById('dialogue-plan');
@@ -507,6 +511,15 @@
                     : markdownToHtml(plan.text);
             }
             function renderTasks() {
+                const panel = document.getElementById('dialogue-tasks-panel');
+                if (tasks.length) {
+                    if (!hasTasks) panel.open = tasks.length <= 8;
+                    hasTasks = true;
+                    panel.hidden = false;
+                }
+                const counts = new Map();
+                for (const task of tasks) counts.set(task.state, (counts.get(task.state) || 0) + 1);
+                document.getElementById('dialogue-tasks-status').textContent = [...counts].map(([state, count]) => count + ' ' + state).join(' \u00b7 ');
                 document.getElementById('dialogue-tasks').innerHTML = tasks.map(task => '<div class="dialogue-task" title="' + escapeHtml(String(task.goal || '')) + '">' + stepSymbol(task) + ' ' + escapeHtml(String(task.id)) + ': ' + escapeHtml(String(task.goal || '')) + '</div>').join('');
             }
             async function connect() {

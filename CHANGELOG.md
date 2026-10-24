@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- **The WebUI task log is collapsible** with live task-state counts, opening
+  initially for up to eight tasks and preserving the user's choice on updates.
+
 ## [9.1.1] - 2026-10-24
 
 ### Changed
