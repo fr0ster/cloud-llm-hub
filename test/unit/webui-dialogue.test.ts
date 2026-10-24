@@ -11,6 +11,8 @@ function harness() {
   const plan = { hidden: true, open: false };
   const planText = { innerHTML: '' };
   const planStatus = { textContent: '' };
+  const active = { hidden: true, innerHTML: '' };
+  const intervals: Array<() => void> = [];
   const timers: Array<{ fn: () => Promise<void>; delay: number }> = [];
   const fetch = jest.fn();
   const context = {
@@ -24,6 +26,13 @@ function harness() {
       return timers.length;
     },
     clearTimeout: jest.fn(),
+    setInterval: (fn: () => void) => {
+      intervals.push(fn);
+      return intervals.length;
+    },
+    clearInterval: (id: number | null) => {
+      if (id) intervals[id - 1] = () => {};
+    },
     sessionHeaders: () => ({ 'x-clh-session': 'key' }),
     conversationHistory: [],
     escapeHtml: (s: string) =>
@@ -38,6 +47,7 @@ function harness() {
           'dialogue-plan': plan,
           'dialogue-plan-text': planText,
           'dialogue-plan-status': planStatus,
+          'dialogue-active': active,
         })[id] ?? list,
       createElement: () => ({}),
     },
@@ -70,6 +80,8 @@ function harness() {
     plan,
     planText,
     planStatus,
+    active,
+    intervals,
   };
 }
 function stream(text: string) {
@@ -390,4 +402,65 @@ test('signed-out event responses stop the reconnect loop', async () => {
   await flush();
   expect(ui.fetch).toHaveBeenCalledTimes(1);
   expect(ui.timers).toHaveLength(0);
+});
+test('only queued and running subagents show above the input with elapsed time', async () => {
+  const ui = harness();
+  const now = Date.now();
+  const tasks = [
+    { id: 'T1', worker: 'executor', goal: 'old', state: 'done' },
+    {
+      id: 'T2',
+      worker: 'executor',
+      goal: 'read <dump>',
+      state: 'running',
+      startedAt: now - 65_000,
+    },
+    { id: 'T3', worker: 'checker', goal: 'check', state: 'queued' },
+  ];
+  ui.fetch.mockResolvedValue(
+    stream(`event: tasks\ndata: ${JSON.stringify(tasks)}\n\n`),
+  );
+  const subscription = ui.subscribeDialogueEvents('key');
+  await flush();
+  expect(ui.active.hidden).toBe(false);
+  expect(ui.active.innerHTML).toContain('main agent · 2 active');
+  expect(ui.active.innerHTML).toContain('├ T2 executor: read &lt;dump&gt;');
+  expect(ui.active.innerHTML).toMatch(/1:0[5-9]/);
+  expect(ui.active.innerHTML).toContain('└ T3 checker: check');
+  expect(ui.active.innerHTML).toContain('· queued');
+  expect(ui.active.innerHTML).not.toContain('old');
+  expect(ui.list.innerHTML).toContain('T1: old');
+  expect(ui.intervals).toHaveLength(1);
+  subscription.stop();
+  ui.stopDialogueEvents();
+  expect(ui.active.hidden).toBe(true);
+  expect(ui.active.innerHTML).toBe('');
+});
+test('the active list hides when every subagent finishes', async () => {
+  const ui = harness();
+  const running = { id: 'T1', worker: 'executor', goal: 'g', state: 'running' };
+  ui.fetch.mockResolvedValue(
+    stream(
+      `event: tasks\ndata: ${JSON.stringify([running])}\n\nevent: task\ndata: ${JSON.stringify({ id: 'T1', state: 'done' })}\n\n`,
+    ),
+  );
+  const subscription = ui.subscribeDialogueEvents('key');
+  await flush();
+  expect(ui.active.hidden).toBe(true);
+  expect(ui.active.innerHTML).toBe('');
+  subscription.stop();
+});
+test('PLAN and TASKS panels share the collapse rule; active agents sit above the input', () => {
+  expect(html).toContain(
+    "showDialoguePanel(document.getElementById('dialogue-plan'),",
+  );
+  expect(html).toContain(
+    "showDialoguePanel(document.getElementById('dialogue-tasks-panel'),",
+  );
+  expect(html.indexOf('id="dialogue-tasks-panel"')).toBeLessThan(
+    html.indexOf('id="dialogue-active"'),
+  );
+  expect(html.indexOf('id="dialogue-active"')).toBeLessThan(
+    html.indexOf('class="input-area"'),
+  );
 });

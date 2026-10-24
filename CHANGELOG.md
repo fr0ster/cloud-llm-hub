@@ -16,6 +16,10 @@ All notable changes to this project will be documented in this file. The format 
   results and pending user consent.
 - **The WebUI task log is collapsible** with live task-state counts, opening
   initially for up to eight tasks and preserving the user's choice on updates.
+  PLAN and TASKS share the same collapse behaviour.
+- **Active subagents above the input**: the WebUI lists only the running and
+  queued subagents of the main agent, with their elapsed time, and hides the
+  list when none are active.
 
 ## [9.1.1] - 2026-10-24
 
