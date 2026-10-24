@@ -57,14 +57,22 @@ where enabled, is unchanged.
   a retry from a new conversation without a key, so this is not
   deduplicated; it is a stated limit. A client that retries automatically
   should open the session explicitly (`POST /v1/session` and the header).
-- The first reply of such a session ends with one short visible line naming
-  the session, for example `Session: ls-…`. Every protocol client sends the
-  history back, so the key returns with every later request.
-- A later request carries the key in an assistant message of its history.
-  The hub takes the key from the most recent assistant message that has one
-  and treats it exactly like a header key: `resolveSession(userId, key)`
-  finds the session only for the same user (live or revived), and an unknown
-  or expired key answers `SESSION_NOT_FOUND`.
+- The first reply of such a session ends with one reserved line that the
+  hub appends after generation, as its own last line:
+  `[clh-session: ls-<uuid>]`. Every protocol client sends the history back,
+  so the key returns with every later request.
+- Extraction is strict. The hub reads only the first assistant message of the
+  history and only its last line, and that line must match the reserved form
+  exactly. Keys anywhere else (quoted transcripts, examples, later replies,
+  the model's own text) are ignored, so no text can redirect a conversation
+  to another session. A first assistant message without a valid last line
+  (missing or malformed) means no key. If the model's generated text happens
+  to end with a line of the reserved form, the hub still appends its own
+  line after it, so the last line is always the hub's.
+- The key from the history is used exactly like a header key:
+  `resolveSession(userId, key)` finds the session only for the same user
+  (live or revived), and an unknown or expired key answers
+  `SESSION_NOT_FOUND`. The header and the cookie win over it.
 - The principal and destination checks are the existing ones for header keys:
   the effective SAP identity (`effectiveSapIdentity`, which covers incomplete
   credential headers and configured authentication), the destination and the
@@ -92,10 +100,17 @@ delegation are unavailable too, because LLM-only mode has no tools at all.
 Tool-driven collection operations without a destination stay out of scope:
 they need the dialogue workers, which need a destination.
 
-Retrieval for answers is not an action and stays as it is: the handler
-searches the collections the request selects and adds the results to the
-context before generation, with or without a destination. An answer from a
-selected collection is therefore an answer, not an imitation.
+Retrieval for answers is not an action. Today the OpenAI handler searches
+the collections a request selects and adds the results to the context before
+generation, with or without a destination. That path is the OpenAI handler's
+own: the Anthropic handler has no collection selection, and in dialogue mode
+the planner turn does not receive the injected context (the dialogue adapter
+ignores the supplied messages).
+
+For parity the retrieval becomes one shared step used by both handlers, and
+its results reach the planner turn in dialogue mode as context of the user's
+message. An answer from a selected collection is then an answer, not an
+imitation, in every mode and in both protocols.
 
 Before generating the reply, the hub asks the LLM (the classifier model when
 set, otherwise the main model) one structured question: does this request ask
@@ -267,6 +282,15 @@ the hub can see:
     of its last message in the `x-clh-last-message` response header.
   Clients that use neither mode should keep one client per session, which the
   key in the conversation (section 1) gives by default.
+- **Message identity while streaming.** The planner's reply in a turn gets
+  its outbox id when the turn starts. Its partial deltas carry that id (the
+  SSE comment precedes the first delta), and the outbox record is completed
+  with the full text when the turn ends. The SSE view shows a message only
+  when it is complete. The WebUI keeps one rendering per id: a complete
+  version, from either channel, replaces whatever partial text it showed for
+  that id; a partial never replaces a complete one. A stream cut after
+  partial content delivers nothing for that id; the next response delivers
+  the complete message, which replaces the partial rendering.
 - The SSE channel `/v1/session/events` becomes a view of the session history,
   the plan and the tasks for any number of tabs. It never marks anything
   delivered and never suppresses protocol delivery: the current
@@ -313,8 +337,9 @@ the run creates and removes.
    no generation pass.
 6a. Collection writes, tool-driven searches and a checker request without a
    destination: the fixed refusal, no invented result.
-6c. A question answered from a selected collection without a destination:
-   retrieval runs as today and the answer uses it.
+6c. A question answered from a selected collection, in both protocols:
+   without a destination, and in dialogue mode with a destination; the
+   answer uses the retrieved documents each time.
 6b. With a destination, a Reader caller asks for an operation only a
    Developer may run: a role denial, not a missing-destination reply; a
    Developer caller gets the operation.
@@ -350,7 +375,9 @@ the run creates and removes.
 **Delivery**
 
 14. Two WebUI tabs on one session: every message rendered once in each tab,
-    including in a tab whose stream was cut.
+    including in a tab whose stream was cut. Both orderings: the protocol
+    stream first and the SSE view first; a cut after partial content ends
+    with the complete message rendered once.
 15. A stream cut after the last content delta but before `[DONE]` or
     `message_stop`: the messages are delivered again in the next response.
 16. Explicit acknowledgement mode, streaming and non-streaming: a response
@@ -380,10 +407,16 @@ the run creates and removes.
     session.
 23. A technical caller without the header: `SESSION_REQUIRED`; another user
     presenting a key: `SESSION_NOT_FOUND`.
+24. Marker cases: a key quoted in a later reply or in the user's text, two
+    keys in the history, a malformed reserved line, and a model reply that
+    ends with a reserved-looking line: only the hub's last line of the first
+    reply counts; a header or cookie wins over it.
 
 ## Rollout
 
 1. Section 2 (refusal in LLM-only mode): it stops invented results today.
+   The shared retrieval step for both handlers and dialogue mode follows in
+   the same section's second change.
 2. Sections 4 (streaming), 5 and 6 together: the delivery change and the
    WebUI change (no SSE ack, `x-clh-ack`, rendering by message id) ship in
    one release, so the WebUI never sees duplicates or loses messages during
