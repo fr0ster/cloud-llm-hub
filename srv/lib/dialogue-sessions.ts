@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
 import type {
+  DialogueState,
   IConcurrencyPool,
   ILlm,
   ISubAgent,
@@ -54,6 +55,9 @@ import {
 import { evaluateGated } from './step-reviewer';
 import { cachedSystemIdentity } from './system-identity-cache';
 
+type Plan = Exclude<DialogueState['plan'], string | undefined>;
+type PlanStep = Plan['steps'][number];
+
 export type DialogueEvent =
   | { kind: 'message'; message: PlannerMessage }
   | { kind: 'plan'; plan: DialoguePlan }
@@ -62,7 +66,8 @@ export type DialogueEvent =
       task: Pick<TaskRecord, 'id' | 'worker' | 'goal' | 'state'>;
     };
 export interface DialoguePlan {
-  text: string;
+  text?: string;
+  steps?: PlanStep[];
   status: 'active' | 'waiting_user' | 'done';
 }
 
@@ -72,7 +77,13 @@ export function dialoguePlan(
 ): DialoguePlan | undefined {
   return state.plan === undefined
     ? undefined
-    : { text: state.plan, status: state.planStatus ?? 'active' };
+    : typeof state.plan === 'string'
+      ? { text: state.plan, status: state.planStatus ?? 'active' }
+      : {
+          steps: state.plan.steps,
+          text: state.plan.note,
+          status: state.plan.status,
+        };
 }
 export interface DialogueHandle {
   destination: string;
@@ -243,13 +254,9 @@ async function open(
   };
   const taskStates = new Map<string, TaskRecord['state']>();
   let lastPlan: DialoguePlan | undefined;
-  const emitPlan = () => {
-    if (!session) return;
-    const plan = dialoguePlan(session.snapshot());
-    if (
-      plan &&
-      (plan.text !== lastPlan?.text || plan.status !== lastPlan?.status)
-    )
+  const emitPlan = (state: DialogueState) => {
+    const plan = dialoguePlan(state);
+    if (plan && JSON.stringify(plan) !== JSON.stringify(lastPlan))
       emit({ kind: 'plan', plan });
     lastPlan = plan;
   };
@@ -394,7 +401,6 @@ async function open(
             );
           } finally {
             for (const task of session?.snapshot().tasks ?? []) emitTask(task);
-            emitPlan();
           }
         },
       },
@@ -409,6 +415,9 @@ async function open(
         },
         save: async (_id, state) => {
           savedState = state;
+          // turn() has recomputed plan status before persisting, including
+          // turns triggered by background task events.
+          emitPlan(state);
           await outbox.add(state.pending);
         },
         delete: async () => {},

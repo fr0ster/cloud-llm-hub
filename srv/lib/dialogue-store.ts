@@ -22,6 +22,9 @@ import {
 } from './rag-provider-factory';
 import { type SessionConfig, sessionConfig } from './session-config';
 
+type Plan = Exclude<DialogueState['plan'], string | undefined>;
+type PlanStep = Plan['steps'][number];
+
 export type HubDialogueState = DialogueState & { outbox?: PlannerMessage[] };
 
 export const DIALOGUE_BYTE_LIMIT = 2 * 1024 * 1024;
@@ -55,10 +58,67 @@ const message = z.object({
     )
     .optional(),
 });
+// Require every exported field (including optional ones) and its exact type.
+// Library additions or changes must be reflected here at compile time.
+type Shape<T> = { [K in keyof T]-?: z.ZodType<T[K]> };
+function planSchema<S extends z.ZodType<Plan>>(
+  schema: S & (Plan extends z.output<S> ? unknown : never),
+): S {
+  return schema;
+}
+const boundedText = str.max(20000);
+const id = str.max(1000);
+const ids = z.array(id).max(1000);
+const check = z.object({
+  by: z.enum(['planner', 'checker']),
+  goal: boundedText,
+  verdict: z.enum(['pass', 'fail']).optional(),
+  taskId: id.optional(),
+} satisfies Shape<NonNullable<PlanStep['check']>>);
+const planStep = z.object({
+  id,
+  goal: boundedText,
+  dependsOn: ids.optional(),
+  worker: id.optional(),
+  state: z.enum([
+    'pending',
+    'running',
+    'checking',
+    'done',
+    'failed',
+    'skipped',
+    'blocked',
+  ]),
+  check: check.optional(),
+  workTaskId: id.optional(),
+  taskIds: ids,
+  note: boundedText.optional(),
+} satisfies Shape<PlanStep>);
+const structuredPlan = planSchema(
+  z.object({
+    version: z.literal(1),
+    steps: z.array(planStep).max(1000),
+    status: z.enum(['active', 'waiting_user', 'done']),
+    question: boundedText.optional(),
+    // Restored legacy text plans become this note; use the overall byte limit.
+    note: str.optional(),
+  } satisfies Shape<Plan>),
+);
 const schema = z.object({
   conversation: z.array(message).max(200),
-  plan: str.optional(),
+  // Legacy text plans are bounded by the overall state byte limit only.
+  plan: z.union([str, structuredPlan]).optional(),
   planStatus: z.enum(['active', 'waiting_user', 'done']).optional(),
+  taskSteps: z
+    .record(id, id)
+    .superRefine((value, ctx) => {
+      if (Object.keys(value).length > 1000)
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Dialogue task step limit exceeded',
+        });
+    })
+    .optional(),
   tasks: z
     .array(
       z.object({

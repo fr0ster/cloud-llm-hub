@@ -324,6 +324,47 @@ test('plan panel renders escaped markdown, updates live, preserves collapse and 
   ui.stopDialogueEvents();
 });
 
+test('structured plan shows states, attempts and escaped goals across live updates', async () => {
+  const ui = harness();
+  const states = [
+    'running',
+    'checking',
+    'done',
+    'failed',
+    'skipped',
+    'blocked',
+    'pending',
+  ];
+  const steps = states.map((state, i) => ({
+    id: String(i),
+    state,
+    goal: '<script>goal</script>',
+    dependsOn: ['0'],
+    workTaskId: '<work>',
+    check: { taskId: '<check>' },
+  }));
+  steps.push({ ...steps[0], id: 'ready', state: 'pending', dependsOn: ['2'] });
+  const frame = (status: string) =>
+    `event: plan\ndata: ${JSON.stringify({ steps, status })}\n\n`;
+  ui.fetch
+    .mockResolvedValueOnce(stream(frame('active')))
+    .mockResolvedValueOnce(stream(frame('done')));
+  ui.startDialogueEvents('key');
+  await flush();
+  for (const state of [...states, 'ready'])
+    expect(ui.planText.innerHTML).toContain(`>${state}</span>`);
+  expect(ui.planText.innerHTML).toContain('&lt;script&gt;goal&lt;/script&gt;');
+  expect(ui.planText.innerHTML).toContain('work: &lt;work&gt;');
+  expect(ui.planText.innerHTML).toContain('check: &lt;check&gt;');
+  expect(ui.planText.innerHTML).not.toContain('<script>');
+  ui.plan.open = false;
+  await ui.timers[0].fn();
+  await flush();
+  expect(ui.planStatus.textContent).toBe('done');
+  expect(ui.plan.open).toBe(false);
+  ui.stopDialogueEvents();
+});
+
 test('long plans start collapsed and done status is visible', async () => {
   const ui = harness();
   ui.fetch.mockResolvedValue(
