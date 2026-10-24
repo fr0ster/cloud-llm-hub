@@ -37,6 +37,9 @@
         #dialogue-tasks { font-size:11px; color:#888; }
         .plan-status { font-size:11px; border:1px solid #555; padding:1px 5px; margin-left:6px; color:#ccc; }
         #dialogue-plan-text, #dialogue-tasks { max-height:240px; overflow:auto; padding-top:5px; }
+        #dialogue-active { font-size:12px; color:#ccc; padding:2px 0 6px 8px; }
+        #dialogue-active .agent-child { color:#aaa; padding-left:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        #dialogue-active .agent-time { color:#777; }
         #clear-btn { color: #ff5555; border-color: #552222; padding: 0 15px; font-size: 13px; }
         #clear-btn:hover:not(:disabled) { background: #ff5555; color: #000; }
         #export-btn { color: #888; border-color: #333; padding: 0 10px; font-size: 11px; }
@@ -231,7 +234,7 @@
                 <li><b>Send</b> or <b>Enter</b> &mdash; submit the message.</li>
                 <li><b>CLR</b> &mdash; wipe history and start a fresh session.</li>
                 <li><b>LOG</b> &mdash; download the current session as text.</li>
-                <li><b>PLAN</b> / <b>TASKS</b> &mdash; dialogue plan steps and background tasks; click the title to collapse or expand. TASKS shows counts per state; both open on first show when they have 8 entries or fewer and then keep your choice.</li>
+                <li><b>PLAN</b> / <b>TASKS</b> &mdash; dialogue plan steps and background tasks; click the title to collapse or expand. TASKS shows counts per state; both open on first show when they have 8 entries or fewer and then keep your choice. Above the input, only the running and queued subagents of the main agent are listed with their elapsed time.</li>
                 <li><b>STATUS</b> &mdash; <span style="color:#00ff00">green</span> idle, <span style="color:#ffcc00">yellow</span> streaming, <span style="color:#ff5555">red</span> error.</li>
                 <li>Long answers stream live. Wait for <b>STATUS</b> to turn green again.</li>
               </ul>
@@ -308,6 +311,7 @@
         <div id="chat-window"></div>
         <details id="dialogue-plan" hidden><summary>PLAN <span id="dialogue-plan-status" class="plan-status"></span></summary><div id="dialogue-plan-text"></div></details>
         <details id="dialogue-tasks-panel" hidden><summary>TASKS <span id="dialogue-tasks-status" class="plan-status"></span></summary><div id="dialogue-tasks"></div></details>
+        <div id="dialogue-active" hidden></div>
         <div class="input-area">
             <input type="text" id="user-input" autocomplete="off" placeholder="root@cloud-llm-hub:~# TYPE YOUR MESSAGE" disabled autofocus
                    onkeydown="handleInputKeydown(event)">
@@ -482,6 +486,39 @@
             document.getElementById('dialogue-plan').hidden = true;
             document.getElementById('dialogue-plan-text').innerHTML = '';
             document.getElementById('dialogue-plan-status').textContent = '';
+            renderActiveAgents([]);
+        }
+        // Collapsible PLAN and TASKS panels share one rule: they open initially
+        // for up to eight entries and then keep the user's choice.
+        function showDialoguePanel(panel, shown, count) {
+            if (!shown) panel.open = count <= 8;
+            panel.hidden = false;
+        }
+        // Only the queued and running subagents of the main agent, above the input.
+        let activeAgentsTimer = null;
+        function formatElapsed(ms) {
+            const seconds = Math.max(0, Math.floor(ms / 1000));
+            return Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
+        }
+        function renderActiveAgents(tasks) {
+            const box = document.getElementById('dialogue-active');
+            const active = tasks.filter(task => task.state === 'running' || task.state === 'queued');
+            clearInterval(activeAgentsTimer); activeAgentsTimer = null;
+            if (!active.length) { box.hidden = true; box.innerHTML = ''; return; }
+            const draw = () => {
+                const now = Date.now();
+                box.innerHTML = '<div>● main agent · ' + active.length + ' active</div>' + active.map((task, index) => {
+                    const since = task.startedAt || task.createdAt;
+                    const elapsed = since ? formatElapsed(now - since) : '';
+                    const time = task.state === 'queued' ? ('queued ' + elapsed).trim() : elapsed || 'running';
+                    return '<div class="agent-child" title="' + escapeHtml(String(task.goal || '')) + '">' + (index === active.length - 1 ? '└ ' : '├ ')
+                        + escapeHtml(String(task.id)) + ' ' + escapeHtml(String(task.worker || '')) + ': ' + escapeHtml(String(task.goal || ''))
+                        + ' <span class="agent-time">· ' + escapeHtml(time) + '</span></div>';
+                }).join('');
+            };
+            draw();
+            box.hidden = false;
+            activeAgentsTimer = setInterval(draw, 1000);
         }
         function startDialogueEvents(key) {
             if (hubSignedOut) return;
@@ -496,10 +533,8 @@
             let hasTasks = false;
             function renderPlan(plan) {
                 if (!Array.isArray(plan.steps) && typeof plan.text !== 'string') return;
-                const panel = document.getElementById('dialogue-plan');
-                if (!hasPlan) panel.open = Array.isArray(plan.steps) ? plan.steps.length <= 8 : plan.text.split(/\r?\n/).length <= 8;
+                showDialoguePanel(document.getElementById('dialogue-plan'), hasPlan, Array.isArray(plan.steps) ? plan.steps.length : plan.text.split(/\r?\n/).length);
                 hasPlan = true;
-                panel.hidden = false;
                 document.getElementById('dialogue-plan-status').textContent = ({ active: 'active', waiting_user: 'waiting for you', done: 'done' })[plan.status] || 'active';
                 document.getElementById('dialogue-plan-text').innerHTML = Array.isArray(plan.steps)
                     ? plan.steps.map(step => {
@@ -512,12 +547,11 @@
                     : markdownToHtml(plan.text);
             }
             function renderTasks() {
-                const panel = document.getElementById('dialogue-tasks-panel');
                 if (tasks.length) {
-                    if (!hasTasks) panel.open = tasks.length <= 8;
+                    showDialoguePanel(document.getElementById('dialogue-tasks-panel'), hasTasks, tasks.length);
                     hasTasks = true;
-                    panel.hidden = false;
                 }
+                renderActiveAgents(tasks);
                 const counts = new Map();
                 for (const task of tasks) counts.set(task.state, (counts.get(task.state) || 0) + 1);
                 document.getElementById('dialogue-tasks-status').textContent = [...counts].map(([state, count]) => count + ' ' + state).join(' \u00b7 ');

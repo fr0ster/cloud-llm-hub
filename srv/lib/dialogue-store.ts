@@ -24,6 +24,7 @@ import { type SessionConfig, sessionConfig } from './session-config';
 
 type Plan = Exclude<DialogueState['plan'], string | undefined>;
 type PlanStep = Plan['steps'][number];
+type TaskRecord = DialogueState['tasks'][number];
 
 export type HubDialogueState = DialogueState & { outbox?: PlannerMessage[] };
 
@@ -78,6 +79,7 @@ const check = z.object({
 const planStep = z.object({
   id,
   goal: boundedText,
+  items: z.array(boundedText).max(1000).optional(),
   dependsOn: ids.optional(),
   worker: id.optional(),
   state: z.enum([
@@ -91,11 +93,13 @@ const planStep = z.object({
   ]),
   check: check.optional(),
   workTaskId: id.optional(),
+  successfulWorkTaskId: id.optional(),
   taskIds: ids,
   note: boundedText.optional(),
 } satisfies Shape<PlanStep>);
 const structuredPlan = planSchema(
   z.object({
+    scopeConsent: z.boolean().optional(),
     version: z.literal(1),
     steps: z.array(planStep).max(1000),
     status: z.enum(['active', 'waiting_user', 'done']),
@@ -133,12 +137,15 @@ const schema = z.object({
           'stopped',
           'interrupted',
         ]),
+        budgetExhausted: z.boolean().optional(),
+        toolCalls: num.optional(),
+        maxToolCalls: num.optional(),
         output: str.optional(),
         error: str.optional(),
         createdAt: num,
         startedAt: num.optional(),
         finishedAt: num.optional(),
-      }),
+      } satisfies Shape<TaskRecord>),
     )
     .superRefine((tasks, ctx) => {
       if (tasks.length > dialogueMaxTasks())

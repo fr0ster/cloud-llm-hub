@@ -62,8 +62,9 @@ let mockPlan:
       steps?: Array<{
         id: string;
         goal: string;
-        state?: 'pending' | 'running' | 'done';
+        state?: 'pending' | 'running' | 'done' | 'skipped';
         dependsOn?: string[];
+        note?: string;
       }>;
       question?: string;
       status?: 'active' | 'waiting_user' | 'done';
@@ -674,20 +675,46 @@ test('restores a 9.0.x state with a long legacy text plan', async () => {
 });
 
 test('emits the finalized done status from the installed DialogueSession', async () => {
+  // A step reaches done only through completed work, and skipping needs the
+  // user's answer: restore a legacy done step and a pending question.
+  await getDialogueStoreBackend().save('alice', 'key', {
+    conversation: [],
+    plan: {
+      version: 1,
+      steps: [
+        { id: 'one', goal: 'Read', state: 'done', taskIds: [] },
+        { id: 'two', goal: 'Store', state: 'pending', taskIds: [] },
+      ],
+      status: 'waiting_user',
+      question: 'Skip storing?',
+    },
+    tasks: [],
+    pending: [],
+    savedAt: Date.now(),
+  });
   const { h } = await ready();
   const events: DialogueEvent[] = [];
   h.subscribe((event) => events.push(event));
   mockPlan = {
-    steps: [{ id: 'one', goal: 'Read', state: 'done' }],
+    steps: [
+      { id: 'one', goal: 'Read', state: 'done' },
+      { id: 'two', goal: 'Store', state: 'skipped', note: 'User agreed' },
+    ],
     status: 'active',
   };
-  await h.session.send('finish');
+  await h.session.send('Yes, skip it');
   await h.session.send('unchanged');
   const plans = events.filter((event) => event.kind === 'plan');
   expect(plans).toHaveLength(1);
   expect(plans[0]).toMatchObject({
     kind: 'plan',
-    plan: { status: 'done', steps: [{ id: 'one', state: 'done' }] },
+    plan: {
+      status: 'done',
+      steps: [
+        { id: 'one', state: 'done' },
+        { id: 'two', state: 'skipped' },
+      ],
+    },
   });
   expect(dialoguePlan(h.session.snapshot())?.status).toBe('done');
 });

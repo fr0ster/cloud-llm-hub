@@ -4,10 +4,22 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [9.2.0] - 2026-10-24
+
 ### Changed
 
+- **Dialogue plans are enforced** (llm-agent 30.9.0): the planner cannot skip
+  or narrow plan items without the user's agreement, batch steps carry their
+  items and are verified with a counted check, steps that ran out of tool
+  budget are not closed without a check, and idle active plans are resumed.
+  Saved sessions keep plan items, successful-work markers, task tool-budget
+  results and pending user consent.
 - **The WebUI task log is collapsible** with live task-state counts, opening
   initially for up to eight tasks and preserving the user's choice on updates.
+  PLAN and TASKS share the same collapse behaviour.
+- **Active subagents above the input**: the WebUI lists only the running and
+  queued subagents of the main agent, with their elapsed time, and hides the
+  list when none are active.
 
 ## [9.1.1] - 2026-10-24
 
