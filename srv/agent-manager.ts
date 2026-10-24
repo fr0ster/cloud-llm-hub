@@ -1,5 +1,6 @@
 import { toolSearchText } from '@mcp-abap-adt/lib/tool-search';
 import { watchDestinations } from './lib/destination-watch';
+import { guardLlmOnlyAgent } from './lib/llm-only-guard';
 import { withToolResultCap } from './lib/tool-result-cap';
 /**
  * Agent Manager - SmartAgent lifecycle management
@@ -3113,7 +3114,7 @@ async function buildLlmOnlyAgent(
         why === 'waiting'
           ? 'You are a helpful AI assistant. No MCP tools are available — no SAP system destination is configured.'
           : 'You are a helpful AI assistant. No MCP tools are available — the SAP system destination is unreachable.',
-        'Answer questions using your knowledge. If the user asks to perform SAP operations, explain that SAP connectivity is not available.',
+        'Answer questions using your knowledge. No action of any kind (SAP operations, storing or searching collection documents via tools, checks, delegation) can run in this session. Never report an action as done or started.',
         why === 'waiting'
           ? 'Say plainly that the hub is waiting for SAP destinations, and that full functionality (ABAP tools) needs at least one SAP destination added to the BTP subaccount — it is picked up automatically once it exists.'
           : 'Say plainly that the SAP destination exists but cannot be reached right now, and that its connectivity (the destination, the Cloud Connector) needs checking — do not suggest adding a destination.',
@@ -3137,6 +3138,10 @@ async function buildLlmOnlyAgent(
   if (e) builder.withEmbedder(agentQueryEmbedder(e));
 
   const handle = await builder.build();
+  handle.agent = guardLlmOnlyAgent(handle.agent, {
+    decide: config.llm.classifierModel ? classifierLlm : mainLlm,
+    why,
+  });
   log.info('LLM-only agent built (no MCP tools)');
   return handle;
 }
