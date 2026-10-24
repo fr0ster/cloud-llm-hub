@@ -19,13 +19,14 @@ user-scope collection, and check the count with the checker.
 
 With a session, an SAP destination and SAP credentials in headers, the SDK got
 the same result as the WebUI: ten records, user scope, checker `pass`, plan
-`done`, in about five minutes. Getting there showed four gaps:
+`done`, in about five minutes. Getting there showed three gaps (and one
+behaviour that stays):
 
 | # | Gap | What the client saw |
 |---|---|---|
 | 1 | A request without `x-clh-session` is refused | `400 SESSION_REQUIRED`; the client must call `POST /v1/session` first, which is not part of either protocol |
 | 2 | A session without a destination has no tools at all, not even RAG, and no planner | The model answered "saved 5 records, the checker confirmed 5" in under ten seconds. Nothing was saved; the collection does not exist |
-| 3 | The destination and SAP credentials travel only in `X-SAP-*` headers | Many clients cannot set custom headers |
+| 3 | The destination and SAP credentials travel in `X-SAP-*` headers | Works; kept as is (section 3) |
 | 4 | The turn ends as soon as the planner has started work ("I will let you know") | Progress and the final result went only to `/v1/session/events` (SSE), which a protocol client does not know. About ten planner messages reached the client only when it sent another message |
 
 Gap 2 is the most dangerous one: a confident, invented success.
@@ -65,18 +66,13 @@ lines, "saved", "the checker confirmed") when no tool ran in the turn, and
 replaces it with the refusal. The guard is a safety net; the prompt is the
 first line.
 
-### 3. Destination and credentials without custom headers
+### 3. Destination and credentials stay in headers
 
-The headers stay. For clients without custom headers:
-
-- the destination can be named in the `model` field as
-  `<model>@<destination>` or, for clients with a fixed model list, chosen by
-  a per-destination entry in `/v1/models`;
-- SAP credentials can be stored once per user for a destination (a protected
-  user setting, opened through the WebUI or `POST /v1/session` with the
-  headers), never in the destination itself.
-
-The exact form is an open question below.
+No change. The destination (`X-SAP-Destination`) and the SAP credentials
+(`X-SAP-Login`, `X-SAP-Password`, `X-SAP-Client`) arrive in request headers,
+as today, and are never stored in the destination. A client that works with
+SAP must be able to send these headers; this is a client requirement, not a
+gap the hub works around.
 
 ### 4. The turn ends only at a real stop
 
@@ -145,13 +141,8 @@ They must give the same results:
 1. Gap 2 first (refusal and guard): it stops invented results today.
 2. Section 4 for streaming, then for non-streaming.
 3. Section 1 (fingerprint sessions).
-4. Section 3 after the open questions are settled.
-5. The WebUI on the streaming form; the SSE channel becomes optional.
+4. The WebUI on the streaming form; the SSE channel becomes optional.
 
 ## Open questions
 
-- The form of the destination for clients without custom headers: model
-  suffix, separate model entries, or a per-user default destination.
-- Storing SAP credentials per user: whether to allow it at all, and where
-  (a credential store service rather than hub storage).
 - The default wait limit for non-streaming clients.
