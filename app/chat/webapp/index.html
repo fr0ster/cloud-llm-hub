@@ -234,7 +234,7 @@
                 <li><b>Send</b> or <b>Enter</b> &mdash; submit the message.</li>
                 <li><b>CLR</b> &mdash; wipe history and start a fresh session.</li>
                 <li><b>LOG</b> &mdash; download the current session as text.</li>
-                <li><b>PLAN</b> / <b>TASKS</b> &mdash; dialogue plan steps and background tasks; click the title to collapse or expand. TASKS shows counts per state; both open on first show when they have 8 entries or fewer and then keep your choice. Above the input, only the running and queued subagents of the main agent are listed with their elapsed time.</li>
+                <li><b>PLAN</b> / <b>TASKS</b> &mdash; dialogue plan steps and background tasks; click the title to collapse or expand. TASKS shows counts per state; both start collapsed and keep your choice. Above the input, only the running and queued subagents of the main agent are listed with their elapsed time.</li>
                 <li><b>STATUS</b> &mdash; <span style="color:#00ff00">green</span> idle, <span style="color:#ffcc00">yellow</span> streaming, <span style="color:#ff5555">red</span> error.</li>
                 <li>Long answers stream live. Wait for <b>STATUS</b> to turn green again.</li>
               </ul>
@@ -481,17 +481,18 @@
         function stopDialogueEvents() {
             dialogueSubscription?.stop(); dialogueSubscription = null;
             document.getElementById('dialogue-tasks-panel').hidden = true;
+            document.getElementById('dialogue-tasks-panel').open = false;
             document.getElementById('dialogue-tasks-status').textContent = '';
             document.getElementById('dialogue-tasks').innerHTML = '';
             document.getElementById('dialogue-plan').hidden = true;
+            document.getElementById('dialogue-plan').open = false;
             document.getElementById('dialogue-plan-text').innerHTML = '';
             document.getElementById('dialogue-plan-status').textContent = '';
             renderActiveAgents([]);
         }
-        // Collapsible PLAN and TASKS panels share one rule: they open initially
-        // for up to eight entries and then keep the user's choice.
-        function showDialoguePanel(panel, shown, count) {
-            if (!shown) panel.open = count <= 8;
+        // Collapsible PLAN and TASKS panels share one rule: they start collapsed
+        // and keep the user's choice on updates.
+        function showDialoguePanel(panel) {
             panel.hidden = false;
         }
         // Only the queued and running subagents of the main agent, above the input.
@@ -529,12 +530,9 @@
             let stopped = false, delay = 1000, timer, controller, reader, lastId;
             const rendered = new Set();
             let tasks = [];
-            let hasPlan = false;
-            let hasTasks = false;
             function renderPlan(plan) {
                 if (!Array.isArray(plan.steps) && typeof plan.text !== 'string') return;
-                showDialoguePanel(document.getElementById('dialogue-plan'), hasPlan, Array.isArray(plan.steps) ? plan.steps.length : plan.text.split(/\r?\n/).length);
-                hasPlan = true;
+                showDialoguePanel(document.getElementById('dialogue-plan'));
                 document.getElementById('dialogue-plan-status').textContent = ({ active: 'active', waiting_user: 'waiting for you', done: 'done' })[plan.status] || 'active';
                 document.getElementById('dialogue-plan-text').innerHTML = Array.isArray(plan.steps)
                     ? plan.steps.map(step => {
@@ -547,10 +545,7 @@
                     : markdownToHtml(plan.text);
             }
             function renderTasks() {
-                if (tasks.length) {
-                    showDialoguePanel(document.getElementById('dialogue-tasks-panel'), hasTasks, tasks.length);
-                    hasTasks = true;
-                }
+                if (tasks.length) showDialoguePanel(document.getElementById('dialogue-tasks-panel'));
                 renderActiveAgents(tasks);
                 const counts = new Map();
                 for (const task of tasks) counts.set(task.state, (counts.get(task.state) || 0) + 1);

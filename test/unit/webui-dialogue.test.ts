@@ -318,19 +318,20 @@ test('plan panel renders escaped markdown, updates live, preserves collapse and 
   ui.startDialogueEvents('key');
   await flush();
   expect(ui.plan.hidden).toBe(false);
-  expect(ui.plan.open).toBe(true);
+  expect(ui.plan.open).toBe(false);
   expect(ui.planText.innerHTML).toContain('<strong>First</strong>');
   expect(ui.planText.innerHTML).toContain('&lt;script&gt;');
   expect(ui.planText.innerHTML).not.toContain('<script>');
   expect(ui.planStatus.textContent).toBe('active');
-  ui.plan.open = false;
+  ui.plan.open = true;
   await ui.timers[0].fn();
   await flush();
   expect(ui.planText.innerHTML).toBe('Second');
   expect(ui.planStatus.textContent).toBe('waiting for you');
-  expect(ui.plan.open).toBe(false);
+  expect(ui.plan.open).toBe(true);
   ui.startDialogueEvents('new');
   expect(ui.plan.hidden).toBe(true);
+  expect(ui.plan.open).toBe(false);
   expect(ui.planText.innerHTML).toBe('');
   expect(ui.planStatus.textContent).toBe('');
   ui.stopDialogueEvents();
@@ -377,11 +378,11 @@ test('structured plan shows states, attempts and escaped goals across live updat
   ui.stopDialogueEvents();
 });
 
-test('long plans start collapsed and done status is visible', async () => {
+test('short plans also start collapsed and done status is visible', async () => {
   const ui = harness();
   ui.fetch.mockResolvedValue(
     stream(
-      `event: plan\ndata: ${JSON.stringify({ text: Array(9).fill('line').join('\n'), status: 'done' })}\n\n`,
+      `event: plan\ndata: ${JSON.stringify({ text: 'one line', status: 'done' })}\n\n`,
     ),
   );
   ui.startDialogueEvents('key');
@@ -452,10 +453,10 @@ test('the active list hides when every subagent finishes', async () => {
 });
 test('PLAN and TASKS panels share the collapse rule; active agents sit above the input', () => {
   expect(html).toContain(
-    "showDialoguePanel(document.getElementById('dialogue-plan'),",
+    "showDialoguePanel(document.getElementById('dialogue-plan'));",
   );
   expect(html).toContain(
-    "showDialoguePanel(document.getElementById('dialogue-tasks-panel'),",
+    "showDialoguePanel(document.getElementById('dialogue-tasks-panel'));",
   );
   expect(html.indexOf('id="dialogue-tasks-panel"')).toBeLessThan(
     html.indexOf('id="dialogue-active"'),

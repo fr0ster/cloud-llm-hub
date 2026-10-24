@@ -9,6 +9,7 @@ import {
 } from './dialogue-sessions';
 import { longSessionsIfReady } from './long-session';
 import type { LongSessionRequest } from './session-connection';
+import { taskView } from './task-view';
 
 /** Multiple tabs receive live events; messages remain until acknowledged.
  * The open channel is the WebUI's live connection, so it counts as session
@@ -64,15 +65,7 @@ export async function handleDialogueEvents(
   const attach = (handle: DialogueHandle) => {
     if (closed || attached) return;
     attached = true;
-    send(
-      'tasks',
-      handle.session.snapshot().tasks.map(({ id, worker, goal, state }) => ({
-        id,
-        worker,
-        goal,
-        state,
-      })),
-    );
+    send('tasks', handle.session.snapshot().tasks.map(taskView));
     if (closed) return;
     const plan = dialoguePlan(handle.session.snapshot());
     if (plan) send('plan', plan);

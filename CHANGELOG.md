@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [9.2.1] - 2026-10-24
+
+### Changed
+
+- **Dialogue plans no longer stall in checking** (llm-agent 30.9.1): idle
+  checks cover steps whose work or check finished without a plan update,
+  checker verdicts wrapped in prose or JSON fences are accepted, and the
+  planner must not claim actions its tools did not confirm.
+
+- **PLAN and TASKS start collapsed** in the WebUI and keep the user's choice;
+  a new session collapses them again.
+
+### Fixed
+
+- **Active subagents show their elapsed time**: task events and snapshots now
+  carry `createdAt` and `startedAt`.
+
 ## [9.2.0] - 2026-10-24
 
 ### Changed

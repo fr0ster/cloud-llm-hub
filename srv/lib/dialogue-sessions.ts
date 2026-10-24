@@ -54,6 +54,7 @@ import {
 } from './session-connection-pool';
 import { evaluateGated } from './step-reviewer';
 import { cachedSystemIdentity } from './system-identity-cache';
+import { type TaskView, taskView } from './task-view';
 
 type Plan = Exclude<DialogueState['plan'], string | undefined>;
 type PlanStep = Plan['steps'][number];
@@ -63,7 +64,7 @@ export type DialogueEvent =
   | { kind: 'plan'; plan: DialoguePlan }
   | {
       kind: 'task';
-      task: Pick<TaskRecord, 'id' | 'worker' | 'goal' | 'state'>;
+      task: TaskView;
     };
 export interface DialoguePlan {
   text?: string;
@@ -260,20 +261,10 @@ async function open(
       emit({ kind: 'plan', plan });
     lastPlan = plan;
   };
-  const emitTask = (
-    task: Pick<TaskRecord, 'id' | 'worker' | 'goal' | 'state'>,
-  ) => {
+  const emitTask = (task: TaskView) => {
     if (taskStates.get(task.id) === task.state) return;
     taskStates.set(task.id, task.state);
-    emit({
-      kind: 'task',
-      task: {
-        id: task.id,
-        worker: task.worker,
-        goal: task.goal,
-        state: task.state,
-      },
-    });
+    emit({ kind: 'task', task: taskView(task) });
   };
   // TaskBoard's wrapRun callback has no task history argument. Carry the
   // lease/admission into its run callback; the worker adapter supplies the

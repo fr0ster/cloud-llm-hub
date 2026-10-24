@@ -46,7 +46,15 @@ jest.mock('../../srv/lib/dialogue-sessions', () => ({
       snapshot: () => ({
         ...planState,
         tasks: [
-          { id: 'task', worker: 'executor', goal: 'read', state: taskState },
+          {
+            id: 'task',
+            worker: 'executor',
+            goal: 'read',
+            state: taskState,
+            createdAt: 100,
+            startedAt: 200,
+            output: 'secret output',
+          },
         ],
       }),
     },
@@ -168,6 +176,10 @@ test.each(['running', 'done'])(
     );
     expect(res.write.mock.calls[0][0]).toContain('event: tasks');
     expect(res.write.mock.calls[0][0]).toContain(`"state":"${state}"`);
+    expect(res.write.mock.calls[0][0]).toContain(
+      '"createdAt":100,"startedAt":200',
+    );
+    expect(res.write.mock.calls[0][0]).not.toContain('secret output');
     expect(res.write.mock.calls[1][0]).toContain('id: m1');
     res.emit('close');
   },
