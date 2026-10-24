@@ -48,8 +48,16 @@ where enabled, is unchanged.
 
 - A request with no key (no header, no cookie, no key in the history) opens a
   new session. This includes every first request: two conversations with the
-  same opening are always two sessions, and a retried first request opens a
-  second session whose unused copy expires as usual.
+  same opening are always two sessions.
+- A retried first request opens a second session, because the client has no
+  key yet. When the first response was lost after the work had started, the
+  work of the first session continues and the retry may start it again. The
+  hub cannot tell a retry from a new conversation without a key, so this is
+  not deduplicated. Two things limit the effect: a first turn usually plans
+  and reads, because SAP changes need the user's agreement in a later turn
+  (`waiting_user`); and the first session's work runs to its end or until the
+  session expires. A client that retries automatically should open the session
+  explicitly (`POST /v1/session` and the header).
 - The first reply of such a session ends with one short visible line naming
   the session, for example `Session: ls-…`. Every protocol client sends the
   history back, so the key returns with every later request.
@@ -79,24 +87,46 @@ today.
 ### 2. No tools: refuse actions, never imitate them
 
 In LLM-only mode no tool can run, so any claim of a performed action is
-invented. Before generating the reply, the hub asks the LLM (the classifier
-model when set, otherwise the main model) one structured question: does this
-request ask to perform an action in a system (save, change, run, check,
-delegate), or only for an answer? The LLM decides; there is no keyword list.
+invented. This covers every action, not only SAP operations: collection
+writes and searches, checks, delegation and stored results are unavailable
+too, because LLM-only mode has no tools at all. Collection operations without
+a destination stay out of scope: they need the dialogue workers, which need a
+destination.
+
+Before generating the reply, the hub asks the LLM (the classifier model when
+set, otherwise the main model) one structured question: does this request ask
+to perform an action (in SAP, in a collection, a check, a delegation), or
+only for an answer? The question sees the recent history, so a follow-up such
+as "do it now" after an answer is judged in context. The LLM decides; there
+is no keyword list.
 
 - An answer-only request is answered as today.
-- An action request gets a plain reply, without a generation pass: it cannot
-  be done in this session, and what is missing (an SAP destination).
+- An action request gets a fixed reply, without a generation pass: it cannot
+  be done in this session, and why (no SAP destination, or the destination
+  is unreachable).
+- When the decision fails (an error or an unusable answer), the reply is the
+  same fixed text with one more sentence: questions without actions can be
+  asked again. No generation pass runs, so nothing can be imitated.
 
 The decision is made before any text is emitted, so it works the same for
-streaming and non-streaming clients, and nothing has to be retracted. The
-question sees the recent history, so a follow-up such as "do it now" after an
-answer is judged in context. When the decision fails (an error or an
-unusable answer), the reply is generated as today under the LLM-only system
-prompt, which also states the rule: it is the second line, not a bypass.
+streaming and non-streaming clients, and nothing has to be retracted.
 
-Dialogue sessions do not need this guard: their `[actions]` records come from
-the hub's own task records, never from model text (llm-agent 30.9.x).
+The LLM-only system prompt also changes. Today it says only "if the user asks
+to perform SAP operations, explain that SAP connectivity is not available".
+It will say that no action of any kind (SAP, collections, checks, delegation)
+can run in this session, and that the reply must never report one as done.
+This covers answer-only replies that drift into describing an action.
+
+A tool that is not available because of the caller's role is a different
+case: there is a destination, the tool exists, and the role does not allow
+it. That is reported as a role denial by the existing exposition rules,
+never as a missing destination.
+
+Dialogue sessions are outside this section. Their `[actions]` records come
+from the hub's task records, but the planner's free text can still claim
+work that did not happen. That is handled by the planner prompt design
+(no claims without a tool call that succeeded in this turn) and is not
+solved here.
 
 ### 3. Destination and credentials stay in headers
 
@@ -175,9 +205,16 @@ follow and ends as today.
   When the planner's turn itself is still running, it continues in the
   background under its admission, and its text is delivered like an outbox
   message;
-- a request that arrives while a turn of its session still runs waits for
-  admission within its own budget; at the budget it gets the status reply
-  instead of `SESSION_BUSY`;
+- a request that arrives while a turn of its session still runs is queued
+  for admission. At the budget it gets a status reply that says its message
+  is accepted and waits for the current turn ("your message is queued and
+  will be handled next"), instead of `SESSION_BUSY`. The queued message stays
+  queued and runs exactly once, after the current turn; its answer is
+  delivered like an outbox message;
+- one queued message per session: a further request while a message is
+  already queued is refused with a status reply that names the waiting
+  message ("a message is already waiting; send this again after it is
+  handled"). Repeated polls therefore never pile up instructions;
 - a timeout or a disconnect never stops the background work;
 - the next request is any user message; the protocols have no empty turn.
   Its reply starts with every undelivered message, then the planner's answer
@@ -185,32 +222,36 @@ follow and ends as today.
 
 ### 5. Delivery
 
-The guarantee is **no loss, in order, per session**. Duplicates are avoided
-whenever the client gives proof of receipt.
+Neither protocol has a receipt: the hub knows that it finished a response,
+never that the client stored it. The guarantee is therefore stated for what
+the hub can see:
 
-- The protocol response is the delivery channel. Every planner message stays
-  in the outbox until a proof of receipt confirms it. A response records the
-  messages it carried (its delivery record).
-- **Proof of receipt** is tied to the response that carried the messages, not
-  to the session:
-  - the next request's history contains the assistant text of that response
-    (every OpenAI and Anthropic client that sends the history gives this
-    proof); or
-  - the request carries `x-clh-ack: <last message id>` (the WebUI, and any
-    client that wants to).
-- Without proof, the messages stay unconfirmed and the next response of the
-  session carries them again. A request from another tab or client whose
-  history lacks a response therefore does not confirm it: it receives those
-  messages itself. A client that sends neither history nor the ack may see a
-  duplicate; no client loses a message because another one asked.
-- A response that was cut before its terminal sequence is never a delivery,
-  whatever the server wrote.
-- The SSE channel `/v1/session/events` becomes a view. It shows the outbox
-  and the plan and task panels to any number of tabs. It never acknowledges
-  and never suppresses protocol delivery: the current `hasSubscribers()`
-  replay suppression in `dialogue-chat.ts` goes, and so does the WebUI's SSE
-  ack. Each message also carries its id as an SSE comment in the protocol
-  stream, so the WebUI renders it once whichever channel shows it first.
+- **Every planner message is delivered at least once to the session.** It
+  stays pending in the outbox until a response that carried it has ended
+  normally (its terminal sequence written and the response finished without
+  an error) and a later request of the session has arrived, or until a
+  request names it in `x-clh-ack: <message id>`. A response that was cut
+  before its terminal sequence never counts; its messages are delivered
+  again in the next response.
+- **Nothing is deleted with the pending mark.** Every delivered message stays
+  in the session history, which the hub already keeps for server-managed
+  sessions. The WebUI shows that history in every tab through the SSE view,
+  so a tab that missed a response still sees its messages.
+- **Limits, stated plainly.** For a plain client:
+  - a response that the server finished but the client lost, followed by a
+    new request from the same client, is not delivered again;
+  - with several plain clients on one session, a message is delivered to the
+    first of them that sends a request; the others do not get it.
+  A plain client that needs more sends `x-clh-ack` with the last message id
+  it stored; each message carries its id as an SSE comment in streaming
+  responses. Clients that cannot do that should keep one client per session,
+  which the key in the conversation (section 1) gives by default.
+- The SSE channel `/v1/session/events` becomes a view of the session history,
+  the plan and the tasks for any number of tabs. It never marks anything
+  delivered and never suppresses protocol delivery: the current
+  `hasSubscribers()` replay suppression in `dialogue-chat.ts` goes, and so
+  does the WebUI's SSE ack. The WebUI renders each message once by its id,
+  whichever channel shows it first.
 
 ### 6. The WebUI becomes an ordinary streaming client
 
@@ -246,8 +287,13 @@ the run creates and removes.
    destination; no invented result, streaming or not.
 5. An answer-only request in LLM-only mode is answered normally; a follow-up
    "do it" after it is refused.
-6. The decision call fails or returns an unusable answer: the reply is
-   generated under the LLM-only system prompt and claims no action.
+6. The decision call fails or returns an unusable answer: the fixed reply,
+   no generation pass.
+6a. Collection operations (store, search, list) and a checker request without
+   a destination: the fixed refusal, no invented result.
+6b. With a destination, a Reader caller asks for an operation only a
+   Developer may run: a role denial, not a missing-destination reply; a
+   Developer caller gets the operation.
 
 **Stream lifecycle**
 
@@ -268,19 +314,22 @@ the run creates and removes.
 12. A run longer than the budget: the status reply, then the accumulated
     messages on the next request; a run that finishes between two polls;
     repeated polling; an early client disconnect and a retry.
-13. A request while a turn of the session still runs: the status reply at
-    the budget, never `SESSION_BUSY`.
+13. A request while a turn of the session still runs: the "queued" status
+    reply at the budget, never `SESSION_BUSY`; the message runs once after
+    the turn.
+13a. A correction queued and timed out, then repeated polls: the correction
+    runs exactly once, each poll gets the "already waiting" reply, and no
+    poll text runs as an instruction.
 
 **Delivery**
 
-14. Two WebUI tabs and one SDK client on the same session: no message lost
-    in any of them, both tabs show the panels, each message rendered once
-    per tab.
-15. A response lost downstream after the server finished it, then a request
-    from another tab: that request does not confirm the lost response and
-    receives its messages.
-16. A client that sends the history: no duplicates. A client that sends
-    neither history nor the ack: duplicates allowed, no loss.
+14. Two WebUI tabs on one session: every message rendered once in each tab,
+    including in a tab whose stream was cut.
+15. A stream cut after the last content delta but before `[DONE]` or
+    `message_stop`: the messages are delivered again in the next response.
+16. A plain client with `x-clh-ack`: a response lost after the server
+    finished it is delivered again. Without the ack: the documented limit,
+    no duplicates in the normal path.
 
 **Sessions**
 
@@ -288,6 +337,9 @@ the run creates and removes.
     first message and the same first reply (for example the fixed refusal):
     two sessions, each with its own key in its first reply.
 18. Concurrent first requests with the same opening: separate sessions.
+18a. The first response is lost after the work started (including a
+    disconnect before the session line): the retry opens a second session;
+    the first session's work continues to its end.
 19. A key in the history with a different SAP client, an incomplete
     credential header, or configured authentication: the same principal
     checks as for a header key.
