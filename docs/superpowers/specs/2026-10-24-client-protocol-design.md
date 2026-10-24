@@ -241,9 +241,12 @@ follow and ends as today.
   connection set-up, the planner's turn and the follow. The budget is
   configurable with a start value of 15 s and is raised only where the path
   is known to allow more;
-- within the budget the reply is one message: the planner's turn text, then
-  every pending outbox message in full, in order. Nothing is shortened, so
-  every message the reply carries counts as delivered complete (section 5);
+- within the budget the reply is one message assembled by one rule: every
+  complete pending outbox message once, by id, in outbox order, in full. The
+  current planner reply is an outbox message too (section 5), so it appears
+  once in its place, after the messages pending from earlier requests.
+  Nothing is shortened, so every message the reply carries counts as
+  delivered complete. Streaming follows the same order;
 - at the budget, the reply ends normally (OpenAI `finish_reason: "stop"`,
   Anthropic `stop_reason: "end_turn"`) with what is ready and a status line
   ("still running: N of M steps done; send any message for the result").
@@ -265,8 +268,9 @@ follow and ends as today.
   which answers it as a question and does not treat it as a new task;
 - a timeout or a disconnect never stops the background work;
 - the next request is any user message; the protocols have no empty turn.
-  Its reply starts with every undelivered message, then the planner's answer
-  to the message.
+  Its reply follows the same assembly rule, so the messages pending from
+  earlier requests come first and the planner's answer to the new message
+  after them.
 
 ### 5. Delivery
 
@@ -405,6 +409,8 @@ the run creates and removes.
 12. A run longer than the budget: the status reply, then the accumulated
     messages on the next request; a run that finishes between two polls;
     repeated polling; an early client disconnect and a retry.
+12a. Results pending from a previous request, then a new non-streaming turn:
+    the pending results once, then the new reply once, in outbox order.
 13. A request while a turn of the session still runs: the "queued" status
     reply at the budget, never `SESSION_BUSY`; the message runs once after
     the turn.
