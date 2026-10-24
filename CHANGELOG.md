@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [9.1.0] - 2026-10-24
+
+### Changed
+
+- **The dialogue planner works on a structured plan** (llm-agent 30.8.0). The
+  plan is a list of steps with states, dependencies and checks; each delegated
+  task belongs to a step; a step with a check closes only on its verdict (from
+  the planner itself or from the checker, which answers with
+  `{"verdict":"pass"|"fail","note"?}`). Every turn ends with a check: when
+  steps are ready, nothing runs and nothing was delegated, the planner gets a
+  bounded corrective turn instead of stalling on a claim. Hub prompt rules
+  that the library now enforces are removed.
+- **The WebUI plan panel shows the steps** with state badges and the current
+  work and check task ids, updated live, including the final `done`; text
+  plans render as before.
+- **Persisted dialogue state** keeps the structured plan and the task-to-step
+  links; states saved by 9.0.x, including long text plans, restore and keep
+  saving.
+
 ## [9.0.1] - 2026-10-23
 
 ### Fixed
