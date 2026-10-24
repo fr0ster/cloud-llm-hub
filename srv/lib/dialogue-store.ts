@@ -24,6 +24,7 @@ import { type SessionConfig, sessionConfig } from './session-config';
 
 type Plan = Exclude<DialogueState['plan'], string | undefined>;
 type PlanStep = Plan['steps'][number];
+type TaskRecord = DialogueState['tasks'][number];
 
 export type HubDialogueState = DialogueState & { outbox?: PlannerMessage[] };
 
@@ -136,12 +137,15 @@ const schema = z.object({
           'stopped',
           'interrupted',
         ]),
+        budgetExhausted: z.boolean().optional(),
+        toolCalls: num.optional(),
+        maxToolCalls: num.optional(),
         output: str.optional(),
         error: str.optional(),
         createdAt: num,
         startedAt: num.optional(),
         finishedAt: num.optional(),
-      }),
+      } satisfies Shape<TaskRecord>),
     )
     .superRefine((tasks, ctx) => {
       if (tasks.length > dialogueMaxTasks())

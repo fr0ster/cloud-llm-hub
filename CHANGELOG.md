@@ -12,7 +12,8 @@ All notable changes to this project will be documented in this file. The format 
   or narrow plan items without the user's agreement, batch steps carry their
   items and are verified with a counted check, steps that ran out of tool
   budget are not closed without a check, and idle active plans are resumed.
-  Saved sessions keep plan items, successful-work markers and pending user
+  Saved sessions keep plan items, successful-work markers, task tool-budget
+  results and pending user
   consent.
 - **The WebUI task log is collapsible** with live task-state counts, opening
   initially for up to eight tasks and preserving the user's choice on updates.

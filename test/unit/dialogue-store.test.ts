@@ -103,6 +103,20 @@ it('round trips structured plans and retained task ownership without stripping f
       ],
     },
     planStatus: 'waiting_user',
+    tasks: [
+      {
+        id: 'work-2',
+        worker: 'executor',
+        goal: 'Read record',
+        state: 'done',
+        budgetExhausted: true,
+        toolCalls: 30,
+        maxToolCalls: 30,
+        output: 'Partial',
+        createdAt: 1,
+        finishedAt: 2,
+      },
+    ],
     taskSteps: {
       'work-1': 'read',
       'work-2': 'read',
