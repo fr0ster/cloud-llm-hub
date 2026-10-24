@@ -194,6 +194,14 @@ running, as today.
 - a wait limit (below);
 - the client disconnects.
 
+A stop takes effect only after the planner turn that produced it has
+settled, its messages are in the outbox, and the follow has sent them. The
+plan state is not enough on its own: today the persistence callback publishes
+the plan (`emitPlan`) before it adds the turn's messages to the outbox, so the
+follow waits for the outbox write of that turn, not for the plan event. The
+final result or the question therefore always comes before the protocol
+terminal.
+
 The plan statuses are the existing `active`, `waiting_user` and `done`; a
 failed step does not end the follow while other work runs, and a plan with
 only failed steps left is idle. An ordinary reply without a plan has no
@@ -376,6 +384,9 @@ the run creates and removes.
    content: the protocol's error form.
 8. A failed step while other work runs: the follow continues; a plan with
    only failed steps left ends the follow with one success terminal.
+8a. A pause between the plan becoming `done` or `waiting_user` and the
+   outbox write of that turn, in both protocols and both response forms: the
+   result or the question arrives before the terminal.
 9. A hub error after partial follow content, for both protocols: the error
    chunk or event and no success terminal.
 10. A disconnect in the middle of a stream: the work continues, and the next
