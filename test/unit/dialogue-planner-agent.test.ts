@@ -362,21 +362,20 @@ test.each([undefined, 7])(
   },
 );
 
-test('hub replaces conflicting library skip instructions', () => {
-  for (const sentence of [
-    'A [check] note means: delegate ready steps, skip them with a reason, or ask with status waiting_user and question.',
-    'Use skipped with a note explaining why instead of silently dropping steps.',
-  ]) {
-    expect(DIALOGUE_PLANNER_SYSTEM).toContain(sentence);
-    expect(HUB_DIALOGUE_PLANNER_SYSTEM).not.toContain(sentence);
+test('planner prompt allows skipping only with user agreement', () => {
+  for (const prompt of [DIALOGUE_PLANNER_SYSTEM, HUB_DIALOGUE_PLANNER_SYSTEM]) {
+    expect(prompt).not.toContain('skip them with a reason');
+    expect(prompt).not.toContain(
+      'Use skipped with a note explaining why instead of silently dropping steps.',
+    );
+    expect(prompt).toContain(
+      'Skipping, removing pending steps or reducing declared items requires a user response',
+    );
   }
   expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
-    'A step may be set to skipped only after the user agreed in this dialogue',
+    "Skip a step, drop items, sample or otherwise narrow the user's scope only after asking the user",
   );
   expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
-    'skip a step only after the user agreed in this dialogue',
-  );
-  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
-    'overrides the skip option offered in library-generated [check] notes',
+    'A [check] note is not user agreement.',
   );
 });

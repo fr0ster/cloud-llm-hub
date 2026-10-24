@@ -78,6 +78,7 @@ const check = z.object({
 const planStep = z.object({
   id,
   goal: boundedText,
+  items: z.array(boundedText).max(1000).optional(),
   dependsOn: ids.optional(),
   worker: id.optional(),
   state: z.enum([
@@ -91,11 +92,13 @@ const planStep = z.object({
   ]),
   check: check.optional(),
   workTaskId: id.optional(),
+  successfulWorkTaskId: id.optional(),
   taskIds: ids,
   note: boundedText.optional(),
 } satisfies Shape<PlanStep>);
 const structuredPlan = planSchema(
   z.object({
+    scopeConsent: z.boolean().optional(),
     version: z.literal(1),
     steps: z.array(planStep).max(1000),
     status: z.enum(['active', 'waiting_user', 'done']),

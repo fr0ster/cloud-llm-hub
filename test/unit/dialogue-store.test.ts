@@ -76,6 +76,7 @@ it('round trips structured plans and retained task ownership without stripping f
   const value: DialogueState = {
     ...state,
     plan: {
+      scopeConsent: true,
       version: 1,
       status: 'waiting_user',
       question: 'Continue?',
@@ -84,10 +85,12 @@ it('round trips structured plans and retained task ownership without stripping f
         {
           id: 'read',
           goal: 'Read record',
+          items: ['A', 'B'],
           dependsOn: ['discover'],
           worker: 'executor',
           state: 'checking',
           workTaskId: 'work-2',
+          successfulWorkTaskId: 'work-2',
           taskIds: ['work-1', 'work-2', 'check-1'],
           check: {
             by: 'checker',
