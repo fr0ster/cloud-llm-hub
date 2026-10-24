@@ -97,6 +97,7 @@
         <div class="system-bar">
             <span>CLASSIFIER: <select id="classifier-model-select" class="aux-model-select" disabled><option value="">...</option></select></span>
             <span>EMBEDDER: <span id="embedding-model">...</span></span>
+            <span>PLANNER: <span id="planner-model">...</span></span>
             <span>RAG: <span id="rag-type">...</span> <button id="rag-manage-btn" onclick="openRagPanel()" title="Manage RAG Collections" style="margin-left:4px;padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00ff00;border:1px solid #333;border-radius:3px;font-family:'Courier New',monospace">MANAGE</button></span>
         </div>
 
@@ -1440,6 +1441,7 @@
                     document.getElementById('agent-mode').innerText = meta.mode || '?';
                     document.getElementById('rag-type').innerText = meta.rag_type || '?';
                     document.getElementById('embedding-model').innerText = meta.embedding_model || '?';
+                    document.getElementById('planner-model').innerText = meta.planner_model || '?';
 
                     // Populate auxiliary model dropdowns with all available models
                     populateAuxSelect(classifierSelect, data.data, meta.classifier_model);
@@ -1504,6 +1506,8 @@
             try {
                 const resp = await hubFetch('/v1/models');
                 const data = await resp.json();
+                // The planner follows a hot-swapped main model unless it has its own.
+                if (data._meta?.planner_model) document.getElementById('planner-model').innerText = data._meta.planner_model;
                 const destinations = data._destinations || [];
                 const activeDest = data._active_destination || '';
                 if (destinations.length > 0) {

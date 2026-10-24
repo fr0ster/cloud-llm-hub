@@ -15,6 +15,17 @@ jest.mock(
   { virtual: true },
 );
 
+const mockLlm: {
+  model: string;
+  plannerModel?: string;
+  temperature: number;
+  maxTokens: number;
+} = {
+  model: 'main-model',
+  temperature: 0,
+  maxTokens: 1,
+};
+
 const mockRag = {
   embedder: null as null | { kind: string; model: string },
   backends: {
@@ -26,7 +37,7 @@ const mockRag = {
 jest.mock('../../srv/agent-config', () => ({
   ...jest.requireActual('../../srv/agent-config'),
   getAgentConfig: () => ({
-    llm: { temperature: 0, maxTokens: 1 },
+    llm: mockLlm,
     agent: { mode: 'smart', maxIterations: 1, ragType: 'in-memory' },
     mcp: { destination: undefined },
     rag: mockRag,
@@ -46,6 +57,18 @@ async function meta(): Promise<Record<string, unknown>> {
 }
 
 describe('/v1/models _meta', () => {
+  it.each([undefined, 'independent-planner'])(
+    'reports the planner model with override %s',
+    async (plannerModel) => {
+      mockLlm.plannerModel = plannerModel;
+      try {
+        expect((await meta()).planner_model).toBe(plannerModel ?? 'main-model');
+      } finally {
+        delete mockLlm.plannerModel;
+      }
+    },
+  );
+
   it('reports no embedding model when no embedder is configured', async () => {
     mockRag.embedder = null;
     const m = await meta();
