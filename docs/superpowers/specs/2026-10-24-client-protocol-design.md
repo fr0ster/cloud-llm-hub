@@ -166,12 +166,14 @@ gap the hub works around.
    no connection lease.
 
 **Session lifetime.** Releasing admission must not let the session expire
-under live work. An open follow touches the session on every keep-alive, as
-the events channel does today on its heartbeats. Background work that runs
-with no follow and no events connection (the client disconnected or timed
-out) also keeps the session alive: each task start, progress and end touches
-it. Once the plan is idle, done or waiting for the user, the TTL counts from
-the last touch as today, and expiry closes the dialogue as today.
+under live work. While any task of the session is running or queued, the
+session holds a lifetime hold in the session registry, which the expiry
+sweep treats like an active request: it does not depend on events, so a
+worker waiting silently on SAP, the LLM or admission is covered. An open
+follow touches the session on every keep-alive, as the events channel does
+today. Once nothing is running or queued (the plan is idle, done or waiting
+for the user), the hold is released, the TTL counts from the last touch as
+today, and expiry closes the dialogue as today.
 
 At most one follow is open per session. A new request in the same session
 (a correction, a cancellation, a question) is admitted at once, because the
@@ -288,13 +290,15 @@ the hub can see:
     anything by arriving. A request without the header confirms nothing; a
     request whose ack names an older message confirms up to that message,
     and everything after it is delivered again;
-  - every confirmation, by ack or by arrival, moves a watermark over the
-    contiguous run of complete messages only. An incomplete message (a
-    planner reply still streaming) stops the watermark: an ack that names a
-    later complete message confirms nothing past the incomplete one, which
-    is delivered complete in a later response. This replaces today's
-    `DialogueOutbox.ack()`, which removes the whole prefix whatever its
-    state;
+  - confirmation follows what was delivered, not the current state of the
+    outbox. Each response's delivery record lists the messages it carried in
+    complete form. A confirmation (by ack or by arrival) covers only messages
+    in the delivery records of responses that ended normally, and only up to
+    the named message in outbox order, over a contiguous run: a message that
+    no such response carried complete stops it, even if it has completed
+    since. It is delivered complete in a later response. This replaces
+    today's `DialogueOutbox.ack()`, which removes the whole prefix whatever
+    was delivered;
   - message ids reach both forms: a streaming response carries each id as an
     SSE comment before the message; a non-streaming response carries the id
     of its last message in the `x-clh-last-message` response header.
@@ -376,9 +380,10 @@ the run creates and removes.
 10. A disconnect in the middle of a stream: the work continues, and the next
     request receives the messages of the cut response.
 10a. A session TTL shorter than the run, with no `/v1/session/events`
-    connection: an open follow and, after a disconnect, the background work
-    keep the session alive to the end of the plan; the session expires one
-    TTL after the plan becomes idle.
+    connection, including a task that waits silently (a slow SAP or LLM call,
+    an admission wait) longer than the TTL: an open follow and, after a
+    disconnect, the hold keep the session alive to the end of the plan; the
+    session expires one TTL after nothing is running or queued.
 
 **Non-streaming**
 
@@ -406,7 +411,10 @@ the run creates and removes.
     `message_stop`: the messages are delivered again in the next response.
 15a. A planner reply still streaming while a background message completes,
     and another tab acks the background message: the streaming reply is not
-    confirmed and arrives complete in a later response.
+    confirmed and arrives complete in a later response. The same when the
+    reply completes before the ack arrives, for both response forms (the ack
+    in a stream comment and in `x-clh-last-message`): the reply was never
+    carried complete, so it is not confirmed.
 16. Explicit acknowledgement mode, streaming and non-streaming: a response
     lost after the server finished it, then a request without the header,
     then one with an older ack: nothing is confirmed by the first, the second
