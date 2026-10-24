@@ -31,6 +31,7 @@
         button:hover:not(:disabled) { background: #00ff00; color: #000; }
         button:disabled, #user-input:disabled { opacity: 0.4; cursor: not-allowed; }
         .dialogue-task { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #dialogue-plan-text .badge { display: inline-block; border: 1px solid #888; border-radius: 4px; padding: 0 4px; font-size: 10px; }
         #dialogue-plan { font-size:12px; color:#aaa; border-left:2px solid #555; padding-left:8px; margin-bottom:6px; }
         #dialogue-plan summary { cursor:pointer; }
         .plan-status { font-size:11px; border:1px solid #555; padding:1px 5px; margin-left:6px; color:#ccc; }
@@ -489,13 +490,21 @@
             let tasks = [];
             let hasPlan = false;
             function renderPlan(plan) {
-                if (typeof plan.text !== 'string') return;
+                if (!Array.isArray(plan.steps) && typeof plan.text !== 'string') return;
                 const panel = document.getElementById('dialogue-plan');
-                if (!hasPlan) panel.open = plan.text.split(/\r?\n/).length <= 8;
+                if (!hasPlan) panel.open = Array.isArray(plan.steps) ? plan.steps.length <= 8 : plan.text.split(/\r?\n/).length <= 8;
                 hasPlan = true;
                 panel.hidden = false;
                 document.getElementById('dialogue-plan-status').textContent = ({ active: 'active', waiting_user: 'waiting for you', done: 'done' })[plan.status] || 'active';
-                document.getElementById('dialogue-plan-text').innerHTML = markdownToHtml(plan.text);
+                document.getElementById('dialogue-plan-text').innerHTML = Array.isArray(plan.steps)
+                    ? plan.steps.map(step => {
+                        const ready = step.state === 'pending' && (step.dependsOn || []).every(id => plan.steps.some(other => other.id === id && other.state === 'done'));
+                        const state = ready ? 'ready' : step.state;
+                        return '<div class="dialogue-task"><span class="badge">' + escapeHtml(String(state)) + '</span> ' + escapeHtml(String(step.id)) + ': ' + escapeHtml(String(step.goal))
+                            + (step.workTaskId ? ' ? work: ' + escapeHtml(String(step.workTaskId)) : '')
+                            + (step.check?.taskId ? ' ? check: ' + escapeHtml(String(step.check.taskId)) : '') + '</div>';
+                    }).join('') + (plan.text ? markdownToHtml(plan.text) : '')
+                    : markdownToHtml(plan.text);
             }
             function renderTasks() {
                 document.getElementById('dialogue-tasks').innerHTML = tasks.map(task => '<div class="dialogue-task" title="' + escapeHtml(String(task.goal || '')) + '">' + stepSymbol(task) + ' ' + escapeHtml(String(task.id)) + ': ' + escapeHtml(String(task.goal || '')) + '</div>').join('');

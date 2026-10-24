@@ -24,21 +24,18 @@ import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { runWithSessionId } from '../../srv/request-session';
 
-test('verification always belongs to the checker', () => {
+test('planner supports planner and checker verification', () => {
   for (const rule of HUB_DIALOGUE_STORAGE_RULES.split('\n')) {
     expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(rule);
   }
   expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
     'The checker can read stored hub RAG records with rag_list; use it to verify stored results.',
   );
-  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
-    'Delegate every verification or check step to the checker worker, never to the executor; the checker only reads and checks.',
-  );
+  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain('For check.by planner');
 });
 
 test('planner prepares a complete brief and discloses narrowed scope', () => {
   for (const rule of [
-    'When you ask the user, set the plan status waiting_user with update_plan; when the request is complete, set it done.',
     'Every delegate_task is a brief: goal says what to achieve in one or two sentences',
     'what not to touch, where results are stored, priority order, scope',
     'ids, names, values',
@@ -52,13 +49,19 @@ test('planner prepares a complete brief and discloses narrowed scope', () => {
     expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(rule);
 });
 
-test('planner grounds task reports in tool results and delegates the next step immediately', () => {
+test('planner uses the structured board and library delegation contract', () => {
   for (const rule of [
-    'Start every turn by calling list_tasks; report tasks only as [tasks] / list_tasks show them.',
-    'A task exists only after delegate_task has returned its id; never name a task id that [tasks], list_tasks or delegate_task did not return, and never say that work started unless delegate_task returned its id in this turn.',
-    'When the plan has a next step that is ready to run (no open question for the user, its inputs known) and no task is running, delegate it in this same turn; never end a turn with a promise to start work later. If the step needs a decision from the user, ask instead.',
+    '[plan] is the task board truth',
+    'Always delegate_task with step_id',
+    'Use get_plan(',
+    'Set status waiting_user with a nonempty question',
+    'dependsOn for prerequisites',
   ])
-    expect(HUB_DIALOGUE_PLANNER_SYSTEM.split('\n')).toContain(rule);
+    expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(rule);
+  expect(HUB_DIALOGUE_PLANNER_SYSTEM).not.toContain(
+    'Start every turn by calling list_tasks',
+  );
+  expect(CHECKER_DESCRIPTION).toContain('"verdict":"pass"|"fail"');
 });
 
 test('shared worker descriptions do not advertise dialogue RAG tools', () => {
@@ -129,7 +132,7 @@ function llm(model: string) {
   };
   return { agent, tools, messages };
 }
-test('hard planner sends all five control tools, hub prompt, and follows getSmartAgent model hot-swap', async () => {
+test('hard planner sends all six control tools, hub prompt, and follows getSmartAgent model hot-swap', async () => {
   const first = llm('first');
   const second = llm('second');
   jest.mocked(makeHubLlm).mockResolvedValue(first.agent);
@@ -142,12 +145,13 @@ test('hard planner sends all five control tools, hub prompt, and follows getSmar
       expect.arrayContaining([
         'delegate_task',
         'get_task',
+        'get_plan',
         'list_tasks',
         'stop_task',
         'update_plan',
       ]),
     );
-    expect(new Set(first.tools.flat()).size).toBe(5);
+    expect(new Set(first.tools.flat()).size).toBe(6);
     expect(first.messages.join('\n')).toContain(HUB_DIALOGUE_PLANNER_SYSTEM);
     // Hub notes are not the user, and the library's fixed default is replaced.
     expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(

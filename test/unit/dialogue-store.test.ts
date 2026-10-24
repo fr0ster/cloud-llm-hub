@@ -26,6 +26,68 @@ const state: DialogueState = {
   savedAt: 1,
 };
 beforeEach(() => initializeDialogueStore(loadSessionConfig({})));
+it('round trips structured plans and retained task ownership without stripping fields', async () => {
+  const store = createDialogueStateStore('alice', 'structured');
+  const value: DialogueState = {
+    ...state,
+    plan: {
+      version: 1,
+      status: 'waiting_user',
+      question: 'Continue?',
+      note: 'A plan',
+      steps: [
+        {
+          id: 'read',
+          goal: 'Read record',
+          dependsOn: ['discover'],
+          worker: 'executor',
+          state: 'checking',
+          workTaskId: 'work-2',
+          taskIds: ['work-1', 'work-2', 'check-1'],
+          check: {
+            by: 'checker',
+            goal: 'Record matches',
+            verdict: 'fail',
+            taskId: 'check-1',
+          },
+          note: 'Retry',
+        },
+      ],
+    },
+    planStatus: 'waiting_user',
+    taskSteps: {
+      'work-1': 'read',
+      'work-2': 'read',
+      'check-1': 'read',
+      removed: 'old-step',
+    },
+  };
+  await store.save('structured', value);
+  expect(await store.load('structured')).toEqual(value);
+});
+it('rejects oversized structured fields and ownership maps', async () => {
+  const store = createDialogueStateStore('alice', 'bounded');
+  for (const extra of [
+    {
+      taskSteps: Object.fromEntries(
+        Array.from({ length: 1001 }, (_, i) => [String(i), 'step']),
+      ),
+    },
+    { taskSteps: { task: 'x'.repeat(1001) } },
+    {
+      plan: {
+        version: 1,
+        status: 'active',
+        steps: [
+          { id: 'a', goal: 'x'.repeat(20001), state: 'pending', taskIds: [] },
+        ],
+      },
+    },
+  ]) {
+    await store.save('bounded', { ...state, ...extra } as DialogueState);
+    expect(await store.load('bounded')).toBeUndefined();
+  }
+});
 it.each(['active', 'waiting_user', 'done'] as const)(
   'round trips plan status %s',
   async (planStatus) => {

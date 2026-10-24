@@ -57,7 +57,17 @@ const mockPlannerTurns: string[] = [];
 const mockEnvironments: string[] = [];
 let mockGoal = 'read';
 let mockPlan:
-  | { plan: string; status?: 'active' | 'waiting_user' | 'done' }
+  | {
+      plan?: string;
+      steps?: Array<{
+        id: string;
+        goal: string;
+        state?: 'pending' | 'running' | 'done';
+        dependsOn?: string[];
+      }>;
+      question?: string;
+      status?: 'active' | 'waiting_user' | 'done';
+    }
   | undefined;
 const mockRegister = { track: <T>(p: Promise<T>) => p };
 jest.mock('../../srv/agent-config', () => ({
@@ -655,7 +665,11 @@ test('plan events emit only when text or status changes after planner turns', as
   });
   const events: DialogueEvent[] = [];
   h.subscribe((event) => events.push(event));
-  mockPlan = { plan: 'Read records', status: 'waiting_user' };
+  mockPlan = {
+    plan: 'Read records',
+    status: 'waiting_user',
+    question: 'Continue?',
+  };
   await h.session.send('first');
   await h.session.send('same');
   mockPlan = { plan: 'Read records', status: 'done' };
@@ -663,8 +677,40 @@ test('plan events emit only when text or status changes after planner turns', as
   mockPlan = { plan: 'Finished reading', status: 'done' };
   await h.session.send('text');
   expect(events.filter((event) => event.kind === 'plan')).toEqual([
-    { kind: 'plan', plan: { text: 'Read records', status: 'waiting_user' } },
-    { kind: 'plan', plan: { text: 'Read records', status: 'done' } },
-    { kind: 'plan', plan: { text: 'Finished reading', status: 'done' } },
+    {
+      kind: 'plan',
+      plan: { text: 'Read records', steps: [], status: 'waiting_user' },
+    },
+    { kind: 'plan', plan: { text: 'Read records', steps: [], status: 'done' } },
+    {
+      kind: 'plan',
+      plan: { text: 'Finished reading', steps: [], status: 'done' },
+    },
   ]);
+});
+
+test('structured step changes emit even when plan text and status stay the same', async () => {
+  const { h } = await ready();
+  const events: DialogueEvent[] = [];
+  h.subscribe((event) => events.push(event));
+  mockPlan = {
+    steps: [{ id: 'one', goal: 'Read', state: 'pending' }],
+    status: 'waiting_user',
+    question: 'Proceed?',
+  };
+  await h.session.send('plan');
+  await h.session.send('unchanged');
+  mockPlan.steps = [{ id: 'one', goal: 'Read revised', state: 'pending' }];
+  await h.session.send('revise');
+  const plans = events.filter((event) => event.kind === 'plan');
+  expect(plans).toHaveLength(2);
+  expect(plans[1]).toMatchObject({
+    kind: 'plan',
+    plan: {
+      status: 'waiting_user',
+      steps: [
+        { id: 'one', goal: 'Read revised', state: 'pending', taskIds: [] },
+      ],
+    },
+  });
 });

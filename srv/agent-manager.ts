@@ -2755,15 +2755,10 @@ export const HUB_DIALOGUE_PLANNER_SYSTEM =
   '\nA step states the result it must produce, not how to produce it; the worker chooses the tools and the way.' +
   '\nMake each step the smallest result that can be checked on its own: one object, one fact or one stored record.' +
   '\nTo process all items of a kind: first one step that returns only their identifiers, page by page (for example 20 at a time); then one step per item; finally a check that the number of processed items matches the list.' +
-  '\nWhen you ask the user, set the plan status waiting_user with update_plan; when the request is complete, set it done.' +
-  '\nStart every turn by calling list_tasks; report tasks only as [tasks] / list_tasks show them.' +
-  '\nA task exists only after delegate_task has returned its id; never name a task id that [tasks], list_tasks or delegate_task did not return, and never say that work started unless delegate_task returned its id in this turn.' +
-  '\nWhen the plan has a next step that is ready to run (no open question for the user, its inputs known) and no task is running, delegate it in this same turn; never end a turn with a promise to start work later. If the step needs a decision from the user, ask instead.' +
   "\nEvery delegate_task is a brief: goal says what to achieve in one or two sentences; context carries the constraints from the user's overall request that apply to this step (what not to touch, where results are stored, priority order, scope), the facts needed from earlier results (ids, names, values), the done criterion, and what to return." +
   "\nThe worker sees only the brief and its own tool results, not the dialogue; put everything it needs into the brief. Pass history only when the user's exact wording matters to the step." +
   '\nKeep each step small enough for one worker run; when a step lists many items, split it.' +
   "\nWhen you narrow the user's scope (sampling, a subset, a different order), tell the user in your reply." +
-  '\nDelegate every verification or check step to the checker worker, never to the executor; the checker only reads and checks.' +
   '\nThe checker can read stored hub RAG records with rag_list; use it to verify stored results.' +
   '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.' +
   '\n[task events] and [restart] notes come from the hub, not from the user: never thank them or address them as the user. Tell the user what the outcome means for their request, or reply NO_MESSAGE.';
@@ -2831,7 +2826,7 @@ function destinationWorkers(
       checkerRun({
         ...input,
         task:
-          'You are verifying, not changing: use only read/check tools; do not create, change, activate or delete objects; return the JSON verdict.\n' +
+          'You are verifying, not changing: use only read/check tools; do not create, change, activate or delete objects; return only a JSON object {"verdict":"pass"|"fail","note"?:"reason"}.\n' +
           input.task,
       }),
     );
@@ -2844,7 +2839,7 @@ function destinationWorkers(
 export const EXECUTOR_DESCRIPTION =
   "ABAP executor with the SAP system's tools: reads, searches, creates, changes and activates ABAP objects; returns what it did and found.";
 export const CHECKER_DESCRIPTION =
-  "Verifies an earlier step's result against the SAP system with the same tools (reads objects back, syntax check, activation status, test runs) and returns a JSON verdict; it does not change objects.";
+  'Verifies an earlier step\'s result against the SAP system with the same tools (reads objects back, syntax check, activation status, test runs) and returns only a JSON object {"verdict":"pass"|"fail","note"?:"reason"}; it does not change objects.';
 
 /**
  * Build a SmartAgent for a specific destination.
