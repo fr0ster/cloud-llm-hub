@@ -1,4 +1,5 @@
 import { lookupDialogue } from './lib/dialogue-sessions';
+import { RAG_CONTEXT_MARKER } from './lib/rag-context-marker';
 /**
  * OpenAI-compatible HTTP handlers for SmartAgent.
  *
@@ -888,7 +889,7 @@ async function serveChatCompletions(
             normalizedMessages = [...normalizedMessages];
             normalizedMessages[lastUserIdx] = {
               ...original,
-              content: `${originalContent}\n\n[Context from knowledge base — answer based on this, in your own words]\n${ragContext}`,
+              content: `${originalContent}${RAG_CONTEXT_MARKER}${ragContext}`,
             };
           }
           log.info('RAG semantic search results injected', {

@@ -3138,8 +3138,16 @@ async function buildLlmOnlyAgent(
   if (e) builder.withEmbedder(agentQueryEmbedder(e));
 
   const handle = await builder.build();
-  handle.agent = guardLlmOnlyAgent(handle.agent, {
-    decide: config.llm.classifierModel ? classifierLlm : mainLlm,
+  // `config.llm.classifierModel` defaults to the main model name, so only the
+  // variable itself says that a classifier was chosen. Otherwise the decision
+  // uses the LLM this agent generates with, read on every call so a model
+  // swap of the agent's deps is followed.
+  const inner = handle.agent;
+  handle.agent = guardLlmOnlyAgent(inner, {
+    decide: process.env.LLM_AGENT_CLASSIFIER_MODEL?.trim()
+      ? classifierLlm
+      : // biome-ignore lint/suspicious/noExplicitAny: internal deps, as in the model hot-swap
+        () => ((inner as any).deps?.mainLlm as ILlm | undefined) ?? mainLlm,
     why,
   });
   log.info('LLM-only agent built (no MCP tools)');
