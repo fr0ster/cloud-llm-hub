@@ -51,13 +51,12 @@ where enabled, is unchanged.
   same opening are always two sessions.
 - A retried first request opens a second session, because the client has no
   key yet. When the first response was lost after the work had started, the
-  work of the first session continues and the retry may start it again. The
-  hub cannot tell a retry from a new conversation without a key, so this is
-  not deduplicated. Two things limit the effect: a first turn usually plans
-  and reads, because SAP changes need the user's agreement in a later turn
-  (`waiting_user`); and the first session's work runs to its end or until the
-  session expires. A client that retries automatically should open the session
-  explicitly (`POST /v1/session` and the header).
+  work of the first session continues and the retry may do it again,
+  including writes: an opening request that asks for an SAP change or a
+  collection write can be carried out in its first turn. The hub cannot tell
+  a retry from a new conversation without a key, so this is not
+  deduplicated; it is a stated limit. A client that retries automatically
+  should open the session explicitly (`POST /v1/session` and the header).
 - The first reply of such a session ends with one short visible line naming
   the session, for example `Session: ls-…`. Every protocol client sends the
   history back, so the key returns with every later request.
@@ -87,11 +86,16 @@ today.
 ### 2. No tools: refuse actions, never imitate them
 
 In LLM-only mode no tool can run, so any claim of a performed action is
-invented. This covers every action, not only SAP operations: collection
-writes and searches, checks, delegation and stored results are unavailable
-too, because LLM-only mode has no tools at all. Collection operations without
-a destination stay out of scope: they need the dialogue workers, which need a
-destination.
+invented. This covers every action, not only SAP operations: storing or
+changing collection documents, tool-driven collection searches, checks and
+delegation are unavailable too, because LLM-only mode has no tools at all.
+Tool-driven collection operations without a destination stay out of scope:
+they need the dialogue workers, which need a destination.
+
+Retrieval for answers is not an action and stays as it is: the handler
+searches the collections the request selects and adds the results to the
+context before generation, with or without a destination. An answer from a
+selected collection is therefore an answer, not an imitation.
 
 Before generating the reply, the hub asks the LLM (the classifier model when
 set, otherwise the main model) one structured question: does this request ask
@@ -174,8 +178,15 @@ follow and ends as today.
 - planner messages from the outbox go out as content deltas of the same
   message, separated by a paragraph break: OpenAI `delta.content` chunks of
   one completion, Anthropic `content_block_delta` events of one text block;
-- the existing keep-alives stay as they are (an SSE comment every 10 s in
-  both handlers); there is no change of interval or framing;
+- keep-alives keep their framing and interval (an SSE comment every 10 s in
+  both handlers) but start when the request arrives, not after admission,
+  connection set-up and agent initialization as today. Destination
+  initialization alone can wait 90 s by default, far beyond the idle
+  timeouts, so the stream headers and the first keep-alive go out at once;
+- an error before the first content (admission, connection, initialization)
+  ends the stream with the protocol's error form; a refusal that today is an
+  HTTP status (for example `503` with `Retry-After`) stays an HTTP status
+  when it is known before the stream starts;
 - the end is exactly one terminal sequence: OpenAI a final chunk with
   `finish_reason: "stop"` and usage summed over the turn and the follow,
   then `data: [DONE]`; Anthropic `content_block_stop`, `message_delta` with
@@ -242,10 +253,20 @@ the hub can see:
     new request from the same client, is not delivered again;
   - with several plain clients on one session, a message is delivered to the
     first of them that sends a request; the others do not get it.
-  A plain client that needs more sends `x-clh-ack` with the last message id
-  it stored; each message carries its id as an SSE comment in streaming
-  responses. Clients that cannot do that should keep one client per session,
-  which the key in the conversation (section 1) gives by default.
+- **Explicit acknowledgement mode** removes the first limit for a client that
+  can send a header:
+  - a session enters it when a request carries `x-clh-ack`, with a message id
+    or `none`; a client sends `x-clh-ack: none` with its first request to be
+    in this mode from the start. The mode lasts for the session;
+  - in this mode only the ack confirms: a later request no longer confirms
+    anything by arriving. A request without the header confirms nothing; a
+    request whose ack names an older message confirms up to that message,
+    and everything after it is delivered again;
+  - message ids reach both forms: a streaming response carries each id as an
+    SSE comment before the message; a non-streaming response carries the id
+    of its last message in the `x-clh-last-message` response header.
+  Clients that use neither mode should keep one client per session, which the
+  key in the conversation (section 1) gives by default.
 - The SSE channel `/v1/session/events` becomes a view of the session history,
   the plan and the tasks for any number of tabs. It never marks anything
   delivered and never suppresses protocol delivery: the current
@@ -255,7 +276,8 @@ the hub can see:
 
 ### 6. The WebUI becomes an ordinary streaming client
 
-The WebUI uses the streaming form of section 4 and sends `x-clh-ack`. The SSE
+The WebUI uses the streaming form of section 4 in explicit acknowledgement
+mode (`x-clh-ack`). The SSE
 channel stays for the panels (plan, tasks, active agents) and for several
 tabs, but everything the user must see also arrives in the protocol response.
 Status comments (`: status {json}`) remain an optional extension that plain
@@ -289,17 +311,21 @@ the run creates and removes.
    "do it" after it is refused.
 6. The decision call fails or returns an unusable answer: the fixed reply,
    no generation pass.
-6a. Collection operations (store, search, list) and a checker request without
-   a destination: the fixed refusal, no invented result.
+6a. Collection writes, tool-driven searches and a checker request without a
+   destination: the fixed refusal, no invented result.
+6c. A question answered from a selected collection without a destination:
+   retrieval runs as today and the answer uses it.
 6b. With a destination, a Reader caller asks for an operation only a
    Developer may run: a role denial, not a missing-destination reply; a
    Developer caller gets the operation.
 
 **Stream lifecycle**
 
-7. Normal completion after silence longer than the idle timeouts and several
-   planner messages: keep-alives during silence and exactly one success
-   terminal sequence.
+7. Normal completion after silence longer than the idle timeouts, during
+   the admission wait, the destination initialization and the follow, and
+   several planner messages: keep-alives from arrival and exactly one
+   success terminal sequence. An initialization error before the first
+   content: the protocol's error form.
 8. A failed step while other work runs: the follow continues; a plan with
    only failed steps left ends the follow with one success terminal.
 9. A hub error after partial follow content, for both protocols: the error
@@ -327,28 +353,32 @@ the run creates and removes.
     including in a tab whose stream was cut.
 15. A stream cut after the last content delta but before `[DONE]` or
     `message_stop`: the messages are delivered again in the next response.
-16. A plain client with `x-clh-ack`: a response lost after the server
-    finished it is delivered again. Without the ack: the documented limit,
-    no duplicates in the normal path.
+16. Explicit acknowledgement mode, streaming and non-streaming: a response
+    lost after the server finished it, then a request without the header,
+    then one with an older ack: nothing is confirmed by the first, the second
+    confirms up to its id, and the lost messages are delivered again. The
+    non-streaming client takes the ids from `x-clh-last-message`.
+17. Without explicit mode: the documented limit, no duplicates in the normal
+    path.
 
 **Sessions**
 
-17. Two conversations of the same user with the same system prompt, the same
+18. Two conversations of the same user with the same system prompt, the same
     first message and the same first reply (for example the fixed refusal):
     two sessions, each with its own key in its first reply.
-18. Concurrent first requests with the same opening: separate sessions.
-18a. The first response is lost after the work started (including a
+19. Concurrent first requests with the same opening: separate sessions.
+19a. The first response is lost after the work started (including a
     disconnect before the session line): the retry opens a second session;
     the first session's work continues to its end.
-19. A key in the history with a different SAP client, an incomplete
+20. A key in the history with a different SAP client, an incomplete
     credential header, or configured authentication: the same principal
     checks as for a header key.
-20. A key of an expired session: `SESSION_NOT_FOUND`, or revival where the
+21. A key of an expired session: `SESSION_NOT_FOUND`, or revival where the
     record allows it, as for a header key.
-21. A client that trims the first reply: a new session (documented); a
+22. A client that trims the first reply: a new session (documented); a
     client that trims older messages but keeps the first reply: the same
     session.
-22. A technical caller without the header: `SESSION_REQUIRED`; another user
+23. A technical caller without the header: `SESSION_REQUIRED`; another user
     presenting a key: `SESSION_NOT_FOUND`.
 
 ## Rollout
