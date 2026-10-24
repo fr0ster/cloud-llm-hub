@@ -100,7 +100,8 @@ const structuredPlan = planSchema(
     steps: z.array(planStep).max(1000),
     status: z.enum(['active', 'waiting_user', 'done']),
     question: boundedText.optional(),
-    note: boundedText.optional(),
+    // Restored legacy text plans become this note; use the overall byte limit.
+    note: str.optional(),
   } satisfies Shape<Plan>),
 );
 const schema = z.object({

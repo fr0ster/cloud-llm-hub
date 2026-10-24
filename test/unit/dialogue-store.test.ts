@@ -4,6 +4,7 @@ jest.mock('@sap/cds', () => ({
 }));
 
 import type { DialogueState } from '@mcp-abap-adt/llm-agent';
+import { DialogueSession } from '@mcp-abap-adt/llm-agent-libs';
 import {
   createDialogueStateStore,
   deleteDialogueState,
@@ -26,6 +27,50 @@ const state: DialogueState = {
   savedAt: 1,
 };
 beforeEach(() => initializeDialogueStore(loadSessionConfig({})));
+it('restores a long 9.0.x legacy plan and persists normalized state and later progress', async () => {
+  const id = 'legacy';
+  const store = createDialogueStateStore('alice', id);
+  const legacy: DialogueState = {
+    ...state,
+    plan: 'x'.repeat(50_000),
+    planStatus: 'active',
+  };
+  await store.save(id, legacy);
+  const options = {
+    id,
+    store,
+    board: { workers: new Map() },
+    planner: {
+      process: jest.fn(async () => ({
+        ok: true as const,
+        value: { content: 'Progress saved' },
+      })),
+    },
+  };
+  const session = await DialogueSession.open(options);
+  expect(session.snapshot().plan).toEqual({
+    version: 1,
+    steps: [],
+    note: legacy.plan,
+    status: 'active',
+  });
+  const normalized = session.snapshot();
+  await store.save(id, normalized);
+  expect(await store.load(id)).toEqual(normalized);
+
+  const reopened = await DialogueSession.open(options);
+  expect(reopened.snapshot()).toEqual(normalized);
+  await reopened.send('Continue with the next task');
+  const progressed = reopened.snapshot();
+  expect(progressed.plan).toEqual(normalized.plan);
+  expect(progressed.conversation).toContainEqual({
+    role: 'assistant',
+    content: 'Progress saved',
+  });
+  expect(progressed.savedAt).toBeGreaterThan(legacy.savedAt);
+  expect(await store.load(id)).toEqual(progressed);
+  expect((await DialogueSession.open(options)).snapshot()).toEqual(progressed);
+});
 it('round trips structured plans and retained task ownership without stripping fields', async () => {
   const store = createDialogueStateStore('alice', 'structured');
   const value: DialogueState = {
@@ -74,6 +119,29 @@ it('rejects oversized structured fields and ownership maps', async () => {
       ),
     },
     { taskSteps: { task: 'x'.repeat(1001) } },
+    {
+      plan: {
+        version: 1,
+        status: 'active',
+        steps: [],
+        question: 'x'.repeat(20001),
+      },
+    },
+    {
+      plan: {
+        version: 1,
+        status: 'active',
+        steps: [
+          {
+            id: 'a',
+            goal: 'Read',
+            state: 'pending',
+            taskIds: [],
+            note: 'x'.repeat(20001),
+          },
+        ],
+      },
+    },
     {
       plan: {
         version: 1,
@@ -145,6 +213,15 @@ it.each([
   { ...state, conversation: [{ role: 'user', content: 'x'.repeat(20001) }] },
   { ...state, tasks: Array(51).fill({}) },
   { ...state, plan: '\u{1f600}'.repeat(600000) },
+  {
+    ...state,
+    plan: {
+      version: 1,
+      status: 'active',
+      steps: [],
+      note: '\u{1f600}'.repeat(600000),
+    },
+  },
 ])('rejects invalid or oversized states without truncating', async (value) => {
   const s = createDialogueStateStore('alice', 'k');
   await s.save('k', value as DialogueState);
