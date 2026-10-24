@@ -4,19 +4,23 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [9.1.1] - 2026-10-24
+
 ### Changed
 
 - **Agent tool-call budgets** use llm-agent 30.8.1 and can be configured per run
   with `LLM_AGENT_MAX_TOOL_CALLS`; unset keeps the library default of 30.
 - **The dialogue planner asks before narrowing scope** and waits for the user.
+  Skipping a step needs the user's prior agreement.
   It prefers one item per step and requires batch storage checks with `rag_list`
   to match stored record counts to item counts.
 
 ### Fixed
 
 - **Calls over the tool-call budget receive error results** with llm-agent 30.8.1.
-- **Planner messages strip boundary `NO_MESSAGE` tokens** before outbox storage
-  and delivery; messages containing only the sentinel are dropped.
+- **Planner messages strip boundary `NO_MESSAGE` tokens** in outbox messages,
+  direct replies and streamed replies; messages containing only the sentinel are
+  dropped.
 - **Plan panel task separators** render middle dots in both chat applications.
 
 ## [9.1.0] - 2026-10-24
