@@ -18,11 +18,16 @@ export function stripNoMessage(text: string): string {
 export class NoMessageFilter {
   private pending = '';
   private leading = true;
+  private stripped = false;
 
   push(delta: string): string {
     this.pending += delta;
     if (this.leading) {
+      const before = this.pending;
       this.pending = this.pending.replace(/^(?:\s*NO_MESSAGE(?=\s))+\s*/, '');
+      if (this.pending !== before) this.stripped = true;
+      // Whitespace after a removed sentinel may arrive in later deltas.
+      if (this.stripped) this.pending = this.pending.trimStart();
       if (leadingCandidate.test(this.pending)) return '';
       this.leading = false;
     }
