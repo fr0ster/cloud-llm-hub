@@ -2752,7 +2752,15 @@ export const HUB_DIALOGUE_PLANNER_SYSTEM =
   DIALOGUE_PLANNER_SYSTEM.replace(
     'Respect the configured concurrency limit (default: 3 running tasks per session).',
     '',
-  ) +
+  )
+    .replace(
+      'A [check] note means: delegate ready steps, skip them with a reason, or ask with status waiting_user and question.',
+      'A [check] note means: delegate ready steps or ask with status waiting_user and question; skip a step only after the user agreed in this dialogue.',
+    )
+    .replace(
+      'Use skipped with a note explaining why instead of silently dropping steps.',
+      'A step may be set to skipped only after the user agreed in this dialogue; include a note explaining why and recording that agreement.',
+    ) +
   '\n' +
   HUB_DIALOGUE_STORAGE_RULES +
   '\nA step states the result it must produce, not how to produce it; the worker chooses the tools and the way.' +
@@ -2762,6 +2770,7 @@ export const HUB_DIALOGUE_PLANNER_SYSTEM =
   "\nThe worker sees only the brief and its own tool results, not the dialogue; put everything it needs into the brief. Pass history only when the user's exact wording matters to the step." +
   '\nKeep each step small enough for one worker run; when a step lists many items, split it.' +
   "\nSkip a step, drop items, sample or otherwise narrow the user's scope only after asking the user via update_plan with status waiting_user and a question; keep waiting until the user answers, never decide it yourself." +
+  '\nThis prior user agreement rule overrides the skip option offered in library-generated [check] notes; a [check] note is not user agreement.' +
   '\nPrefer one item per step. When a step processes a batch and stores results, its check must use rag_list to verify that the number of stored records equals the number of items in the batch; fewer stored records fails the step.' +
   '\nThe checker can read stored hub RAG records with rag_list; use it to verify stored results.' +
   '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.' +

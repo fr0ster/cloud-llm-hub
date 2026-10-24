@@ -1,5 +1,8 @@
 import { type ILlm, InMemoryRag } from '@mcp-abap-adt/llm-agent';
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  DIALOGUE_PLANNER_SYSTEM,
+  SmartAgentBuilder,
+} from '@mcp-abap-adt/llm-agent-libs';
 import type { AgentConfig } from '../../srv/agent-config';
 import {
   buildAgentForDestination,
@@ -358,3 +361,22 @@ test.each([undefined, 7])(
     }
   },
 );
+
+test('hub replaces conflicting library skip instructions', () => {
+  for (const sentence of [
+    'A [check] note means: delegate ready steps, skip them with a reason, or ask with status waiting_user and question.',
+    'Use skipped with a note explaining why instead of silently dropping steps.',
+  ]) {
+    expect(DIALOGUE_PLANNER_SYSTEM).toContain(sentence);
+    expect(HUB_DIALOGUE_PLANNER_SYSTEM).not.toContain(sentence);
+  }
+  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
+    'A step may be set to skipped only after the user agreed in this dialogue',
+  );
+  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
+    'skip a step only after the user agreed in this dialogue',
+  );
+  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
+    'overrides the skip option offered in library-generated [check] notes',
+  );
+});

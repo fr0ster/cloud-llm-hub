@@ -11,6 +11,7 @@ import type { Request, Response } from 'express';
 import { setSessionDestination } from '../agent-manager';
 import { dialogueFor } from './dialogue-sessions';
 import type { LongSession } from './long-session';
+import { NoMessageFilter, stripNoMessage } from './no-message';
 
 /** Adapt planner turns to the existing chat response/error and history paths. */
 export function dialogueChat(
@@ -74,7 +75,7 @@ export function dialogueChat(
         return {
           ok: true,
           value: {
-            content: prefix + answer.text,
+            content: prefix + stripNoMessage(answer.text),
             stopReason: 'stop',
             iterations: 0,
             toolCallCount: 0,
@@ -91,7 +92,8 @@ export function dialogueChat(
       const queue: Array<Result<{ content: string }, OrchestratorError>> = [];
       let wake: (() => void) | undefined;
       let finished = false;
-      let streamed = '';
+      let receivedPartial = false;
+      const filter = new NoMessageFilter();
       let failure: OrchestratorError | undefined;
       const push = (chunk: Result<{ content: string }, OrchestratorError>) => {
         queue.push(chunk);
@@ -104,15 +106,18 @@ export function dialogueChat(
           onPartial(chunk) {
             if (chunk.kind === 'content') {
               if (!chunk.delta) return;
-              const content = chunk.delta;
-              streamed += content;
-              push({ ok: true, value: { content } });
+              receivedPartial = true;
+              const content = filter.push(chunk.delta);
+              if (content) push({ ok: true, value: { content } });
             }
           },
         })
         .then(
           (answer) => {
-            if (!streamed) push({ ok: true, value: { content: answer.text } });
+            const content = receivedPartial
+              ? filter.finish()
+              : stripNoMessage(answer.text);
+            if (content) push({ ok: true, value: { content } });
           },
           (error) => {
             failure = plannerError(error);

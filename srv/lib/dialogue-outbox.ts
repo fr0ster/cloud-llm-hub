@@ -1,11 +1,11 @@
 import type { PlannerMessage } from '@mcp-abap-adt/llm-agent';
 
+import { stripNoMessage } from './no-message';
+
 /** Remove boundary sentinel tokens before persistence or delivery. */
 function cleanMessages(messages: PlannerMessage[]): PlannerMessage[] {
   return messages.flatMap((message) => {
-    const text = message.text
-      .replace(/^(?:\s*NO_MESSAGE(?=\s|$))+\s*/, '')
-      .replace(/(?:\s+NO_MESSAGE)+\s*$/, '');
+    const text = stripNoMessage(message.text);
     return text.trim() ? [{ ...message, text }] : [];
   });
 }
