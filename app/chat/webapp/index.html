@@ -509,7 +509,8 @@
                 const now = Date.now();
                 box.innerHTML = '<div>● main agent · ' + active.length + ' active</div>' + active.map((task, index) => {
                     const since = task.startedAt || task.createdAt;
-                    const time = task.state === 'queued' ? 'queued' : since ? formatElapsed(now - since) : 'running';
+                    const elapsed = since ? formatElapsed(now - since) : '';
+                    const time = task.state === 'queued' ? ('queued ' + elapsed).trim() : elapsed || 'running';
                     return '<div class="agent-child" title="' + escapeHtml(String(task.goal || '')) + '">' + (index === active.length - 1 ? '└ ' : '├ ')
                         + escapeHtml(String(task.id)) + ' ' + escapeHtml(String(task.worker || '')) + ': ' + escapeHtml(String(task.goal || ''))
                         + ' <span class="agent-time">· ' + escapeHtml(time) + '</span></div>';
