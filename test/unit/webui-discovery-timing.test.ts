@@ -33,6 +33,9 @@ test('chat elapsed time includes synchronous transcript rendering before the req
     set innerHTML(_value: string) {
       now += 10000;
     },
+    insertAdjacentHTML() {
+      now += 10000;
+    },
     scrollTop: 0,
     scrollHeight: 0,
   };
@@ -43,6 +46,7 @@ test('chat elapsed time includes synchronous transcript rendering before the req
   runInNewContext(
     source + '\nstopTimer(); setStatus(elapsed()); }; sendMessage();',
     {
+      chatSendSequence: 0,
       ready: true,
       hubSignedOut: false,
       userInput: { value: 'hello' },

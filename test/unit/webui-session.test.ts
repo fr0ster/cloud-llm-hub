@@ -340,6 +340,7 @@ test.each([false, true])(
       showSessionNotice: jest.fn(),
       fileArtifacts: {},
       conversationHistory: ['old'],
+      messageViews: new Map(),
       chatWindow: { innerHTML: 'old' },
       connectedDestination: '',
       loginGateDone: true,
