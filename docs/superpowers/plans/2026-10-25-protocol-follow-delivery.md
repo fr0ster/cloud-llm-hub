@@ -1,5 +1,7 @@
 # Protocol Turn/Follow, Delivery and WebUI Streaming Implementation Plan
 
+<!-- docs-check:proposed-env: this plan introduces LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS, which does not exist yet -->
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A streaming chat request in a dialogue session stays open until the plan really stops. Every planner message reaches the session at least once, by id. The WebUI is an ordinary streaming client of that protocol. All three ship in one release.
@@ -281,7 +283,7 @@
 - Modify: `mta.yaml` and `docs/deployment/templates/*.mtaext.template`, but only if the setting is exposed as a deploy parameter. Default: do not expose it.
 - Modify: `CHANGELOG.md` `### Added` / `### Changed` under `## [Unreleased]`.
 
-- [ ] **Step 1:** Write the docs. Run `npm run docs:check` → only the 3 known environmental `@mcp-abap-adt/core` errors. Commit `docs: follow phase, delivery and x-clh-ack`.
+- [ ] **Step 1:** Write the docs. Run `npm run docs:check` → no new errors (the known environmental package errors excepted). Commit `docs: follow phase, delivery and x-clh-ack`.
 
 ### Task 10: Live verification on the POC
 
