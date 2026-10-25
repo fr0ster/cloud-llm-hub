@@ -647,13 +647,45 @@ it('streams pending messages then the reply, with matching framing', async () =>
     trigger: 'user',
   });
 });
-it.each(['', 'NO_MESSAGE'])(
-  'reply %j adds nothing and emits no reply id or empty paragraph',
-  async (text) => {
-    send.mockResolvedValue({ text });
+it('preserves buffered leading whitespace when reply content arrives', async () => {
+  send.mockImplementation(async (_text, opts) => {
+    for (const delta of [' ', '\t\n', 'answer', ' '])
+      opts.onPartial?.({ kind: 'content', delta });
+    return { text: ' \t\nanswer ' };
+  });
+  const chunks = await chunksOf(directChat().agent);
+  expect(chunks.map((c) => c.content || '').join('')).toBe(
+    'one\n\ntwo\n\n \t\nanswer ',
+  );
+  expect(outbox.history().at(-1)?.text).toBe(' \t\nanswer ');
+});
+it.each(
+  ['', 'NO_MESSAGE', ' \t\r\n'].flatMap((text) =>
+    ['partials', 'fallback', 'non-streaming'].map((mode) => ({ text, mode })),
+  ),
+)(
+  'reply $text adds nothing and emits no reply id or empty paragraph ($mode)',
+  async ({ text, mode }) => {
+    send.mockImplementation(async (_text, opts) => {
+      if (mode === 'partials') {
+        for (const delta of text) opts.onPartial?.({ kind: 'content', delta });
+      }
+      return { text };
+    });
+    if (mode === 'non-streaming') {
+      const { agent, res } = directChat();
+      const result = await agent.process([]);
+      expect(result.ok && result.value.content).toBe('one\n\ntwo');
+      expect(res.headers['x-clh-last-message']).toBe('two');
+      expect(outbox.history()).toEqual([]);
+      return;
+    }
     const chunks = await chunksOf(directChat().agent);
     expect(
       chunks.filter((c) => c.clhMessageId).map((c) => c.clhMessageId),
+    ).toEqual(['one', 'two']);
+    expect(
+      chunks.filter((c) => c.clhMessageEnd).map((c) => c.clhMessageEnd),
     ).toEqual(['one', 'two']);
     expect(chunks.map((c) => c.content || '').join('')).toBe('one\n\ntwo');
     expect(outbox.history()).toEqual([]);

@@ -206,15 +206,17 @@ export function dialogueChat(
           const chunk = queue.shift();
           if (chunk) {
             if (chunk.ok && chunk.value.content) {
+              text += chunk.value.content;
               if (!replyStarted) {
+                if (!text.trim()) continue;
                 replyStarted = true;
                 if (hasContent) yield { ok: true, value: { content: '\n\n' } };
                 yield {
                   ok: true,
                   value: { content: '', clhMessageId: replyId },
                 };
+                chunk.value.content = text;
               }
-              text += chunk.value.content;
             }
             yield chunk;
           }
