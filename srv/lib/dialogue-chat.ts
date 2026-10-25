@@ -28,6 +28,13 @@ export type DialogueStreamChunk = LlmStreamChunk & {
   clhTurnEnd?: true;
 };
 
+const failedResponses = new WeakSet<Response>();
+
+/** SSE failures keep HTTP 200 but do not confirm an outbox delivery. */
+export function failDialogueResponse(response: Response): void {
+  failedResponses.add(response);
+}
+
 /** Adapt planner turns to the existing chat response/error and history paths. */
 export function dialogueChat(
   req: Request,
@@ -73,7 +80,12 @@ export function dialogueChat(
     await handle.drainPending();
     let successful = false;
     response.on('finish', () => {
-      if (successful && !disconnected && response.statusCode < 400)
+      if (
+        successful &&
+        !disconnected &&
+        !failedResponses.has(response) &&
+        response.statusCode < 400
+      )
         delivery.ended();
     });
     return {

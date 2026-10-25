@@ -1,11 +1,18 @@
+import { Stream as AnthropicStream } from '@anthropic-ai/sdk/core/streaming';
+import { Stream as OpenAIStream } from 'openai/core/streaming';
 import {
   type DialogueStreamChunk,
   dialogueChat,
 } from '../../srv/lib/dialogue-chat';
 import { DialogueOutbox } from '../../srv/lib/dialogue-outbox';
 import { plannerWithRetrievedContext } from '../../srv/lib/dialogue-planner-content';
-import { resetGatekeeperForTest } from '../../srv/lib/gatekeeper';
+import {
+  admitPipeline,
+  resetGatekeeperForTest,
+  theRetention,
+} from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
+import { longSessions } from '../../srv/lib/long-session';
 
 jest.mock(
   '@sap/cds',
@@ -792,3 +799,214 @@ it('follow is absent for a plain reply and for a non-streaming turn', async () =
     nonStreaming.follow(new AbortController().signal, 100),
   ).toBeUndefined();
 });
+
+function streamingRequest() {
+  const req = fakeReq(
+    {
+      model: 'm',
+      max_tokens: 100,
+      stream: true,
+      messages: [{ role: 'user', content: 'hi' }],
+    },
+    session.key,
+  ) as unknown as Request & { longSession: LongSession };
+  req.longSession = session;
+  return req;
+}
+
+for (const anthropic of [false, true]) {
+  const handler = anthropic ? handleAnthropicMessages : handleChatCompletions;
+  const label = anthropic ? 'anthropic' : 'openai';
+  it(`${label}: headers and immediate keep-alive precede initialization`, async () => {
+    jest.useFakeTimers();
+    const gate = deferred();
+    harness.agentGate = gate.promise;
+    const res = fakeRes();
+    const response = handler(streamingRequest(), res as unknown as Response);
+    try {
+      await jest.advanceTimersByTimeAsync(0);
+      expect(res.headersSent).toBe(true);
+      expect(res.body).toBe(': keep-alive\n\n');
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(res.body.match(/: keep-alive/g)).toHaveLength(2);
+      gate.resolve();
+      await response;
+    } finally {
+      gate.resolve();
+      jest.useRealTimers();
+    }
+  });
+
+  it(`${label}: a queued request opens its stream before its turn can run`, async () => {
+    const gate = deferred();
+    const blocker = longSessions().run(session, () => gate.promise);
+    const res = fakeRes();
+    const response = handler(streamingRequest(), res as unknown as Response);
+    expect(res.headersSent).toBe(true);
+    expect(res.body).toBe(': keep-alive\n\n');
+    expect(send).not.toHaveBeenCalled();
+    gate.resolve();
+    await blocker;
+    await response;
+    expect(res.body.match(/: keep-alive/g)).toHaveLength(1);
+  });
+
+  it(`${label}: initialization failure uses only the stream error form`, async () => {
+    harness.agentGate = Promise.reject(new Error('initialization failed'));
+    const res = fakeRes();
+    await handler(streamingRequest(), res as unknown as Response);
+    expect(res.body).toContain('initialization failed');
+    expect(res.body).toContain(anthropic ? 'event: error' : 'data: {"error"');
+    expect(res.body).not.toContain('[DONE]');
+    expect(res.body).not.toContain('message_stop');
+    expect(ended).not.toHaveBeenCalled();
+  });
+
+  it(`${label}: a closed destination still returns HTTP 503 and Retry-After`, async () => {
+    harness.closedDestination = 'DEST';
+    harness.retryAfterSeconds = 7;
+    const res = fakeRes();
+    await handler(streamingRequest(), res as unknown as Response);
+    expect(res.statusCode).toBe(503);
+    expect(res.headers['Retry-After']).toBe('7');
+    expect(res.body).not.toContain(': keep-alive');
+  });
+
+  it(`${label}: SDK parses pending, reply and follow with one terminal, including a cut stream`, async () => {
+    const handle = await dialogueFor('alice', session.key, 'DEST');
+    handle.state = () => ({
+      status: 'done',
+      turnActive: false,
+      queuedInputs: 0,
+      running: 0,
+      total: 1,
+      done: 1,
+      idle: false,
+    });
+    handle.subscribe = () => () => {};
+    const originalSend = send.getMockImplementation();
+    if (!originalSend) throw new Error('Missing send fixture');
+    send.mockImplementation(async (...args) => {
+      const answer = await originalSend(...args);
+      const pending = outbox.pending();
+      jest
+        .mocked(outbox.pending)
+        .mockReturnValue([
+          ...pending,
+          { id: 'follow-id', text: 'follow', createdAt: 3, trigger: 'event' },
+        ]);
+      return answer;
+    });
+    const res = fakeRes();
+    await handler(streamingRequest(), res as unknown as Response);
+    expect(res.body.match(/: turn-end/g)).toHaveLength(1);
+    expect(res.body.indexOf(': turn-end')).toBeLessThan(
+      res.body.indexOf(': message-id follow-id'),
+    );
+    for (const id of ['one', 'two', 'follow-id']) {
+      const start = res.body.indexOf(`: message-id ${id}\n`);
+      const end = res.body.indexOf(`: message-end ${id}\n`);
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      expect(res.body.slice(start, end)).toContain(
+        id === 'follow-id' ? 'follow' : id,
+      );
+    }
+    expect(
+      res.body.match(anthropic ? /event: message_stop\n/g : /data: \[DONE\]/g),
+    ).toHaveLength(1);
+    expect(
+      res.body.match(
+        anthropic ? /event: content_block_stop\n/g : /"finish_reason":"stop"/g,
+      ),
+    ).toHaveLength(1);
+    if (anthropic)
+      expect(res.body.match(/event: content_block_start\n/g)).toHaveLength(1);
+    const terminalStart = res.body.indexOf(
+      anthropic ? 'event: content_block_stop' : 'data: {"id"',
+      res.body.indexOf(': message-end follow-id'),
+    );
+    for (const body of [res.body, res.body.slice(0, terminalStart)]) {
+      const response = new globalThis.Response(body, {
+        headers: { 'Content-Type': 'text/event-stream' },
+      });
+      const events = anthropic
+        ? AnthropicStream.fromSSEResponse<any>(response, new AbortController())
+        : OpenAIStream.fromSSEResponse<any>(response, new AbortController());
+      let text = '';
+      for await (const event of events)
+        text += anthropic
+          ? event.delta?.text || ''
+          : event.choices?.[0]?.delta?.content || '';
+      expect(text).toBe(`${visible}\n\nfollow`);
+    }
+  });
+
+  it(`${label}: follow begins after the session slot is released`, async () => {
+    const handle = await dialogueFor('alice', session.key, 'DEST');
+    handle.state = () => ({
+      status: 'active',
+      turnActive: false,
+      queuedInputs: 0,
+      running: 1,
+      total: 1,
+      done: 0,
+      idle: false,
+    });
+    const following = deferred();
+    handle.subscribe = () => {
+      following.resolve();
+      return () => {};
+    };
+    const res = fakeRes();
+    const response = handler(streamingRequest(), res as unknown as Response);
+    await following.promise;
+    expect(theRetention().hasLease('alice', session.key, 'pipeline')).toBe(
+      false,
+    );
+    const other = await admitPipeline('alice', 'another-session');
+    expect('admitted' in other).toBe(true);
+    if ('admitted' in other) other.admitted.release();
+    let admitted = false;
+    await longSessions().run(session, async () => {
+      admitted = true;
+    });
+    expect(admitted).toBe(true);
+    res.disconnect();
+    await response;
+  });
+
+  it(`${label}: follow failure emits an error without a success terminal`, async () => {
+    const handle = await dialogueFor('alice', session.key, 'DEST');
+    handle.state = () => ({
+      status: 'done',
+      turnActive: false,
+      queuedInputs: 0,
+      running: 0,
+      total: 1,
+      done: 1,
+      idle: false,
+    });
+    handle.subscribe = () => {
+      throw new Error('follow failed');
+    };
+    const res = fakeRes();
+    await handler(streamingRequest(), res as unknown as Response);
+    expect(res.body).toContain('follow failed');
+    if (anthropic) {
+      expect(res.body).toContain('event: error\n');
+      expect(res.body).toContain('"type":"api_error"');
+    } else {
+      const errorChunk = res.body
+        .split('\n')
+        .find((line) => line.startsWith('data: {"error":'));
+      expect(JSON.parse(errorChunk?.slice('data: '.length) ?? '')).toEqual({
+        error: { message: 'follow failed', type: 'server_error' },
+      });
+    }
+    expect(res.body).not.toContain('[DONE]');
+    expect(res.body).not.toContain('event: message_stop');
+    expect(res.body).not.toContain('"finish_reason":"stop"');
+    expect(ended).not.toHaveBeenCalled();
+  });
+}

@@ -149,7 +149,11 @@ export class LongSessionRegistry {
   }
 
   /** FIFO per session; touches before and after. */
-  async run<T>(s: LongSession, fn: () => Promise<T>): Promise<T | RunRefusal> {
+  async run<T>(
+    s: LongSession,
+    fn: () => Promise<T>,
+    onQueued?: () => void,
+  ): Promise<T | RunRefusal> {
     const entry = this.entries.get(slot(s.userId, s.key));
     if (!entry || entry.session !== s || entry.closing) {
       return { refused: 'SESSION_CLOSED' };
@@ -157,6 +161,7 @@ export class LongSessionRegistry {
     if (entry.active >= 1 + this.cfg.queueLength) {
       return { refused: 'SESSION_BUSY' };
     }
+    if (entry.active > 0) onQueued?.();
     entry.active += 1;
     const previous = entry.tail;
     let release!: () => void;
