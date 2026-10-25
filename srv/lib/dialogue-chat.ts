@@ -60,9 +60,14 @@ export function dialogueChat(
   let followHandle: Awaited<ReturnType<typeof dialogueFor>> | undefined;
   let delivery: Delivery;
   let since: number;
+  let resolveResponseEnded!: () => void;
+  const responseEnded = new Promise<void>((resolve) => {
+    resolveResponseEnded = resolve;
+  });
   let disconnected = response.destroyed && !response.writableFinished;
   response.on('close', () => {
     if (!response.writableFinished) disconnected = true;
+    resolveResponseEnded();
   });
   const open = async () => {
     const handle = await dialogueFor(userId, session.key, destination);
@@ -90,6 +95,7 @@ export function dialogueChat(
         response.statusCode < 400
       )
         delivery.ended();
+      resolveResponseEnded();
     });
     return {
       handle,
@@ -104,7 +110,13 @@ export function dialogueChat(
     hasFollow: () => followHandle !== undefined,
     follow(signal, maxMs) {
       return followHandle
-        ? followDialogue(followHandle, { delivery, since, signal, maxMs })
+        ? followDialogue(followHandle, {
+            delivery,
+            responseEnded,
+            since,
+            signal,
+            maxMs,
+          })
         : undefined;
     },
     async process(messages, opts) {
@@ -163,6 +175,7 @@ export function dialogueChat(
       const { handle, pending, complete } = await open();
       let hasContent = false;
       for (const message of pending) {
+        if (!message.text.trim()) continue;
         if (hasContent) yield { ok: true, value: { content: '\n\n' } };
         hasContent = true;
         yield { ok: true, value: { content: '', clhMessageId: message.id } };

@@ -838,6 +838,7 @@ it('a new request supersedes an open follow before reading pending', async () =>
   const observed = end.then((item) => {
     superseded =
       item.value?.kind === 'end' && item.value.reason === 'superseded';
+    first.res.end();
   });
   pending.mockImplementation(() => {
     expect(superseded).toBe(true);
@@ -1275,4 +1276,115 @@ it('a request during follow sees the preceding turn in its history', async () =>
     'assistant',
   ]);
   expect(history[1].content).toContain(visible);
+});
+
+it.each([undefined, 'explicit'])(
+  'superseded delivery confirms before arrival (%s)',
+  async (mode) => {
+    jest.mocked(outbox.pending).mockRestore();
+    jest.mocked(outbox.confirmUpTo).mockRestore();
+    directAnswer();
+    const handle = await dialogueFor('alice', session.key, 'SAP');
+    handle.state = () => ({
+      settledSeq: 0,
+      lastFailedSeq: 0,
+      status: 'active',
+      turnActive: false,
+      queuedInputs: 0,
+      running: 1,
+      total: 1,
+      done: 0,
+      idle: false,
+    });
+    handle.subscribe = () => () => {};
+    const first = directChat(mode ? 'none' : undefined);
+    await chunksOf(first.agent);
+    const id = outbox.pending()[0].id;
+    const iterator = first.agent
+      .follow(new AbortController().signal, 10000)
+      ?.[Symbol.asyncIterator]();
+    if (!iterator) throw new Error('expected a follow');
+    const end = iterator.next();
+    await tick();
+    let opened = false;
+    const second = chunksOf(directChat(mode ? id : undefined).agent).then(
+      (chunks) => {
+        opened = true;
+        return chunks;
+      },
+    );
+    expect((await end).value).toMatchObject({
+      kind: 'end',
+      reason: 'superseded',
+    });
+    await tick();
+    expect(opened).toBe(false);
+    first.res.end();
+    const chunks = await second;
+    expect(chunks.some((c) => c.clhMessageId === id)).toBe(false);
+    expect(chunks.map((c) => c.content || '').join('')).toBe('answer');
+    await iterator.return?.();
+  },
+);
+
+it('superseded response closed abnormally redelivers its message', async () => {
+  jest.mocked(outbox.pending).mockRestore();
+  directAnswer();
+  const handle = await dialogueFor('alice', session.key, 'SAP');
+  handle.state = () => ({
+    settledSeq: 0,
+    lastFailedSeq: 0,
+    status: 'active',
+    turnActive: false,
+    queuedInputs: 0,
+    running: 1,
+    total: 1,
+    done: 0,
+    idle: false,
+  });
+  handle.subscribe = () => () => {};
+  const first = directChat();
+  await chunksOf(first.agent);
+  const id = outbox.pending()[0].id;
+  const iterator = first.agent
+    .follow(new AbortController().signal, 10000)
+    ?.[Symbol.asyncIterator]();
+  if (!iterator) throw new Error('expected a follow');
+  const end = iterator.next();
+  await tick();
+  const second = chunksOf(directChat().agent);
+  expect((await end).value).toMatchObject({ reason: 'superseded' });
+  first.res.disconnect();
+  expect((await second).some((c) => c.clhMessageId === id)).toBe(true);
+  await iterator.return?.();
+});
+
+it.each([false, true])(
+  'reply separator appears only with preceding messages (empty=%s)',
+  async (empty) => {
+    emptyPending = empty;
+    directAnswer();
+    const chunks = await chunksOf(directChat().agent);
+    const start = chunks.findIndex(
+      (c) =>
+        c.clhMessageId && c.clhMessageId !== 'one' && c.clhMessageId !== 'two',
+    );
+    expect(chunks[start + 1].content).toBe('answer');
+    expect(chunks[start - 1]?.content).toBe(empty ? undefined : '\n\n');
+    expect(chunks.map((c) => c.content || '').join('')).toBe(
+      empty ? 'answer' : visible,
+    );
+  },
+);
+
+it('empty pending messages do not add a separator before the reply', async () => {
+  jest
+    .mocked(outbox.pending)
+    .mockReturnValue([
+      { id: 'empty', text: '  ', createdAt: 0, trigger: 'event' },
+    ]);
+  directAnswer();
+  const chunks = await chunksOf(directChat().agent);
+  expect(chunks.map((c) => c.content || '').join('')).toBe('answer');
+  expect(chunks.some((c) => c.clhMessageId === 'empty')).toBe(false);
 });

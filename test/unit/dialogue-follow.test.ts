@@ -279,3 +279,27 @@ test('failure before delivery began does not end with error', async () => {
   });
   expect((await iterator.next()).done).toBe(true);
 });
+
+test('supersede bounds waiting for a stuck response at five seconds', async () => {
+  const f = fixture();
+  const iterator = followDialogue(f.handle, {
+    delivery: f.delivery,
+    since: 0,
+    signal: f.controller.signal,
+    maxMs: 10000,
+    responseEnded: new Promise<void>(() => {}),
+  })[Symbol.asyncIterator]();
+  const next = iterator.next();
+  await Promise.resolve();
+  let resolved = false;
+  const superseding = supersedeFollow(f.handle).then(() => {
+    resolved = true;
+  });
+  expect((await next).value).toMatchObject({ reason: 'superseded' });
+  await jest.advanceTimersByTimeAsync(4999);
+  expect(resolved).toBe(false);
+  await jest.advanceTimersByTimeAsync(1);
+  await superseding;
+  expect(resolved).toBe(true);
+  await iterator.return?.();
+});

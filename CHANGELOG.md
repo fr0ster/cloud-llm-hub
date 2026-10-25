@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- Superseding dialogue requests wait up to five seconds for the previous response to finish before confirming delivery; interrupted responses keep messages pending.
+- Dialogue replies omit the leading separator when no nonempty message precedes them in the response.
+
 ## [9.5.0] - 2026-10-25
 
 ### Added
