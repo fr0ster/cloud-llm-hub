@@ -200,9 +200,8 @@ In BTP Cockpit → Subaccount → Security → Role Collections:
 
 1. Find role collections created by XSUAA:
    - **MCP Reader Access** — read-only (browse, search ABAP objects)
-   - **MCP Analyst Access** — read + analysis (SQL, dumps, profiling)
    - **MCP Developer Access** — create / update / delete / activate via the high-level tools
-   - **MCP Full Access** — all tool groups
+   - **MCP Admin Access** — administrative endpoints only; no tool access
 
 2. Assign appropriate role collection to your user(s)
 

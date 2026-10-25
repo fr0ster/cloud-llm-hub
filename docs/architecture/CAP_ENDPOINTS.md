@@ -2,7 +2,7 @@
 
 ## McpProxyService (@path: 'mcp-proxy')
 
-⚠️ **IMPORTANT**: Authorization differs by surface. The OData endpoints of `McpProxyService` need an authenticated XSUAA user — there is no `@requires` annotation on the service in the CDS model, so no particular role is enforced there. The raw `/mcp/**` and `/v1/**` routes are different: `requireMcpRole` in `srv/server.ts` rejects a token that carries none of **`MCP_Reader`, `MCP_Analyst`, `MCP_Developer`, `MCP_Full`** with 403. A valid JWT alone is not enough for those.
+⚠️ **IMPORTANT**: Authorization differs by surface. The OData endpoints of `McpProxyService` need an authenticated XSUAA user — there is no `@requires` annotation on the service in the CDS model, so no particular role is enforced there. The raw `/mcp/**` and `/v1/**` routes are different: `requireMcpRole` from `srv/lib/require-mcp-role.ts` rejects a token that carries none of **`MCP_Reader`, `MCP_Developer`** with 403. A valid JWT alone is not enough for those.
 
 > **Note**: The CDS service path was changed from `'mcp'` to `'mcp-proxy'` to avoid
 > conflicting with custom Express routes on `/mcp/stream/http`. See
@@ -65,7 +65,7 @@ These endpoints are registered directly in Express and bypass CAP's OData layer.
 
 - **Method**: POST
 - **URL**: `/mcp/stream/http`
-- **Authorization**: ✅ Authenticated XSUAA user **with an MCP role** — `requireMcpRole` in `srv/server.ts` returns 403 unless the token carries `MCP_Reader`, `MCP_Analyst`, `MCP_Developer` or `MCP_Full`
+- **Authorization**: ✅ Authenticated XSUAA user **with an MCP role** — `requireMcpRole` from `srv/lib/require-mcp-role.ts` returns 403 unless the token carries `MCP_Reader` or `MCP_Developer`
 - **Content-Type**: `application/json` — exactly **one** JSON-RPC message per request (`srv/server.ts` runs a single `JSON.parse` over the whole body)
 - **Accept**: `application/json, text/event-stream` — the response is SSE when the server streams progress
 - **Purpose**: MCP Streamable HTTP transport, **stateless** (`sessionIdGenerator: undefined`) — no `Mcp-Session-Id` is issued or expected
@@ -126,13 +126,13 @@ Arrays are passed as JSON, URL encoded:
 #### Development (Basic Auth)
 
 ```bash
-# alice (MCP_Full + MCP_Developer + MCP_Analyst + MCP_Reader)
+# alice (MCP_Admin + MCP_Developer + MCP_Reader)
 Authorization: Basic YWxpY2U6
 
-# bob (MCP_Developer + MCP_Analyst + MCP_Reader)
+# bob (MCP_Developer + MCP_Reader)
 Authorization: Basic Ym9iOg==
 
-# carol (MCP_Analyst + MCP_Reader)
+# carol (MCP_Reader)
 Authorization: Basic Y2Fyb2w6
 
 # dave (MCP_Reader)
@@ -145,7 +145,7 @@ Authorization: Basic ZGF2ZTo=
 Authorization: Bearer <JWT_TOKEN>
 ```
 
-The JWT token must contain one of: `MCP_Reader`, `MCP_Analyst`, `MCP_Developer`, `MCP_Full`.
+The JWT token must contain one of: `MCP_Reader`, `MCP_Developer`.
 
 ## Examples for Postman
 
@@ -253,7 +253,7 @@ curl -X POST \
 ### Error: "Forbidden" or "Unauthorized"
 
 - Check if Authorization header is set
-- Check if the token contains one of the issued scopes (`MCP_Reader`, `MCP_Analyst`, `MCP_Developer`, `MCP_Full`)
+- Check if the token contains one of the issued scopes (`MCP_Reader`, `MCP_Developer`)
 - For development, check if the user exists in `package.json` → `cds.requires.auth[development].users`
 
 ### Error: "Function not found" or 404
@@ -291,15 +291,15 @@ For service-to-service integrations via `client_credentials`, the deployment pro
 
 | xsuaa instance | Default scope | Exposition tiers | Example consumer |
 |---|---|---|---|
-| `cloud-llm-hub-auth` (main) | `MCP_Reader` (via `authorities`) | `readonly + search` | Read-only monitors, health checks |
-| `cloud-llm-hub-analyst-consumer` | `MCP_Analyst` | `+ system` | Dump analysis services (dumps, SQL, profiling) |
+| `cloud-llm-hub-auth` (main) | `MCP_Reader` (via `authorities`) | `readonly + search + system` | Read-only monitors, health checks |
+| `cloud-llm-hub-analyst-consumer` | `MCP_Reader` | `readonly`, `search`, `system` | Dump analysis services (dumps, SQL, profiling) |
 | `cloud-llm-hub-developer-consumer` | `MCP_Developer` | `+ high` (CRUD) | Internal CI tooling (CreateUnitTest, activation) |
 
-`MCP_Full` is deliberately **not** exposed via a dedicated consumer xsuaa — full access for unattended service flows requires explicit justification per use case. To grant `MCP_Full` to a specific new consumer, add `grant-as-authority-to-apps` to the `MCP_Full` scope in the `cloud-llm-hub-auth` resource's `config` in `mta.yaml`, and provision the consumer xsuaa there.
+`MCP_Admin` grants administrative endpoints only and has no dedicated consumer or tool exposition.
 
 ### How the cross-app scope grant works
 
-1. **The provider grants.** The `cloud-llm-hub-auth` resource in `mta.yaml` carries the scopes in its `config` (not in `xs-security.json`). `MCP_Analyst` and `MCP_Developer` name their consumer in `grant-as-authority-to-apps` as `$XSAPPNAME(application,cloud-llm-hub-<tier>-consumer-${space-guid})`. MTA fills in the space guid; xsuaa resolves the tenant suffix (`!tNNN`) of the referenced app itself.
+1. **The provider grants.** The `cloud-llm-hub-auth` resource in `mta.yaml` carries the scopes in its `config` (not in `xs-security.json`). `MCP_Reader` and `MCP_Developer` name their consumer in `grant-as-authority-to-apps` as `$XSAPPNAME(application,cloud-llm-hub-<tier>-consumer-${space-guid})`. MTA fills in the space guid; xsuaa resolves the tenant suffix (`!tNNN`) of the referenced app itself.
 2. **The consumer accepts.** Each `xs-security-<tier>-consumer.json` declares `"authorities": ["$ACCEPT_GRANTED_AUTHORITIES"]` — it takes whatever the provider granted it, without naming the provider.
 3. At `client_credentials` token issuance time, xsuaa inlines the granted scope into the consumer's token. `cloud-llm-hub-srv` accepts it unchanged because `@sap/xssec` validates signature, `iss`, and `aud` within the shared subaccount trust boundary — all three are common across xsuaa instances in the same subaccount.
 

@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- `MCP_Admin` and MCP Admin Access for administrative endpoints only, with no tool access.
+
+### Removed
+
+- `MCP_Full` (never assigned; no migration).
+- `MCP_Analyst` and MCP Analyst Access (never assigned; no migration). Tokens of Developer users no longer carry the Analyst scope, which only came from the Developer template.
+
 ## [9.5.1] - 2026-10-25
 
 ### Fixed

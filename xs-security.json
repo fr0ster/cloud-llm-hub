@@ -10,30 +10,18 @@
       ]
     },
     {
-      "name": "MCP_Analyst",
-      "description": "MCP analyst - read plus system analysis (SQL, AST, where-used, profiling)",
-      "scope-references": [
-        "$XSAPPNAME.MCP_Reader",
-        "$XSAPPNAME.MCP_Analyst"
-      ]
-    },
-    {
       "name": "MCP_Developer",
       "description": "MCP developer - high-level CRUD, read, search, system tools",
       "scope-references": [
         "$XSAPPNAME.MCP_Reader",
-        "$XSAPPNAME.MCP_Analyst",
         "$XSAPPNAME.MCP_Developer"
       ]
     },
     {
-      "name": "MCP_Full",
-      "description": "Full MCP access - all tool groups including per-object CRUD",
+      "name": "MCP_Admin",
+      "description": "Administrative endpoints only; no MCP tool access",
       "scope-references": [
-        "$XSAPPNAME.MCP_Reader",
-        "$XSAPPNAME.MCP_Analyst",
-        "$XSAPPNAME.MCP_Developer",
-        "$XSAPPNAME.MCP_Full"
+        "$XSAPPNAME.MCP_Admin"
       ]
     }
   ],
@@ -46,13 +34,6 @@
       ]
     },
     {
-      "name": "MCP Analyst Access",
-      "description": "Read and analyze ABAP objects via MCP.",
-      "role-template-references": [
-        "$XSAPPNAME.MCP_Analyst"
-      ]
-    },
-    {
       "name": "MCP Developer Access",
       "description": "Develop ABAP objects via MCP with high-level CRUD.",
       "role-template-references": [
@@ -60,10 +41,10 @@
       ]
     },
     {
-      "name": "MCP Full Access",
-      "description": "Full MCP access with all tool groups.",
+      "name": "MCP Admin Access",
+      "description": "Administrative endpoints only; no MCP tool access.",
       "role-template-references": [
-        "$XSAPPNAME.MCP_Full"
+        "$XSAPPNAME.MCP_Admin"
       ]
     }
   ],

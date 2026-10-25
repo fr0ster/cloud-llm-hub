@@ -29,7 +29,7 @@ npx mcp-auth --service-key ./mcp.json --output ./service.env --type xsuaa --brow
 ```
 
 The token must include MCP role scopes. Assign Role Collections in BTP Cockpit:
-Security -> Role Collections -> assign "MCP Full Access" (or other MCP role) to user.
+Security -> Role Collections -> assign "MCP Developer Access" (or "MCP Reader Access") to user.
 
 **References:**
 - [SAP BTP Security: Role Collections](https://help.sap.com/docs/btp/sap-business-technology-platform/role-collections-and-roles)

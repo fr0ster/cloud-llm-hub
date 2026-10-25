@@ -78,7 +78,7 @@ type Q = {
 };
 
 // Same two tiers `resolveExposition` produces in production (srv/lib/exposition.ts):
-// MCP_Reader/MCP_Analyst grant only the reader collection; MCP_Developer/MCP_Full
+// MCP_Reader grant only the reader collection; MCP_Developer
 // additionally grant the writer collection.
 const ROLE_TIERS = ['MCP_Reader', 'MCP_Developer'] as const;
 

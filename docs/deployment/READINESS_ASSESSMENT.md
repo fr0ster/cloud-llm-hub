@@ -122,7 +122,7 @@ for answers to 3.2 and 3.3 in the very first conversation.
 |---|--------|---------------|--------|
 | 5.2 | Corporate IdP | Trust configuration must exist in the subaccount | If it does not, add 0.5–2 days and a security-team dependency |
 | 5.3 | Role assignment owner unclear | Users get deployed access on day two instead of day one | Name the owner during installation, not after |
-| 5.4 | Access levels | Maps directly to the four role collections: MCP Reader Access, MCP Analyst Access, MCP Developer Access, MCP Full Access | Cross-check against 3.3, 4.6, and 4.7 — the narrowest of the three wins |
+| 5.4 | Access levels | Maps directly to the three role collections: MCP Reader Access, MCP Developer Access, and independent MCP Admin Access | Cross-check against 3.3, 4.6, and 4.7 — the narrowest of the three wins |
 | 5.1 | User count and groups | Together with 5.4 this decides how many role collections and how much sizing headroom we need | Get per-group numbers, not a single total — a group is what a role collection is assigned to |
 | 5.5 | High concurrency | Drives CF memory sizing and hits the LLM rate limits at 2.9 | The deployed baseline is 2 GB for the backend plus 512 MB for the approuter — a floor, not a target. It is already sized for a per-request heap spike; scale it against real numbers |
 | 5.6 | Claude Code, Cline, or Claude Desktop | Each needs its own endpoint and token setup | See the optional steps in [INSTALLATION_PLAN.md](INSTALLATION_PLAN.md); add ~30 min per tool per user group |

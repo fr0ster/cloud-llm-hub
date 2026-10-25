@@ -226,9 +226,9 @@ property) holds a value other than `onprem`, `cloud` or `legacy`.
 
 ```bash
 # Development users (mocked auth, see package.json cds.requires.auth)
-# alice: MCP_Full, MCP_Developer, MCP_Analyst, MCP_Reader
-# bob:   MCP_Developer, MCP_Analyst, MCP_Reader
-# carol: MCP_Analyst, MCP_Reader
+# alice: MCP_Admin, MCP_Developer, MCP_Reader
+# bob:   MCP_Developer, MCP_Reader
+# carol: MCP_Reader
 # dave:  MCP_Reader
 
 # Verify with correct user
@@ -240,15 +240,14 @@ curl -H "Authorization: Basic YWxpY2U6" \  # alice
 
 - Check `xs-security.json` for required scopes
 - Ensure role collections are configured
-- Verify the user holds one of `MCP_Reader`, `MCP_Analyst`, `MCP_Developer`, `MCP_Full`
+- Verify the user holds one of `MCP_Reader`, `MCP_Developer`
 
 **3. Check Production Roles:**
 
 ```bash
 # In BTP Cockpit
 # Go to Security → Role Collections
-# Assign one of: MCP Reader Access, MCP Analyst Access,
-#                MCP Developer Access, MCP Full Access
+# Assign a tool role: MCP Reader Access or MCP Developer Access
 ```
 
 ---

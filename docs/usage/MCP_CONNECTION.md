@@ -41,17 +41,15 @@ on-premise destination and an ABAP Cloud one therefore expose different sets.
 So `tools/list` returns *at most* these numbers, and the exact figure depends on
 which destination you connect to.
 
-The four XSUAA roles map onto those two, so nothing has to be reassigned:
+Tool access and administration use separate role collections:
 
-| Role Collection      | Roles Included                                  | Level |
-|----------------------|-------------------------------------------------|--------------|
-| MCP Reader Access    | MCP_Reader                                      | Reader |
-| MCP Analyst Access   | MCP_Reader + MCP_Analyst                        | Reader |
-| MCP Developer Access | MCP_Reader + MCP_Analyst + MCP_Developer         | Developer |
-| MCP Full Access      | MCP_Reader + MCP_Analyst + MCP_Developer + MCP_Full | Developer |
+| Role Collection | Scopes Included | Access |
+|---|---|---|
+| MCP Reader Access | MCP_Reader | Reader |
+| MCP Developer Access | MCP_Reader + MCP_Developer | Developer |
+| MCP Admin Access | MCP_Admin | Administrative endpoints only; no tools |
 
-For new assignments, use **MCP Reader Access** or **MCP Developer Access**. The
-other two are kept only so existing users keep working.
+Assign Admin plus a tool role to users who need both. Existing Analyst holders use Reader.
 
 **The MCP role is not the only gate.** Every ABAP tool runs under **your own SAP
 credentials** — the hub keeps no service user and fails closed without them — so

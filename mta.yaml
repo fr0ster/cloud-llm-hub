@@ -236,17 +236,15 @@ resources:
         # $ACCEPT_GRANTED_AUTHORITIES (xs-security-*-consumer.json).
         scopes:
           - name: $XSAPPNAME.MCP_Reader
-            description: Read-only access to ABAP objects and search
-          - name: $XSAPPNAME.MCP_Analyst
-            description: Read access plus system analysis tools (SQL, AST, profiling, dumps)
+            description: Read-only access to ABAP objects, search and system diagnostics
             grant-as-authority-to-apps:
               - $XSAPPNAME(application,cloud-llm-hub-analyst-consumer-${space-guid})
           - name: $XSAPPNAME.MCP_Developer
             description: CRUD operations via the high-level tools plus read and system tools
             grant-as-authority-to-apps:
               - $XSAPPNAME(application,cloud-llm-hub-developer-consumer-${space-guid})
-          - name: $XSAPPNAME.MCP_Full
-            description: Full access with per-object granular CRUD handlers
+          - name: $XSAPPNAME.MCP_Admin
+            description: Administrative endpoints only; no MCP tool access
     requires:
       - name: app-api
   - name: cloud-llm-hub-destination

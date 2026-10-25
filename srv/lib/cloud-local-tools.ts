@@ -38,7 +38,7 @@ export function mergeCloudLocalTools(tools: ToolDocInput[]): ToolDocInput[] {
 /**
  * Exposition tags for cloud-local tools, merged into `getToolExpositionMap()`
  * (`ToolDocInput` carries no exposition field of its own). Dumps need
- * MCP_Analyst, same tier as `RuntimeGetDumpById`.
+ * MCP_Reader, same tier as `RuntimeGetDumpById`.
  */
 export const CLOUD_LOCAL_TOOL_EXPOSITIONS: Record<string, string> = {
   GetDumpSection: 'system',

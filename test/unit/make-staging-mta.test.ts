@@ -40,7 +40,7 @@ resources:
       config:
         xsappname: cloud-llm-hub-\${space-guid}
         scopes:
-          - name: $XSAPPNAME.MCP_Analyst
+          - name: $XSAPPNAME.MCP_Reader
             grant-as-authority-to-apps:
               - $XSAPPNAME(application,cloud-llm-hub-analyst-consumer-\${space-guid})
   - name: cloud-llm-hub-analyst-consumer
@@ -64,7 +64,7 @@ const PROD_XS_AUTH = JSON.stringify(
     xsappname: 'cloud-llm-hub-{space-guid}',
     scopes: [
       {
-        name: '$XSAPPNAME.MCP_Analyst',
+        name: '$XSAPPNAME.MCP_Reader',
         'grant-as-authority-to-apps': [
           'cloud-llm-hub-analyst-consumer-abc!t000001',
         ],
@@ -86,7 +86,7 @@ const PROD_XS_AUTH = JSON.stringify(
 const PROD_XS_ANALYST = JSON.stringify(
   {
     xsappname: 'cloud-llm-hub-analyst-consumer-{space-guid}',
-    authorities: ['cloud-llm-hub-abc!t000001.MCP_Analyst'],
+    authorities: ['cloud-llm-hub-abc!t000001.MCP_Reader'],
   },
   null,
   2,
@@ -240,7 +240,7 @@ describe('make-staging-mta', () => {
       'cloud-llm-hub-staging-analyst-consumer-{space-guid}',
     );
     expect(sec.authorities).toEqual([
-      'cloud-llm-hub-staging-abc!t000001.MCP_Analyst',
+      'cloud-llm-hub-staging-abc!t000001.MCP_Reader',
     ]);
   });
 

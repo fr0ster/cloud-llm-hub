@@ -5,18 +5,13 @@
 export type ExpositionLevel = 'readonly' | 'search' | 'system' | 'high';
 
 /**
- * Every MCP role, in one place.
+ * Every MCP tool role, in one place.
  *
  * Each channel used to carry its own copy of this list, which is how
  * `/v1/messages` ended up with no role handling at all — there was nothing
  * central to notice was missing.
  */
-export const MCP_ROLES = [
-  'MCP_Reader',
-  'MCP_Analyst',
-  'MCP_Developer',
-  'MCP_Full',
-] as const;
+export const MCP_ROLES = ['MCP_Reader', 'MCP_Developer'] as const;
 
 /** Minimal shape of the CAP user object — `cds.context?.user`. */
 export interface RoleBearer {
@@ -107,15 +102,13 @@ export const SYSTEM_TOOLS_THAT_WRITE: Readonly<
  * neither. A tool of theirs is in no group, and a tool in no group is refused
  * to everyone (`assertToolAllowed` fails closed on an unclassified tool).
  *
- * The four XSUAA roles map onto the two levels rather than being removed, so
- * nobody already assigned a collection loses access:
+ * Tool roles map onto two levels. Admin grants no tool exposition:
  *
  * | Role          | Level     |
  * |---------------|-----------|
  * | MCP_Reader    | Reader    |
- * | MCP_Analyst   | Reader    |
  * | MCP_Developer | Developer |
- * | MCP_Full      | Developer |
+ * | MCP_Admin     | None      |
  *
  * Note this widens Reader (it now reaches `system` diagnostics such as dumps
  * and `GetSqlQuery`).
@@ -132,7 +125,7 @@ export function resolveExposition(userRoles: string[]): ExpositionLevel[] {
   const exposition: ExpositionLevel[] = ['readonly', 'search', 'system'];
 
   // Developer: everything that changes something.
-  if (roles.has('MCP_Developer') || roles.has('MCP_Full')) {
+  if (roles.has('MCP_Developer')) {
     exposition.push('high');
   }
 
