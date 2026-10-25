@@ -12,7 +12,7 @@ Now we only collect raw statistics. The analysis (minimum Python, maybe Grafana 
 
 Code goes to the main repo (`fr0ster/cloud-llm-hub`, a branch from `main`), which already has the dialogue sessions, outbox and persistence it measures.
 
-The contract, the transports and the sinks live in llm-agent: `docs/superpowers/specs/2026-10-25-usage-analytics-design.md` there, packages the llm-agent package `llm-usage` and the llm-agent package `llm-usage-sql`. The hub configures them and adds its own measurements.
+The contract, the transports and the sinks live in llm-agent: `docs/superpowers/specs/2026-10-25-usage-analytics-design.md` there, the llm-agent packages `llm-usage`, `llm-usage-pg`, `llm-usage-hana` and `llm-usage-sqlite`. The hub configures them and adds its own measurements.
 
 ## Goals
 
@@ -48,7 +48,12 @@ All of them are `x.hub.*` records of the llm-agent contract: numbers, labels and
 
 `x.hub.process` carries no session id. Attribution to sessions is a later analysis step: the active-session count is in the record, and session records give time windows. *(My call: a per-session memory split inside one Node process cannot be measured honestly.)*
 
-Library usage reaches the recorder through the `IRequestLogger` adapter (`usageRequestLogger`). The hub installs it wherever it builds the library's request logger today, so the existing hub wrappers (`tracked-llm`, review-scope token capture) are not a second source of records. The context of library records comes from the hub binding the recorder per request and per dialogue session: `sessionId`, `userId`, `destination`, `traceId`. The library narrows it with `role`, `turnId` and `taskId`.
+Library usage is recorded by llm-agent's boundary decorators (`UsageLlm`, `UsageEmbedder`, the MCP client, TaskBoard).
+- **Decorators.** The hub applies the LLM and embedder decorators directly around every provider it builds (`srv/lib/llm-factory.ts` and the embedder factories), inside retry wrappers.
+- **Not sources.** Its existing usage wrappers (`tracked-llm`, review-scope token capture) and `IRequestLogger` stay as they are and are not record sources.
+- **Recorder per call.** The hub passes its recorder in `CallOptions.usage` for every request and dialogue session.
+
+The context of library records comes from the hub binding the recorder per request and per dialogue session: `sessionId`, `userId`, `destination`, `traceId`. The library narrows it with `role`, `turnId` and `taskId`.
 
 `userId` is a stable hash of the user id by default (`LLM_AGENT_USAGE_USER_ID=hash|plain`). *(My call: analysis needs a stable key, not the person.)*
 
@@ -66,13 +71,13 @@ Library usage reaches the recorder through the `IRequestLogger` adapter (`usageR
 
 The hub uses the `direct` transport only. *(My call: one `srv` instance today, so there is no remote collector to feed. `http` and `signals` exist in llm-agent for consumers that need them, and the hub can add them later without changing its records.)*
 
-Without persistence, the `sqlite` sink writes to the container disk.
+Without persistence, the `sqlite` sink (`llm-usage-sqlite`, Node ≥ 22.13) writes to the container disk; if the runtime lacks `node:sqlite`, the hub logs it, reports it in `/v1/usage/status` and falls back to the `memory` sink.
 - **Loss on restart.** The CF container disk is ephemeral: the file is lost on every restart, restage, redeploy or instance move. The user decided this is the small price of running without persistence. Statistics that must survive are collected on a deployment with persistence.
 - **Disk quota.** The file is bounded by the app's disk quota. Retention by age applies here too, and `/v1/usage/status` reports the file size.
 
-The `sql` sink uses the hub's existing persistence:
+The `sql` sink uses the hub's existing persistence (`llm-usage-pg` or `llm-usage-hana`):
 - **PostgreSQL:** the table is created at runtime.
-- **HANA:** the DDL from the llm-agent package `llm-usage-sql` is added to `tools/deploy-hdi-tables.sh`, which already applies the vector-store tables to the shared HDI container. The sink runs with `autoCreateSchema` off; if the table is missing, `/v1/usage/status` reports it and records stay in memory.
+- **HANA:** the DDL from the llm-agent package `llm-usage-hana` is added to `tools/deploy-hdi-tables.sh`, which already applies the vector-store tables to the shared HDI container. The sink runs with `autoCreateSchema` off; if the table is missing, `/v1/usage/status` reports it and records stay in memory.
 
 ## Export
 
