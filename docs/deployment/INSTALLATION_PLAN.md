@@ -205,6 +205,20 @@ In BTP Cockpit → Subaccount → Security → Role Collections:
 
 2. Assign appropriate role collection to your user(s)
 
+#### Upgrading a deployment that has MCP Analyst Access
+
+From this release on, `MCP_Analyst` and its role collection **MCP Analyst Access** no longer exist. They granted exactly the Reader level. `MCP_Full` is removed as well; it was never assigned.
+
+The update does **not** move anyone to another collection. Users who hold only MCP Analyst Access lose tool access once their tokens are refreshed. Do the following **before** deploying the new version:
+
+1. **Find every holder.** In BTP Cockpit → Security, find everyone who holds MCP Analyst Access, either directly or through an IdP group or attribute mapping. Also find custom role collections that reference the `MCP_Analyst` role template.
+2. **Grant Reader.** Give each of them **MCP Reader Access**, through the same assignment path: user, group or mapping. Add Developer or Admin only where intended.
+3. **Verify.** Have an affected user sign in again (a fresh token) and confirm that read tools work.
+4. **Remove the old references.** Remove the MCP Analyst Access assignments and mappings, and the `MCP_Analyst` references from custom role collections.
+5. **Deploy.** XSUAA then removes the role template and the collection.
+
+Technical clients that use the analyst consumer service instance keep working without changes. The instance keeps its name and is now granted the Reader scope.
+
 ### Step 7: Verify Deployment (5 min)
 
 ```bash
