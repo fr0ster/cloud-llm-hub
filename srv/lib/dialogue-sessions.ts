@@ -104,7 +104,8 @@ export interface DialogueHandle {
     done: number;
     status?: 'active' | 'waiting_user' | 'done';
     idle: boolean;
-    lastSettled?: { outcome: 'ok' | 'failed'; at: number };
+    settledSeq: number;
+    lastFailedSeq: number;
   };
   hasSubscribers(): boolean;
   drainPending(): Promise<void>;
@@ -431,9 +432,13 @@ async function open(
     () => stopLifetime(),
     { source: key },
   );
+  let settledSeq = 0;
+  let lastFailedSeq = 0;
   const unsubscribeSettled = signals.on(
     'dialogue.turn.settled',
     async ({ payload: { outcome, trigger } }) => {
+      settledSeq++;
+      if (outcome === 'failed') lastFailedSeq = settledSeq;
       turnReply = undefined;
       await outbox.flushed();
       emit({ kind: 'settled', outcome, trigger });
@@ -630,12 +635,9 @@ async function open(
     state() {
       const activity = signals.last('dialogue.activity', key)?.payload;
       const plan = signals.last('dialogue.plan.changed', key)?.payload;
-      const settled = signals.last('dialogue.turn.settled', key);
       return {
-        lastSettled: settled && {
-          outcome: settled.payload.outcome,
-          at: settled.at,
-        },
+        settledSeq,
+        lastFailedSeq,
         turnActive: activity?.turnActive ?? false,
         queuedInputs: activity?.queuedInputs,
         running: activity?.running ?? 0,

@@ -59,6 +59,7 @@ export function dialogueChat(
 } {
   let followHandle: Awaited<ReturnType<typeof dialogueFor>> | undefined;
   let delivery: Delivery;
+  let since: number;
   let disconnected = response.destroyed && !response.writableFinished;
   response.on('close', () => {
     if (!response.writableFinished) disconnected = true;
@@ -71,6 +72,7 @@ export function dialogueChat(
       await handle.outbox.enterAckMode();
       if (ack !== 'none') await handle.outbox.confirmUpTo(ack);
     } else await handle.outbox.confirmByArrival();
+    since = handle.state().settledSeq;
     delivery = handle.outbox.beginDelivery();
     const pending = handle.outbox.pending();
     await handle.factory.refresh(
@@ -102,7 +104,7 @@ export function dialogueChat(
     hasFollow: () => followHandle !== undefined,
     follow(signal, maxMs) {
       return followHandle
-        ? followDialogue(followHandle, { delivery, signal, maxMs })
+        ? followDialogue(followHandle, { delivery, since, signal, maxMs })
         : undefined;
     },
     async process(messages, opts) {

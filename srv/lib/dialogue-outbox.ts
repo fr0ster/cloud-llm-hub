@@ -15,7 +15,6 @@ export type OutboxEntry = PlannerMessage & { confirmed?: boolean };
 
 export interface Delivery {
   readonly id: string;
-  readonly startedAt: number;
   carried(messageId: string): void;
   has(messageId: string): boolean;
   ended(): void;
@@ -95,7 +94,6 @@ export class DialogueOutbox {
     this.trimDeliveries();
     return {
       id: randomUUID(),
-      startedAt: Date.now(),
       carried: (id) => {
         if (!record.ended) record.carried.add(id);
       },

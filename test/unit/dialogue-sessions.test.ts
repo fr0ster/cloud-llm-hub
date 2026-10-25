@@ -274,22 +274,20 @@ test('a save during the turn emits no settled', async () => {
   }
 });
 
-test('state exposes the retained settlement and its bus timestamp for this session', async () => {
+test('state counts every session settlement and retains the latest failure sequence', async () => {
   const { h } = await ready();
   const bus = dialogueSignals();
-  bus.emit(
-    'dialogue.turn.settled',
-    { outcome: 'failed', trigger: 'event' },
-    'key',
-  );
-  const settled = bus.last('dialogue.turn.settled', 'key');
-  expect(h.state().lastSettled).toEqual({ outcome: 'failed', at: settled?.at });
-  bus.emit(
-    'dialogue.turn.settled',
-    { outcome: 'ok', trigger: 'user' },
-    'other',
-  );
-  expect(h.state().lastSettled).toEqual({ outcome: 'failed', at: settled?.at });
+  expect(h.state()).toMatchObject({ settledSeq: 0, lastFailedSeq: 0 });
+  for (const [source, outcome, settledSeq, lastFailedSeq] of [
+    ['key', 'failed', 1, 1],
+    ['other', 'failed', 1, 1],
+    ['key', 'ok', 2, 1],
+    ['key', 'failed', 3, 3],
+    ['key', 'ok', 4, 3],
+  ] as const) {
+    bus.emit('dialogue.turn.settled', { outcome, trigger: 'event' }, source);
+    expect(h.state()).toMatchObject({ settledSeq, lastFailedSeq });
+  }
 });
 
 test('idle is false between a task end and its event turn and while ready steps remain', async () => {
@@ -329,7 +327,8 @@ test('idle is false between a task end and its event turn and while ready steps 
   expect(h.state()).toMatchObject({ running: 1, idle: false });
   bus.emit('dialogue.activity', { ...activity, queuedInputs: 0 }, 'key');
   expect(h.state()).toEqual({
-    lastSettled: undefined,
+    settledSeq: 0,
+    lastFailedSeq: 0,
     turnActive: false,
     queuedInputs: 0,
     running: 0,

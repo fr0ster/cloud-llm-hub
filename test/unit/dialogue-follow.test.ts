@@ -5,9 +5,11 @@ import type {
   DialogueHandle,
 } from '../../srv/lib/dialogue-sessions';
 
-function fixture() {
+function fixture(priorFailure = false) {
   const outbox = new DialogueOutbox([], async () => {});
   const state: ReturnType<DialogueHandle['state']> = {
+    settledSeq: priorFailure ? 1 : 0,
+    lastFailedSeq: priorFailure ? 1 : 0,
     turnActive: false,
     queuedInputs: 0,
     running: 1,
@@ -31,11 +33,13 @@ function fixture() {
       };
     },
   } as DialogueHandle;
+  const since = state.settledSeq;
   const delivery = outbox.beginDelivery();
   const controller = new AbortController();
   const start = () =>
     followDialogue(handle, {
       delivery,
+      since,
       signal: controller.signal,
       maxMs: 1000,
     })[Symbol.asyncIterator]();
@@ -47,6 +51,8 @@ function fixture() {
     controller,
     start,
     settled: (outcome: 'ok' | 'failed' = 'ok') => {
+      state.settledSeq++;
+      if (outcome === 'failed') state.lastFailedSeq = state.settledSeq;
       for (const fn of listeners)
         fn({ kind: 'settled', outcome, trigger: 'event' });
     },
@@ -245,21 +251,31 @@ test('failed settlement ends after progress with an error', async () => {
   expect((await iterator.next()).done).toBe(true);
 });
 
-test.each([-1, 0, 1])(
-  'retained failure at delivery start %+i ends only if newer',
-  async (offset) => {
+test.each([false, true])(
+  'failure before subscription ends with error even after success=%s',
+  async (success) => {
     const f = fixture();
-    jest.advanceTimersByTime(10);
-    f.state.lastSettled = {
-      outcome: 'failed',
-      at: f.delivery.startedAt + offset,
-    };
+    const startedAt = Date.now();
+    f.settled('failed');
+    if (success) f.settled('ok');
+    expect(Date.now()).toBe(startedAt);
     f.state.idle = true;
     const iterator = f.start();
     expect((await iterator.next()).value).toEqual({
       kind: 'end',
-      reason: offset > 0 ? 'error' : 'idle',
+      reason: 'error',
     });
     expect((await iterator.next()).done).toBe(true);
   },
 );
+
+test('failure before delivery began does not end with error', async () => {
+  const f = fixture(true);
+  f.state.idle = true;
+  const iterator = f.start();
+  expect((await iterator.next()).value).toEqual({
+    kind: 'end',
+    reason: 'idle',
+  });
+  expect((await iterator.next()).done).toBe(true);
+});

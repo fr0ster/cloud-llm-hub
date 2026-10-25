@@ -113,7 +113,7 @@ beforeEach(() => {
     factory: { refresh },
     drainPending: async () => {},
     hasSubscribers: () => true,
-    state: () => ({}),
+    state: () => ({ settledSeq: 0, lastFailedSeq: 0 }),
     outbox,
     session: { takePending: () => [{ text: 'one' }, { text: 'two' }], send },
   } as never);
@@ -150,6 +150,8 @@ for (const initial of ['', 'NO_MESSAGE', 'answer']) {
       const handle = await dialogueFor('alice', session.key, 'DEST');
       if (following) {
         handle.state = () => ({
+          settledSeq: 0,
+          lastFailedSeq: 0,
           status: 'done',
           turnActive: false,
           queuedInputs: 0,
@@ -811,6 +813,8 @@ it('a new request supersedes an open follow before reading pending', async () =>
   directAnswer();
   const handle = await dialogueFor('alice', session.key, 'SAP');
   handle.state = () => ({
+    settledSeq: 0,
+    lastFailedSeq: 0,
     status: 'active',
     turnActive: false,
     queuedInputs: 0,
@@ -852,6 +856,8 @@ it('follow is absent for a plain reply and for a non-streaming turn', async () =
   expect(agent.follow(new AbortController().signal, 100)).toBeUndefined();
   const handle = await dialogueFor('alice', session.key, 'SAP');
   handle.state = () => ({
+    settledSeq: 0,
+    lastFailedSeq: 0,
     status: 'done',
     turnActive: false,
     queuedInputs: 0,
@@ -942,6 +948,8 @@ for (const anthropic of [false, true]) {
   it(`${label}: SDK parses pending, reply and follow with one terminal, including a cut stream`, async () => {
     const handle = await dialogueFor('alice', session.key, 'DEST');
     handle.state = () => ({
+      settledSeq: 0,
+      lastFailedSeq: 0,
       status: 'done',
       turnActive: false,
       queuedInputs: 0,
@@ -1017,6 +1025,8 @@ for (const anthropic of [false, true]) {
   it(`${label}: follow begins after the session slot is released`, async () => {
     const handle = await dialogueFor('alice', session.key, 'DEST');
     handle.state = () => ({
+      settledSeq: 0,
+      lastFailedSeq: 0,
       status: 'active',
       turnActive: false,
       queuedInputs: 0,
@@ -1051,6 +1061,8 @@ for (const anthropic of [false, true]) {
   it(`${label}: follow failure emits an error without a success terminal`, async () => {
     const handle = await dialogueFor('alice', session.key, 'DEST');
     handle.state = () => ({
+      settledSeq: 0,
+      lastFailedSeq: 0,
       status: 'done',
       turnActive: false,
       queuedInputs: 0,
@@ -1086,9 +1098,11 @@ for (const anthropic of [false, true]) {
     `${label}: failed background settlement emits an error (retained before subscription=%s)`,
     async (retained) => {
       const handle = await dialogueFor('alice', session.key, 'DEST');
-      let lastSettled: { outcome: 'failed'; at: number } | undefined;
+      let settledSeq = 0;
+      let lastFailedSeq = 0;
       handle.state = () => ({
-        lastSettled,
+        settledSeq,
+        lastFailedSeq,
         status: 'active',
         turnActive: false,
         queuedInputs: 0,
@@ -1107,16 +1121,18 @@ for (const anthropic of [false, true]) {
       if (retained) {
         send.mockImplementation(async () => {
           await new Promise((resolve) => setTimeout(resolve, 5));
-          lastSettled = { outcome: 'failed', at: Date.now() };
+          lastFailedSeq = ++settledSeq;
+          settledSeq++;
           return { text: 'answer' };
         });
       }
       handle.subscribe = (fn) => {
         if (retained) return () => {};
         jest.spyOn(outbox, 'pending').mockReturnValue([progress]);
-        setImmediate(() =>
-          fn({ kind: 'settled', outcome: 'failed', trigger: 'event' }),
-        );
+        setImmediate(() => {
+          lastFailedSeq = ++settledSeq;
+          fn({ kind: 'settled', outcome: 'failed', trigger: 'event' });
+        });
         return () => {};
       };
       const res = fakeRes();
@@ -1209,6 +1225,8 @@ for (const anthropic of [false, true]) {
 it('a request during follow sees the preceding turn in its history', async () => {
   const handle = await dialogueFor('alice', session.key, 'DEST');
   handle.state = () => ({
+    settledSeq: 0,
+    lastFailedSeq: 0,
     status: 'active',
     turnActive: false,
     queuedInputs: 0,

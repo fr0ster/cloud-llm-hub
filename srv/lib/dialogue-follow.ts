@@ -37,6 +37,7 @@ export function followDialogue(
   handle: DialogueHandle,
   opts: {
     delivery: Delivery;
+    since: number;
     signal: AbortSignal;
     maxMs: number;
     now?: () => number;
@@ -93,8 +94,6 @@ export function followDialogue(
       unsubscribe = handle.subscribe((event) => {
         if (event.kind === 'settled') {
           evaluate = true;
-          if (event.outcome === 'failed')
-            forced ??= { kind: 'end', reason: 'error' };
         }
         wake();
       });
@@ -119,10 +118,7 @@ export function followDialogue(
           wake = resolve;
         });
         const state = handle.state();
-        if (
-          state.lastSettled?.outcome === 'failed' &&
-          state.lastSettled.at > opts.delivery.startedAt
-        )
+        if (state.lastFailedSeq > opts.since)
           forced ??= { kind: 'end', reason: 'error' };
         if (forced) {
           cleanup();
