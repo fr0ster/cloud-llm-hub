@@ -23,7 +23,7 @@ let taskState = 'running';
 let planState: { plan?: string; planStatus?: string } = {};
 beforeEach(() => {
   outbox = new DialogueOutbox(
-    [{ id: 'm1', text: 'hello', createdAt: 123 }],
+    [{ id: 'm1', text: 'hello', createdAt: 123, trigger: 'event' }],
     persist,
   );
   taskState = 'running';
@@ -96,7 +96,7 @@ test('unacknowledged replay across reconnect, live messages/tasks, heartbeat and
     'no-cache, no-transform',
   );
   expect(res.write).toHaveBeenCalledWith(
-    'id: m1\nevent: message\ndata: {"id":"m1","text":"hello","createdAt":123}\n\n',
+    'id: m1\nevent: message\ndata: {"id":"m1","text":"hello","createdAt":123,"trigger":"event"}\n\n',
   );
   listener({
     kind: 'task',
@@ -107,7 +107,7 @@ test('unacknowledged replay across reconnect, live messages/tasks, heartbeat and
   );
   listener({
     kind: 'message',
-    message: { id: 'm2', text: 'live', createdAt: 124 },
+    message: { id: 'm2', text: 'live', createdAt: 124, trigger: 'event' },
   });
   expect(res.write).toHaveBeenLastCalledWith(expect.stringContaining('live'));
   jest.advanceTimersByTime(15000);
@@ -216,7 +216,9 @@ test('the view shows confirmed messages too', async () => {
   delivery.ended();
   await outbox.confirmByArrival();
   expect(outbox.pending()).toEqual([]);
-  await outbox.add([{ id: 'm2', text: 'pending', createdAt: 124 }]);
+  await outbox.add([
+    { id: 'm2', text: 'pending', createdAt: 124, trigger: 'event' },
+  ]);
   const res = response();
   await handleDialogueEvents(
     { longSession: { userId: 'alice', key: 'ls-a' } } as any,
@@ -226,8 +228,8 @@ test('the view shows confirmed messages too', async () => {
     .map(([body]) => body)
     .filter((body) => body.includes('event: message'));
   expect(messages).toEqual([
-    'id: m1\nevent: message\ndata: {"id":"m1","text":"hello","createdAt":123}\n\n',
-    'id: m2\nevent: message\ndata: {"id":"m2","text":"pending","createdAt":124}\n\n',
+    'id: m1\nevent: message\ndata: {"id":"m1","text":"hello","createdAt":123,"trigger":"event"}\n\n',
+    'id: m2\nevent: message\ndata: {"id":"m2","text":"pending","createdAt":124,"trigger":"event"}\n\n',
   ]);
   res.emit('close');
 });
@@ -264,9 +266,11 @@ test('settled is not sent', async () => {
   res.write.mockClear();
   listener({ kind: 'settled' });
   expect(res.write).not.toHaveBeenCalled();
-  await outbox.add([{ id: 'm2', text: 'complete', createdAt: 124 }]);
+  await outbox.add([
+    { id: 'm2', text: 'complete', createdAt: 124, trigger: 'event' },
+  ]);
   expect(res.write).toHaveBeenCalledWith(
-    'id: m2\nevent: message\ndata: {"id":"m2","text":"complete","createdAt":124}\n\n',
+    'id: m2\nevent: message\ndata: {"id":"m2","text":"complete","createdAt":124,"trigger":"event"}\n\n',
   );
   res.emit('close');
 });
