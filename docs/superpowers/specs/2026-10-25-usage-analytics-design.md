@@ -105,14 +105,19 @@ The `sql` sink uses the hub's existing persistence:
 
 ## Roles
 
-The user decided to replace `MCP_Full` with `MCP_Admin`.
+The user decided to replace `MCP_Full` with `MCP_Admin` and to remove `MCP_Analyst`.
 
 - **What it grants.** Administrative endpoints only: usage export and status now, and later the global planner-skill administration of the planner prompt design.
-- **The existing roles.** The templates `MCP_Reader`, `MCP_Analyst` and `MCP_Developer` stay as they are.
+- **The tool roles left:** `MCP_Reader` and `MCP_Developer`, unchanged.
+- **Removal of `MCP_Analyst`.** It already grants exactly the Reader level (`srv/lib/exposition.ts` maps it to Reader), so nobody loses access by holding `MCP_Reader` instead.
+  - **Scope and role collection.** The scope, role template and role collection `MCP Analyst Access` are removed. The `MCP_Developer` template stops referencing the Analyst scope.
+  - **People.** People who hold `MCP Analyst Access` get `MCP Reader Access`. On the POC the test user already holds Reader.
+  - **Technical clients.** The analyst consumer XSUAA instance (`xs-security-analyst-consumer.json`, granted through `grant-as-authority-to-apps` in `mta.yaml`) is retargeted to `MCP_Reader`, keeping its instance name so existing bindings keep working. *(My call: renaming the instance would force every technical client to rebind.)*
 - **Not a composite role.** The user decided: no composite roles, give each role that is needed. The `MCP_Admin` role template references only `$XSAPPNAME.MCP_Admin` and grants no tool exposition. A person who administers and also works with SAP tools gets `MCP Admin Access` together with the tool role they need, for example `MCP Developer Access`.
 - **What changes:**
-  - **XSUAA and deployment:** the scope `$XSAPPNAME.MCP_Admin`, the role template `MCP_Admin` and the role collection `MCP Admin Access` in `xs-security.json` and `mta.yaml`. The consumer xs-security files reference only Reader, Analyst and Developer and stay unchanged.
+  - **XSUAA and deployment:** the scope `$XSAPPNAME.MCP_Admin`, the role template `MCP_Admin` and the role collection `MCP Admin Access` are added. `MCP_Full` and `MCP_Analyst` are removed from `xs-security.json`, `mta.yaml` and the analyst consumer file.
   - **Code:** the role lists and exposition mapping in `srv/lib/exposition.ts` and `srv/server.ts`, including the access-denied text.
-  - **Documentation:** every mention of `MCP_Full`.
+  - **Documentation:** every mention of `MCP_Full` and `MCP_Analyst`.
+  - **Tests:** `test/unit/exposition*.test.ts`, `test/integration/role-exposition.test.ts` and `tools/measure-tool-rag.ts`.
 - **Removal of `MCP_Full`.** The user confirmed that `MCP_Full` was never assigned to anyone, so it is removed without migration. The CHANGELOG lists it under Removed. *(My call: a minor release, since no assignment breaks.)*
 - **Separate item.** This is a security change: its own PR, reviewed as such, before the export endpoint ships.
