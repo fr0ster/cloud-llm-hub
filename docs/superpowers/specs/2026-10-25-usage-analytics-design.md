@@ -48,8 +48,7 @@ All of them are `x.hub.*` records of the llm-agent contract: numbers, labels and
 
 `x.hub.process` carries no session id. Attribution to sessions is a later analysis step: the active-session count is in the record, and session records give time windows. *(My call: a per-session memory split inside one Node process cannot be measured honestly.)*
 
-Library usage is recorded by llm-agent's boundary decorators (`UsageLlm`, `UsageEmbedder`, the MCP client, TaskBoard).
-- **Decorators.** The hub applies the LLM and embedder decorators directly around every provider it builds (`srv/lib/llm-factory.ts` and the embedder factories), inside retry wrappers.
+Library usage is recorded inside llm-agent: in the provider packages, at each physical LLM and embedding request; in the MCP client, at each dispatch; and in TaskBoard. The hub adds no instrumentation of its own around providers.
 - **Not sources.** Its existing usage wrappers (`tracked-llm`, review-scope token capture) and `IRequestLogger` stay as they are and are not record sources.
 - **Recorder per call.** The hub passes its recorder in `CallOptions.usage` for every request and dialogue session.
 
