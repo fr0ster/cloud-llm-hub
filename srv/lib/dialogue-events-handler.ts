@@ -76,7 +76,7 @@ export async function handleDialogueEvents(
         if (event.kind === 'message')
           send('message', event.message, event.message.id);
         else if (event.kind === 'plan') send('plan', event.plan);
-        else send('task', event.task);
+        else if (event.kind === 'task') send('task', event.task);
       },
       typeof cursor === 'string' ? cursor : undefined,
     );

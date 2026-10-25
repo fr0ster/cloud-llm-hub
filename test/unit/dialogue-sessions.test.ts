@@ -38,6 +38,7 @@ import {
   onDialogueCreated,
   sharedExecutorPool,
 } from '../../srv/lib/dialogue-sessions';
+import { dialogueSignals } from '../../srv/lib/dialogue-signals';
 import {
   getDialogueStoreBackend,
   hasDialogueState,
@@ -192,6 +193,138 @@ afterEach(async () => {
   await closeDialogue('bob', 'key', 'ttl');
   setLongSessionsForTest(undefined);
 });
+
+test('settled is emitted after the outbox write of the turn', async () => {
+  let finish!: () => void;
+  mockRun.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({ output: 'done' });
+      }),
+  );
+  const { h } = await ready();
+  await h.session.send('go');
+  await until(() => !!finish);
+  await h.outbox.flushed();
+  mockPlan = {
+    plan: 'Read records',
+    status: 'waiting_user',
+    question: 'Proceed?',
+  };
+  const events: DialogueEvent[] = [];
+  h.subscribe((event) => events.push(event));
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const backend = getDialogueStoreBackend();
+  const save = backend.save.bind(backend);
+  const spy = jest
+    .spyOn(backend, 'save')
+    .mockImplementation(async (...args) => {
+      await blocked;
+      await save(...args);
+    });
+  finish();
+  try {
+    await until(() => events.some((event) => event.kind === 'plan'));
+    expect(events.some((event) => event.kind === 'settled')).toBe(false);
+    release();
+    await until(() => events.some((event) => event.kind === 'settled'));
+    expect(
+      events
+        .filter((event) => event.kind !== 'task')
+        .map((event) => event.kind),
+    ).toEqual(['plan', 'message', 'settled']);
+  } finally {
+    release();
+    await h.outbox.flushed();
+    spy.mockRestore();
+  }
+});
+
+test('a save during the turn emits no settled', async () => {
+  const { h } = await ready();
+  mockPlan = { plan: 'Read', status: 'done' };
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  mockPlannerHook = () => blocked;
+  const events: DialogueEvent[] = [];
+  h.subscribe((event) => events.push(event));
+  const turn = h.session.send('plan');
+  try {
+    await until(() => mockPlannerTurns.length > 0);
+    h.session.takePending();
+    await h.drainPending();
+    await h.outbox.flushed();
+    expect(events).toEqual([]);
+  } finally {
+    release();
+    await turn;
+  }
+});
+
+test('idle is false between a task end and its event turn and while ready steps remain', async () => {
+  const { h } = await ready();
+  const bus = dialogueSignals();
+  expect(h.state()).toMatchObject({
+    status: undefined,
+    total: 0,
+    done: 0,
+    idle: false,
+  });
+  bus.emit(
+    'dialogue.plan.changed',
+    { status: 'active', total: 3, done: 1 },
+    'key',
+  );
+  const activity = { turnActive: false, queuedInputs: 1, running: 0, ready: 0 };
+  bus.emit('dialogue.activity', activity, 'key');
+  expect(h.state().idle).toBe(false);
+  bus.emit(
+    'dialogue.activity',
+    { ...activity, queuedInputs: 0, ready: 1 },
+    'key',
+  );
+  expect(h.state().idle).toBe(false);
+  bus.emit(
+    'dialogue.activity',
+    { ...activity, queuedInputs: 0, turnActive: true },
+    'key',
+  );
+  expect(h.state()).toMatchObject({ turnActive: true, idle: false });
+  bus.emit(
+    'dialogue.activity',
+    { ...activity, queuedInputs: 0, running: 1 },
+    'key',
+  );
+  expect(h.state()).toMatchObject({ running: 1, idle: false });
+  bus.emit('dialogue.activity', { ...activity, queuedInputs: 0 }, 'key');
+  expect(h.state()).toEqual({
+    turnActive: false,
+    running: 0,
+    total: 3,
+    done: 1,
+    status: 'active',
+    idle: true,
+  });
+});
+
+test.each(['waiting_user', 'done'] as const)(
+  '%s is reported',
+  async (status) => {
+    const { h } = await ready();
+    mockPlan = {
+      plan: 'Read',
+      status,
+      ...(status === 'waiting_user' ? { question: 'Proceed?' } : {}),
+    };
+    await h.session.send('plan');
+    expect(h.state()).toMatchObject({ status, idle: false });
+  },
+);
 test('isolates owners and shares concurrent opens', async () => {
   const [a, b, c] = await Promise.all([
     dialogueFor('alice', 'key', 'TEST'),

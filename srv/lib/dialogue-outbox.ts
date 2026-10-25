@@ -120,6 +120,13 @@ export class DialogueOutbox {
     this.writes = result;
     return result;
   }
+  async flushed(): Promise<void> {
+    let pending: Promise<void>;
+    do {
+      pending = this.writes;
+      await pending;
+    } while (pending !== this.writes);
+  }
   add(messages: PlannerMessage[]): Promise<void> {
     return this.write(async () => {
       for (const message of cleanMessages(messages)) {

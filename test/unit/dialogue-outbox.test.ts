@@ -16,6 +16,28 @@ const ended = (box: DialogueOutbox, ...ids: string[]) => {
   return delivery;
 };
 
+test('flushed waits for queued adds and writes including message publication', async () => {
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const events: string[] = [];
+  const box = new DialogueOutbox([], async () => {
+    await blocked;
+  });
+  box.subscribe((message) => events.push(message.id));
+  const first = box.add([message('m1')]);
+  const second = box.add([message('m2')]);
+  const write = box.enterAckMode();
+  const flushed = box.flushed().then(() => events.push('flushed'));
+  await Promise.resolve();
+  expect(events).toEqual([]);
+  release();
+  await Promise.all([first, second, write, flushed]);
+  expect(box.ackMode).toBe(true);
+  expect(events).toEqual(['m1', 'm2', 'flushed']);
+});
+
 test('confirms only messages carried by an ended delivery', async () => {
   const box = new DialogueOutbox([], async () => {});
   await box.add(['m1', 'm2', 'm3'].map(message));

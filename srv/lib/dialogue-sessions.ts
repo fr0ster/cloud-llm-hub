@@ -62,6 +62,7 @@ type Plan = Exclude<DialogueState['plan'], string | undefined>;
 type PlanStep = Plan['steps'][number];
 
 export type DialogueEvent =
+  | { kind: 'settled' }
   | { kind: 'message'; message: PlannerMessage }
   | { kind: 'plan'; plan: DialoguePlan }
   | {
@@ -93,6 +94,14 @@ export interface DialogueHandle {
   session: DialogueSession;
   retrievedContexts: WeakMap<object, string>;
   outbox: DialogueOutbox;
+  state(): {
+    turnActive: boolean;
+    running: number;
+    total: number;
+    done: number;
+    status?: 'active' | 'waiting_user' | 'done';
+    idle: boolean;
+  };
   hasSubscribers(): boolean;
   drainPending(): Promise<void>;
   factory: SessionConnectionFactory;
@@ -412,9 +421,18 @@ async function open(
     () => stopLifetime(),
     { source: key },
   );
+  const unsubscribeSettled = signals.on(
+    'dialogue.turn.settled',
+    async () => {
+      await outbox.flushed();
+      emit({ kind: 'settled' });
+    },
+    { source: key },
+  );
   const stopLifetime = () => {
     unsubscribeActivity();
     unsubscribeClosed();
+    unsubscribeSettled();
     releaseLifetime();
   };
   try {
@@ -572,6 +590,24 @@ async function open(
     session,
     retrievedContexts,
     outbox,
+    state() {
+      const activity = signals.last('dialogue.activity', key)?.payload;
+      const plan = signals.last('dialogue.plan.changed', key)?.payload;
+      return {
+        turnActive: activity?.turnActive ?? false,
+        running: activity?.running ?? 0,
+        total: plan?.total ?? 0,
+        done: plan?.done ?? 0,
+        status: plan?.status,
+        idle:
+          plan?.status === 'active' &&
+          activity !== undefined &&
+          !activity.turnActive &&
+          activity.queuedInputs === 0 &&
+          activity.running === 0 &&
+          activity.ready === 0,
+      };
+    },
     drainPending,
     hasSubscribers: () => subscribers.size > 0,
     factory,
