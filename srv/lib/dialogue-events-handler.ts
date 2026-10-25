@@ -126,6 +126,6 @@ export async function handleDialogueAck(
     return;
   }
   const handle = await lookupDialogue(userId, session.key);
-  await handle?.outbox.ack(req.body.id);
+  await handle?.outbox.confirmUpTo(req.body.id);
   res.status(204).end();
 }

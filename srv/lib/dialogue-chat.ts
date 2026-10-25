@@ -45,13 +45,13 @@ export function dialogueChat(
     );
     setSessionDestination(userId, session.key, destination);
     await handle.drainPending();
-    const messages = handle.hasSubscribers() ? [] : handle.outbox.replay();
+    const messages = handle.hasSubscribers() ? [] : handle.outbox.pending();
     const pending = messages.map((m) => `**Planner:** ${m.text}`).join('\n\n');
     let successful = false;
     response.on('finish', () => {
       if (successful && !disconnected && messages.length)
         void handle.outbox
-          .ack(messages[messages.length - 1].id)
+          .confirmUpTo(messages[messages.length - 1].id)
           .catch(() => {});
     });
     return {

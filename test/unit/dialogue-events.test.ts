@@ -18,7 +18,7 @@ const pending = [{ id: 'm1', text: 'hello', createdAt: 123 }];
 let listener: (e: any) => void;
 const unsubscribe = jest.fn();
 const takePending = jest.fn(() => pending.splice(0));
-const ack = jest.fn(async (id: string) => {
+const confirmUpTo = jest.fn(async (id: string) => {
   const index = pending.findIndex((m) => m.id === id);
   if (index >= 0) pending.splice(0, index + 1);
 });
@@ -60,11 +60,12 @@ jest.mock('../../srv/lib/dialogue-sessions', () => ({
     },
     drainPending: async () => {},
     outbox: {
-      replay: (after?: string) =>
+      history: (after?: string) =>
         pending.slice(
           (after ? pending.findIndex((m) => m.id === after) : -1) + 1,
         ),
-      ack,
+      pending: () => pending.slice(),
+      confirmUpTo,
     },
     subscribe: (fn: any, cursor?: string) => {
       listener = fn;
@@ -156,7 +157,7 @@ test('Last-Event-ID skips rendered prefix, ack removes it, ownership is enforced
   expect(res.write).toHaveBeenCalledTimes(1); // snapshot only
   await handleDialogueAck(req as any, response() as any);
   expect(pending).toEqual([]);
-  expect(ack).toHaveBeenCalledWith('m1');
+  expect(confirmUpTo).toHaveBeenCalledWith('m1');
   const denied = response();
   await handleDialogueAck(
     { ...req, longSession: { userId: 'bob', key: 'ls-a' } } as any,
@@ -214,7 +215,7 @@ test('events before chat stays open and attaches to creation; ack never creates'
   const ackRes = response();
   await handleDialogueAck({ ...req, body: { id: 'm1' } } as any, ackRes as any);
   expect(ackRes.status).toHaveBeenCalledWith(204);
-  expect(ack).not.toHaveBeenCalled();
+  expect(confirmUpTo).not.toHaveBeenCalled();
   res.emit('close');
 });
 

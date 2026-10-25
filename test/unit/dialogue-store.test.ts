@@ -5,7 +5,9 @@ import {
 
 jest.mock('@sap/cds', () => ({
   __esModule: true,
-  default: { log: () => ({ warn: jest.fn(), debug: jest.fn() }) },
+  default: {
+    log: () => ({ info: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
+  },
 }));
 
 import type { DialogueState } from '@mcp-abap-adt/llm-agent';
@@ -328,4 +330,32 @@ it('saves dialogue state when temporary retrieved context exceeds the message li
   } finally {
     await session.close();
   }
+});
+
+it('round trips confirmed outbox entries and ack mode, and loads legacy rows', async () => {
+  const store = new MemoryDialogueStore();
+  const entry = {
+    id: 'm1',
+    text: 'hello',
+    createdAt: 1,
+    trigger: 'event' as const,
+  };
+  const row = {
+    ...state,
+    outbox: [
+      { ...entry, confirmed: true },
+      { ...entry, id: 'm2' },
+    ],
+    ackMode: true,
+  };
+  await store.save('alice', 'new', row);
+  expect(await store.load('alice', 'new')).toEqual(row);
+  const legacy = { ...state, outbox: [entry] };
+  await store.save('alice', 'old', legacy);
+  expect(await store.load('alice', 'old')).toEqual(legacy);
+  await store.save('alice', 'empty', { ...state, ackMode: true });
+  expect(await store.load('alice', 'empty')).toEqual({
+    ...state,
+    ackMode: true,
+  });
 });

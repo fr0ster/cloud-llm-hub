@@ -5,7 +5,6 @@ import type {
   IRagBackendWriter,
   IRagProvider,
   IRagScanner,
-  PlannerMessage,
 } from '@mcp-abap-adt/llm-agent';
 import { isRagScanner } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
@@ -13,6 +12,7 @@ import { z } from 'zod';
 import type { RagConfig } from '../agent-config';
 import { dialogueMaxTasks } from '../agent-config';
 import { ensureDialogueStore } from './collection-persistence';
+import type { OutboxEntry } from './dialogue-outbox';
 import { guardedTask } from './guarded-task';
 import {
   createCollectionProvider,
@@ -26,7 +26,10 @@ type Plan = Exclude<DialogueState['plan'], string | undefined>;
 type PlanStep = Plan['steps'][number];
 type TaskRecord = DialogueState['tasks'][number];
 
-export type HubDialogueState = DialogueState & { outbox?: PlannerMessage[] };
+export type HubDialogueState = DialogueState & {
+  outbox?: OutboxEntry[];
+  ackMode?: boolean;
+};
 
 export const DIALOGUE_BYTE_LIMIT = 2 * 1024 * 1024;
 export interface DialogueStoreBackend {
@@ -171,9 +174,25 @@ function stored(record: HubDialogueState): HubDialogueState {
   const raw = JSON.parse(text);
   const state = schema.parse(raw.state ?? raw);
   const outbox = raw.outbox;
-  if (outbox === undefined) return state;
-  const parsed = schema.shape.pending.parse(outbox);
-  return parsed.length ? { ...state, outbox: parsed } : state;
+  const ackMode = z
+    .boolean()
+    .optional()
+    .parse(raw.ackMode ?? raw.state?.ackMode);
+  const parsed =
+    outbox === undefined
+      ? undefined
+      : z
+          .array(
+            schema.shape.pending.element.extend({
+              confirmed: z.boolean().optional(),
+            }),
+          )
+          .parse(outbox);
+  return {
+    ...state,
+    ...(parsed?.length ? { outbox: parsed } : {}),
+    ...(ackMode !== undefined ? { ackMode } : {}),
+  };
 }
 function encode(
   record: HubDialogueState,
@@ -341,8 +360,8 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
   ): Promise<void> {
     const copy = encode(record, this.log);
     if (!copy) return;
-    const { outbox, ...state } = copy;
-    const text = JSON.stringify({ state, outbox: outbox ?? [] });
+    const { outbox, ackMode, ...state } = copy;
+    const text = JSON.stringify({ state, outbox: outbox ?? [], ackMode });
     const savedAt = Date.now();
     const { writer } = await this.store();
     const r = await writer.upsertPrecomputedRaw(

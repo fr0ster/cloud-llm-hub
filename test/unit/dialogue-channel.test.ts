@@ -57,7 +57,7 @@ import {
 
 let session: LongSession;
 const refresh = jest.fn();
-const ack = jest.fn(async () => {});
+const confirmUpTo = jest.fn(async () => {});
 let subscribed = false;
 const send = jest.fn();
 let turnContext: WeakMap<object, string>;
@@ -67,7 +67,7 @@ beforeEach(() => {
   resetGatekeeperForTest();
   harness.reset();
   refresh.mockClear();
-  ack.mockClear();
+  confirmUpTo.mockClear();
   subscribed = false;
   send.mockReset();
   turnContext = new WeakMap<object, string>();
@@ -83,11 +83,11 @@ beforeEach(() => {
     drainPending: async () => {},
     hasSubscribers: () => subscribed,
     outbox: {
-      replay: () => [
+      pending: () => [
         { id: 'one', text: 'one' },
         { id: 'two', text: 'two' },
       ],
-      ack,
+      confirmUpTo,
     },
     session: { takePending: () => [{ text: 'one' }, { text: 'two' }], send },
   } as never);
@@ -187,7 +187,7 @@ for (const anthropic of [false, true])
             : payload.choices[0].message.content,
         ).toBe(visible);
       }
-      expect(ack).toHaveBeenCalledWith('two');
+      expect(confirmUpTo).toHaveBeenCalledWith('two');
       const history = getSessionHistory(session.key, 'alice');
       expect(history).toHaveLength(anthropic ? 0 : 2);
       if (!anthropic) expect(history[1].content).toBe(visible);
@@ -232,7 +232,7 @@ it('disconnect mid-answer completes and stores visible text once', async () => {
   res.disconnect();
   gate.resolve();
   await done;
-  expect(ack).not.toHaveBeenCalled();
+  expect(confirmUpTo).not.toHaveBeenCalled();
   expect(getSessionHistory(session.key, 'alice').map((m) => m.content)).toEqual(
     ['hi', visible],
   );
@@ -257,7 +257,7 @@ for (const anthropic of [false, true])
         req,
         res as unknown as Response,
       );
-      expect(ack).not.toHaveBeenCalled();
+      expect(confirmUpTo).not.toHaveBeenCalled();
       expect(res.body).toContain('planner failed');
       if (stream)
         expect(res.body).toContain(anthropic ? 'event: error' : 'server_error');
@@ -306,7 +306,7 @@ it.each([false, true])(
     await handleChatCompletions(req, res as unknown as Response);
     expect(res.body).toContain('answer');
     expect(res.body).not.toContain('**Planner:**');
-    expect(ack).not.toHaveBeenCalled();
+    expect(confirmUpTo).not.toHaveBeenCalled();
   },
 );
 it('failed chat write retains outbox', async () => {
@@ -319,7 +319,7 @@ it('failed chat write retains outbox', async () => {
     req,
     fakeRes({ throwOnWriteAfter: 0 }) as unknown as Response,
   );
-  expect(ack).not.toHaveBeenCalled();
+  expect(confirmUpTo).not.toHaveBeenCalled();
 });
 
 it.each([false, true])(

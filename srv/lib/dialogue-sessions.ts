@@ -28,7 +28,7 @@ import {
   runWithToolGateBypass,
 } from '../request-session';
 import { runWithContextCapture } from './context-capture';
-import { DialogueOutbox } from './dialogue-outbox';
+import { DialogueOutbox, type OutboxEntry } from './dialogue-outbox';
 import {
   plannerWithEnvironment,
   plannerWithParagraphs,
@@ -372,17 +372,19 @@ async function open(
   }
   let saving = Promise.resolve();
   const persist = (
-    outboxMessages: PlannerMessage[] = outbox.replay(),
+    outboxMessages: OutboxEntry[],
+    ackMode: boolean,
   ): Promise<void> => {
     const state = session?.snapshot() ?? savedState;
     if (!state) return Promise.resolve();
-    const row = { ...state, pending: [], outbox: outboxMessages };
+    const row = { ...state, pending: [], outbox: outboxMessages, ackMode };
     saving = saving.catch(() => {}).then(() => backend.save(userId, key, row));
     return saving;
   };
   const outbox: DialogueOutbox = new DialogueOutbox(
     savedState?.outbox ?? [],
-    (messages) => persist(messages),
+    (messages, ackMode) => persist(messages, ackMode),
+    savedState?.ackMode,
   );
   const drainPending = async () => {
     await outbox.add(session?.takePending() ?? []);
