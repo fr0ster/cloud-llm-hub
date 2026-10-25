@@ -1,5 +1,4 @@
 import {
-  DialogueTurnContext,
   plannerWithEnvironment,
   plannerWithRetrievedContext,
 } from '../../srv/lib/dialogue-planner-content';
@@ -294,7 +293,7 @@ it('dialogue activity touches persistence at most once per 60 seconds', async ()
 });
 
 it('saves dialogue state when temporary retrieved context exceeds the message limit', async () => {
-  const context = new DialogueTurnContext();
+  const context = new WeakMap<object, string>();
   const knowledge = 'retrieved knowledge '.repeat(6000);
   const inputs: string[] = [];
   const store = createDialogueStateStore('alice', 'large-context');
@@ -316,7 +315,9 @@ it('saves dialogue state when temporary retrieved context exceeds the message li
     board: { workers: new Map(), maxConcurrent: 1 },
   });
   try {
-    await context.run(knowledge, () => session.send('hello'));
+    const trace = { traceId: 'large' };
+    context.set(trace, knowledge);
+    await session.send('hello', { trace }).finally(() => context.delete(trace));
     expect(inputs[0]).toContain(knowledge);
     const snapshot = session.snapshot();
     expect(JSON.stringify(snapshot)).not.toContain('retrieved knowledge');

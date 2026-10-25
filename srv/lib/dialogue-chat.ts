@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type {
   AgentCallOptions,
   LlmStreamChunk,
@@ -67,13 +68,18 @@ export function dialogueChat(
       try {
         const { handle, prefix, complete } = await open();
         const message = messages.filter((m) => m.role === 'user').at(-1);
-        const answer = await handle.turnContext
-          .run(message && ragContextOf(message), () =>
-            handle.session.send(userText(message), {
-              signal: opts?.signal,
-              trace: opts?.trace,
-            }),
-          )
+        const trace = {
+          ...opts?.trace,
+          traceId: opts?.trace?.traceId ?? randomUUID(),
+        };
+        const context = message && ragContextOf(message);
+        if (context) handle.retrievedContexts.set(trace, context);
+        const answer = await handle.session
+          .send(userText(message), {
+            signal: opts?.signal,
+            trace,
+          })
+          .finally(() => handle.retrievedContexts.delete(trace))
           .finally(() => handle.drainPending());
         complete();
         return {
@@ -104,21 +110,26 @@ export function dialogueChat(
         wake?.();
       };
       const message = messages.filter((m) => m.role === 'user').at(-1);
-      const sending = handle.turnContext
-        .run(message && ragContextOf(message), () =>
-          handle.session.send(userText(message), {
-            signal: opts?.signal,
-            trace: opts?.trace,
-            onPartial(chunk) {
-              if (chunk.kind === 'content') {
-                if (!chunk.delta) return;
-                receivedPartial = true;
-                const content = filter.push(chunk.delta);
-                if (content) push({ ok: true, value: { content } });
-              }
-            },
-          }),
-        )
+      const trace = {
+        ...opts?.trace,
+        traceId: opts?.trace?.traceId ?? randomUUID(),
+      };
+      const context = message && ragContextOf(message);
+      if (context) handle.retrievedContexts.set(trace, context);
+      const sending = handle.session
+        .send(userText(message), {
+          signal: opts?.signal,
+          trace,
+          onPartial(chunk) {
+            if (chunk.kind === 'content') {
+              if (!chunk.delta) return;
+              receivedPartial = true;
+              const content = filter.push(chunk.delta);
+              if (content) push({ ok: true, value: { content } });
+            }
+          },
+        })
+        .finally(() => handle.retrievedContexts.delete(trace))
         .then(
           (answer) => {
             const content = receivedPartial

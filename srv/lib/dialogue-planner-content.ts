@@ -54,33 +54,14 @@ function paragraphPad(text: string): string {
   return '\n'.repeat(Math.max(0, 2 - trailing));
 }
 
-/** Request-owned temporary input; an older send cannot clear a newer value. */
-export class DialogueTurnContext {
-  private current?: { text: string | undefined };
-
-  get text(): string | undefined {
-    return this.current?.text;
-  }
-
-  async run<T>(text: string | undefined, send: () => Promise<T>): Promise<T> {
-    const value = { text };
-    this.current = value;
-    try {
-      return await send();
-    } finally {
-      if (this.current === value) this.current = undefined;
-    }
-  }
-}
-
 /** Collection content belongs to this turn's input, never the conversation. */
 export function plannerWithRetrievedContext(
   planner: PlannerAgent,
-  context: DialogueTurnContext,
+  contexts: WeakMap<object, string>,
 ): PlannerAgent {
   return {
     process(input, options) {
-      const text = context.text;
+      const text = options.trace && contexts.get(options.trace);
       if (!text) return planner.process(input, options);
       const messages = [...input];
       messages.splice(Math.max(0, messages.length - 1), 0, {

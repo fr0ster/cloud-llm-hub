@@ -30,7 +30,6 @@ import {
 import { runWithContextCapture } from './context-capture';
 import { DialogueOutbox } from './dialogue-outbox';
 import {
-  DialogueTurnContext,
   plannerWithEnvironment,
   plannerWithParagraphs,
   plannerWithRetrievedContext,
@@ -91,7 +90,7 @@ export function dialoguePlan(
 export interface DialogueHandle {
   destination: string;
   session: DialogueSession;
-  turnContext: DialogueTurnContext;
+  retrievedContexts: WeakMap<object, string>;
   outbox: DialogueOutbox;
   hasSubscribers(): boolean;
   drainPending(): Promise<void>;
@@ -213,9 +212,12 @@ async function open(
     throw new Error('Destination executor workers unavailable');
   const planner = await buildPlannerAgent(config);
   const factory = new SessionConnectionFactory(userId, key);
-  const turnContext = new DialogueTurnContext();
+  const retrievedContexts = new WeakMap<object, string>();
   const turnPlanner = plannerWithEnvironment(
-    plannerWithRetrievedContext(plannerWithParagraphs(planner), turnContext),
+    plannerWithRetrievedContext(
+      plannerWithParagraphs(planner),
+      retrievedContexts,
+    ),
     () => {
       const connection = longSessionsIfReady()?.get(userId, key)?.connection;
       const identity = connection
@@ -535,7 +537,7 @@ async function open(
   return {
     destination,
     session,
-    turnContext,
+    retrievedContexts,
     outbox,
     drainPending,
     hasSubscribers: () => subscribers.size > 0,
