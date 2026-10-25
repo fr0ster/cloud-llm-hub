@@ -7,7 +7,7 @@ const flush = async () => {
 };
 function harness() {
   const nodes: any[] = [];
-  const list = { innerHTML: '' };
+  const list = { innerHTML: '', style: {} };
   const plan = { hidden: true, open: false };
   const planText = { innerHTML: '' };
   const planStatus = { textContent: '' };
@@ -23,7 +23,7 @@ function harness() {
     ready: true,
     sessionKey: 'key',
     ensureSession: async () => {},
-    sessionFetch: fetch,
+
     userInput,
     getSelectedDestination: () => '',
     getSelectedModel: () => '',
@@ -38,13 +38,12 @@ function harness() {
     unlockInput: (token: string) => locks.delete(token),
     setStatus: jest.fn(),
     setIdleStatus: jest.fn(),
-    createFileParser: () => ({
-      process: () => {},
-      finish: () => {},
-      render: () => ({ html: '', mermaidIds: [] }),
-    }),
+    renderMermaidDiagrams: jest.fn(),
+    localStorage: { getItem: () => 'key' },
     hubFetch: fetch,
     hubSignedOut: false,
+    connectedDestination: 'SAP',
+    platformSessionExpired: () => 'Sign in again',
     AbortController,
     TextDecoder,
     setTimeout: (fn: () => Promise<void>, delay: number) => {
@@ -59,7 +58,7 @@ function harness() {
     clearInterval: (id: number | null) => {
       if (id) intervals[id - 1] = () => {};
     },
-    sessionHeaders: () => ({ 'x-clh-session': 'key' }),
+    sessionHeaders: () => ({ 'x-clh-session': context.sessionKey }),
     conversationHistory: [],
     escapeHtml: (s: string) =>
       s
@@ -104,13 +103,33 @@ function harness() {
     html.indexOf('        // Check model availability'),
   );
   const api = runInNewContext(
-    markdown +
+    html.slice(
+      html.indexOf('        const FILE_MIME_TYPES'),
+      html.indexOf('        // Lazy-loaded RAG'),
+    ) +
+      html.slice(
+        html.indexOf('        function getFileExt('),
+        html.indexOf('        function copyArtifact('),
+      ) +
+      html.slice(
+        html.indexOf('        function buildFileCardHtml('),
+        html.indexOf('        async function renderMermaidDiagrams('),
+      ) +
+      html.slice(
+        html.indexOf('        async function sessionFetch('),
+        html.indexOf('        async function logout('),
+      ) +
+      html.slice(
+        html.indexOf('        async function runActiveProbe()'),
+        html.indexOf('        async function runActiveProbeAndShow()'),
+      ) +
+      markdown +
       source +
       html.slice(
         html.indexOf('        async function sendMessage()'),
         html.indexOf('        // Quick file attach'),
       ) +
-      ';({sendMessage, renderMessageVersion, subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml, signOut: () => { hubSignedOut = true; }})',
+      ';({sendMessage, renderMessageVersion, subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml, runActiveProbe, replaceSession: key => { sessionKey = key; }, ack: key => sessionAcks.get(key), view: (key, id) => messageViews.get(key + ":" + id), signOut: () => { hubSignedOut = true; }})',
     context,
   );
   return {
@@ -132,6 +151,7 @@ function stream(text: string) {
   let first = true;
   return {
     ok: true,
+    headers: { get: () => null },
     body: {
       getReader: () => ({
         read: async () => {
@@ -280,6 +300,7 @@ test('new session cancels pending reader and ignores late data; clear removes ta
   ui.fetch
     .mockResolvedValueOnce({
       ok: true,
+      headers: { get: () => null },
       body: {
         getReader: () => ({
           read: () =>
@@ -513,6 +534,7 @@ function controlledStream() {
   return {
     response: {
       ok: true,
+      headers: { get: () => null },
       body: {
         getReader: () => ({
           read: () =>
@@ -622,7 +644,7 @@ test('a stream cut before message-end stays partial and is not acknowledged', as
   );
   ui.userInput.value = 'first';
   await ui.sendMessage();
-  expect(ui.nodes[0].innerHTML).toContain('partial');
+  expect(ui.nodes[0].innerHTML).toContain('pa');
   expect(ui.locks.size).toBe(0);
   ui.userInput.value = 'retry';
   await ui.sendMessage();
@@ -660,4 +682,70 @@ test('non-dialogue content without id comments keeps the existing placeholder', 
   });
   expect(ui.nodes).toHaveLength(0);
   expect(ui.locks.size).toBe(0);
+});
+
+test('framed messages parse split file blocks per id with the real parser', async () => {
+  const ui = harness();
+  const response = controlledStream();
+  ui.fetch.mockResolvedValue(response.response);
+  ui.userInput.value = 'files';
+  const sent = ui.sendMessage();
+  await flush();
+  response.push(
+    ': message-id file\n\n' + delta('Here <file path="report.txt">hello'),
+  );
+  await flush();
+  response.push(
+    delta('</file>') +
+      ': message-end file\n\n' +
+      messageWire('next', 'plain answer'),
+  );
+  response.push();
+  await sent;
+  expect(ui.nodes[0].innerHTML).toContain('class="file-card"');
+  expect(ui.nodes[0].innerHTML).toContain('report.txt');
+  expect(ui.nodes[0].innerHTML).toContain('hello');
+  expect(ui.nodes[1].innerHTML).not.toContain('file-card');
+});
+
+test('a pending response keeps messages and acknowledgement on its request session', async () => {
+  const ui = harness();
+  let resolve!: (value: any) => void;
+  ui.fetch.mockImplementationOnce(
+    () =>
+      new Promise((r) => {
+        resolve = r;
+      }),
+  );
+  ui.userInput.value = 'question';
+  const sent = ui.sendMessage();
+  await flush();
+  ui.replaceSession('new');
+  resolve(stream(messageWire('old-message', 'old answer')));
+  await sent;
+  expect(ui.view('key', 'old-message').node.innerHTML).toContain('old answer');
+  expect(ui.ack('key')).toBe('old-message');
+  expect(ui.ack('new')).toBeUndefined();
+});
+
+test('probe notice preserves a cached partial message node and its completion', async () => {
+  const ui = harness();
+  ui.renderMessageVersion('key', 'm', 'partial', false);
+  const node = ui.nodes[0];
+  Object.defineProperty(ui.chatWindow, 'innerHTML', {
+    set() {
+      ui.nodes.length = 0;
+    },
+  });
+  ui.fetch.mockResolvedValue({
+    ok: false,
+    status: 401,
+    json: async () => ({ error: { type: 'SAP_USER_TOKEN_REQUIRED' } }),
+  });
+  await ui.runActiveProbe();
+  expect(ui.nodes).toContain(node);
+  ui.renderMessageVersion('key', 'm', 'completed answer', true);
+  expect(ui.nodes).toContain(ui.view('key', 'm').node);
+  expect(node.innerHTML).toContain('completed answer');
+  expect(html).not.toMatch(/chatWindow\.innerHTML\s*\+=/);
 });

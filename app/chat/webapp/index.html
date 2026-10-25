@@ -438,11 +438,13 @@
         }
 
         async function sessionFetch(url, opts = {}) {
+            const { onSessionKey, ...requestOpts } = opts;
             await ensureSession();
             const request = () => {
                 const headers = { ...opts.headers, ...sessionHeaders() };
                 if (Object.hasOwn(headers, 'x-clh-ack')) headers['x-clh-ack'] = sessionAcks.get(sessionKey) || 'none';
-                return hubFetch(url, { ...opts, headers });
+                onSessionKey?.(sessionKey);
+                return hubFetch(url, { ...requestOpts, headers });
             };
             const requestedKey = localStorage.getItem('clh.session');
             let response = await request();
@@ -491,10 +493,16 @@
             if (!view) {
                 const node = document.createElement('div'); node.className = 'message';
                 chatWindow.appendChild(node);
-                view = { node, complete: false };
+                view = { node, complete: false, text: '', parser: createFileParser() };
                 messageViews.set(viewKey, view);
             }
-            view.node.innerHTML = '<span class="agent"><b>> AGENT:</b> ' + markdownToHtml(text) + '</span>';
+            if (!text.startsWith(view.text)) { view.parser = createFileParser(); view.text = ''; }
+            view.parser.process(text.slice(view.text.length));
+            view.text = text;
+            if (complete) view.parser.finish();
+            const rendered = view.parser.render();
+            view.node.innerHTML = '<span class="agent"><b>> AGENT:</b> ' + rendered.html + '</span>';
+            if (complete) void renderMermaidDiagrams(rendered.mermaidIds);
             view.complete = complete;
             if (complete) {
                 conversationHistory.push({ role: 'assistant', content: text });
@@ -826,7 +834,7 @@
             if (sap) { sap.textContent = '—'; sap.style.color = '#888'; }
             const diag = document.getElementById('dest-diag');
             if (diag) diag.style.display = '';
-            chatWindow.innerHTML += '<div class="message"><b>> SYSTEM:</b> SAP destinations are available — connect to one to use the full functionality.</div>';
+            chatWindow.insertAdjacentHTML('beforeend', '<div class="message"><b>> SYSTEM:</b> SAP destinations are available — connect to one to use the full functionality.</div>');
             chatWindow.scrollTop = chatWindow.scrollHeight;
             lockInput('login-gate');
             populateGateDestinations();
@@ -1576,7 +1584,7 @@
                     const error = await resp.json().catch(() => ({}));
                     if (resp.status === 401 && (error.error?.type === 'SAP_USER_TOKEN_REQUIRED' || error.error?.code === 'SAP_USER_TOKEN_REQUIRED')) {
                         const message = platformSessionExpired();
-                        chatWindow.innerHTML += `<div class="message"><b>> SYSTEM:</b> ${message}</div>`;
+                        chatWindow.insertAdjacentHTML('beforeend', `<div class="message"><b>> SYSTEM:</b> ${message}</div>`);
                         setSap('SIGN IN AGAIN', '#ff5555');
                     } else { setSap('ERROR ' + resp.status, '#ff5555'); }
                     return null;
@@ -1911,7 +1919,9 @@
                     reqBody.rag_collections = activeRagCollections;
                 }
 
+                let streamKey = requestKey;
                 const response = await sessionFetch('/v1/chat/completions', {
+                    onSessionKey: key => { streamKey = key; },
                     method: 'POST',
                     headers,
                     body: JSON.stringify(reqBody)
@@ -1948,7 +1958,6 @@
                 phase = 'STREAMING';
                 const fileParser = createFileParser();
                 let segmentId = null, segmentText = '', framed = false, noteNode = null;
-                const streamKey = typeof sessionKey === 'string' ? sessionKey : '';
                 function contentSegment(text) {
                     if (segmentId) {
                         segmentText += text;
