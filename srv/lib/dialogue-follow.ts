@@ -118,6 +118,12 @@ export function followDialogue(
         const changed = new Promise<void>((resolve) => {
           wake = resolve;
         });
+        const state = handle.state();
+        if (
+          state.lastSettled?.outcome === 'failed' &&
+          state.lastSettled.at > opts.delivery.startedAt
+        )
+          forced ??= { kind: 'end', reason: 'error' };
         if (forced) {
           cleanup();
           yield forced;
@@ -140,7 +146,6 @@ export function followDialogue(
         }
         if (evaluate) {
           evaluate = false;
-          const state = handle.state();
           if (!state.turnActive && state.queuedInputs === 0) {
             const reason =
               state.status === 'done' || state.status === 'waiting_user'

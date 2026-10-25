@@ -104,6 +104,7 @@ export interface DialogueHandle {
     done: number;
     status?: 'active' | 'waiting_user' | 'done';
     idle: boolean;
+    lastSettled?: { outcome: 'ok' | 'failed'; at: number };
   };
   hasSubscribers(): boolean;
   drainPending(): Promise<void>;
@@ -629,7 +630,12 @@ async function open(
     state() {
       const activity = signals.last('dialogue.activity', key)?.payload;
       const plan = signals.last('dialogue.plan.changed', key)?.payload;
+      const settled = signals.last('dialogue.turn.settled', key);
       return {
+        lastSettled: settled && {
+          outcome: settled.payload.outcome,
+          at: settled.at,
+        },
         turnActive: activity?.turnActive ?? false,
         queuedInputs: activity?.queuedInputs,
         running: activity?.running ?? 0,

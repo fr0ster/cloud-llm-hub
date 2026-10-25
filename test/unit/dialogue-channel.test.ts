@@ -1082,54 +1082,67 @@ for (const anthropic of [false, true]) {
     expect(ended).not.toHaveBeenCalled();
   });
 
-  it(`${label}: failed background settlement after progress emits an error without a success terminal`, async () => {
-    const handle = await dialogueFor('alice', session.key, 'DEST');
-    handle.state = () => ({
-      status: 'active',
-      turnActive: false,
-      queuedInputs: 0,
-      running: 0,
-      total: 1,
-      done: 1,
-      idle: false,
-    });
-    const progress = {
-      id: 'progress',
-      text: 'background progress',
-      createdAt: 4,
-      trigger: 'event' as const,
-    };
-    jest.spyOn(outbox, 'pending').mockReturnValue([]);
-    handle.subscribe = (fn) => {
-      jest.spyOn(outbox, 'pending').mockReturnValue([progress]);
-      setImmediate(() =>
-        fn({ kind: 'settled', outcome: 'failed', trigger: 'event' }),
-      );
-      return () => {};
-    };
-    const res = fakeRes();
-    await handler(streamingRequest(), res as unknown as Response);
-    expect(res.body).toContain('background progress');
-    expect(res.body).toContain('Background planner turn failed');
-    if (anthropic) {
-      expect(res.body).toContain('event: error\n');
-      expect(res.body).toContain('"type":"api_error"');
-    } else {
-      const errorChunk = res.body
-        .split('\n')
-        .find((line) => line.startsWith('data: {"error":'));
-      expect(JSON.parse(errorChunk?.slice('data: '.length) ?? '')).toEqual({
-        error: {
-          message: 'Background planner turn failed',
-          type: 'server_error',
-        },
+  it.each([false, true])(
+    `${label}: failed background settlement emits an error (retained before subscription=%s)`,
+    async (retained) => {
+      const handle = await dialogueFor('alice', session.key, 'DEST');
+      let lastSettled: { outcome: 'failed'; at: number } | undefined;
+      handle.state = () => ({
+        lastSettled,
+        status: 'active',
+        turnActive: false,
+        queuedInputs: 0,
+        running: 0,
+        total: 1,
+        done: 1,
+        idle: retained,
       });
-    }
-    expect(res.body).not.toContain('[DONE]');
-    expect(res.body).not.toContain('event: message_stop');
-    expect(res.body).not.toContain('"finish_reason":"stop"');
-    expect(ended).not.toHaveBeenCalled();
-  });
+      const progress = {
+        id: 'progress',
+        text: 'background progress',
+        createdAt: 4,
+        trigger: 'event' as const,
+      };
+      jest.spyOn(outbox, 'pending').mockReturnValue([]);
+      if (retained) {
+        send.mockImplementation(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          lastSettled = { outcome: 'failed', at: Date.now() };
+          return { text: 'answer' };
+        });
+      }
+      handle.subscribe = (fn) => {
+        if (retained) return () => {};
+        jest.spyOn(outbox, 'pending').mockReturnValue([progress]);
+        setImmediate(() =>
+          fn({ kind: 'settled', outcome: 'failed', trigger: 'event' }),
+        );
+        return () => {};
+      };
+      const res = fakeRes();
+      await handler(streamingRequest(), res as unknown as Response);
+      if (!retained) expect(res.body).toContain('background progress');
+      expect(res.body).toContain('Background planner turn failed');
+      if (anthropic) {
+        expect(res.body).toContain('event: error\n');
+        expect(res.body).toContain('"type":"api_error"');
+      } else {
+        const errorChunk = res.body
+          .split('\n')
+          .find((line) => line.startsWith('data: {"error":'));
+        expect(JSON.parse(errorChunk?.slice('data: '.length) ?? '')).toEqual({
+          error: {
+            message: 'Background planner turn failed',
+            type: 'server_error',
+          },
+        });
+      }
+      expect(res.body).not.toContain('[DONE]');
+      expect(res.body).not.toContain('event: message_stop');
+      expect(res.body).not.toContain('"finish_reason":"stop"');
+      expect(ended).not.toHaveBeenCalled();
+    },
+  );
 }
 
 for (const anthropic of [false, true]) {

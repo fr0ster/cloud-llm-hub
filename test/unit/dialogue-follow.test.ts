@@ -7,7 +7,7 @@ import type {
 
 function fixture() {
   const outbox = new DialogueOutbox([], async () => {});
-  const state = {
+  const state: ReturnType<DialogueHandle['state']> = {
     turnActive: false,
     queuedInputs: 0,
     running: 1,
@@ -244,3 +244,22 @@ test('failed settlement ends after progress with an error', async () => {
   });
   expect((await iterator.next()).done).toBe(true);
 });
+
+test.each([-1, 0, 1])(
+  'retained failure at delivery start %+i ends only if newer',
+  async (offset) => {
+    const f = fixture();
+    jest.advanceTimersByTime(10);
+    f.state.lastSettled = {
+      outcome: 'failed',
+      at: f.delivery.startedAt + offset,
+    };
+    f.state.idle = true;
+    const iterator = f.start();
+    expect((await iterator.next()).value).toEqual({
+      kind: 'end',
+      reason: offset > 0 ? 'error' : 'idle',
+    });
+    expect((await iterator.next()).done).toBe(true);
+  },
+);
