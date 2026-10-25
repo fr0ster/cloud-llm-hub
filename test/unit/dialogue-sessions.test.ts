@@ -56,6 +56,7 @@ const mockDrop = jest.fn();
 const mockPlannerTurns: string[] = [];
 const mockEnvironments: string[] = [];
 let mockGoal = 'read';
+let mockPlannerHook: ((text: string) => Promise<void>) | undefined;
 let mockPlan:
   | {
       plan?: string;
@@ -98,6 +99,7 @@ jest.mock('../../srv/agent-manager', () => ({
         ? input.slice(input.indexOf('[task events]'))
         : input;
       mockPlannerTurns.push(text);
+      await mockPlannerHook?.(text);
       if (mockPlan) {
         await new PlannerToolsClient().callTool('update_plan', mockPlan);
         return { ok: true, value: { content: 'Plan updated' } };
@@ -180,6 +182,7 @@ beforeEach(() => {
   mockPlannerTurns.length = 0;
   mockEnvironments.length = 0;
   mockGoal = 'read';
+  mockPlannerHook = undefined;
   mockPlan = undefined;
   mockRun.mockReset().mockResolvedValue({ output: 'read done' });
   jest.mocked(evaluateGated).mockResolvedValue({ ok: true });
@@ -187,6 +190,7 @@ beforeEach(() => {
 afterEach(async () => {
   await closeDialogue('alice', 'key', 'ttl');
   await closeDialogue('bob', 'key', 'ttl');
+  setLongSessionsForTest(undefined);
 });
 test('isolates owners and shares concurrent opens', async () => {
   const [a, b, c] = await Promise.all([
@@ -788,4 +792,126 @@ test('structured step changes emit even when plan text and status stay the same'
       ],
     },
   });
+});
+
+function lifetimeRegistry() {
+  let now = 0;
+  const registry = new LongSessionRegistry(
+    { ttlMs: 1000, maxSessions: 10, maxPerUser: 5, queueLength: 2 },
+    { onClose: async () => {} },
+    () => now,
+  );
+  registry.open('alice', { key: 'key' });
+  setLongSessionsForTest(registry);
+  const hold = jest.spyOn(registry, 'hold');
+  return {
+    registry,
+    hold,
+    setTime: (value: number) => {
+      now = value;
+    },
+  };
+}
+
+test('a running task holds the session; finishing all tasks releases it', async () => {
+  const { registry, hold, setTime } = lifetimeRegistry();
+  const finishes: Array<() => void> = [];
+  mockRun.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finishes.push(() => resolve({ output: 'done' }));
+      }),
+  );
+  const { h } = await ready();
+  await h.session.send('go');
+  await until(() => finishes.length === 1);
+  await h.session.send('another');
+  setTime(2000);
+  expect(await registry.sweep()).toBe(0);
+  expect(hold).toHaveBeenCalledTimes(1);
+  finishes[0]();
+  await until(() => finishes.length === 2);
+  setTime(4000);
+  expect(await registry.sweep()).toBe(0);
+  expect(hold).toHaveBeenCalledTimes(1);
+  finishes[1]();
+  await until(() =>
+    h.session.snapshot().tasks.every((task) => task.state === 'done'),
+  );
+  expect(registry.get('alice', 'key')?.lastActivity).toBe(4000);
+  setTime(5001);
+  expect(await registry.sweep()).toBe(1);
+});
+
+test('a queued task cancelled before start releases the hold', async () => {
+  const { registry, hold, setTime } = lifetimeRegistry();
+  const releasePool = await sharedExecutorPool().acquire();
+  try {
+    const { h } = await ready();
+    await h.session.send('go');
+    const task = h.session.snapshot().tasks[0];
+    expect(task.state).toBe('queued');
+    setTime(2000);
+    expect(await registry.sweep()).toBe(0);
+    expect(hold).toHaveBeenCalledTimes(1);
+    mockPlannerHook = async (text) => {
+      // The library prepends plan and environment notes to the user input.
+      if (text.endsWith('\ncancel')) {
+        const result = await new PlannerToolsClient().callTool('stop_task', {
+          task_id: task.id,
+        });
+        expect(result).toMatchObject({
+          ok: true,
+          value: {
+            content: [
+              { type: 'text', text: JSON.stringify({ stopped: true }) },
+            ],
+          },
+        });
+        mockPlan = { plan: 'Cancelled', status: 'done' };
+      }
+    };
+    await h.session.send('cancel');
+    expect(h.session.snapshot().tasks[0].state).toBe('stopped');
+    expect(mockRun).not.toHaveBeenCalled();
+    expect(registry.get('alice', 'key')?.lastActivity).toBe(2000);
+    setTime(3001);
+    expect(await registry.sweep()).toBe(1);
+  } finally {
+    releasePool();
+  }
+});
+
+test("the hold is released at the task's terminal transition even when its event turn is delayed", async () => {
+  const { registry, setTime } = lifetimeRegistry();
+  let finish!: () => void;
+  let unblock!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    unblock = resolve;
+  });
+  mockRun.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({ output: 'done' });
+      }),
+  );
+  const { h } = await ready();
+  await h.session.send('go');
+  await until(() => !!finish);
+  mockPlannerHook = async (text) => {
+    if (text.startsWith('[task events]')) await blocked;
+  };
+  try {
+    setTime(2000);
+    finish();
+    await until(() =>
+      mockPlannerTurns.some((text) => text.startsWith('[task events]')),
+    );
+    expect(h.session.snapshot().tasks[0].state).toBe('done');
+    expect(registry.get('alice', 'key')?.lastActivity).toBe(2000);
+    setTime(3001);
+    expect(await registry.sweep()).toBe(1);
+  } finally {
+    unblock();
+  }
 });

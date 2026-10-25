@@ -389,10 +389,38 @@ async function open(
   const drainPending = async () => {
     await outbox.add(session?.takePending() ?? []);
   };
+  const signals = dialogueSignals();
+  const registry = longSessionsIfReady();
+  const longSession = registry?.get(userId, key);
+  let releaseHold: (() => void) | undefined;
+  const releaseLifetime = () => {
+    releaseHold?.();
+    releaseHold = undefined;
+  };
+  const unsubscribeActivity = signals.on(
+    'dialogue.activity',
+    ({ payload }) => {
+      if (payload.running > 0) {
+        if (!releaseHold && longSession)
+          releaseHold = registry?.hold(longSession);
+      } else releaseLifetime();
+    },
+    { source: key },
+  );
+  const unsubscribeClosed = signals.on(
+    'dialogue.session.closed',
+    () => stopLifetime(),
+    { source: key },
+  );
+  const stopLifetime = () => {
+    unsubscribeActivity();
+    unsubscribeClosed();
+    releaseLifetime();
+  };
   try {
     session = await DialogueSession.open({
       id: key,
-      signals: dialogueSignals(),
+      signals,
       planner: {
         async process(input, options) {
           try {
@@ -530,6 +558,7 @@ async function open(
     });
     await drainPending();
   } catch (error) {
+    stopLifetime();
     await session?.close();
     releasePlannerAgent(planner);
     await pool.closeAll();
@@ -549,6 +578,7 @@ async function open(
     pool,
     planner,
     stop() {
+      stopLifetime();
       stopped = true;
       lifetime.abort();
       subscribers.clear();

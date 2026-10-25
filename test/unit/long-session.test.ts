@@ -313,3 +313,42 @@ describe('LongSessionRegistry', () => {
     expect('refused' in registry.open('alice', { key: 'ls-k' })).toBe(false);
   });
 });
+
+test('sweep keeps a held session past the TTL', async () => {
+  const { registry, setTime } = make();
+  const s = opened(registry.open('alice', {}));
+  const a = registry.hold(s);
+  const b = registry.hold(s);
+  setTime(2000);
+  expect(await registry.sweep()).toBe(0);
+  a();
+  setTime(4000);
+  expect(await registry.sweep()).toBe(0);
+  b();
+});
+
+test('release touches, so the TTL counts from release', async () => {
+  const { registry, setTime } = make();
+  const s = opened(registry.open('alice', {}));
+  const release = registry.hold(s);
+  setTime(2000);
+  release();
+  expect(s.lastActivity).toBe(2000);
+  setTime(3000);
+  expect(await registry.sweep()).toBe(0);
+  setTime(3001);
+  expect(await registry.sweep()).toBe(1);
+});
+
+test('double release is harmless', async () => {
+  const { registry, setTime } = make();
+  const s = opened(registry.open('alice', {}));
+  const release = registry.hold(s);
+  setTime(2000);
+  release();
+  setTime(2500);
+  release();
+  expect(s.lastActivity).toBe(2000);
+  setTime(3001);
+  expect(await registry.sweep()).toBe(1);
+});
