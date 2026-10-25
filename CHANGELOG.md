@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [9.4.0] - 2026-10-25
+
 ### Fixed
 
 - Selected knowledge collections now provide answer context in both OpenAI and Anthropic chats, including dialogue planner turns.
