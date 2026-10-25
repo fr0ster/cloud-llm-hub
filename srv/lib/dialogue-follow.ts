@@ -50,36 +50,45 @@ export function followDialogue(
   });
   let forced: End | undefined;
   let wake = () => {};
+  let started = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let unsubscribe = () => {};
+  const cleanup = () => {
+    clearTimeout(timer);
+    unsubscribe();
+    opts.signal.removeEventListener('abort', abort);
+    if (follows.get(handle) === current) follows.delete(handle);
+    resolveEnded();
+  };
+  const abort = () => {
+    forced = { kind: 'end', reason: 'disconnected' };
+    if (!started) cleanup();
+    wake();
+  };
   const current = {
     stop() {
       forced ??= superseded;
+      if (!started) cleanup();
       wake();
     },
     ended,
   };
   follows.set(handle, current);
-  return (async function* () {
+  opts.signal.addEventListener('abort', abort, { once: true });
+  if (opts.signal.aborted) abort();
+  const iterator = (async function* (): AsyncGenerator<FollowItem, void> {
+    started = true;
     const now = opts.now ?? Date.now;
-    const started = now();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let unsubscribe = () => {};
+    const startedAt = now();
     let evaluate = true;
     const yielded = new Set<string>();
-    const abort = () => {
-      forced = { kind: 'end', reason: 'disconnected' };
-      wake();
-    };
-    const cleanup = () => {
-      clearTimeout(timer);
-      unsubscribe();
-      opts.signal.removeEventListener('abort', abort);
-      if (follows.get(handle) === current) follows.delete(handle);
-      resolveEnded();
-    };
     try {
       await previous?.ended;
-      opts.signal.addEventListener('abort', abort, { once: true });
-      if (opts.signal.aborted) abort();
+      if (forced) {
+        cleanup();
+        yield forced;
+        return;
+      }
       unsubscribe = handle.subscribe((event) => {
         if (event.kind === 'settled') evaluate = true;
         wake();
@@ -97,7 +106,7 @@ export function followDialogue(
           };
           wake();
         },
-        Math.max(0, opts.maxMs - (now() - started)),
+        Math.max(0, opts.maxMs - (now() - startedAt)),
       );
       while (true) {
         // Install the waiter before inspecting state to avoid losing notifications.
@@ -147,4 +156,10 @@ export function followDialogue(
       cleanup();
     }
   })();
+  const returnIterator = iterator.return.bind(iterator);
+  iterator.return = (value) => {
+    if (!started) cleanup();
+    return returnIterator(value);
+  };
+  return iterator;
 }

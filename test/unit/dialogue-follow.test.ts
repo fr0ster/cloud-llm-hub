@@ -180,3 +180,53 @@ test('abort ends with disconnected and yields nothing more', async () => {
   await f.add('later');
   expect((await iterator.next()).done).toBe(true);
 });
+
+test('abort before next allows supersede to finish', async () => {
+  const f = fixture();
+  const iterator = f.start();
+  f.controller.abort();
+  await supersedeFollow(f.handle);
+  await f.add('later');
+  expect((await iterator.next()).value).toEqual({
+    kind: 'end',
+    reason: 'disconnected',
+  });
+  expect((await iterator.next()).done).toBe(true);
+});
+
+test('supersede before next finishes and prevents message delivery', async () => {
+  const f = fixture();
+  const iterator = f.start();
+  await supersedeFollow(f.handle);
+  await f.add('later');
+  expect((await iterator.next()).value).toMatchObject({
+    kind: 'end',
+    reason: 'superseded',
+  });
+  expect((await iterator.next()).done).toBe(true);
+});
+
+test('return before next allows supersede to finish', async () => {
+  const f = fixture();
+  const iterator = f.start();
+  expect((await iterator.return?.())?.done).toBe(true);
+  await supersedeFollow(f.handle);
+  expect((await iterator.next()).done).toBe(true);
+});
+
+test('replacement can start when the previous follow never started', async () => {
+  const f = fixture();
+  const old = f.start();
+  const replacement = f.start();
+  await f.add('replacement');
+  expect((await replacement.next()).value).toMatchObject({
+    kind: 'message',
+    message: { id: 'replacement' },
+  });
+  expect((await old.next()).value).toMatchObject({
+    kind: 'end',
+    reason: 'superseded',
+  });
+  await old.next();
+  await replacement.return?.();
+});
