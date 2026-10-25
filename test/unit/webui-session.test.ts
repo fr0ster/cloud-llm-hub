@@ -210,10 +210,13 @@ describe('session request helper', () => {
       )
       .mockResolvedValueOnce(response(201, { session: 'new-key' }))
       .mockResolvedValueOnce(response(200, {}, 'abap_session_renewed'));
+    const onSessionKey = jest.fn();
     await ui.sessionFetch('/v1/rag/collections', {
+      onSessionKey,
       method: 'POST',
       body: 'same-body',
     });
+    expect(onSessionKey.mock.calls).toEqual([['old-key'], ['new-key']]);
     expect(ui.fetch).toHaveBeenCalledTimes(3);
     expect(ui.fetch.mock.calls[2][1]).toMatchObject({
       body: 'same-body',
@@ -340,6 +343,7 @@ test.each([false, true])(
       showSessionNotice: jest.fn(),
       fileArtifacts: {},
       conversationHistory: ['old'],
+      messageViews: new Map(),
       chatWindow: { innerHTML: 'old' },
       connectedDestination: '',
       loginGateDone: true,

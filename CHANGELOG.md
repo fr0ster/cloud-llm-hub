@@ -4,8 +4,17 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- Streaming dialogue follow phase after admission release, with settled plan stops, disconnect/supersession handling and `LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS` (default 30 minutes).
+- At-least-once dialogue delivery with stable message IDs, `x-clh-ack: <id>` / `none`, non-streaming `x-clh-last-message`, and `: message-id`, `: message-end` and `: turn-end` stream framing.
+
 ### Changed
 
+- Dialogue chat streams send keep-alives immediately on opening, including queue waits before initialization, and every 10 seconds; turn and follow share one terminal sequence.
+- Session events are a read-only view of retained complete messages, plans and tasks; the deprecated events ack route is a compatibility no-op. Chat includes pending messages even with event subscribers.
+- WebUI deduplicates chat/SSE messages by ID, replaces partial messages with complete versions, acknowledges through chat headers, and unlocks input at turn end for corrections during follow.
+- Running dialogue work holds sessions against inactivity expiry; persistent outboxes retain confirmation state and acknowledgement mode across restart.
 - Dialogue sessions publish llm-agent dialogue signals on a process-wide bus (llm-agent 30.10.0, llm-signals 1.0.1).
 
 ## [9.4.1] - 2026-10-25

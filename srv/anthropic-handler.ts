@@ -1,3 +1,4 @@
+import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
 /**
@@ -114,13 +115,43 @@ export async function handleAnthropicMessages(
   // A long session serves its requests one at a time, through the connection
   // it holds; without one the request stands alone, as it always has.
   const s = (req as LongSessionRequest).longSession;
-  if (!s) return serveMessages(req, res, normalized);
-  const ran = await longSessions().run(s, () =>
-    serveMessages(req, res, normalized, s),
-  );
-  if (ran) {
-    const refusal = anthropicSessionRunRefusal(ran.refused);
-    res.status(refusal.status).json(refusal.body);
+  const early =
+    normalized.stream &&
+    s &&
+    (req.headers['x-sap-destination'] ||
+      s.destination ||
+      getCurrentDestination(
+        cds.context?.user?.id ?? 'anonymous',
+        sessionIdOf(req),
+      )) &&
+    getAgentConfig().agent.chatCoordinator === 'dialogue'
+      ? chatStream(res, 'anthropic', s)
+      : undefined;
+  try {
+    const continuation = s
+      ? await longSessions().run(
+          s,
+          () => serveMessages(req, res, normalized, s, early),
+          () => early?.ensureStream(),
+        )
+      : await serveMessages(req, res, normalized, undefined, early);
+    if (typeof continuation === 'function') await continuation();
+    else if (continuation) {
+      const refusal = anthropicSessionRunRefusal(continuation.refused);
+      if (early?.opened) early.error(refusal.body);
+      else {
+        res.status(refusal.status).json(refusal.body);
+      }
+    }
+  } catch (error) {
+    if (!early?.opened) throw error;
+    early.error({
+      type: 'error',
+      error: {
+        message: error instanceof Error ? error.message : String(error),
+        type: 'api_error',
+      },
+    });
   }
 }
 
@@ -130,7 +161,8 @@ async function serveMessages(
   res: Response,
   normalized: NormalizedRequest,
   s?: LongSession,
-): Promise<void> {
+  early?: ChatStream,
+): Promise<(() => Promise<void>) | void> {
   const log = cds.log('anthropic-handler');
   const dialogueMode = getAgentConfig().agent.chatCoordinator === 'dialogue';
   const { stream, options, context } = normalized;
@@ -165,6 +197,16 @@ async function serveMessages(
     try {
       await handle?.factory.assertPrincipal(req.headers, destination);
     } catch (error) {
+      if (early?.opened) {
+        early.error({
+          error: {
+            type: 'conflict',
+            code: 'DIALOGUE_PRINCIPAL_FIXED',
+            message: (error as Error).message,
+          },
+        });
+        return;
+      }
       res.status(409).json({
         error: {
           type: 'conflict',
@@ -180,6 +222,17 @@ async function serveMessages(
     s?.destination !== undefined &&
     s.destination !== destination
   ) {
+    if (early?.opened) {
+      early.error({
+        error: {
+          type: 'conflict',
+          code: 'DIALOGUE_DESTINATION_FIXED',
+          message:
+            'The dialogue destination is fixed for the lifetime of the session',
+        },
+      });
+      return;
+    }
     res.status(409).json({
       error: {
         type: 'conflict',
@@ -200,6 +253,15 @@ async function serveMessages(
   if (isDestinationClosed(destination)) {
     recordDestinationRefusal(destination);
     const seconds = retryAfterForDestination(destination);
+    if (early?.opened) {
+      early.error({
+        error: {
+          type: 'overloaded_error',
+          message: destinationClosedText(destination),
+        },
+      });
+      return;
+    }
     res.writeHead(503, {
       'Content-Type': 'application/json',
       ...(seconds !== undefined ? { 'Retry-After': String(seconds) } : {}),
@@ -215,6 +277,8 @@ async function serveMessages(
     );
     return;
   }
+
+  early?.ensureStream();
 
   let requestConnection:
     | import('@mcp-abap-adt/interfaces-adt-connection').IAbapConnection
@@ -253,6 +317,16 @@ async function serveMessages(
   } catch (err) {
     await releaseRequestConnection(requestConnection, s);
     const message = err instanceof Error ? err.message : String(err);
+    if (early?.opened) {
+      early.error({
+        type: 'error',
+        error: {
+          type: 'api_error',
+          message: `Agent initialization failed: ${message}`,
+        },
+      });
+      return;
+    }
     log.error('Failed to initialize SmartAgent', { error: message });
     res.status(503).json({
       type: 'error',
@@ -292,18 +366,21 @@ async function serveMessages(
     if ('refused' in admission) {
       await releaseRequestConnection(requestConnection, s);
       const refusal = anthropicDoorRefusal(admission.refused);
-      out.json(refusal.status, refusal.body);
+      if (early?.opened) early.error(refusal.body);
+      else out.json(refusal.status, refusal.body);
       return;
     }
     if ('closed' in admission) {
       await releaseRequestConnection(requestConnection, s);
       const closed = anthropicSessionClosed();
-      out.json(closed.status, closed.body);
+      if (early?.opened) early.error(closed.body);
+      else out.json(closed.status, closed.body);
       return;
     }
     pipeline = admission.admitted;
-  } catch {
+  } catch (error) {
     await releaseRequestConnection(requestConnection, s);
+    if (early?.opened && !callerLeft.signal.aborted) throw error;
     return;
   }
 
@@ -371,8 +448,15 @@ async function serveMessages(
       userId,
       sessionId,
       log,
+      res.headersSent,
     );
     if (retrieval.refusal) {
+      if (early?.opened) {
+        early.error({
+          error: { type: 'api_error', message: retrieval.refusal.message },
+        });
+        return;
+      }
       out.json(retrieval.refusal.status, {
         type: 'error',
         error: {
@@ -384,6 +468,30 @@ async function serveMessages(
       return;
     }
     messages = retrieval.messages;
+    if (stream && useDialogue && early) {
+      return await streamDialogue({
+        stream: early,
+        protocol: 'anthropic',
+        model: String(context.protocol.model),
+        context,
+        agent: chatAgent as ReturnType<typeof dialogueChat>,
+        source: chatAgent.streamProcess(messages, agentOpts),
+        run: runAgent,
+        maxMs: getAgentConfig().agent.dialogue?.followMaxMs ?? 1_800_000,
+        onError: (error) => {
+          if (isOutageError(error))
+            closeDestination(destination, describeCause(error));
+          return {
+            type: 'error',
+            error: {
+              type: 'api_error',
+              message: error instanceof Error ? error.message : String(error),
+            },
+          };
+        },
+      });
+    }
+
     // --- Streaming ---
     if (stream) {
       out.writeHead(200, {
@@ -429,6 +537,13 @@ async function serveMessages(
                 out.write(`: status ${JSON.stringify(chunk.value.status)}\n\n`);
                 continue;
               }
+              if (
+                chunk.ok &&
+                ('clhMessageId' in chunk.value ||
+                  'clhMessageEnd' in chunk.value ||
+                  'clhTurnEnd' in chunk.value)
+              )
+                continue;
               yield chunk;
             }
           })();

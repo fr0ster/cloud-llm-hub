@@ -1,83 +1,178 @@
-import { DialogueOutbox } from '../../srv/lib/dialogue-outbox';
+import {
+  DialogueOutbox,
+  type OutboxEntry,
+} from '../../srv/lib/dialogue-outbox';
 
-test('retains on failed delivery, replays by id, deduplicates and acknowledges prefixes', async () => {
-  const saves: unknown[] = [];
-  const outbox = new DialogueOutbox([], async (messages) => {
-    saves.push(messages);
+const message = (id: string) => ({
+  id,
+  text: id,
+  createdAt: 1,
+  trigger: 'event' as const,
+});
+const ended = (box: DialogueOutbox, ...ids: string[]) => {
+  const delivery = box.beginDelivery();
+  for (const id of ids) delivery.carried(id);
+  delivery.ended();
+  return delivery;
+};
+
+test('flushed waits for queued adds and writes including message publication', async () => {
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
   });
-  const one = {
-    id: 'one',
-    text: 'first',
-    createdAt: 1,
-    trigger: 'event' as const,
-  };
-  const two = { ...one, id: 'two' };
-  await outbox.add([one, two, one]);
-  expect(outbox.replay().map((m) => m.id)).toEqual(['one', 'two']);
-  expect(outbox.replay('one')).toEqual([two]);
-  const restarted = new DialogueOutbox(outbox.replay(), async () => {});
-  expect(restarted.replay()).toEqual([one, two]);
-  await restarted.ack('missing');
-  expect(restarted.replay()).toHaveLength(2);
-  await restarted.ack('one');
-  expect(restarted.replay()).toEqual([two]);
-  expect(saves).toHaveLength(1);
+  const events: string[] = [];
+  const box = new DialogueOutbox([], async () => {
+    await blocked;
+  });
+  box.subscribe((message) => events.push(message.id));
+  const first = box.add([message('m1')]);
+  const second = box.add([message('m2')]);
+  const write = box.enterAckMode();
+  const flushed = box.flushed().then(() => events.push('flushed'));
+  await Promise.resolve();
+  expect(events).toEqual([]);
+  release();
+  await Promise.all([first, second, write, flushed]);
+  expect(box.ackMode).toBe(true);
+  expect(events).toEqual(['m1', 'm2', 'flushed']);
 });
 
-test('failed durable acknowledgement retains prefix and concurrent additions survive acknowledgement', async () => {
-  const one = {
-    id: 'one',
-    text: 'first',
-    createdAt: 1,
-    trigger: 'event' as const,
-  };
-  let fail = false;
-  let release: (() => void) | undefined;
-  const outbox = new DialogueOutbox([one], async () => {
-    if (fail) throw new Error('database failed');
-    if (release === undefined)
-      await new Promise<void>((resolve) => {
-        release = resolve;
-      });
+test('confirms only messages carried by an ended delivery', async () => {
+  const box = new DialogueOutbox([], async () => {});
+  await box.add(['m1', 'm2', 'm3'].map(message));
+  ended(box, 'm1', 'm3');
+  await box.confirmByArrival();
+  expect(box.pending().map((m) => m.id)).toEqual(['m2', 'm3']);
+});
+
+test('a delivery that did not end confirms nothing', async () => {
+  const box = new DialogueOutbox([message('m1')], async () => {});
+  const delivery = box.beginDelivery();
+  delivery.carried('m1');
+  expect(delivery.has('m1')).toBe(true);
+  await box.confirmByArrival();
+  await box.confirmUpTo('m1');
+  expect(box.pending()).toEqual([message('m1')]);
+});
+
+test('confirmUpTo stops at the named id and at an uncarried message', async () => {
+  const box = new DialogueOutbox(
+    ['m1', 'm2', 'm3'].map(message),
+    async () => {},
+  );
+  ended(box, 'm1', 'm3');
+  await box.confirmUpTo('unknown');
+  expect(box.pending()).toHaveLength(3);
+  await box.confirmUpTo('m1');
+  expect(box.pending().map((m) => m.id)).toEqual(['m2', 'm3']);
+  await box.confirmUpTo('m3');
+  expect(box.pending().map((m) => m.id)).toEqual(['m2', 'm3']);
+  ended(box, 'm2');
+  await box.confirmUpTo('m2');
+  expect(box.pending().map((m) => m.id)).toEqual(['m3']);
+  await box.confirmUpTo('m3');
+  expect(box.pending()).toEqual([]);
+});
+
+test('ack mode ignores arrival and survives restart without delivery records', async () => {
+  let saved: OutboxEntry[] = [];
+  let mode = false;
+  const box = new DialogueOutbox([message('m1')], async (entries, ackMode) => {
+    saved = entries;
+    mode = ackMode;
   });
-  fail = true;
-  await expect(outbox.ack('one')).rejects.toThrow('database failed');
-  expect(outbox.replay()).toEqual([one]);
+  await box.enterAckMode();
+  ended(box, 'm1');
+  await box.confirmByArrival();
+  expect(box.pending()).toHaveLength(1);
+  const restored = new DialogueOutbox(saved, async () => {}, mode);
+  expect(restored.ackMode).toBe(true);
+  await restored.confirmUpTo('m1');
+  expect(restored.pending()).toHaveLength(1);
+  await box.confirmUpTo('m1');
+  expect(box.pending()).toEqual([]);
+});
+
+test('history keeps confirmed messages, bounded to 200 confirmed', async () => {
+  const box = new DialogueOutbox([], async () => {});
+  const messages = Array.from({ length: 202 }, (_, i) => message(String(i)));
+  await box.add([...messages, messages[0]]);
+  ended(box, ...messages.slice(0, 201).map((m) => m.id));
+  await box.confirmByArrival();
+  expect(box.history()).toEqual(messages.slice(1));
+  expect(box.history('199')).toEqual(messages.slice(200));
+  expect(box.pending()).toEqual(messages.slice(201));
+  await box.add([messages[0]]);
+  expect(box.history()).toHaveLength(201);
+});
+
+test('persist receives entries with confirmed flags and ackMode', async () => {
+  const persist = jest.fn(
+    async (_entries: OutboxEntry[], _mode: boolean) => {},
+  );
+  const box = new DialogueOutbox([message('m1')], persist);
+  ended(box, 'm1');
+  await box.enterAckMode();
+  await box.confirmUpTo('m1');
+  expect(persist).toHaveBeenLastCalledWith(
+    [{ ...message('m1'), confirmed: true }],
+    true,
+  );
+  expect(box.history()).toEqual([message('m1')]);
+});
+
+test('failed durable confirmation retains pending and serialized additions survive', async () => {
+  let fail = true;
+  const box = new DialogueOutbox([message('m1')], async () => {
+    if (fail) throw new Error('offline');
+  });
+  ended(box, 'm1');
+  await expect(box.confirmByArrival()).rejects.toThrow('offline');
+  expect(box.pending()).toEqual([message('m1')]);
   fail = false;
-  const ack = outbox.ack('one');
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  const two = { ...one, id: 'two' };
-  const added = outbox.add([two]);
-  release?.();
-  await ack;
-  await added;
-  expect(outbox.replay()).toEqual([two]);
+  await Promise.all([box.confirmByArrival(), box.add([message('m2')])]);
+  expect(box.pending()).toEqual([message('m2')]);
+  expect(box.history()).toEqual(['m1', 'm2'].map(message));
 });
 
-test('delivers failed persistence prefixes in order with independent tab cursors', async () => {
+test('delivery records drop oldest ended first and remain bounded with open responses', async () => {
+  const box = new DialogueOutbox(['m1', 'm2'].map(message), async () => {});
+  const open = box.beginDelivery();
+  open.carried('m1');
+  ended(box, 'm2');
+  for (let i = 0; i < 19; i++) box.beginDelivery();
+  open.ended();
+  await box.confirmByArrival();
+  expect(box.pending()).toEqual([message('m2')]);
+  const conservative = new DialogueOutbox([message('m1')], async () => {});
+  const oldest = conservative.beginDelivery();
+  oldest.carried('m1');
+  for (let i = 0; i < 20; i++) conservative.beginDelivery();
+  oldest.ended();
+  await conservative.confirmByArrival();
+  expect(conservative.pending()).toHaveLength(1);
+});
+
+test('subscribers receive retained history with independent cursors after failed persistence', async () => {
   let fail = true;
   const box = new DialogueOutbox([], async () => {
     if (fail) throw new Error('offline');
   });
-  const a = { id: 'a', text: 'A', createdAt: 1, trigger: 'event' as const };
-  const b = { ...a, id: 'b' };
   const first: string[] = [],
     second: string[] = [];
-  box.subscribe((m) => {
-    first.push(m.id);
-  });
-  await expect(box.add([a])).rejects.toThrow('offline');
-  box.subscribe((m) => {
-    second.push(m.id);
-  }, 'a');
+  box.subscribe((m) => first.push(m.id));
+  await expect(box.add([message('a')])).rejects.toThrow('offline');
+  box.subscribe((m) => second.push(m.id), 'a');
   fail = false;
-  await box.add([b]);
+  await box.add([message('b')]);
+  ended(box, 'a', 'b');
+  await box.confirmByArrival();
+  const late: string[] = [];
+  box.subscribe((m) => late.push(m.id));
   expect(first).toEqual(['a', 'b']);
   expect(second).toEqual(['b']);
-  await box.ack('b');
-  expect(box.replay()).toEqual([]);
+  expect(late).toEqual(['a', 'b']);
 });
 
 test.each([
@@ -104,9 +199,22 @@ test.each([
     await outbox.add([message]);
     const texts = expected === undefined ? [] : [expected];
     expect(delivered).toEqual(texts);
-    expect(outbox.replay().map((m) => m.text)).toEqual(texts);
-    expect(persist).toHaveBeenCalledWith(outbox.replay());
+    expect(outbox.history().map((m) => m.text)).toEqual(texts);
+    expect(persist).toHaveBeenCalledWith(outbox.history(), false);
     const restored = new DialogueOutbox([message], persist);
-    expect(restored.replay().map((m) => m.text)).toEqual(texts);
+    expect(restored.history().map((m) => m.text)).toEqual(texts);
   },
 );
+
+test('upsert replaces an unconfirmed reply and preserves confirmed text', async () => {
+  const persist = jest.fn(async (_entries: OutboxEntry[]) => {});
+  const box = new DialogueOutbox([], persist);
+  await box.upsert([message('reply')]);
+  await box.upsert([{ ...message('reply'), text: 'complete' }]);
+  expect(box.pending()).toEqual([{ ...message('reply'), text: 'complete' }]);
+  ended(box, 'reply');
+  await box.confirmUpTo('reply');
+  await box.upsert([{ ...message('reply'), text: 'changed' }]);
+  expect(box.history()).toEqual([{ ...message('reply'), text: 'complete' }]);
+  expect(box.pending()).toEqual([]);
+});

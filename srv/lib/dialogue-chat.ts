@@ -10,11 +10,30 @@ import type {
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { setSessionDestination } from '../agent-manager';
+import {
+  type FollowItem,
+  followDialogue,
+  supersedeFollow,
+} from './dialogue-follow';
+import type { Delivery } from './dialogue-outbox';
 import { dialogueFor } from './dialogue-sessions';
 import type { LongSession } from './long-session';
 import { NoMessageFilter, stripNoMessage } from './no-message';
 import { ragContextOf, userTextOf } from './rag-context-marker';
 import { extractText } from './session-turns';
+
+export type DialogueStreamChunk = LlmStreamChunk & {
+  clhMessageId?: string;
+  clhMessageEnd?: string;
+  clhTurnEnd?: true;
+};
+
+const failedResponses = new WeakSet<Response>();
+
+/** SSE failures keep HTTP 200 but do not confirm an outbox delivery. */
+export function failDialogueResponse(response: Response): void {
+  failedResponses.add(response);
+}
 
 /** Adapt planner turns to the existing chat response/error and history paths. */
 export function dialogueChat(
@@ -31,32 +50,50 @@ export function dialogueChat(
   streamProcess(
     messages: Message[],
     opts?: AgentCallOptions,
-  ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>>;
+  ): AsyncIterable<Result<DialogueStreamChunk, OrchestratorError>>;
+  follow(
+    signal: AbortSignal,
+    maxMs: number,
+  ): AsyncIterable<FollowItem> | undefined;
+  hasFollow(): boolean;
 } {
+  let followHandle: Awaited<ReturnType<typeof dialogueFor>> | undefined;
+  let delivery: Delivery;
+  let since: number;
   let disconnected = response.destroyed && !response.writableFinished;
   response.on('close', () => {
-    disconnected = true;
+    if (!response.writableFinished) disconnected = true;
   });
   const open = async () => {
     const handle = await dialogueFor(userId, session.key, destination);
+    await supersedeFollow(handle);
+    const ack = req.headers['x-clh-ack'];
+    if (typeof ack === 'string') {
+      await handle.outbox.enterAckMode();
+      if (ack !== 'none') await handle.outbox.confirmUpTo(ack);
+    } else await handle.outbox.confirmByArrival();
+    since = handle.state().settledSeq;
+    delivery = handle.outbox.beginDelivery();
+    const pending = handle.outbox.pending();
     await handle.factory.refresh(
       { headers: req.headers, user: cds.context?.user },
       destination,
     );
     setSessionDestination(userId, session.key, destination);
     await handle.drainPending();
-    const messages = handle.hasSubscribers() ? [] : handle.outbox.replay();
-    const pending = messages.map((m) => `**Planner:** ${m.text}`).join('\n\n');
     let successful = false;
     response.on('finish', () => {
-      if (successful && !disconnected && messages.length)
-        void handle.outbox
-          .ack(messages[messages.length - 1].id)
-          .catch(() => {});
+      if (
+        successful &&
+        !disconnected &&
+        !failedResponses.has(response) &&
+        response.statusCode < 400
+      )
+        delivery.ended();
     });
     return {
       handle,
-      prefix: pending ? `${pending}\n\n` : '',
+      pending,
       complete: () => {
         successful = true;
       },
@@ -64,9 +101,15 @@ export function dialogueChat(
   };
 
   return {
+    hasFollow: () => followHandle !== undefined,
+    follow(signal, maxMs) {
+      return followHandle
+        ? followDialogue(followHandle, { delivery, since, signal, maxMs })
+        : undefined;
+    },
     async process(messages, opts) {
       try {
-        const { handle, prefix, complete } = await open();
+        const { handle, pending, complete } = await open();
         const message = messages.filter((m) => m.role === 'user').at(-1);
         const trace = {
           ...opts?.trace,
@@ -74,18 +117,39 @@ export function dialogueChat(
         };
         const context = message && ragContextOf(message);
         if (context) handle.retrievedContexts.set(trace, context);
+        const replyId = randomUUID();
+        const createdAt = Date.now();
+        handle.replies.set(trace, { id: replyId, createdAt });
         const answer = await handle.session
           .send(userText(message), {
             signal: opts?.signal,
             trace,
           })
-          .finally(() => handle.retrievedContexts.delete(trace))
+          .finally(() => {
+            handle.retrievedContexts.delete(trace);
+            handle.replies.delete(trace);
+          })
           .finally(() => handle.drainPending());
+        const text = stripNoMessage(answer.text);
+        const carried = [...pending];
+        if (text.trim()) {
+          const reply = {
+            id: replyId,
+            text,
+            createdAt,
+            trigger: 'user' as const,
+          };
+          await handle.outbox.upsert([reply]);
+          carried.push(reply);
+        }
+        for (const message of carried) delivery.carried(message.id);
+        const lastId = carried.at(-1)?.id;
+        if (lastId) response.setHeader('x-clh-last-message', lastId);
         complete();
         return {
           ok: true,
           value: {
-            content: prefix + stripNoMessage(answer.text),
+            content: carried.map((m) => m.text).join('\n\n'),
             stopReason: 'stop',
             iterations: 0,
             toolCallCount: 0,
@@ -96,8 +160,20 @@ export function dialogueChat(
       }
     },
     async *streamProcess(messages, opts) {
-      const { handle, prefix, complete } = await open();
-      if (prefix) yield { ok: true, value: { content: prefix } };
+      const { handle, pending, complete } = await open();
+      let hasContent = false;
+      for (const message of pending) {
+        if (hasContent) yield { ok: true, value: { content: '\n\n' } };
+        hasContent = true;
+        yield { ok: true, value: { content: '', clhMessageId: message.id } };
+        yield { ok: true, value: { content: message.text } };
+        delivery.carried(message.id);
+        yield { ok: true, value: { content: '', clhMessageEnd: message.id } };
+      }
+      const replyId = randomUUID();
+      const createdAt = Date.now();
+      let text = '';
+      let replyStarted = false;
       // Callback deltas must reach the socket while send is still running.
       const queue: Array<Result<{ content: string }, OrchestratorError>> = [];
       let wake: (() => void) | undefined;
@@ -116,6 +192,7 @@ export function dialogueChat(
       };
       const context = message && ragContextOf(message);
       if (context) handle.retrievedContexts.set(trace, context);
+      handle.replies.set(trace, { id: replyId, createdAt });
       const sending = handle.session
         .send(userText(message), {
           signal: opts?.signal,
@@ -129,7 +206,10 @@ export function dialogueChat(
             }
           },
         })
-        .finally(() => handle.retrievedContexts.delete(trace))
+        .finally(() => {
+          handle.retrievedContexts.delete(trace);
+          handle.replies.delete(trace);
+        })
         .then(
           (answer) => {
             const content = receivedPartial
@@ -148,7 +228,22 @@ export function dialogueChat(
       while (!finished || queue.length) {
         if (queue.length) {
           const chunk = queue.shift();
-          if (chunk) yield chunk;
+          if (chunk) {
+            if (chunk.ok && chunk.value.content) {
+              text += chunk.value.content;
+              if (!replyStarted) {
+                if (!text.trim()) continue;
+                replyStarted = true;
+                if (hasContent) yield { ok: true, value: { content: '\n\n' } };
+                yield {
+                  ok: true,
+                  value: { content: '', clhMessageId: replyId },
+                };
+                chunk.value.content = text;
+              }
+            }
+            yield chunk;
+          }
         } else
           await new Promise<void>((resolve) => {
             wake = resolve;
@@ -157,6 +252,16 @@ export function dialogueChat(
       await sending;
       await handle.drainPending();
       if (failure) throw failure;
+      if (text.trim()) {
+        await handle.outbox.upsert([
+          { id: replyId, text, createdAt, trigger: 'user' },
+        ]);
+        delivery.carried(replyId);
+      }
+      if (replyStarted)
+        yield { ok: true, value: { content: '', clhMessageEnd: replyId } };
+      yield { ok: true, value: { content: '', clhTurnEnd: true } };
+      if (handle.state().status) followHandle = handle;
       complete();
       yield { ok: true, value: { content: '', finishReason: 'stop' } };
     },

@@ -210,6 +210,7 @@ test.each(['', 'new draft'])(
       document: { getElementById: () => ({ remove: jest.fn() }) },
       thinkingId: 'thinking',
       unlockInput: jest.fn(),
+      releaseTurn: jest.fn(),
     };
     runInNewContext(`(function () { ${html.slice(start, end)} })()`, context);
     expect(context.userInput.value).toBe(draft || 'submitted draft');

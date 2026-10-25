@@ -3,6 +3,7 @@ import {
   handleDialogueAck,
   handleDialogueEvents,
 } from '../../srv/lib/dialogue-events-handler';
+import { DialogueOutbox } from '../../srv/lib/dialogue-outbox';
 
 jest.mock('@sap/cds', () => ({
   __esModule: true,
@@ -14,22 +15,17 @@ jest.mock('../../srv/agent-config', () => ({
     mcp: { destination: 'DEV' },
   }),
 }));
-const pending = [{ id: 'm1', text: 'hello', createdAt: 123 }];
+let outbox: DialogueOutbox;
 let listener: (e: any) => void;
 const unsubscribe = jest.fn();
-const takePending = jest.fn(() => pending.splice(0));
-const ack = jest.fn(async (id: string) => {
-  const index = pending.findIndex((m) => m.id === id);
-  if (index >= 0) pending.splice(0, index + 1);
-});
+const persist = jest.fn(async () => {});
 let taskState = 'running';
 let planState: { plan?: string; planStatus?: string } = {};
 beforeEach(() => {
-  pending.splice(0, pending.length, {
-    id: 'm1',
-    text: 'hello',
-    createdAt: 123,
-  });
+  outbox = new DialogueOutbox(
+    [{ id: 'm1', text: 'hello', createdAt: 123, trigger: 'event' }],
+    persist,
+  );
   taskState = 'running';
   planState = {};
   jest.clearAllMocks();
@@ -42,7 +38,6 @@ jest.mock('../../srv/lib/dialogue-sessions', () => ({
   onDialogueCreated: jest.fn(() => () => {}),
   lookupDialogue: jest.fn(async () => ({
     session: {
-      takePending,
       snapshot: () => ({
         ...planState,
         tasks: [
@@ -58,21 +53,17 @@ jest.mock('../../srv/lib/dialogue-sessions', () => ({
         ],
       }),
     },
-    drainPending: async () => {},
-    outbox: {
-      replay: (after?: string) =>
-        pending.slice(
-          (after ? pending.findIndex((m) => m.id === after) : -1) + 1,
-        ),
-      ack,
-    },
+    outbox,
     subscribe: (fn: any, cursor?: string) => {
       listener = fn;
-      for (const message of pending.slice(
-        (cursor ? pending.findIndex((m) => m.id === cursor) : -1) + 1,
-      ))
-        fn({ kind: 'message', message });
-      return unsubscribe;
+      const detach = outbox.subscribe(
+        (message) => fn({ kind: 'message', message }),
+        cursor,
+      );
+      return () => {
+        detach();
+        unsubscribe();
+      };
     },
   })),
 }));
@@ -105,7 +96,7 @@ test('unacknowledged replay across reconnect, live messages/tasks, heartbeat and
     'no-cache, no-transform',
   );
   expect(res.write).toHaveBeenCalledWith(
-    'id: m1\nevent: message\ndata: {"id":"m1","text":"hello","createdAt":123}\n\n',
+    'id: m1\nevent: message\ndata: {"id":"m1","text":"hello","createdAt":123,"trigger":"event"}\n\n',
   );
   listener({
     kind: 'task',
@@ -116,7 +107,7 @@ test('unacknowledged replay across reconnect, live messages/tasks, heartbeat and
   );
   listener({
     kind: 'message',
-    message: { id: 'm2', text: 'live', createdAt: 124 },
+    message: { id: 'm2', text: 'live', createdAt: 124, trigger: 'event' },
   });
   expect(res.write).toHaveBeenLastCalledWith(expect.stringContaining('live'));
   jest.advanceTimersByTime(15000);
@@ -145,7 +136,7 @@ test.each([undefined, { userId: 'bob', key: 'ls-a' }])(
   },
 );
 
-test('Last-Event-ID skips rendered prefix, ack removes it, ownership is enforced', async () => {
+test('Last-Event-ID skips rendered prefix and ack ownership is enforced', async () => {
   const req = {
     headers: { 'last-event-id': 'm1' },
     longSession: { userId: 'alice', key: 'ls-a' },
@@ -155,8 +146,8 @@ test('Last-Event-ID skips rendered prefix, ack removes it, ownership is enforced
   await handleDialogueEvents(req as any, res as any);
   expect(res.write).toHaveBeenCalledTimes(1); // snapshot only
   await handleDialogueAck(req as any, response() as any);
-  expect(pending).toEqual([]);
-  expect(ack).toHaveBeenCalledWith('m1');
+  expect(outbox.pending().map((message) => message.id)).toEqual(['m1']);
+  expect(persist).not.toHaveBeenCalled();
   const denied = response();
   await handleDialogueAck(
     { ...req, longSession: { userId: 'bob', key: 'ls-a' } } as any,
@@ -210,11 +201,77 @@ test('events before chat stays open and attaches to creation; ack never creates'
   const handle = await sessions.lookupDialogue();
   attach(handle);
   expect(res.write).toHaveBeenCalledWith(expect.stringContaining('id: m1'));
-  sessions.lookupDialogue.mockResolvedValueOnce(undefined);
+  sessions.lookupDialogue.mockClear();
   const ackRes = response();
   await handleDialogueAck({ ...req, body: { id: 'm1' } } as any, ackRes as any);
   expect(ackRes.status).toHaveBeenCalledWith(204);
-  expect(ack).not.toHaveBeenCalled();
+  expect(sessions.lookupDialogue).not.toHaveBeenCalled();
+  expect(persist).not.toHaveBeenCalled();
+  res.emit('close');
+});
+
+test('the view shows confirmed messages too', async () => {
+  const delivery = outbox.beginDelivery();
+  delivery.carried('m1');
+  delivery.ended();
+  await outbox.confirmByArrival();
+  expect(outbox.pending()).toEqual([]);
+  await outbox.add([
+    { id: 'm2', text: 'pending', createdAt: 124, trigger: 'event' },
+  ]);
+  const res = response();
+  await handleDialogueEvents(
+    { longSession: { userId: 'alice', key: 'ls-a' } } as any,
+    res as any,
+  );
+  const messages = res.write.mock.calls
+    .map(([body]) => body)
+    .filter((body) => body.includes('event: message'));
+  expect(messages).toEqual([
+    'id: m1\nevent: message\ndata: {"id":"m1","text":"hello","createdAt":123,"trigger":"event"}\n\n',
+    'id: m2\nevent: message\ndata: {"id":"m2","text":"pending","createdAt":124,"trigger":"event"}\n\n',
+  ]);
+  res.emit('close');
+});
+
+test.each([undefined, {}, { id: '' }, { id: 'm1' }, { id: 'unknown' }])(
+  'ack route changes nothing (body %p)',
+  async (body) => {
+    const delivery = outbox.beginDelivery();
+    delivery.carried('m1');
+    delivery.ended();
+    const sessions = jest.requireMock('../../srv/lib/dialogue-sessions');
+    const before = outbox.history();
+    const res = response();
+    await handleDialogueAck(
+      { longSession: { userId: 'alice', key: 'ls-a' }, body } as any,
+      res as any,
+    );
+    expect(res.status).toHaveBeenCalledWith(204);
+    expect(res.end).toHaveBeenCalledTimes(1);
+    expect(sessions.lookupDialogue).not.toHaveBeenCalled();
+    expect(outbox.pending()).toEqual(before);
+    expect(outbox.history()).toEqual(before);
+    expect(outbox.ackMode).toBe(false);
+    expect(persist).not.toHaveBeenCalled();
+  },
+);
+
+test('settled is not sent', async () => {
+  const res = response();
+  await handleDialogueEvents(
+    { longSession: { userId: 'alice', key: 'ls-a' } } as any,
+    res as any,
+  );
+  res.write.mockClear();
+  listener({ kind: 'settled', outcome: 'ok', trigger: 'event' });
+  expect(res.write).not.toHaveBeenCalled();
+  await outbox.add([
+    { id: 'm2', text: 'complete', createdAt: 124, trigger: 'event' },
+  ]);
+  expect(res.write).toHaveBeenCalledWith(
+    'id: m2\nevent: message\ndata: {"id":"m2","text":"complete","createdAt":124,"trigger":"event"}\n\n',
+  );
   res.emit('close');
 });
 

@@ -438,8 +438,14 @@
         }
 
         async function sessionFetch(url, opts = {}) {
+            const { onSessionKey, ...requestOpts } = opts;
             await ensureSession();
-            const request = () => hubFetch(url, { ...opts, headers: { ...opts.headers, ...sessionHeaders() } });
+            const request = () => {
+                const headers = { ...opts.headers, ...sessionHeaders() };
+                if (Object.hasOwn(headers, 'x-clh-ack')) headers['x-clh-ack'] = sessionAcks.get(sessionKey) || 'none';
+                onSessionKey?.(sessionKey);
+                return hubFetch(url, { ...requestOpts, headers });
+            };
             const requestedKey = localStorage.getItem('clh.session');
             let response = await request();
             if (response.status === 404) {
@@ -476,6 +482,33 @@
         }
         function renderStepTrail(steps) {
             return steps.size ? '<div class="step-trail" style="color:#888;font-size:11px">' + [...steps.values()].map(step => escapeHtml(step.stepId) + ' ' + stepSymbol(step)).join(' · ') + '</div>' : '';
+        }
+        const messageViews = new Map();
+        const sessionAcks = new Map();
+        let chatSendSequence = 0;
+        function renderMessageVersion(key, id, text, complete) {
+            const viewKey = key + ':' + id;
+            let view = messageViews.get(viewKey);
+            if (view?.complete) return;
+            if (!view) {
+                const node = document.createElement('div'); node.className = 'message';
+                chatWindow.appendChild(node);
+                view = { node, complete: false, text: '', parser: createFileParser() };
+                messageViews.set(viewKey, view);
+            }
+            if (!text.startsWith(view.text)) { view.parser = createFileParser(); view.text = ''; }
+            view.parser.process(text.slice(view.text.length));
+            view.text = text;
+            if (complete) view.parser.finish();
+            const rendered = view.parser.render();
+            view.node.innerHTML = '<span class="agent"><b>> AGENT:</b> ' + rendered.html + '</span>';
+            if (complete) void renderMermaidDiagrams(rendered.mermaidIds);
+            view.complete = complete;
+            if (complete) {
+                conversationHistory.push({ role: 'assistant', content: text });
+                sessionAcks.set(key, id);
+            }
+            chatWindow.scrollTop = chatWindow.scrollHeight;
         }
         // Dialogue events
         let dialogueSubscription = null;
@@ -529,7 +562,6 @@
         }
         function subscribeDialogueEvents(key) {
             let stopped = false, delay = 1000, timer, controller, reader, lastId;
-            const rendered = new Set();
             let tasks = [];
             function renderPlan(plan) {
                 if (!Array.isArray(plan.steps) && typeof plan.text !== 'string') return;
@@ -585,14 +617,8 @@
                             if (event === 'message') {
                                 id = id || parsed.id;
                                 if (!id || typeof parsed.text !== 'string') continue;
-                                if (!rendered.has(id)) {
-                                    const node = document.createElement('div'); node.className = 'message';
-                                    node.innerHTML = '<span class="agent"><b>> AGENT:</b> ' + markdownToHtml(parsed.text) + '</span>';
-                                    chatWindow.appendChild(node); chatWindow.scrollTop = chatWindow.scrollHeight;
-                                    conversationHistory.push({ role: 'assistant', content: parsed.text });
-                                    rendered.add(id); lastId = id;
-                                }
-                                void hubFetch('/v1/session/events/ack', { method: 'POST', headers: { ...sessionHeaders(), 'x-clh-session': key, 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) }).catch(() => {});
+                                renderMessageVersion(key, id, parsed.text, true);
+                                lastId = id;
                             } else if (event === 'plan') { renderPlan(parsed); }
                             else if (event === 'tasks' && Array.isArray(parsed)) { tasks = parsed; renderTasks(); }
                             else if (event === 'task' && parsed.id) {
@@ -808,7 +834,7 @@
             if (sap) { sap.textContent = '—'; sap.style.color = '#888'; }
             const diag = document.getElementById('dest-diag');
             if (diag) diag.style.display = '';
-            chatWindow.innerHTML += '<div class="message"><b>> SYSTEM:</b> SAP destinations are available — connect to one to use the full functionality.</div>';
+            chatWindow.insertAdjacentHTML('beforeend', '<div class="message"><b>> SYSTEM:</b> SAP destinations are available — connect to one to use the full functionality.</div>');
             chatWindow.scrollTop = chatWindow.scrollHeight;
             lockInput('login-gate');
             populateGateDestinations();
@@ -838,6 +864,7 @@
             gif: 'image/gif', mmd: 'text/plain',
         };
         const fileArtifacts = {};
+        let artifactCounter = 0;
 
         // Lazy-loaded RAG external tool definitions (rag_add / rag_correct / rag_deprecate).
         // Schemas come from the server so they stay in sync with llm-agent — UI just opts in
@@ -1046,7 +1073,6 @@
             let state = 'passthrough';
             let buf = '';        // accumulated buffer in BUFFERING state
             let tail = '';       // partial match tail in PASSTHROUGH state
-            let cardCounter = 0;
             const BUFFER_LIMIT = 102400; // 100KB flush limit
             const TAG_START = '<file';
             const TAG_END = '</file>';
@@ -1147,7 +1173,7 @@
                             if (!attrs.path && attrs.name) attrs.path = attrs.name;
 
                             if (attrs.path) {
-                                const cardId = 'art-' + Date.now() + '-' + (cardCounter++);
+                                const cardId = 'art-' + Date.now() + '-' + (artifactCounter++);
                                 fileArtifacts[cardId] = {
                                     path: attrs.path,
                                     content: content.trim(),
@@ -1180,6 +1206,8 @@
             }
 
             function finish() {
+                // A final chunk can enter buffering with one or more complete blocks.
+                while (state === 'buffering' && buf.includes(TAG_END)) process('');
                 // Flush any remaining state
                 if (tail) { currentText += tail; tail = ''; }
                 if (buf) { currentText += escapeHtml(buf); buf = ''; state = 'passthrough'; }
@@ -1558,7 +1586,7 @@
                     const error = await resp.json().catch(() => ({}));
                     if (resp.status === 401 && (error.error?.type === 'SAP_USER_TOKEN_REQUIRED' || error.error?.code === 'SAP_USER_TOKEN_REQUIRED')) {
                         const message = platformSessionExpired();
-                        chatWindow.innerHTML += `<div class="message"><b>> SYSTEM:</b> ${message}</div>`;
+                        chatWindow.insertAdjacentHTML('beforeend', `<div class="message"><b>> SYSTEM:</b> ${message}</div>`);
                         setSap('SIGN IN AGAIN', '#ff5555');
                     } else { setSap('ERROR ' + resp.status, '#ff5555'); }
                     return null;
@@ -1720,6 +1748,7 @@
             Object.keys(fileArtifacts).forEach(k => delete fileArtifacts[k]);
             conversationHistory = [];
             chatWindow.innerHTML = '';
+            messageViews.clear();
         }
 
         function exportSessionLog() {
@@ -1815,14 +1844,21 @@
             historyIndex = -1;
             historyDraft = '';
 
-            chatWindow.innerHTML += `<div class="message user"><b>> USER:</b> ${escapeHtml(text)}</div>`;
+            chatWindow.insertAdjacentHTML('beforeend', `<div class="message user"><b>> USER:</b> ${escapeHtml(text)}</div>`);
             userInput.value = '';
-            lockInput('chat-pending');
+            const sendToken = 'chat-pending:' + (++chatSendSequence);
+            lockInput(sendToken);
+            let released = false;
+            function releaseTurn() {
+                if (released) return;
+                released = true;
+                unlockInput(sendToken);
+            }
 
             conversationHistory.push({ role: 'user', content: text });
 
-            const thinkingId = 'thinking-' + Date.now();
-            chatWindow.innerHTML += `<div class="message" id="${thinkingId}"><span class="thinking">> SYSTEM: AGENT IS PROCESSING...</span></div>`;
+            const thinkingId = 'thinking-' + chatSendSequence;
+            chatWindow.insertAdjacentHTML('beforeend', `<div class="message" id="${thinkingId}"><span class="thinking">> SYSTEM: AGENT IS PROCESSING...</span></div>`);
             chatWindow.scrollTop = chatWindow.scrollHeight;
 
             const stepStates = new Map();
@@ -1874,7 +1910,9 @@
                 if (selectedModel) reqBody.model = selectedModel;
                 if (classifierSelect.value) reqBody.classifier_model = classifierSelect.value;
                 // Send only current message — SmartAgent manages session history internally.
-                const headers = { 'Content-Type': 'application/json', ...getSapCredHeaders() };
+                await ensureSession();
+                const requestKey = sessionKey;
+                const headers = { 'Content-Type': 'application/json', ...getSapCredHeaders(), 'x-clh-ack': sessionAcks.get(requestKey) || 'none' };
                 if (selectedDest) headers['X-SAP-Destination'] = selectedDest;
 
                 // Include dynamic RAG collections via body (not header — headers don't support non-ASCII)
@@ -1883,7 +1921,9 @@
                     reqBody.rag_collections = activeRagCollections;
                 }
 
+                let streamKey = requestKey;
                 const response = await sessionFetch('/v1/chat/completions', {
+                    onSessionKey: key => { streamKey = key; },
                     method: 'POST',
                     headers,
                     body: JSON.stringify(reqBody)
@@ -1919,76 +1959,109 @@
                 let buffer = '';
                 phase = 'STREAMING';
                 const fileParser = createFileParser();
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-
-                    buffer += decoder.decode(value, { stream: true });
-                    const parts = buffer.split(/\r?\n\r?\n/);
-                    buffer = parts.pop() || '';
-
-                    for (const part of parts) {
-                        for (const line of part.split('\n')) {
-                            const trimmed = line.trim();
-                            const status = parseStepStatus(trimmed);
-                            if (status) {
-                                stepStates.set(status.stepId, status);
-                                phase = ('STEP ' + status.stepId + ' · ' + (status.kind || '') + ' · ' + status.state + (status.verdict ? ' · ' + status.verdict : '')).toUpperCase();
-                                setStatus(phase, 'status-connecting');
-                                const el = document.getElementById(thinkingId);
-                                if (el) el.innerHTML = renderStepTrail(stepStates) + '<span class="agent"><b>> AGENT:</b> ' + fileParser.render().html + '</span>';
-                            }
-                            if (!trimmed || trimmed.charAt(0) === ':') continue;
-                            if (trimmed === 'data: [DONE]') continue;
-                            if (!trimmed.startsWith('data: ')) continue;
-
-                            try {
-                                const data = JSON.parse(trimmed.substring(6));
-
-                                if (data.error && data.error.message) throw new Error(data.error.message);
-                                if (data.usage) usage = data.usage;
-                                if (!data.choices || !data.choices.length) continue;
-
-                                const delta = data.choices[0].delta || {};
-
-                                if (delta.content) {
-                                    assistantContent += delta.content;
-                                    // Detect internal tool executions from content
-                                    const execMatch = delta.content.match(/\[SmartAgent: Executing (\w+)\.\.\.\]/);
-                                    if (execMatch) {
-                                        const toolName = execMatch[1];
-                                        toolCalls.push({ name: toolName, arguments: '' });
-                                        toolCallNames.add(toolName);
-                                        phase = 'TOOL: ' + toolName;
-                                    }
-                                    fileParser.process(delta.content);
-                                    const el = document.getElementById(thinkingId);
-                                    if (el) {
-                                        const { html } = fileParser.render();
-                                        el.innerHTML = renderStepTrail(stepStates) + '<span class="agent"><b>> AGENT:</b> ' + html + '</span>';
-                                        chatWindow.scrollTop = chatWindow.scrollHeight;
-                                    }
-                                }
-
-                                if (delta.tool_calls && delta.tool_calls.length) {
-                                    for (const tc of delta.tool_calls) {
-                                        const idx = tc.index != null ? tc.index : externalToolCalls.length;
-                                        if (!externalToolCalls[idx]) externalToolCalls[idx] = { name: '', arguments: '' };
-                                        if (tc.function) {
-                                            if (tc.function.name) externalToolCalls[idx].name += tc.function.name;
-                                            if (tc.function.arguments) externalToolCalls[idx].arguments += tc.function.arguments;
-                                        }
-                                    }
-                                    phase = 'TOOL CALL';
-                                }
-                            } catch (parseErr) {
-                                if (parseErr.message && !parseErr.message.includes('JSON')) throw parseErr;
-                            }
+                let segmentId = null, segmentText = '', framed = false, noteNode = null;
+                function contentSegment(text) {
+                    if (segmentId) {
+                        segmentText += text;
+                        renderMessageVersion(streamKey, segmentId, segmentText, false);
+                    } else if (framed && (noteNode || text.trim())) {
+                        if (!noteNode) {
+                            noteNode = document.createElement('div'); noteNode.className = 'message';
+                            chatWindow.appendChild(noteNode);
                         }
+                        noteNode.textContent = (noteNode.textContent || '> SYSTEM: ') + text;
                     }
                 }
 
+                try {
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+
+                        buffer += decoder.decode(value, { stream: true });
+                        const parts = buffer.split(/\r?\n\r?\n/);
+                        buffer = parts.pop() || '';
+
+                        for (const part of parts) {
+                            for (const line of part.split('\n')) {
+                                const trimmed = line.trim();
+                                if (trimmed.startsWith(': message-id ')) {
+                                    framed = true; segmentId = trimmed.slice(13).trim(); segmentText = ''; noteNode = null;
+                                    document.getElementById(thinkingId)?.remove();
+                                    continue;
+                                }
+                                if (trimmed.startsWith(': message-end ')) {
+                                    if (segmentId && trimmed.slice(14).trim() === segmentId) {
+                                        renderMessageVersion(streamKey, segmentId, segmentText, true);
+                                        segmentId = null; segmentText = '';
+                                    }
+                                    continue;
+                                }
+                                if (trimmed === ': turn-end') {
+                                    framed = true;
+                                    document.getElementById(thinkingId)?.remove();
+                                    releaseTurn(); continue;
+                                }
+                                const status = parseStepStatus(trimmed);
+                                if (status) {
+                                    stepStates.set(status.stepId, status);
+                                    phase = ('STEP ' + status.stepId + ' · ' + (status.kind || '') + ' · ' + status.state + (status.verdict ? ' · ' + status.verdict : '')).toUpperCase();
+                                    setStatus(phase, 'status-connecting');
+                                    const el = document.getElementById(thinkingId);
+                                    if (el) el.innerHTML = renderStepTrail(stepStates) + '<span class="agent"><b>> AGENT:</b> ' + fileParser.render().html + '</span>';
+                                }
+                                if (!trimmed || trimmed.charAt(0) === ':') continue;
+                                if (trimmed === 'data: [DONE]') continue;
+                                if (!trimmed.startsWith('data: ')) continue;
+
+                                try {
+                                    const data = JSON.parse(trimmed.substring(6));
+
+                                    if (data.error && data.error.message) throw new Error(data.error.message);
+                                    if (data.usage) usage = data.usage;
+                                    if (!data.choices || !data.choices.length) continue;
+
+                                    const delta = data.choices[0].delta || {};
+
+                                    if (delta.content) {
+                                        if (framed) { contentSegment(delta.content); continue; }
+                                        assistantContent += delta.content;
+                                        // Detect internal tool executions from content
+                                        const execMatch = delta.content.match(/\[SmartAgent: Executing (\w+)\.\.\.\]/);
+                                        if (execMatch) {
+                                            const toolName = execMatch[1];
+                                            toolCalls.push({ name: toolName, arguments: '' });
+                                            toolCallNames.add(toolName);
+                                            phase = 'TOOL: ' + toolName;
+                                        }
+                                        fileParser.process(delta.content);
+                                        const el = document.getElementById(thinkingId);
+                                        if (el) {
+                                            const { html } = fileParser.render();
+                                            el.innerHTML = renderStepTrail(stepStates) + '<span class="agent"><b>> AGENT:</b> ' + html + '</span>';
+                                            chatWindow.scrollTop = chatWindow.scrollHeight;
+                                        }
+                                    }
+
+                                    if (delta.tool_calls && delta.tool_calls.length) {
+                                        for (const tc of delta.tool_calls) {
+                                            const idx = tc.index != null ? tc.index : externalToolCalls.length;
+                                            if (!externalToolCalls[idx]) externalToolCalls[idx] = { name: '', arguments: '' };
+                                            if (tc.function) {
+                                                if (tc.function.name) externalToolCalls[idx].name += tc.function.name;
+                                                if (tc.function.arguments) externalToolCalls[idx].arguments += tc.function.arguments;
+                                            }
+                                        }
+                                        phase = 'TOOL CALL';
+                                    }
+                                } catch (parseErr) {
+                                    if (parseErr.message && !parseErr.message.includes('JSON')) throw parseErr;
+                                }
+                            }
+                        }
+                    }
+
+                } finally { reader.releaseLock(); releaseTurn(); }
                 stopTimer();
 
                 // Process GenerateFile tool calls from external tool calls
@@ -2116,25 +2189,29 @@
                 if (hubSignedOut) {
                     if (!userInput.value) userInput.value = text;
                     document.getElementById(thinkingId)?.remove();
-                    unlockInput('chat-pending');
+                    releaseTurn();
                     return;
                 }
                 const durationSec = ((Date.now() - t0) / 1000).toFixed(1);
                 const placeholder = document.getElementById(thinkingId);
+                if (!placeholder) {
+                    const errorNode = document.createElement('div'); errorNode.className = 'message';
+                    errorNode.textContent = '> ERROR: ' + e.message; chatWindow.appendChild(errorNode);
+                }
                 if (placeholder) {
                     placeholder.innerHTML = `${renderStepTrail(stepStates)}<span style="color:#ff5555"><b>> ERROR:</b> ${escapeHtml(e.message)}</span>
                         <div class="stats-bar"><span>TIME: <span class="val">${durationSec}s</span></span></div>`;
                     placeholder.className = 'message';
                 }
                 setStatus('ERROR', 'status-error');
-                unlockInput('chat-pending');
+                releaseTurn();
                 userInput.focus();
                 chatWindow.scrollTop = chatWindow.scrollHeight;
                 return;
             }
 
             setIdleStatus();
-            unlockInput('chat-pending');
+            releaseTurn();
             userInput.focus();
             chatWindow.scrollTop = chatWindow.scrollHeight;
         }

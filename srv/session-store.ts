@@ -96,6 +96,19 @@ export function appendToSession(
   }
 }
 
+/** Amend the original turn entry without recreating expired or cleared history. */
+export function amendSessionMessage(
+  sessionId: string,
+  userId: string,
+  message: Message,
+  content: string,
+): void {
+  const entry = sessionStore.get(sessionStoreKey(sessionId, userId));
+  if (!entry?.messages.includes(message)) return;
+  message.content = content;
+  entry.lastAccess = Date.now();
+}
+
 function deleteRunRecord(userId: string, sessionId: string): void {
   guardedTask('Run record delete', cds.log('run-store'), () =>
     getRunRecordStore().delete(userId, sessionId),

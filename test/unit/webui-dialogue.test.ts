@@ -5,9 +5,9 @@ const html = readFileSync('app/chat/webapp/index.html', 'utf8');
 const flush = async () => {
   for (let i = 0; i < 30; i++) await Promise.resolve();
 };
-function harness() {
+function harness(now?: number) {
   const nodes: any[] = [];
-  const list = { innerHTML: '' };
+  const list = { innerHTML: '', style: {} };
   const plan = { hidden: true, open: false };
   const planText = { innerHTML: '' };
   const planStatus = { textContent: '' };
@@ -15,10 +15,43 @@ function harness() {
   const intervals: Array<() => void> = [];
   const timers: Array<{ fn: () => Promise<void>; delay: number }> = [];
   const fetch = jest.fn();
+  const locks = new Set();
+  const placeholders = new Map();
+  const userInput = { value: '', focus: jest.fn() };
   const context = {
+    Date:
+      now === undefined
+        ? Date
+        : class extends Date {
+            static now() {
+              return now ?? Date.now();
+            }
+          },
     fetch,
+    ready: true,
+    sessionKey: 'key',
+    ensureSession: async () => {},
+
+    userInput,
+    getSelectedDestination: () => '',
+    getSelectedModel: () => '',
+    getSapCredHeaders: () => ({}),
+    getActiveRagCollections: () => [],
+    getRagTools: async () => [],
+    classifierSelect: { value: '' },
+    inputHistory: [],
+    historyIndex: -1,
+    historyDraft: '',
+    lockInput: (token: string) => locks.add(token),
+    unlockInput: (token: string) => locks.delete(token),
+    setStatus: jest.fn(),
+    setIdleStatus: jest.fn(),
+    renderMermaidDiagrams: jest.fn(),
+    localStorage: { getItem: () => 'key' },
     hubFetch: fetch,
     hubSignedOut: false,
+    connectedDestination: 'SAP',
+    platformSessionExpired: () => 'Sign in again',
     AbortController,
     TextDecoder,
     setTimeout: (fn: () => Promise<void>, delay: number) => {
@@ -33,7 +66,7 @@ function harness() {
     clearInterval: (id: number | null) => {
       if (id) intervals[id - 1] = () => {};
     },
-    sessionHeaders: () => ({ 'x-clh-session': 'key' }),
+    sessionHeaders: () => ({ 'x-clh-session': context.sessionKey }),
     conversationHistory: [],
     escapeHtml: (s: string) =>
       s
@@ -48,11 +81,23 @@ function harness() {
           'dialogue-plan-text': planText,
           'dialogue-plan-status': planStatus,
           'dialogue-active': active,
-        })[id] ?? list,
+        })[id] ??
+        placeholders.get(id) ??
+        (id.startsWith('thinking-') ? null : list),
       createElement: () => ({}),
     },
     chatWindow: {
       appendChild: (node: any) => nodes.push(node),
+      insertAdjacentHTML: (_where: string, text: string) => {
+        const id = /id="([^"]+)"/.exec(text)?.[1];
+        if (id)
+          placeholders.set(id, {
+            innerHTML: '',
+            remove() {
+              placeholders.delete(id);
+            },
+          });
+      },
       scrollTop: 0,
       scrollHeight: 10,
     },
@@ -66,15 +111,41 @@ function harness() {
     html.indexOf('        // Check model availability'),
   );
   const api = runInNewContext(
-    markdown +
+    html.slice(
+      html.indexOf('        const FILE_MIME_TYPES'),
+      html.indexOf('        // Lazy-loaded RAG'),
+    ) +
+      html.slice(
+        html.indexOf('        function getFileExt('),
+        html.indexOf('        function copyArtifact('),
+      ) +
+      html.slice(
+        html.indexOf('        function buildFileCardHtml('),
+        html.indexOf('        async function renderMermaidDiagrams('),
+      ) +
+      html.slice(
+        html.indexOf('        async function sessionFetch('),
+        html.indexOf('        async function logout('),
+      ) +
+      html.slice(
+        html.indexOf('        async function runActiveProbe()'),
+        html.indexOf('        async function runActiveProbeAndShow()'),
+      ) +
+      markdown +
       source +
-      ';({subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml, signOut: () => { hubSignedOut = true; }})',
+      html.slice(
+        html.indexOf('        async function sendMessage()'),
+        html.indexOf('        // Quick file attach'),
+      ) +
+      ';({sendMessage, renderMessageVersion, subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml, runActiveProbe, fileArtifacts, replaceSession: key => { sessionKey = key; }, ack: key => sessionAcks.get(key), view: (key, id) => messageViews.get(key + ":" + id), signOut: () => { hubSignedOut = true; }})',
     context,
   );
   return {
     ...context,
     ...api,
     nodes,
+    locks,
+    userInput,
     list,
     timers,
     plan,
@@ -88,6 +159,7 @@ function stream(text: string) {
   let first = true;
   return {
     ok: true,
+    headers: { get: () => null },
     body: {
       getReader: () => ({
         read: async () => {
@@ -177,7 +249,7 @@ test('plan text and planner messages reject unsafe markdown links', async () => 
   subscription.stop();
 });
 
-test('standalone renders before ack, dedupes replay, sends cursor and handles task snapshots/updates safely', async () => {
+test('standalone dedupes replay without ack, sends cursor and handles task snapshots/updates safely', async () => {
   const ui = harness();
   const message =
     'id: m1\r\nevent: message\r\ndata: {"text":"<script>hi</script>"}\r\n\r\n';
@@ -199,11 +271,8 @@ test('standalone renders before ack, dedupes replay, sends cursor and handles ta
   expect(ui.list.innerHTML).toContain('✓ &lt;t&gt;: &lt;goal&gt;');
   expect(ui.list.innerHTML).not.toContain('gone');
   expect(
-    ui.fetch.mock.calls.find(([url]: [string]) => url.endsWith('/ack'))?.[1],
-  ).toMatchObject({
-    body: JSON.stringify({ id: 'm1' }),
-    headers: { 'x-clh-session': 'key' },
-  });
+    ui.fetch.mock.calls.some(([url]: [string]) => url.endsWith('/ack')),
+  ).toBe(false);
   expect(ui.timers[0].delay).toBe(1000);
   await ui.timers[0].fn();
   await flush();
@@ -239,6 +308,7 @@ test('new session cancels pending reader and ignores late data; clear removes ta
   ui.fetch
     .mockResolvedValueOnce({
       ok: true,
+      headers: { get: () => null },
       body: {
         getReader: () => ({
           read: () =>
@@ -464,4 +534,285 @@ test('PLAN and TASKS panels share the collapse rule; active agents sit above the
   expect(html.indexOf('id="dialogue-active"')).toBeLessThan(
     html.indexOf('class="input-area"'),
   );
+});
+
+function controlledStream() {
+  let resolve: (chunk: any) => void;
+  const queue: any[] = [];
+  return {
+    response: {
+      ok: true,
+      headers: { get: () => null },
+      body: {
+        getReader: () => ({
+          read: () =>
+            queue.length
+              ? Promise.resolve(queue.shift())
+              : new Promise((r) => {
+                  resolve = r;
+                }),
+          releaseLock: jest.fn(),
+        }),
+      },
+    },
+    push(text?: string) {
+      const chunk =
+        text === undefined
+          ? { done: true }
+          : { value: new TextEncoder().encode(text), done: false };
+      if (resolve) {
+        const r = resolve;
+        resolve = undefined as any;
+        r(chunk);
+      } else queue.push(chunk);
+    },
+  };
+}
+const delta = (text: string) =>
+  `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`;
+const messageWire = (id: string, text: string) =>
+  `: message-id ${id}\n\n${delta(text)}: message-end ${id}\n\n`;
+
+test.each([true, false])(
+  'renders each id once across stream and SSE, SSE first: %s',
+  async (sseFirst) => {
+    const ui = harness();
+    const response = controlledStream();
+    ui.fetch.mockResolvedValue(response.response);
+    if (sseFirst) ui.renderMessageVersion('key', 'm', 'complete', true);
+    ui.userInput.value = 'hello';
+    const sent = ui.sendMessage();
+    await flush();
+    response.push(messageWire('m', 'complete'));
+    await flush();
+    if (!sseFirst) ui.renderMessageVersion('key', 'm', 'complete', true);
+    response.push();
+    await sent;
+    expect(ui.nodes).toHaveLength(1);
+    expect(ui.nodes[0].innerHTML).toContain('complete');
+  },
+);
+
+test('complete SSE replaces a cut partial; later partial cannot replace it', async () => {
+  const ui = harness();
+  ui.renderMessageVersion('key', 'm', 'cut', false);
+  ui.renderMessageVersion('key', 'm', 'complete', true);
+  ui.renderMessageVersion('key', 'm', 'late partial', false);
+  expect(ui.nodes).toHaveLength(1);
+  expect(ui.nodes[0].innerHTML).toContain('complete');
+});
+
+test.each([true, false])(
+  'turn-end unlocks a silent follow; older EOF preserves the newer lock; notes stay separate (SSE first %s)',
+  async (sseFirst) => {
+    const ui = harness();
+    const a = controlledStream(),
+      b = controlledStream();
+    ui.fetch
+      .mockResolvedValueOnce(a.response)
+      .mockResolvedValueOnce(b.response);
+    ui.userInput.value = 'first';
+    const first = ui.sendMessage();
+    await flush();
+    expect(ui.fetch.mock.calls[0][1].headers['x-clh-ack']).toBe('none');
+    expect(ui.locks.size).toBe(1);
+    if (sseFirst) ui.renderMessageVersion('key', 'm', 'answer', true);
+    a.push(messageWire('m', 'answer') + ': turn-end\n\n');
+    await flush();
+    expect(ui.locks.size).toBe(0);
+    if (!sseFirst) ui.renderMessageVersion('key', 'm', 'answer', true);
+    ui.userInput.value = 'correction';
+    const second = ui.sendMessage();
+    await flush();
+    expect(ui.fetch.mock.calls[1][1].headers['x-clh-ack']).toBe('m');
+    a.push(delta('A new message arrived; the work continues in its response.'));
+    a.push();
+    await first;
+    expect(ui.locks.size).toBe(1);
+    expect(ui.nodes[0].innerHTML).not.toContain('new message');
+    expect(ui.nodes[1].textContent).toContain('A new message arrived');
+    b.push(
+      messageWire('n', 'second answer') +
+        delta('still running: 1 of 2 steps done') +
+        ': turn-end\n\n',
+    );
+    await flush();
+    expect(ui.locks.size).toBe(0);
+    b.push();
+    await second;
+    expect(ui.nodes[2].innerHTML).toContain('second answer');
+    expect(ui.nodes[3].textContent).toContain('still running');
+  },
+);
+
+test('a stream cut before message-end stays partial and is not acknowledged', async () => {
+  const ui = harness();
+  ui.fetch.mockResolvedValue(
+    stream(`: keep-alive\n\n: message-id cut\n\n${delta('partial')}`),
+  );
+  ui.userInput.value = 'first';
+  await ui.sendMessage();
+  expect(ui.nodes[0].innerHTML).toContain('pa');
+  expect(ui.locks.size).toBe(0);
+  ui.userInput.value = 'retry';
+  await ui.sendMessage();
+  expect(ui.fetch.mock.calls[1][1].headers['x-clh-ack']).toBe('none');
+  ui.renderMessageVersion('key', 'cut', 'complete replacement', true);
+  expect(ui.nodes).toHaveLength(1);
+  expect(ui.nodes[0].innerHTML).toContain('complete replacement');
+});
+
+test('acknowledgements are kept per session and reset in a fresh page', async () => {
+  const ui = harness();
+  ui.renderMessageVersion('another-session', 'other', 'other answer', true);
+  ui.fetch.mockResolvedValue(stream(messageWire('m', 'answer')));
+  ui.userInput.value = 'first';
+  await ui.sendMessage();
+  expect(ui.fetch.mock.calls[0][1].headers['x-clh-ack']).toBe('none');
+  ui.userInput.value = 'second';
+  await ui.sendMessage();
+  expect(ui.fetch.mock.calls[1][1].headers['x-clh-ack']).toBe('m');
+  const reloaded = harness();
+  reloaded.fetch.mockResolvedValue(stream(''));
+  reloaded.userInput.value = 'after reload';
+  await reloaded.sendMessage();
+  expect(reloaded.fetch.mock.calls[0][1].headers['x-clh-ack']).toBe('none');
+});
+
+test('non-dialogue content without id comments keeps the existing placeholder', async () => {
+  const ui = harness();
+  ui.fetch.mockResolvedValue(stream(delta('ordinary answer')));
+  ui.userInput.value = 'question';
+  await ui.sendMessage();
+  expect(ui.conversationHistory).toContainEqual({
+    role: 'assistant',
+    content: 'ordinary answer',
+  });
+  expect(ui.nodes).toHaveLength(0);
+  expect(ui.locks.size).toBe(0);
+});
+
+test('framed messages parse split file blocks per id with the real parser', async () => {
+  const ui = harness();
+  const response = controlledStream();
+  ui.fetch.mockResolvedValue(response.response);
+  ui.userInput.value = 'files';
+  const sent = ui.sendMessage();
+  await flush();
+  response.push(
+    ': message-id file\n\n' + delta('Here <file path="report.txt">hello'),
+  );
+  await flush();
+  response.push(
+    delta('</file>') +
+      ': message-end file\n\n' +
+      messageWire('next', 'plain answer'),
+  );
+  response.push();
+  await sent;
+  expect(ui.nodes[0].innerHTML).toContain('class="file-card"');
+  expect(ui.nodes[0].innerHTML).toContain('report.txt');
+  expect(ui.nodes[0].innerHTML).toContain('hello');
+  expect(ui.nodes[1].innerHTML).not.toContain('file-card');
+});
+
+test('SSE-first complete messages drain all file blocks with the real parser', async () => {
+  const ui = harness();
+  const text =
+    'Before <file path="first.txt">first</file> between <file path="second.txt">second</file> after';
+  ui.fetch.mockResolvedValue(
+    stream(`id: files\nevent: message\ndata: ${JSON.stringify({ text })}\n\n`),
+  );
+  const subscription = ui.subscribeDialogueEvents('key');
+  await flush();
+  const rendered = ui.nodes[0].innerHTML;
+  expect(rendered.match(/class="file-card"/g)).toHaveLength(2);
+  expect(rendered).toContain('first.txt');
+  expect(rendered).toContain('second.txt');
+  expect(rendered).toContain('Before');
+  expect(rendered).toContain('between');
+  expect(rendered).toContain('after');
+  expect(rendered).not.toContain('&lt;file');
+  expect(Object.values(ui.fileArtifacts)).toEqual([
+    { path: 'first.txt', content: 'first', encoding: '', render: '' },
+    { path: 'second.txt', content: 'second', encoding: '', render: '' },
+  ]);
+  ui.renderMessageVersion('key', 'files', text, true);
+  expect(ui.nodes).toHaveLength(1);
+  expect(ui.nodes[0].innerHTML).toBe(rendered);
+  subscription.stop();
+});
+
+test('two messages at the same time keep distinct artifact ids and contents', () => {
+  const ui = harness(123456789);
+  ui.renderMessageVersion(
+    'key',
+    'first',
+    '<file path="a.txt">alpha</file>',
+    true,
+  );
+  ui.renderMessageVersion(
+    'key',
+    'second',
+    '<file path="b.txt">beta</file>',
+    true,
+  );
+  const ids = ui.nodes.map(
+    (node: { innerHTML: string }) =>
+      /id="file-body-(art-[^"]+)"/.exec(node.innerHTML)?.[1],
+  );
+  expect(ids[0]).toBeDefined();
+  expect(ids[1]).toBeDefined();
+  expect(ids[0]).not.toBe(ids[1]);
+  expect(Object.keys(ui.fileArtifacts)).toHaveLength(2);
+  expect(ui.fileArtifacts[ids[0]]).toMatchObject({
+    path: 'a.txt',
+    content: 'alpha',
+  });
+  expect(ui.fileArtifacts[ids[1]]).toMatchObject({
+    path: 'b.txt',
+    content: 'beta',
+  });
+});
+
+test('a pending response keeps messages and acknowledgement on its request session', async () => {
+  const ui = harness();
+  let resolve!: (value: any) => void;
+  ui.fetch.mockImplementationOnce(
+    () =>
+      new Promise((r) => {
+        resolve = r;
+      }),
+  );
+  ui.userInput.value = 'question';
+  const sent = ui.sendMessage();
+  await flush();
+  ui.replaceSession('new');
+  resolve(stream(messageWire('old-message', 'old answer')));
+  await sent;
+  expect(ui.view('key', 'old-message').node.innerHTML).toContain('old answer');
+  expect(ui.ack('key')).toBe('old-message');
+  expect(ui.ack('new')).toBeUndefined();
+});
+
+test('probe notice preserves a cached partial message node and its completion', async () => {
+  const ui = harness();
+  ui.renderMessageVersion('key', 'm', 'partial', false);
+  const node = ui.nodes[0];
+  Object.defineProperty(ui.chatWindow, 'innerHTML', {
+    set() {
+      ui.nodes.length = 0;
+    },
+  });
+  ui.fetch.mockResolvedValue({
+    ok: false,
+    status: 401,
+    json: async () => ({ error: { type: 'SAP_USER_TOKEN_REQUIRED' } }),
+  });
+  await ui.runActiveProbe();
+  expect(ui.nodes).toContain(node);
+  ui.renderMessageVersion('key', 'm', 'completed answer', true);
+  expect(ui.nodes).toContain(ui.view('key', 'm').node);
+  expect(node.innerHTML).toContain('completed answer');
+  expect(html).not.toMatch(/chatWindow\.innerHTML\s*\+=/);
 });

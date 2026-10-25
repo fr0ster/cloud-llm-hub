@@ -1,3 +1,4 @@
+import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
 /**
@@ -69,6 +70,7 @@ import {
 import { runWithSessionId } from './request-session';
 import { honouredSessionId, sessionIdOf, type WithSession } from './session-id';
 import {
+  amendSessionMessage,
   appendToSession,
   clearSession,
   getSessionHistory,
@@ -283,14 +285,47 @@ export async function handleChatCompletions(
   // A long session serves its requests one at a time, through the connection
   // it holds; without one the request stands alone, as it always has.
   const s = (req as LongSessionRequest).longSession;
-  if (!s) return serveChatCompletions(req, res, body, userMessages);
-  const ran = await longSessions().run(s, () =>
-    serveChatCompletions(req, res, body, userMessages, s),
-  );
-  if (ran) {
-    const refusal = openAiSessionRunRefusal(ran.refused);
-    res.writeHead(refusal.status, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(refusal.body));
+  const early =
+    body.stream &&
+    s &&
+    (req.headers['x-sap-destination'] ||
+      s.destination ||
+      getCurrentDestination(getUserId(), sessionIdOf(req))) &&
+    getAgentConfig().agent.chatCoordinator === 'dialogue'
+      ? chatStream(res, 'openai', s)
+      : undefined;
+  try {
+    const continuation = s
+      ? await longSessions().run(
+          s,
+          () => serveChatCompletions(req, res, body, userMessages, s, early),
+          () => early?.ensureStream(),
+        )
+      : await serveChatCompletions(
+          req,
+          res,
+          body,
+          userMessages,
+          undefined,
+          early,
+        );
+    if (typeof continuation === 'function') await continuation();
+    else if (continuation) {
+      const refusal = openAiSessionRunRefusal(continuation.refused);
+      if (early?.opened) early.error(refusal.body);
+      else {
+        res.writeHead(refusal.status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(refusal.body));
+      }
+    }
+  } catch (error) {
+    if (!early?.opened) throw error;
+    early.error({
+      error: {
+        message: error instanceof Error ? error.message : String(error),
+        type: 'server_error',
+      },
+    });
   }
 }
 
@@ -301,7 +336,8 @@ async function serveChatCompletions(
   body: OpenAIChatRequest,
   userMessages: OpenAIChatRequest['messages'],
   s?: LongSession,
-): Promise<void> {
+  early?: ChatStream,
+): Promise<(() => Promise<void>) | void> {
   const log = cds.log('openai-handler');
   const dialogueMode = getAgentConfig().agent.chatCoordinator === 'dialogue';
 
@@ -448,6 +484,16 @@ async function serveChatCompletions(
     try {
       await handle?.factory.assertPrincipal(req.headers, destAfter);
     } catch (error) {
+      if (early?.opened) {
+        early.error({
+          error: {
+            type: 'conflict',
+            code: 'DIALOGUE_PRINCIPAL_FIXED',
+            message: (error as Error).message,
+          },
+        });
+        return;
+      }
       res.status(409).json({
         error: {
           type: 'conflict',
@@ -463,6 +509,17 @@ async function serveChatCompletions(
     s?.destination !== undefined &&
     s.destination !== destAfter
   ) {
+    if (early?.opened) {
+      early.error({
+        error: {
+          type: 'conflict',
+          code: 'DIALOGUE_DESTINATION_FIXED',
+          message:
+            'The dialogue destination is fixed for the lifetime of the session',
+        },
+      });
+      return;
+    }
     res.status(409).json({
       error: {
         type: 'conflict',
@@ -495,6 +552,15 @@ async function serveChatCompletions(
   if (isDestinationClosed(destAfter)) {
     recordDestinationRefusal(destAfter);
     const seconds = retryAfterForDestination(destAfter);
+    if (early?.opened) {
+      early.error({
+        error: {
+          type: 'overloaded_error',
+          message: destinationClosedText(destAfter),
+        },
+      });
+      return;
+    }
     res.writeHead(503, {
       'Content-Type': 'application/json',
       ...(seconds !== undefined ? { 'Retry-After': String(seconds) } : {}),
@@ -509,6 +575,17 @@ async function serveChatCompletions(
     );
     return;
   }
+
+  early?.ensureStream({
+    'X-SAP-Active-Destination': destAfter,
+    ...(externalToolsValidation.errors.length
+      ? {
+          'x-smartagent-invalid-tools': String(
+            externalToolsValidation.errors.length,
+          ),
+        }
+      : {}),
+  });
 
   if (destAfter && !useDialogue) {
     const established = s
@@ -549,6 +626,15 @@ async function serveChatCompletions(
   } catch (err) {
     await releaseRequestConnection(requestConnection, s);
     const message = err instanceof Error ? err.message : String(err);
+    if (early?.opened) {
+      early.error({
+        error: {
+          type: 'server_error',
+          message: `Agent initialization failed: ${message}`,
+        },
+      });
+      return;
+    }
     // Propagate the structured destination_unreachable error from getSmartAgent
     // so clients can distinguish "your SAP system isn't reachable" from generic
     // server faults (see issue #83). Falls through to generic 503 otherwise.
@@ -631,7 +717,8 @@ async function serveChatCompletions(
     if ('refused' in admission) {
       await releaseRequestConnection(requestConnection, s);
       const refusal = openAiDoorRefusal(admission.refused);
-      out.json(refusal.status, refusal.body);
+      if (early?.opened) early.error(refusal.body);
+      else out.json(refusal.status, refusal.body);
       return;
     }
     if ('closed' in admission) {
@@ -639,13 +726,15 @@ async function serveChatCompletions(
       // bring the session back under the id the caller asked us to destroy.
       await releaseRequestConnection(requestConnection, s);
       const closed = openAiSessionClosed();
-      out.json(closed.status, closed.body);
+      if (early?.opened) early.error(closed.body);
+      else out.json(closed.status, closed.body);
       return;
     }
     pipeline = admission.admitted;
-  } catch {
+  } catch (error) {
     // Left while queued. Nothing was started, so nothing is owed but the connection.
     await releaseRequestConnection(requestConnection, s);
+    if (early?.opened && !callerLeft.signal.aborted) throw error;
     return;
   }
 
@@ -698,6 +787,12 @@ async function serveChatCompletions(
       res.headersSent,
     );
     if (retrieval.refusal) {
+      if (early?.opened) {
+        early.error({
+          error: { message: retrieval.refusal.message, type: 'server_error' },
+        });
+        return;
+      }
       res.writeHead(retrieval.refusal.status, {
         'Content-Type': 'application/json',
       });
@@ -752,6 +847,63 @@ async function serveChatCompletions(
             ),
           }
         : {};
+
+    if (body.stream && useDialogue && early) {
+      let assistant: Message | undefined;
+      const lastUser = normalizedMessages
+        .filter((m) => m.role === 'user')
+        .at(-1);
+      let following = false;
+      return await streamDialogue({
+        stream: early,
+        protocol: 'openai',
+        model: getCurrentModel(),
+        agent: chatAgent as ReturnType<typeof dialogueChat>,
+        source: chatAgent.streamProcess(normalizedMessages, opts),
+        run: (fn) =>
+          pipeline.run(() =>
+            runWithSessionId(sessionId, fn, priorTurns, userId),
+          ),
+        maxMs: getAgentConfig().agent.dialogue?.followMaxMs ?? 1_800_000,
+        onError: (error) => {
+          if (isOutageError(error))
+            closeDestination(destAfter, describeCause(error));
+          return {
+            error: {
+              message: error instanceof Error ? error.message : String(error),
+              type: 'server_error',
+            },
+          };
+        },
+        onTurnEnd: (text, hasFollow) => {
+          following = hasFollow;
+          if (lastUser) {
+            if (text) assistant = { role: 'assistant', content: text };
+            appendToSession(
+              sessionId,
+              userId,
+              lastUser,
+              ...(assistant ? [assistant] : []),
+            );
+            if (!following) recordTurn(sessionId, userId, lastUser, text);
+          }
+        },
+        onEnd: (text) => {
+          if (assistant)
+            amendSessionMessage(sessionId, userId, assistant, text);
+          else if (
+            text &&
+            lastUser &&
+            getSessionHistory(sessionId, userId).includes(lastUser)
+          ) {
+            assistant = { role: 'assistant', content: text };
+            appendToSession(sessionId, userId, assistant);
+          }
+          if (following && lastUser)
+            recordTurn(sessionId, userId, lastUser, text);
+        },
+      });
+    }
 
     // --- Streaming ---
     if (body.stream) {
@@ -863,6 +1015,12 @@ async function serveChatCompletions(
                       }
 
                       const v = chunk.value;
+                      if (
+                        'clhMessageId' in v ||
+                        'clhMessageEnd' in v ||
+                        'clhTurnEnd' in v
+                      )
+                        continue;
 
                       // Forward heartbeats as SSE comments to keep the connection alive.
                       // Without this, CF Router / Cloud Connector may close idle TCP

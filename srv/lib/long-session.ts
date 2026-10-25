@@ -59,6 +59,7 @@ interface Entry {
   tail: Promise<void>;
   /** Requests running or waiting: one running plus up to `queueLength`. */
   active: number;
+  holds: number;
   closing?: Promise<void>;
 }
 
@@ -112,6 +113,7 @@ export class LongSessionRegistry {
       session,
       tail: Promise.resolve(),
       active: 0,
+      holds: 0,
     });
     this.hooks.onTouch?.(session);
     return session;
@@ -147,7 +149,11 @@ export class LongSessionRegistry {
   }
 
   /** FIFO per session; touches before and after. */
-  async run<T>(s: LongSession, fn: () => Promise<T>): Promise<T | RunRefusal> {
+  async run<T>(
+    s: LongSession,
+    fn: () => Promise<T>,
+    onQueued?: () => void,
+  ): Promise<T | RunRefusal> {
     const entry = this.entries.get(slot(s.userId, s.key));
     if (!entry || entry.session !== s || entry.closing) {
       return { refused: 'SESSION_CLOSED' };
@@ -155,6 +161,7 @@ export class LongSessionRegistry {
     if (entry.active >= 1 + this.cfg.queueLength) {
       return { refused: 'SESSION_BUSY' };
     }
+    if (entry.active > 0) onQueued?.();
     entry.active += 1;
     const previous = entry.tail;
     let release!: () => void;
@@ -176,6 +183,22 @@ export class LongSessionRegistry {
     }
   }
 
+  /** Keep live background work from expiring; release starts a fresh idle TTL. */
+  hold(s: LongSession): () => void {
+    const entry = this.entries.get(slot(s.userId, s.key));
+    if (!entry || entry.session !== s || entry.closing) return () => {};
+    entry.holds += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      entry.holds -= 1;
+      // A stale release must never touch a replacement session with the same key.
+      if (this.entries.get(slot(s.userId, s.key)) === entry)
+        this.touch(s.userId, s.key);
+    };
+  }
+
   /** Waits for the running request. Idempotent. */
   close(userId: string, key: string, reason: CloseReason): Promise<void> {
     const id = slot(userId, key);
@@ -192,6 +215,7 @@ export class LongSessionRegistry {
       (e) =>
         !e.closing &&
         e.active === 0 &&
+        e.holds === 0 &&
         now - e.session.lastActivity > this.cfg.ttlMs,
     );
     await this.closeEach(idle, 'ttl');

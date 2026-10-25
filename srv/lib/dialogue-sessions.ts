@@ -28,7 +28,7 @@ import {
   runWithToolGateBypass,
 } from '../request-session';
 import { runWithContextCapture } from './context-capture';
-import { DialogueOutbox } from './dialogue-outbox';
+import { DialogueOutbox, type OutboxEntry } from './dialogue-outbox';
 import {
   plannerWithEnvironment,
   plannerWithParagraphs,
@@ -45,6 +45,7 @@ import {
 } from './dialogue-store';
 import { admitBackground, type PipelineSession } from './gatekeeper';
 import { longSessionsIfReady } from './long-session';
+import { stripNoMessage } from './no-message';
 import { renderNotice } from './notify-policy';
 import type { RecordingMcpClient } from './recording-mcp-client';
 import { runWithRequestSystem } from './request-system-context';
@@ -62,6 +63,7 @@ type Plan = Exclude<DialogueState['plan'], string | undefined>;
 type PlanStep = Plan['steps'][number];
 
 export type DialogueEvent =
+  | { kind: 'settled'; outcome: 'ok' | 'failed'; trigger: 'user' | 'event' }
   | { kind: 'message'; message: PlannerMessage }
   | { kind: 'plan'; plan: DialoguePlan }
   | {
@@ -92,7 +94,19 @@ export interface DialogueHandle {
   destination: string;
   session: DialogueSession;
   retrievedContexts: WeakMap<object, string>;
+  replies: WeakMap<object, { id: string; createdAt: number }>;
   outbox: DialogueOutbox;
+  state(): {
+    turnActive: boolean;
+    queuedInputs?: number;
+    running: number;
+    total: number;
+    done: number;
+    status?: 'active' | 'waiting_user' | 'done';
+    idle: boolean;
+    settledSeq: number;
+    lastFailedSeq: number;
+  };
   hasSubscribers(): boolean;
   drainPending(): Promise<void>;
   factory: SessionConnectionFactory;
@@ -214,6 +228,8 @@ async function open(
   const planner = await buildPlannerAgent(config);
   const factory = new SessionConnectionFactory(userId, key);
   const retrievedContexts = new WeakMap<object, string>();
+  const replies = new WeakMap<object, { id: string; createdAt: number }>();
+  let turnReply: { id: string; createdAt: number } | undefined;
   const turnPlanner = plannerWithEnvironment(
     plannerWithRetrievedContext(
       plannerWithParagraphs(planner),
@@ -372,32 +388,85 @@ async function open(
   }
   let saving = Promise.resolve();
   const persist = (
-    outboxMessages: PlannerMessage[] = outbox.replay(),
+    outboxMessages: OutboxEntry[],
+    ackMode: boolean,
   ): Promise<void> => {
     const state = session?.snapshot() ?? savedState;
     if (!state) return Promise.resolve();
-    const row = { ...state, pending: [], outbox: outboxMessages };
+    const row = { ...state, pending: [], outbox: outboxMessages, ackMode };
     saving = saving.catch(() => {}).then(() => backend.save(userId, key, row));
     return saving;
   };
   const outbox: DialogueOutbox = new DialogueOutbox(
     savedState?.outbox ?? [],
-    (messages) => persist(messages),
+    (messages, ackMode) => persist(messages, ackMode),
+    savedState?.ackMode,
   );
   const drainPending = async () => {
     await outbox.add(session?.takePending() ?? []);
   };
+  const signals = dialogueSignals();
+  const registry = longSessionsIfReady();
+  const longSession = registry?.get(userId, key);
+  let releaseHold: (() => void) | undefined;
+  const releaseLifetime = () => {
+    releaseHold?.();
+    releaseHold = undefined;
+  };
+  const unsubscribeActivity = signals.on(
+    'dialogue.activity',
+    ({ payload }) => {
+      if (
+        payload.running > 0 ||
+        payload.turnActive ||
+        payload.queuedInputs > 0
+      ) {
+        if (!releaseHold && longSession)
+          releaseHold = registry?.hold(longSession);
+      } else releaseLifetime();
+    },
+    { source: key },
+  );
+  const unsubscribeClosed = signals.on(
+    'dialogue.session.closed',
+    () => stopLifetime(),
+    { source: key },
+  );
+  let settledSeq = 0;
+  let lastFailedSeq = 0;
+  const unsubscribeSettled = signals.on(
+    'dialogue.turn.settled',
+    async ({ payload: { outcome, trigger } }) => {
+      settledSeq++;
+      if (outcome === 'failed') lastFailedSeq = settledSeq;
+      turnReply = undefined;
+      await outbox.flushed();
+      emit({ kind: 'settled', outcome, trigger });
+    },
+    { source: key },
+  );
+  const stopLifetime = () => {
+    unsubscribeActivity();
+    unsubscribeClosed();
+    unsubscribeSettled();
+    releaseLifetime();
+  };
   try {
     session = await DialogueSession.open({
       id: key,
-      signals: dialogueSignals(),
+      signals,
       planner: {
         async process(input, options) {
+          const reply = options.trace && replies.get(options.trace);
+          turnReply = undefined;
           try {
-            return await runWithContextCapture(
+            const result = await runWithContextCapture(
               { component: 'planner', sessionKey: key },
               () => turnPlanner.process(input, options),
             );
+            // The library appends this successful result before its final save.
+            if (result.ok) turnReply = reply;
+            return result;
           } finally {
             for (const task of session?.snapshot().tasks ?? []) emitTask(task);
           }
@@ -417,7 +486,27 @@ async function open(
           // turn() has recomputed plan status before persisting, including
           // turns triggered by background task events.
           emitPlan(state);
-          await outbox.add(state.pending);
+          const assistant = turnReply
+            ? [...state.conversation]
+                .reverse()
+                .find((message) => message.role === 'assistant')
+            : undefined;
+          const text = stripNoMessage(
+            typeof assistant?.content === 'string' ? assistant.content : '',
+          );
+          await outbox.upsert(
+            turnReply && text.trim()
+              ? [
+                  {
+                    id: turnReply.id,
+                    createdAt: turnReply.createdAt,
+                    text,
+                    trigger: 'user',
+                  },
+                ]
+              : [],
+            state.pending,
+          );
         },
         delete: async () => {},
       },
@@ -528,6 +617,7 @@ async function open(
     });
     await drainPending();
   } catch (error) {
+    stopLifetime();
     await session?.close();
     releasePlannerAgent(planner);
     await pool.closeAll();
@@ -540,13 +630,36 @@ async function open(
     destination,
     session,
     retrievedContexts,
+    replies,
     outbox,
+    state() {
+      const activity = signals.last('dialogue.activity', key)?.payload;
+      const plan = signals.last('dialogue.plan.changed', key)?.payload;
+      return {
+        settledSeq,
+        lastFailedSeq,
+        turnActive: activity?.turnActive ?? false,
+        queuedInputs: activity?.queuedInputs,
+        running: activity?.running ?? 0,
+        total: plan?.total ?? 0,
+        done: plan?.done ?? 0,
+        status: plan?.status,
+        idle:
+          plan?.status === 'active' &&
+          activity !== undefined &&
+          !activity.turnActive &&
+          activity.queuedInputs === 0 &&
+          activity.running === 0 &&
+          activity.ready === 0,
+      };
+    },
     drainPending,
     hasSubscribers: () => subscribers.size > 0,
     factory,
     pool,
     planner,
     stop() {
+      stopLifetime();
       stopped = true;
       lifetime.abort();
       subscribers.clear();

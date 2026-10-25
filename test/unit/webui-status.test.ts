@@ -71,6 +71,7 @@ test('chat reader parses fragmented CRLF status comments and retains trail with 
       response: {
         body: {
           getReader: () => ({
+            releaseLock: jest.fn(),
             read: async () =>
               chunks.length
                 ? { value: new TextEncoder().encode(chunks.shift()) }
@@ -78,6 +79,7 @@ test('chat reader parses fragmented CRLF status comments and retains trail with 
           }),
         },
       },
+      releaseTurn: () => {},
       thinkingId: 'answer',
       setStatus,
       escapeHtml: (s: string) => s.replace(/</g, '&lt;').replace(/>/g, '&gt;'),

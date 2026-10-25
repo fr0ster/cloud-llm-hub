@@ -38,6 +38,7 @@ import {
   onDialogueCreated,
   sharedExecutorPool,
 } from '../../srv/lib/dialogue-sessions';
+import { dialogueSignals } from '../../srv/lib/dialogue-signals';
 import {
   getDialogueStoreBackend,
   hasDialogueState,
@@ -56,6 +57,7 @@ const mockDrop = jest.fn();
 const mockPlannerTurns: string[] = [];
 const mockEnvironments: string[] = [];
 let mockGoal = 'read';
+let mockPlannerHook: ((text: string) => Promise<void>) | undefined;
 let mockPlan:
   | {
       plan?: string;
@@ -98,6 +100,7 @@ jest.mock('../../srv/agent-manager', () => ({
         ? input.slice(input.indexOf('[task events]'))
         : input;
       mockPlannerTurns.push(text);
+      await mockPlannerHook?.(text);
       if (mockPlan) {
         await new PlannerToolsClient().callTool('update_plan', mockPlan);
         return { ok: true, value: { content: 'Plan updated' } };
@@ -180,6 +183,7 @@ beforeEach(() => {
   mockPlannerTurns.length = 0;
   mockEnvironments.length = 0;
   mockGoal = 'read';
+  mockPlannerHook = undefined;
   mockPlan = undefined;
   mockRun.mockReset().mockResolvedValue({ output: 'read done' });
   jest.mocked(evaluateGated).mockResolvedValue({ ok: true });
@@ -187,7 +191,167 @@ beforeEach(() => {
 afterEach(async () => {
   await closeDialogue('alice', 'key', 'ttl');
   await closeDialogue('bob', 'key', 'ttl');
+  setLongSessionsForTest(undefined);
 });
+
+test.each([false, true])(
+  'settled is emitted after the outbox write of the turn (save fails: %s)',
+  async (saveFails) => {
+    let finish!: () => void;
+    mockRun.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve({ output: 'done' });
+        }),
+    );
+    const { h } = await ready();
+    await h.session.send('go');
+    await until(() => !!finish);
+    await h.outbox.flushed();
+    mockPlan = {
+      plan: 'Read records',
+      status: 'waiting_user',
+      question: 'Proceed?',
+    };
+    const events: DialogueEvent[] = [];
+    h.subscribe((event) => events.push(event));
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const backend = getDialogueStoreBackend();
+    const save = backend.save.bind(backend);
+    const spy = jest
+      .spyOn(backend, 'save')
+      .mockImplementation(async (...args) => {
+        await blocked;
+        if (saveFails) throw new Error('store unavailable');
+        await save(...args);
+      });
+    finish();
+    try {
+      await until(() => events.some((event) => event.kind === 'plan'));
+      expect(events.some((event) => event.kind === 'settled')).toBe(false);
+      release();
+      await until(() => events.some((event) => event.kind === 'settled'));
+      expect(
+        events
+          .filter((event) => event.kind !== 'task')
+          .map((event) => event.kind),
+      ).toEqual(['plan', 'message', 'settled']);
+      const message = events.find((event) => event.kind === 'message');
+      expect(message).toBeDefined();
+      if (message?.kind === 'message')
+        expect(h.outbox.pending()).toContainEqual(message.message);
+    } finally {
+      release();
+      await h.outbox.flushed();
+      spy.mockRestore();
+    }
+  },
+);
+
+test('a save during the turn emits no settled', async () => {
+  const { h } = await ready();
+  mockPlan = { plan: 'Read', status: 'done' };
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  mockPlannerHook = () => blocked;
+  const events: DialogueEvent[] = [];
+  h.subscribe((event) => events.push(event));
+  const turn = h.session.send('plan');
+  try {
+    await until(() => mockPlannerTurns.length > 0);
+    h.session.takePending();
+    await h.drainPending();
+    await h.outbox.flushed();
+    expect(events).toEqual([]);
+  } finally {
+    release();
+    await turn;
+  }
+});
+
+test('state counts every session settlement and retains the latest failure sequence', async () => {
+  const { h } = await ready();
+  const bus = dialogueSignals();
+  expect(h.state()).toMatchObject({ settledSeq: 0, lastFailedSeq: 0 });
+  for (const [source, outcome, settledSeq, lastFailedSeq] of [
+    ['key', 'failed', 1, 1],
+    ['other', 'failed', 1, 1],
+    ['key', 'ok', 2, 1],
+    ['key', 'failed', 3, 3],
+    ['key', 'ok', 4, 3],
+  ] as const) {
+    bus.emit('dialogue.turn.settled', { outcome, trigger: 'event' }, source);
+    expect(h.state()).toMatchObject({ settledSeq, lastFailedSeq });
+  }
+});
+
+test('idle is false between a task end and its event turn and while ready steps remain', async () => {
+  const { h } = await ready();
+  const bus = dialogueSignals();
+  expect(h.state()).toMatchObject({
+    status: undefined,
+    total: 0,
+    done: 0,
+    idle: false,
+  });
+  bus.emit(
+    'dialogue.plan.changed',
+    { status: 'active', total: 3, done: 1 },
+    'key',
+  );
+  const activity = { turnActive: false, queuedInputs: 1, running: 0, ready: 0 };
+  bus.emit('dialogue.activity', activity, 'key');
+  expect(h.state().idle).toBe(false);
+  bus.emit(
+    'dialogue.activity',
+    { ...activity, queuedInputs: 0, ready: 1 },
+    'key',
+  );
+  expect(h.state().idle).toBe(false);
+  bus.emit(
+    'dialogue.activity',
+    { ...activity, queuedInputs: 0, turnActive: true },
+    'key',
+  );
+  expect(h.state()).toMatchObject({ turnActive: true, idle: false });
+  bus.emit(
+    'dialogue.activity',
+    { ...activity, queuedInputs: 0, running: 1 },
+    'key',
+  );
+  expect(h.state()).toMatchObject({ running: 1, idle: false });
+  bus.emit('dialogue.activity', { ...activity, queuedInputs: 0 }, 'key');
+  expect(h.state()).toEqual({
+    settledSeq: 0,
+    lastFailedSeq: 0,
+    turnActive: false,
+    queuedInputs: 0,
+    running: 0,
+    total: 3,
+    done: 1,
+    status: 'active',
+    idle: true,
+  });
+});
+
+test.each(['waiting_user', 'done'] as const)(
+  '%s is reported',
+  async (status) => {
+    const { h } = await ready();
+    mockPlan = {
+      plan: 'Read',
+      status,
+      ...(status === 'waiting_user' ? { question: 'Proceed?' } : {}),
+    };
+    await h.session.send('plan');
+    expect(h.state()).toMatchObject({ status, idle: false });
+  },
+);
 test('isolates owners and shares concurrent opens', async () => {
   const [a, b, c] = await Promise.all([
     dialogueFor('alice', 'key', 'TEST'),
@@ -202,11 +366,11 @@ test('isolates owners and shares concurrent opens', async () => {
 test('missing credentials become a task outcome and wake the planner', async () => {
   const h = await dialogueFor('alice', 'key', 'TEST');
   await h.session.send('go');
-  await until(() => h.outbox.replay().length > 0);
+  await until(() => h.outbox.pending().length > 0);
   expect(h.session.snapshot().tasks[0].error).toContain(
     "no SAP credentials yet; they arrive with the user's next message",
   );
-  expect(h.outbox.replay()[0].text).toContain('no SAP credentials yet');
+  expect(h.outbox.pending()[0].text).toContain('no SAP credentials yet');
   expect(mockRun).not.toHaveBeenCalled();
   expect(mockDrop).toHaveBeenCalledTimes(1);
   expect(mockEnvironments.length).toBeGreaterThanOrEqual(2);
@@ -231,7 +395,7 @@ test('delegated worker has system, session, owner, task history, admission, conn
     return { output: 'read done' };
   });
   await h.session.send('go');
-  await until(() => h.outbox.replay().length > 0);
+  await until(() => h.outbox.pending().length > 0);
   expect(runWithRequestConnection).toHaveBeenCalledWith(
     connection,
     expect.any(Function),
@@ -265,9 +429,9 @@ test('honesty notice reaches task output and planner', async () => {
     ],
   });
   await h.session.send('go');
-  await until(() => h.outbox.replay().length > 0);
+  await until(() => h.outbox.pending().length > 0);
   expect(h.session.snapshot().tasks[0].output).toContain('UNVERIFIED_WRITE:');
-  expect(h.outbox.replay()[0].text).toContain('UNVERIFIED_WRITE:');
+  expect(h.outbox.pending()[0].text).toContain('UNVERIFIED_WRITE:');
 });
 test('subscribers receive task events and messages; messages stay in outbox for both tabs until acknowledged', async () => {
   const { h } = await ready();
@@ -299,7 +463,7 @@ test('subscribers receive task events and messages; messages stay in outbox for 
   unsubscribe();
   const count = events.length;
   await h.session.send('again');
-  await until(() => h.outbox.replay().length > 0);
+  await until(() => h.outbox.pending().length > 0);
   expect(events).toHaveLength(count);
 });
 test('ttl cooperatively stops tasks, closes connections, forgets credentials, deletes state and prevents event turns', async () => {
@@ -395,7 +559,7 @@ test('dialogue lifecycle logs contain goal sizes and hashed session keys', async
   try {
     const { h } = await ready();
     await h.session.send('go');
-    await until(() => h.outbox.replay().length > 0);
+    await until(() => h.outbox.pending().length > 0);
     await closeDialogue('alice', 'key', 'explicit');
     const entries = info.mock.calls;
     expect(entries).toEqual(
@@ -453,7 +617,7 @@ test('lifecycle logs carry no goal text, task output or error text', async () =>
   try {
     const { h } = await ready();
     await h.session.send('go');
-    await until(() => h.outbox.replay().length > 0);
+    await until(() => h.outbox.pending().length > 0);
     const started = info.mock.calls.find(
       (entry: unknown[]) => entry[0] === 'task started',
     );
@@ -503,7 +667,7 @@ test('worker failures close unhealthy connections and release admission and pool
   const { h, connection } = await ready();
   mockRun.mockRejectedValue(new Error('worker failed'));
   await h.session.send('go');
-  await until(() => h.outbox.replay().length > 0);
+  await until(() => h.outbox.pending().length > 0);
   expect(connection.close).toHaveBeenCalledTimes(1);
   expect(mockRelease).toHaveBeenCalledTimes(1);
   expect(h.session.snapshot().tasks[0].state).toBe('failed');
@@ -527,7 +691,7 @@ test('builder secrets never reach task error, planner input, persistence or logs
     'TEST',
   );
   await h.session.send('go');
-  await until(() => h.outbox.replay().length > 0);
+  await until(() => h.outbox.pending().length > 0);
   expect(h.session.snapshot().tasks[0].error).toMatch(/^SAP connection failed/);
   const saved = await require('../../srv/lib/dialogue-store')
     .createDialogueStateStore('alice', 'key')
@@ -545,7 +709,7 @@ test('builder secrets never reach task error, planner input, persistence or logs
   warning.mockRestore();
 });
 
-test('unacknowledged outbox survives shutdown/reopen; either tab can acknowledge', async () => {
+test('outbox history and acknowledgement mode survive shutdown/reopen', async () => {
   const { h } = await ready();
   const tab1: DialogueEvent[] = [];
   const tab2: DialogueEvent[] = [];
@@ -554,15 +718,23 @@ test('unacknowledged outbox survives shutdown/reopen; either tab can acknowledge
   await h.session.send('go');
   await until(() => tab1.some((e) => e.kind === 'message'));
   expect(tab2).toEqual(tab1);
-  const messages = h.outbox.replay();
+  await h.outbox.enterAckMode();
+  const messages = h.outbox.pending();
   expect(messages.length).toBeGreaterThan(0);
   await closeDialogue('alice', 'key', 'shutdown');
   const restored = await dialogueFor('alice', 'key', 'TEST');
-  expect(restored.outbox.replay()).toEqual(messages);
-  await restored.outbox.ack(messages[messages.length - 1].id);
-  expect(restored.outbox.replay()).toEqual([]);
+  expect(restored.outbox.pending()).toEqual(messages);
+  expect(restored.outbox.ackMode).toBe(true);
+  await restored.outbox.confirmUpTo(messages[messages.length - 1].id);
+  expect(restored.outbox.pending()).toEqual(messages);
+  const delivery = restored.outbox.beginDelivery();
+  for (const message of messages) delivery.carried(message.id);
+  delivery.ended();
+  await restored.outbox.confirmUpTo(messages[messages.length - 1].id);
+  expect(restored.outbox.pending()).toEqual([]);
+  expect(restored.outbox.history()).toEqual(messages);
   await closeDialogue('alice', 'key', 'shutdown');
-  expect((await dialogueFor('alice', 'key', 'TEST')).outbox.replay()).toEqual(
+  expect((await dialogueFor('alice', 'key', 'TEST')).outbox.pending()).toEqual(
     [],
   );
 });
@@ -570,7 +742,7 @@ test('unacknowledged outbox survives shutdown/reopen; either tab can acknowledge
 test('heartbeat activity maintains dialogue beyond TTL and restart restores state', async () => {
   const h = await dialogueFor('alice', 'key', 'TEST');
   await h.session.send('go');
-  await until(() => h.outbox.replay().length > 0);
+  await until(() => h.outbox.pending().length > 0);
   const state = h.session.snapshot();
   const ttl = require('../../srv/lib/session-config').sessionConfig().ttlMs;
   const registry = new LongSessionRegistry(
@@ -616,9 +788,9 @@ test('legacy library pending migrates to hub outbox on opening and leaves librar
   });
   const h = await dialogueFor('alice', 'key', 'TEST');
   expect(h.session.snapshot().pending).toEqual([]);
-  expect(h.outbox.replay()).toEqual([message]);
+  expect(h.outbox.pending()).toEqual([message]);
   await closeDialogue('alice', 'key', 'shutdown');
-  expect((await dialogueFor('alice', 'key', 'TEST')).outbox.replay()).toEqual([
+  expect((await dialogueFor('alice', 'key', 'TEST')).outbox.pending()).toEqual([
     message,
   ]);
 });
@@ -781,3 +953,183 @@ test('structured step changes emit even when plan text and status stay the same'
     },
   });
 });
+
+function lifetimeRegistry() {
+  let now = 0;
+  const registry = new LongSessionRegistry(
+    { ttlMs: 1000, maxSessions: 10, maxPerUser: 5, queueLength: 2 },
+    { onClose: async () => {} },
+    () => now,
+  );
+  registry.open('alice', { key: 'key' });
+  setLongSessionsForTest(registry);
+  const hold = jest.spyOn(registry, 'hold');
+  return {
+    registry,
+    hold,
+    setTime: (value: number) => {
+      now = value;
+    },
+  };
+}
+
+test('a running task holds the session; finishing all tasks releases it', async () => {
+  const { registry, hold, setTime } = lifetimeRegistry();
+  const finishes: Array<() => void> = [];
+  mockRun.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finishes.push(() => resolve({ output: 'done' }));
+      }),
+  );
+  const { h } = await ready();
+  await h.session.send('go');
+  await until(() => finishes.length === 1);
+  await h.session.send('another');
+  setTime(2000);
+  expect(await registry.sweep()).toBe(0);
+  expect(hold).toHaveBeenCalledTimes(1);
+  finishes[0]();
+  await until(() => finishes.length === 2);
+  setTime(4000);
+  expect(await registry.sweep()).toBe(0);
+  expect(hold).toHaveBeenCalledTimes(1);
+  finishes[1]();
+  await until(() =>
+    h.session.snapshot().tasks.every((task) => task.state === 'done'),
+  );
+  expect(registry.get('alice', 'key')?.lastActivity).toBe(4000);
+  setTime(5001);
+  expect(await registry.sweep()).toBe(1);
+});
+
+test('a queued task cancelled before start releases the hold', async () => {
+  const { registry, hold, setTime } = lifetimeRegistry();
+  const releasePool = await sharedExecutorPool().acquire();
+  try {
+    const { h } = await ready();
+    await h.session.send('go');
+    const task = h.session.snapshot().tasks[0];
+    expect(task.state).toBe('queued');
+    setTime(2000);
+    expect(await registry.sweep()).toBe(0);
+    expect(hold).toHaveBeenCalledTimes(1);
+    mockPlannerHook = async (text) => {
+      // The library prepends plan and environment notes to the user input.
+      if (text.endsWith('\ncancel')) {
+        const result = await new PlannerToolsClient().callTool('stop_task', {
+          task_id: task.id,
+        });
+        expect(result).toMatchObject({
+          ok: true,
+          value: {
+            content: [
+              { type: 'text', text: JSON.stringify({ stopped: true }) },
+            ],
+          },
+        });
+        mockPlan = { plan: 'Cancelled', status: 'done' };
+      }
+    };
+    await h.session.send('cancel');
+    expect(h.session.snapshot().tasks[0].state).toBe('stopped');
+    expect(mockRun).not.toHaveBeenCalled();
+    // Cancellation leaves the planner turn holding the session until it ends.
+    expect(h.state().turnActive).toBe(true);
+    expect(registry.get('alice', 'key')?.lastActivity).toBe(0);
+    setTime(3000);
+    expect(await registry.sweep()).toBe(0);
+    await until(() => !h.state().turnActive);
+    expect(registry.get('alice', 'key')?.lastActivity).toBe(3000);
+    setTime(4001);
+    expect(await registry.sweep()).toBe(1);
+  } finally {
+    releasePool();
+  }
+});
+
+test('the final planner turn holds the session after the last worker finishes', async () => {
+  const { registry, setTime } = lifetimeRegistry();
+  let finish!: () => void;
+  let unblock!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    unblock = resolve;
+  });
+  mockRun.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({ output: 'done' });
+      }),
+  );
+  const { h } = await ready();
+  await h.session.send('go');
+  await until(() => !!finish);
+  mockPlannerHook = async (text) => {
+    if (text.startsWith('[task events]')) await blocked;
+  };
+  try {
+    setTime(2000);
+    finish();
+    await until(() =>
+      mockPlannerTurns.some((text) => text.startsWith('[task events]')),
+    );
+    expect(h.session.snapshot().tasks[0].state).toBe('done');
+    expect(h.state().turnActive).toBe(true);
+    setTime(3001);
+    expect(await registry.sweep()).toBe(0);
+    unblock();
+    await until(() => !h.state().turnActive);
+    expect(registry.get('alice', 'key')?.lastActivity).toBe(3001);
+    setTime(4002);
+    expect(await registry.sweep()).toBe(1);
+  } finally {
+    unblock();
+  }
+});
+
+test.each([false, true])(
+  'final save persists the registered reply before send resolves (stream: %s)',
+  async (stream) => {
+    mockPlan = { plan: 'Read', status: 'done' };
+    const { h } = await ready();
+    const trace = { traceId: 'reply-trace' };
+    h.replies.set(trace, { id: 'streamed-reply', createdAt: 123 });
+    let resolved = false;
+    let checked = false;
+    const backend = getDialogueStoreBackend();
+    const save = backend.save.bind(backend);
+    const spy = jest
+      .spyOn(backend, 'save')
+      .mockImplementation(async (user, key, row) => {
+        if (row.outbox?.some((entry) => entry.id === 'streamed-reply')) {
+          expect(resolved).toBe(false);
+          expect(row.outbox).toContainEqual({
+            id: 'streamed-reply',
+            createdAt: 123,
+            text: 'Plan updated',
+            trigger: 'user',
+          });
+          checked = true;
+        }
+        await save(user, key, row);
+      });
+    try {
+      await h.session.send('go', {
+        trace,
+        ...(stream ? { onPartial: () => {} } : {}),
+      });
+      resolved = true;
+      expect(checked).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+    await closeDialogue('alice', 'key', 'shutdown');
+    const restored = await dialogueFor('alice', 'key', 'TEST');
+    expect(restored.outbox.pending()).toContainEqual({
+      id: 'streamed-reply',
+      createdAt: 123,
+      text: 'Plan updated',
+      trigger: 'user',
+    });
+  },
+);
