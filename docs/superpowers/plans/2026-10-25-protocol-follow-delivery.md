@@ -297,7 +297,7 @@
   - `sendMessage` sends `x-clh-ack: none` on the first request of a session, and afterwards the id of the last message it received complete.
   - Remember the id per session key in memory; on a page reload start with `none`.
   - Remove the SSE ack call (l.595).
-- **Corrections during a follow:** input is no longer locked for the whole response. `lockInput('chat-pending')` (l.1820) is released at `: turn-end` or when the stream ends. Each `sendMessage` call keeps its own response state (reader, placeholder, segments). A new send while an older response is still following is allowed; the older response then ends with the supersede note from the hub.
+- **Corrections during a follow:** input is no longer locked for the whole response. `lockInput('chat-pending')` (l.1820) is taken per send with its own token (`chat-pending:<n>`) and released once, at `: turn-end` or when that response's stream ends, whichever comes first; a later release of the same token does nothing. Each `sendMessage` call keeps its own response state (reader, placeholder, segments). A new send while an older response is still following is allowed; the older response then ends with the supersede note from the hub.
 - **Stream segments:** `sendMessage` splits the stream into segments at `: message-id <id>` comments. Each segment renders into its own AGENT block keyed by id. Content before the first id comment keeps today's placeholder behaviour, for non-dialogue answers.
 
 - [ ] **Step 1: Failing tests** (vm harness):
@@ -307,6 +307,7 @@
   - `no SSE ack request is made`.
   - `a second message can be sent while the first response is still open`, and both responses render into their own blocks.
   - `input unlocks at turn-end while the follow is silent`.
+  - `an older response ending does not unlock a newer send`: A past turn-end, B sent and its turn blocked, A's stream ends → input stays locked until B's turn-end.
   - `a supersede or limit note never becomes part of a message`, in both SSE-first and stream-first orders.
 - [ ] **Steps 2–5:** FAIL → implement → PASS → commit `feat(webui): render by message id, x-clh-ack, no SSE ack`.
 
