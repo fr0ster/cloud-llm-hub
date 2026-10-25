@@ -42,7 +42,7 @@
 
 The hub's status must report unconfirmed records. The published recorder's `stats()` does not return that count.
 
-- **Change** (llm-agent repo, branch from main): add `unconfirmed: number` to `IUsageControl.stats()` in `@mcp-abap-adt/llm-agent`, as an additive optional field in the contract, and implement it in `@mcp-abap-adt/llm-usage`'s recorder. It counts records whose delivery is currently ambiguous.
+- **Change** (llm-agent repo, branch from main): add `unconfirmed: number` to `IUsageControl.stats()` in the core package `llm-agent`, as an additive optional field in the contract, and implement it in the `llm-usage` recorder. It counts records whose delivery is currently ambiguous.
 - **Test:** an ambiguous send increments it; a later successful resend decrements it.
 - **Release:** a changeset (minor for `llm-usage`, minor for `llm-agent`), then the version PR → tags → the user publishes. The hub's Task 1 depends on this release.
 
@@ -71,8 +71,8 @@ The hub's status must report unconfirmed records. The published recorder's `stat
   - re-check every 5 min;
   - **switch-over**, all under one mutex shared with `write`:
     1. copy the buffered records to the HANA sink, idempotent, in batches;
-    2. remove each batch from the buffer only after its copy resolved;
-    3. once the buffer is empty, switch the active sink and reader to HANA.
+    2. keep the whole buffer, and keep it as the reader, until every record is copied. A failed batch leaves the buffer complete and the copy is retried at the next check; HANA may already hold some records, which is harmless because writes are idempotent;
+    3. when the full copy succeeded, switch the active sink and reader to HANA atomically, then clear the buffer.
   - Writes that arrive during the copy are queued behind the mutex, then go to whichever sink is active, so no record is stranded. A failed copy keeps the records, and the copy is retried at the next check.
 - **Composition:**
   - with several sinks configured, writes go through `combineSinks`;
@@ -94,6 +94,7 @@ The hub's status must report unconfirmed records. The published recorder's `stat
   - status counters, including unconfirmed;
   - `initUsage` runs before `startProviders`;
   - the switch-over with concurrent writes: no record is lost or duplicated;
+  - an intermediate batch fails during the copy: export still returns every record from the buffer, and a later check completes the switch;
   - `userId` hashing is stable and on by default;
   - `LLM_AGENT_USAGE_MEASURE` without a kind suppresses its records and its timer;
   - off → `initUsage` returns `undefined`.
@@ -139,8 +140,10 @@ The hub's status must report unconfirmed records. The published recorder's `stat
 - Modify, at the lifecycle owners:
   - **long sessions:** `srv/lib/session-lifecycle.ts` `lifecycleHooks` (open, revive, close) and `discardSession` (`expired-offline`, `endKnown: false`);
   - **plain sessions:**
-    - open: the first request that creates the session's history in `srv/session-store.ts`;
-    - close: `SessionRetention` eviction (`srv/lib/session-retention.ts`, synchronous `deleteAll` inside `lease`), history expiry in `srv/session-store.ts`, and `forgetEmptySessions`. Each emits `close` once, with a closed-set guard, so overlapping paths do not double it.
+    - The owner is `SessionRetention` (`srv/lib/session-retention.ts`). It tracks every retained plain session, whatever created it: chat history, `rag-handler.ts` session collections, or dialogue state.
+    - **Open:** the shared once-only hook `onSessionRetained(userId, sessionId)`, called when `lease` creates a new entry.
+    - **Close:** `onSessionReleased(userId, sessionId, reason)`, called when the entry ends: eviction (synchronous `deleteAll` inside `lease`, reason `evicted`), or `forgetEmptySessions` when no state remains (reason `ttl`). A closed-set guard makes it once-only.
+    - History expiry in `srv/session-store.ts` only shrinks storage. It is not a close.
   - Collection sweeps only affect storage measures, not the session lifecycle.
   - the request ends in `srv/openai-handler.ts`, `srv/anthropic-handler.ts` and `srv/agent-mcp.ts`.
 - Create: `srv/lib/usage/hub-records.ts`, with typed builders `sessionRecord(...)`, `requestRecord(...)` and their `x.hub.*` value shapes, using only numbers, labels and flags.
@@ -162,7 +165,9 @@ The hub's status must report unconfirmed records. The published recorder's `stat
   - a disconnect with work continuing: `operationEndAt` > `responseEndAt`, recorded once;
   - shutdown order, including a live plain session;
   - **eviction while a measurement is slow:** a delayed storage measurement does not block `lease`; the evicted session's close uses the cached snapshot; another admission reuses the slot at once;
-  - each plain-session close path emits exactly one close.
+  - each plain-session close path emits exactly one close;
+  - history expiry while dialogue state or session collections remain: no close, and the next storage snapshot shows the smaller history;
+  - a session created only through `rag-handler.ts` session collections (no chat): it gets an open, storage measurements and, on eviction, a close.
 - [ ] **Steps 2–5:** fail → implement → pass → commit `feat(usage): session and request records`.
 
 ### Task 4: Storage records
