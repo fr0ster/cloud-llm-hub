@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Fixed
 
+- Selected knowledge collections now provide answer context in both OpenAI and Anthropic chats, including dialogue planner turns.
 - Sessions without available tools now refuse action requests instead of reporting invented success, with guidance for missing or unreachable SAP destinations. Questions and answers using selected collection context remain available.
 
 ## [9.3.0] - 2026-10-24

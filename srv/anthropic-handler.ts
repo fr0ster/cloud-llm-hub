@@ -1,3 +1,4 @@
+import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
 /**
  * Anthropic Messages API handler for SmartAgent.
@@ -49,7 +50,6 @@ import {
   type LongSessionRequest,
   releaseRequestConnection,
 } from './lib/session-connection';
-import { extractText } from './lib/session-turns';
 import {
   anthropicDoorRefusal,
   anthropicErrorPayload,
@@ -133,7 +133,8 @@ async function serveMessages(
 ): Promise<void> {
   const log = cds.log('anthropic-handler');
   const dialogueMode = getAgentConfig().agent.chatCoordinator === 'dialogue';
-  const { messages, stream, options, context } = normalized;
+  const { stream, options, context } = normalized;
+  let { messages } = normalized;
 
   log.info('Messages request', {
     stream,
@@ -308,16 +309,7 @@ async function serveMessages(
 
   const chatAgent =
     useDialogue && s
-      ? dialogueChat(
-          req,
-          userId,
-          s,
-          destination,
-          extractText(
-            messages.filter((m) => m.role === 'user').at(-1)?.content,
-          ),
-          res,
-        )
+      ? dialogueChat(req, userId, s, destination, res)
       : handle.agent;
 
   const agentOpts = {
@@ -371,7 +363,27 @@ async function serveMessages(
       ),
     );
 
+  const collections = collectionRetrieval(handle.agent);
   try {
+    const retrieval = await collections.retrieve(
+      req,
+      messages,
+      userId,
+      sessionId,
+      log,
+    );
+    if (retrieval.refusal) {
+      out.json(retrieval.refusal.status, {
+        type: 'error',
+        error: {
+          type:
+            retrieval.refusal.kind === 'conflict' ? 'conflict' : 'api_error',
+          message: retrieval.refusal.message,
+        },
+      });
+      return;
+    }
+    messages = retrieval.messages;
     // --- Streaming ---
     if (stream) {
       out.writeHead(200, {
@@ -538,6 +550,7 @@ async function serveMessages(
       }
     }
   } finally {
+    collections.restore();
     await pipeline.drain();
     await releaseRequestConnection(requestConnection, s);
     // Free the per-trace telemetry bucket — nobody else calls dropRequest, so

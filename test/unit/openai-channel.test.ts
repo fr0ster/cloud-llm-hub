@@ -620,3 +620,33 @@ describe('adaptive status SSE', () => {
     expect(res.body).not.toContain('event: status');
   });
 });
+
+describe('selected collection retrieval', () => {
+  afterEach(() => jest.restoreAllMocks());
+  it('reads rag_collections from a raw, unparsed body', async () => {
+    const { getCollectionRegistry } = require('../../srv/agent-manager');
+    const registry = getCollectionRegistry();
+    jest.spyOn(registry, 'getCollection').mockResolvedValue({
+      id: 'docs__u_alice',
+      owner: 'alice',
+      scope: 'user',
+    });
+    jest
+      .spyOn(registry, 'degradedOf')
+      .mockResolvedValue({ httpStatus: 409, message: 'collection degraded' });
+    const raw = Buffer.from(
+      JSON.stringify({ ...body(), rag_collections: ['docs__u_alice'] }),
+    );
+    const req = {
+      ...fakeReq(undefined),
+      async *[Symbol.asyncIterator]() {
+        yield raw;
+      },
+    } as unknown as Request;
+    const res = fakeRes();
+    await handleChatCompletions(req, res as unknown as Response);
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error.message).toBe('collection degraded');
+    expect(harness.events).not.toContain('pipeline');
+  });
+});

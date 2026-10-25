@@ -1,6 +1,6 @@
 /**
  * Separates the user's own words from the retrieved collection context that
- * the OpenAI handler appends to the last user message.
+ * the chat handlers append to the last user message.
  *
  * The provenance is kept out of band: the handler records the user's original
  * text against the new message object. Client text can contain the marker

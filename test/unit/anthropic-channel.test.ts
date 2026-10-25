@@ -714,3 +714,69 @@ it('plain Anthropic release preserves the run for the next request until TTL', a
     now.mockRestore();
   }
 });
+
+describe('selected collection retrieval', () => {
+  afterEach(() => jest.restoreAllMocks());
+  function collections(status?: number) {
+    const { getCollectionRegistry } = require('../../srv/agent-manager');
+    const registry = getCollectionRegistry();
+    jest.spyOn(registry, 'getCollection').mockResolvedValue({
+      id: 'docs__u_alice',
+      owner: 'alice',
+      scope: 'user',
+    });
+    jest
+      .spyOn(registry, 'degradedOf')
+      .mockResolvedValue(
+        status
+          ? { httpStatus: status, message: 'collection unavailable' }
+          : undefined,
+      );
+    jest.spyOn(registry, 'getRagStores').mockResolvedValue({});
+    jest.spyOn(registry, 'getRagStore').mockResolvedValue({
+      query: async () => ({
+        ok: true,
+        value: [{ text: 'retrieved answer', score: 1 }],
+      }),
+    });
+  }
+  it('passes context with original user provenance to the agent', async () => {
+    collections();
+    const {
+      userTextOf,
+      RAG_CONTEXT_MARKER,
+    } = require('../../srv/lib/rag-context-marker');
+    harness.process = async (messages) => {
+      const last = (messages as Array<{ content: string }>).at(-1);
+      if (!last) throw new Error('missing user message');
+      expect(last.content).toBe(`hi${RAG_CONTEXT_MARKER}retrieved answer`);
+      expect(userTextOf(last)).toBe('hi');
+      return { ok: true, value: { content: 'answer', stopReason: 'stop' } };
+    };
+    const req = fakeReq(body()) as unknown as Request;
+    req.headers['x-rag-collections'] = 'docs__u_alice';
+    const res = fakeRes();
+    await handleAnthropicMessages(req, res as unknown as Response);
+    expect(res.statusCode).toBe(200);
+    expect(harness.events).toContain('pipeline');
+  });
+  it.each([409, 503])(
+    'refuses degraded collections before streaming (%s)',
+    async (status) => {
+      collections(status);
+      const req = fakeReq(body(true)) as unknown as Request;
+      req.headers['x-rag-collections'] = 'docs__u_alice';
+      const res = fakeRes();
+      await handleAnthropicMessages(req, res as unknown as Response);
+      expect(res.statusCode).toBe(status);
+      expect(JSON.parse(res.body)).toEqual({
+        type: 'error',
+        error: {
+          type: status === 409 ? 'conflict' : 'api_error',
+          message: 'collection unavailable',
+        },
+      });
+      expect(harness.events).not.toContain('pipeline');
+    },
+  );
+});
