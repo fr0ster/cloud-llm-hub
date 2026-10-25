@@ -97,7 +97,7 @@ Logical bytes are the UTF-8 length of the persisted payloads, and vector bytes a
 How storage is measured:
 - **Counters, not scans.** Values come from counters the stores maintain at write time where cheap. Otherwise they come from bounded asynchronous aggregate queries (`COUNT`, `SUM(LENGTH)`) per backend: HANA, PostgreSQL, SQLite and memory.
 - **Never content.** Content and vectors are never loaded to measure them.
-- **Unknown values.** A measure the backend cannot provide is reported as `null` with `unknown: true`.
+- **Unknown values.** A measure the backend cannot provide is omitted, and the record carries `<measure>Unknown: true` (for example `historyBytesUnknown: true`). This fits the contract's value types (number, string, boolean) and keeps partial snapshots unambiguous.
 - **When.** At session close, and every `LLM_AGENT_USAGE_STORAGE_INTERVAL_MS` for live sessions and users.
 
 **`x.hub.process`**, every `LLM_AGENT_USAGE_PROCESS_INTERVAL_MS`:
@@ -129,10 +129,10 @@ It carries no session id. Attribution to sessions is a later analysis step, usin
 - **Missing `node:sqlite`.** If the runtime lacks it (Node < 22.13; the mta engine is 22.16), the hub logs it, reports it in status and falls back to the bounded `memory` sink.
 
 **HANA.** The DDL from `llm-usage-hana` is added to `tools/deploy-hdi-tables.sh`, which already applies the vector-store tables to the shared HDI container. The sink runs with `autoCreateSchema` off. If the table is missing:
-- the hub uses the bounded, readable `memory` sink and reports it in status;
+- the hub uses a bounded, readable `memory` sink in fallback mode and reports it in status. In this mode the sink never evicts: when full, it rejects new batches with `UsageDeliveryError(possiblyDelivered: false)`, so the recorder accounts them as lost through its normal path, with their session, kind and affected time range in `x.usage.lost`;
 - it re-checks the table every 5 minutes;
-- once the table exists, it writes the memory sink's records to it (idempotent by id) and switches over.
-- Records beyond the memory sink's bound are accounted as lost by the recorder, so they still appear in `x.usage.lost`.
+- once the table exists, it copies the memory sink's records to it (idempotent by id) and switches over.
+- A record leaves memory only after its copy succeeded. A failed copy keeps it, and the copy is retried at the next check.
 
 **Retention.** Retention runs once a day, and at startup, against the configured sink.
 
@@ -207,7 +207,7 @@ The user decided to replace `MCP_Full` with `MCP_Admin` and to remove `MCP_Analy
 - **Hub-owned providers.** `SapAiCoreEmbedder` and the step reviewer, the guard classifier and the retrieval embeddings produce records.
 - **Storage.**
   - Measures do not overlap: the outbox is not counted twice.
-  - Unknown measures are reported as such.
+  - Unknown measures are omitted, with their `…Unknown` flag set.
   - No content is loaded.
 - **Content.** Distinctive strings in the prompts, tool arguments, results and documents never appear in any record.
 - **Overhead.** A small benchmark harness, built as part of this work, runs the fake-pipeline dialogue scenario with recording on and off. Latency and memory stay within noise, and recording off is identical to today.
@@ -215,5 +215,8 @@ The user decided to replace `MCP_Full` with `MCP_Admin` and to remove `MCP_Analy
   - Window, kind and session filters work, with the CSV columns.
   - Loss evidence is included across a window boundary (late loss) and for `''` losses.
   - Requests without `MCP_Admin` are refused.
-- **Fallbacks and retention.** The HANA-table-missing fallback and switch-over, the SQLite capability fallback, and retention.
+- **Fallbacks and retention.**
+  - The HANA-table-missing fallback and switch-over.
+  - Fallback overflow before switch-over: the overflowing batches are reported in `x.usage.lost` with the right sessions and ranges; nothing in memory is lost silently, and a failed copy is retried.
+  - The SQLite capability fallback, and retention.
 - **Live on the POC.** One session per typical scenario (question, read task, multi-step task). Export it, and check the totals against AI Core and logs where they are visible.
