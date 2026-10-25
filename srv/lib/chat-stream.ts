@@ -94,6 +94,7 @@ export async function streamDialogue(opts: {
   run: (fn: () => Promise<void>) => Promise<void>;
   maxMs: number;
   onError: (error: unknown) => unknown;
+  onTurnEnd?: (text: string) => void;
   onEnd?: (text: string) => void;
 }): Promise<() => Promise<void>> {
   const { stream, protocol } = opts;
@@ -183,6 +184,7 @@ export async function streamDialogue(opts: {
           await push({ ok: true, value });
         }
       }
+      opts.onTurnEnd?.(text);
     });
   } catch (error) {
     failure = error;

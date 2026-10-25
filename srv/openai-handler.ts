@@ -70,6 +70,7 @@ import {
 import { runWithSessionId } from './request-session';
 import { honouredSessionId, sessionIdOf, type WithSession } from './session-id';
 import {
+  amendSessionMessage,
   appendToSession,
   clearSession,
   getSessionHistory,
@@ -293,28 +294,38 @@ export async function handleChatCompletions(
     getAgentConfig().agent.chatCoordinator === 'dialogue'
       ? chatStream(res, 'openai', s)
       : undefined;
-  const continuation = s
-    ? await longSessions().run(
-        s,
-        () => serveChatCompletions(req, res, body, userMessages, s, early),
-        () => early?.ensureStream(),
-      )
-    : await serveChatCompletions(
-        req,
-        res,
-        body,
-        userMessages,
-        undefined,
-        early,
-      );
-  if (typeof continuation === 'function') await continuation();
-  else if (continuation) {
-    const refusal = openAiSessionRunRefusal(continuation.refused);
-    if (early?.opened) early.error(refusal.body);
-    else {
-      res.writeHead(refusal.status, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(refusal.body));
+  try {
+    const continuation = s
+      ? await longSessions().run(
+          s,
+          () => serveChatCompletions(req, res, body, userMessages, s, early),
+          () => early?.ensureStream(),
+        )
+      : await serveChatCompletions(
+          req,
+          res,
+          body,
+          userMessages,
+          undefined,
+          early,
+        );
+    if (typeof continuation === 'function') await continuation();
+    else if (continuation) {
+      const refusal = openAiSessionRunRefusal(continuation.refused);
+      if (early?.opened) early.error(refusal.body);
+      else {
+        res.writeHead(refusal.status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(refusal.body));
+      }
     }
+  } catch (error) {
+    if (!early?.opened) throw error;
+    early.error({
+      error: {
+        message: error instanceof Error ? error.message : String(error),
+        type: 'server_error',
+      },
+    });
   }
 }
 
@@ -720,9 +731,10 @@ async function serveChatCompletions(
       return;
     }
     pipeline = admission.admitted;
-  } catch {
+  } catch (error) {
     // Left while queued. Nothing was started, so nothing is owed but the connection.
     await releaseRequestConnection(requestConnection, s);
+    if (early?.opened && !callerLeft.signal.aborted) throw error;
     return;
   }
 
@@ -837,6 +849,7 @@ async function serveChatCompletions(
         : {};
 
     if (body.stream && useDialogue && early) {
+      let assistant: Message | undefined;
       return await streamDialogue({
         stream: early,
         protocol: 'openai',
@@ -858,17 +871,19 @@ async function serveChatCompletions(
             },
           };
         },
-        onEnd: (text) => {
+        onTurnEnd: (text) => {
           const lastUser = normalizedMessages
             .filter((m) => m.role === 'user')
             .at(-1);
           if (lastUser && text) {
-            appendToSession(sessionId, userId, lastUser, {
-              role: 'assistant',
-              content: text,
-            });
+            assistant = { role: 'assistant', content: text };
+            appendToSession(sessionId, userId, lastUser, assistant);
             recordTurn(sessionId, userId, lastUser, text);
           }
+        },
+        onEnd: (text) => {
+          if (assistant)
+            amendSessionMessage(sessionId, userId, assistant, text);
         },
       });
     }

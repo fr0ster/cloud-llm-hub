@@ -55,6 +55,7 @@ import {
 } from '../../srv/lib/long-session';
 import { handleChatCompletions } from '../../srv/openai-handler';
 import {
+  getRequestHistory,
   getRequestSessionId,
   getRequestUserId,
 } from '../../srv/request-session';
@@ -403,7 +404,7 @@ it.each(['before', 'before\n'])(
             tool: 'test',
           });
           opts.onPartial?.({ kind: 'content', delta: 'after' });
-          return { ok: true, value: { content: before + 'after' } };
+          return { ok: true, value: { content: `${before}after` } };
         },
       }).process([], options);
       return { text: result.ok ? result.value.content : '' };
@@ -422,7 +423,7 @@ it.each(['before', 'before\n'])(
       if (chunk.ok) text += chunk.value.content || '';
     expect(text).toContain(
       // A tool boundary always yields a paragraph break (two newlines).
-      before + (before.endsWith('\n') ? '\n' : '\n\n') + 'after',
+      `${before}${before.endsWith('\n') ? '\n' : '\n\n'}after`,
     );
   },
 );
@@ -899,6 +900,11 @@ for (const anthropic of [false, true]) {
     });
     const res = fakeRes();
     await handler(streamingRequest(), res as unknown as Response);
+    if (!anthropic) {
+      expect(
+        getSessionHistory(session.key, 'alice').map((m) => m.content),
+      ).toEqual(['hi', `${visible}\n\nfollow`]);
+    }
     expect(res.body.match(/: turn-end/g)).toHaveLength(1);
     expect(res.body.indexOf(': turn-end')).toBeLessThan(
       res.body.indexOf(': message-id follow-id'),
@@ -1010,3 +1016,117 @@ for (const anthropic of [false, true]) {
     expect(ended).not.toHaveBeenCalled();
   });
 }
+
+for (const anthropic of [false, true]) {
+  for (const readiness of [false, true]) {
+    it(`setup rejection ends the stream and heartbeat (anthropic=${anthropic}, readiness=${readiness})`, async () => {
+      const { getCollectionRegistry } = await import('../../srv/agent-manager');
+      const retrieval = await import('../../srv/lib/collection-retrieval');
+      const { CollectionBackendError } = await import(
+        '../../srv/lib/collection-persistence'
+      );
+      jest.useFakeTimers();
+      const res = fakeRes();
+      const req = streamingRequest();
+      const error = readiness
+        ? new CollectionBackendError('restore', {
+            name: 'RagError',
+            code: 'COLLECTIONS_UNAVAILABLE',
+            message: 'registry unavailable',
+          })
+        : new Error('retrieval failed');
+      if (readiness) {
+        req.headers['x-rag-collections'] = 'docs';
+        jest
+          .spyOn(getCollectionRegistry(), 'ready', 'get')
+          .mockImplementation(() => {
+            expect(res.headersSent).toBe(true);
+            return Promise.reject(error);
+          });
+      } else {
+        jest.spyOn(retrieval, 'collectionRetrieval').mockReturnValue({
+          restore: jest.fn(),
+          retrieve: async () => {
+            expect(res.headersSent).toBe(true);
+            throw error;
+          },
+        });
+      }
+      try {
+        await (anthropic ? handleAnthropicMessages : handleChatCompletions)(
+          req,
+          res as unknown as Response,
+        );
+        expect(res.statusCode).toBe(200);
+        expect(res.writableEnded).toBe(true);
+        expect(res.body).toContain(error.message);
+        expect(res.body).toContain(
+          anthropic ? 'event: error' : '"type":"server_error"',
+        );
+        expect(res.body).not.toContain('[DONE]');
+        expect(res.body).not.toContain('message_stop');
+        expect(res.body).not.toContain('"finish_reason":"stop"');
+        expect(ended).not.toHaveBeenCalled();
+        const body = res.body;
+        await jest.advanceTimersByTimeAsync(20_000);
+        expect(res.body).toBe(body);
+      } finally {
+        jest.restoreAllMocks();
+        jest.useRealTimers();
+      }
+    });
+  }
+}
+
+it('a request during follow sees the preceding turn in its history', async () => {
+  const handle = await dialogueFor('alice', session.key, 'DEST');
+  handle.state = () => ({
+    status: 'active',
+    turnActive: false,
+    queuedInputs: 0,
+    running: 1,
+    total: 1,
+    done: 0,
+    idle: false,
+  });
+  const following = deferred();
+  handle.subscribe = () => {
+    following.resolve();
+    return () => {};
+  };
+  const res = fakeRes();
+  const first = handleChatCompletions(
+    streamingRequest(),
+    res as unknown as Response,
+  );
+  await following.promise;
+  expect(res.writableEnded).toBe(false);
+  expect(getSessionHistory(session.key, 'alice').map((m) => m.content)).toEqual(
+    ['hi', visible],
+  );
+  send.mockImplementationOnce(async () => {
+    expect(getRequestHistory()).toEqual([
+      expect.objectContaining({ role: 'user', content: 'hi' }),
+      expect.objectContaining({
+        role: 'assistant',
+        content: expect.stringContaining(visible),
+      }),
+    ]);
+    return { text: 'second answer' };
+  });
+  const req = streamingRequest();
+  Object.assign(req, { sessionMinted: false });
+  req.body = { messages: [{ role: 'user', content: 'second question' }] };
+  const secondRes = fakeRes();
+  await handleChatCompletions(req, secondRes as unknown as Response);
+  expect(secondRes.body).toContain('second answer');
+  await first;
+  const history = getSessionHistory(session.key, 'alice');
+  expect(history.map((m) => m.role)).toEqual([
+    'user',
+    'assistant',
+    'user',
+    'assistant',
+  ]);
+  expect(history[1].content).toContain(visible);
+});

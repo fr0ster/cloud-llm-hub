@@ -127,20 +127,31 @@ export async function handleAnthropicMessages(
     getAgentConfig().agent.chatCoordinator === 'dialogue'
       ? chatStream(res, 'anthropic', s)
       : undefined;
-  const continuation = s
-    ? await longSessions().run(
-        s,
-        () => serveMessages(req, res, normalized, s, early),
-        () => early?.ensureStream(),
-      )
-    : await serveMessages(req, res, normalized, undefined, early);
-  if (typeof continuation === 'function') await continuation();
-  else if (continuation) {
-    const refusal = anthropicSessionRunRefusal(continuation.refused);
-    if (early?.opened) early.error(refusal.body);
-    else {
-      res.status(refusal.status).json(refusal.body);
+  try {
+    const continuation = s
+      ? await longSessions().run(
+          s,
+          () => serveMessages(req, res, normalized, s, early),
+          () => early?.ensureStream(),
+        )
+      : await serveMessages(req, res, normalized, undefined, early);
+    if (typeof continuation === 'function') await continuation();
+    else if (continuation) {
+      const refusal = anthropicSessionRunRefusal(continuation.refused);
+      if (early?.opened) early.error(refusal.body);
+      else {
+        res.status(refusal.status).json(refusal.body);
+      }
     }
+  } catch (error) {
+    if (!early?.opened) throw error;
+    early.error({
+      type: 'error',
+      error: {
+        message: error instanceof Error ? error.message : String(error),
+        type: 'api_error',
+      },
+    });
   }
 }
 
@@ -367,8 +378,9 @@ async function serveMessages(
       return;
     }
     pipeline = admission.admitted;
-  } catch {
+  } catch (error) {
     await releaseRequestConnection(requestConnection, s);
+    if (early?.opened && !callerLeft.signal.aborted) throw error;
     return;
   }
 
@@ -436,6 +448,7 @@ async function serveMessages(
       userId,
       sessionId,
       log,
+      res.headersSent,
     );
     if (retrieval.refusal) {
       if (early?.opened) {
