@@ -11,7 +11,7 @@ import { longSessionsIfReady } from './long-session';
 import type { LongSessionRequest } from './session-connection';
 import { taskView } from './task-view';
 
-/** Multiple tabs receive live events; messages remain until acknowledged.
+/** Read-only view of complete session messages, plans and tasks for all tabs.
  * The open channel is the WebUI's live connection, so it counts as session
  * activity: each heartbeat touches the session, and the TTL starts once the
  * channel drops (spec: TTL counts from the last activity).
@@ -71,6 +71,7 @@ export async function handleDialogueEvents(
     if (plan) send('plan', plan);
     if (closed) return;
     const cursor = req.headers?.['last-event-id'];
+    // subscribe replays outbox.history(cursor), including confirmed messages.
     const detach = handle.subscribe(
       (event) => {
         if (event.kind === 'message')
@@ -101,7 +102,9 @@ export async function handleDialogueEvents(
   heartbeat.unref?.();
 }
 
-/** Same middleware and ownership boundary as the event stream. */
+/** @deprecated Compatibility no-op for old WebUI tabs. Same ownership boundary
+ * as the event stream; delivery is confirmed only by chat requests.
+ */
 export async function handleDialogueAck(
   req: Request,
   res: Response,
@@ -121,11 +124,5 @@ export async function handleDialogueAck(
       .json({ error: { message: 'Dialogue coordinator required' } });
     return;
   }
-  if (typeof req.body?.id !== 'string' || !req.body.id) {
-    res.status(400).json({ error: { message: 'Message id required' } });
-    return;
-  }
-  const handle = await lookupDialogue(userId, session.key);
-  await handle?.outbox.confirmUpTo(req.body.id);
   res.status(204).end();
 }
