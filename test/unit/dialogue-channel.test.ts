@@ -109,6 +109,7 @@ beforeEach(() => {
   session = registry.open('alice', {}) as LongSession;
   jest.mocked(dialogueFor).mockResolvedValue({
     retrievedContexts: turnContext,
+    replies: new WeakMap(),
     factory: { refresh },
     drainPending: async () => {},
     hasSubscribers: () => true,
@@ -1073,6 +1074,55 @@ for (const anthropic of [false, true]) {
         .find((line) => line.startsWith('data: {"error":'));
       expect(JSON.parse(errorChunk?.slice('data: '.length) ?? '')).toEqual({
         error: { message: 'follow failed', type: 'server_error' },
+      });
+    }
+    expect(res.body).not.toContain('[DONE]');
+    expect(res.body).not.toContain('event: message_stop');
+    expect(res.body).not.toContain('"finish_reason":"stop"');
+    expect(ended).not.toHaveBeenCalled();
+  });
+
+  it(`${label}: failed background settlement after progress emits an error without a success terminal`, async () => {
+    const handle = await dialogueFor('alice', session.key, 'DEST');
+    handle.state = () => ({
+      status: 'active',
+      turnActive: false,
+      queuedInputs: 0,
+      running: 0,
+      total: 1,
+      done: 1,
+      idle: false,
+    });
+    const progress = {
+      id: 'progress',
+      text: 'background progress',
+      createdAt: 4,
+      trigger: 'event' as const,
+    };
+    jest.spyOn(outbox, 'pending').mockReturnValue([]);
+    handle.subscribe = (fn) => {
+      jest.spyOn(outbox, 'pending').mockReturnValue([progress]);
+      setImmediate(() =>
+        fn({ kind: 'settled', outcome: 'failed', trigger: 'event' }),
+      );
+      return () => {};
+    };
+    const res = fakeRes();
+    await handler(streamingRequest(), res as unknown as Response);
+    expect(res.body).toContain('background progress');
+    expect(res.body).toContain('Background planner turn failed');
+    if (anthropic) {
+      expect(res.body).toContain('event: error\n');
+      expect(res.body).toContain('"type":"api_error"');
+    } else {
+      const errorChunk = res.body
+        .split('\n')
+        .find((line) => line.startsWith('data: {"error":'));
+      expect(JSON.parse(errorChunk?.slice('data: '.length) ?? '')).toEqual({
+        error: {
+          message: 'Background planner turn failed',
+          type: 'server_error',
+        },
       });
     }
     expect(res.body).not.toContain('[DONE]');

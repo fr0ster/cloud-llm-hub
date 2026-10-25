@@ -205,3 +205,16 @@ test.each([
     expect(restored.history().map((m) => m.text)).toEqual(texts);
   },
 );
+
+test('upsert replaces an unconfirmed reply and preserves confirmed text', async () => {
+  const persist = jest.fn(async (_entries: OutboxEntry[]) => {});
+  const box = new DialogueOutbox([], persist);
+  await box.upsert([message('reply')]);
+  await box.upsert([{ ...message('reply'), text: 'complete' }]);
+  expect(box.pending()).toEqual([{ ...message('reply'), text: 'complete' }]);
+  ended(box, 'reply');
+  await box.confirmUpTo('reply');
+  await box.upsert([{ ...message('reply'), text: 'changed' }]);
+  expect(box.history()).toEqual([{ ...message('reply'), text: 'complete' }]);
+  expect(box.pending()).toEqual([]);
+});

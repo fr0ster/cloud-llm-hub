@@ -117,12 +117,16 @@ export function dialogueChat(
         if (context) handle.retrievedContexts.set(trace, context);
         const replyId = randomUUID();
         const createdAt = Date.now();
+        handle.replies.set(trace, { id: replyId, createdAt });
         const answer = await handle.session
           .send(userText(message), {
             signal: opts?.signal,
             trace,
           })
-          .finally(() => handle.retrievedContexts.delete(trace))
+          .finally(() => {
+            handle.retrievedContexts.delete(trace);
+            handle.replies.delete(trace);
+          })
           .finally(() => handle.drainPending());
         const text = stripNoMessage(answer.text);
         const carried = [...pending];
@@ -133,7 +137,7 @@ export function dialogueChat(
             createdAt,
             trigger: 'user' as const,
           };
-          await handle.outbox.add([reply]);
+          await handle.outbox.upsert([reply]);
           carried.push(reply);
         }
         for (const message of carried) delivery.carried(message.id);
@@ -186,6 +190,7 @@ export function dialogueChat(
       };
       const context = message && ragContextOf(message);
       if (context) handle.retrievedContexts.set(trace, context);
+      handle.replies.set(trace, { id: replyId, createdAt });
       const sending = handle.session
         .send(userText(message), {
           signal: opts?.signal,
@@ -199,7 +204,10 @@ export function dialogueChat(
             }
           },
         })
-        .finally(() => handle.retrievedContexts.delete(trace))
+        .finally(() => {
+          handle.retrievedContexts.delete(trace);
+          handle.replies.delete(trace);
+        })
         .then(
           (answer) => {
             const content = receivedPartial
@@ -243,7 +251,7 @@ export function dialogueChat(
       await handle.drainPending();
       if (failure) throw failure;
       if (text.trim()) {
-        await handle.outbox.add([
+        await handle.outbox.upsert([
           { id: replyId, text, createdAt, trigger: 'user' },
         ]);
         delivery.carried(replyId);

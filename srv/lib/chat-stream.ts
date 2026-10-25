@@ -201,6 +201,8 @@ export async function streamDialogue(opts: {
             await content(item.message.text);
             comment('message-end', item.message.id);
             if (!stream.out.detached && !stream.signal.aborted) item.written();
+          } else if (item.reason === 'error') {
+            throw new Error('Background planner turn failed');
           } else if (item.note)
             await content(`${text ? '\n\n' : ''}${item.note}`);
         }

@@ -45,6 +45,7 @@ import {
 } from './dialogue-store';
 import { admitBackground, type PipelineSession } from './gatekeeper';
 import { longSessionsIfReady } from './long-session';
+import { stripNoMessage } from './no-message';
 import { renderNotice } from './notify-policy';
 import type { RecordingMcpClient } from './recording-mcp-client';
 import { runWithRequestSystem } from './request-system-context';
@@ -62,7 +63,7 @@ type Plan = Exclude<DialogueState['plan'], string | undefined>;
 type PlanStep = Plan['steps'][number];
 
 export type DialogueEvent =
-  | { kind: 'settled' }
+  | { kind: 'settled'; outcome: 'ok' | 'failed'; trigger: 'user' | 'event' }
   | { kind: 'message'; message: PlannerMessage }
   | { kind: 'plan'; plan: DialoguePlan }
   | {
@@ -93,6 +94,7 @@ export interface DialogueHandle {
   destination: string;
   session: DialogueSession;
   retrievedContexts: WeakMap<object, string>;
+  replies: WeakMap<object, { id: string; createdAt: number }>;
   outbox: DialogueOutbox;
   state(): {
     turnActive: boolean;
@@ -224,6 +226,8 @@ async function open(
   const planner = await buildPlannerAgent(config);
   const factory = new SessionConnectionFactory(userId, key);
   const retrievedContexts = new WeakMap<object, string>();
+  const replies = new WeakMap<object, { id: string; createdAt: number }>();
+  let turnReply: { id: string; createdAt: number } | undefined;
   const turnPlanner = plannerWithEnvironment(
     plannerWithRetrievedContext(
       plannerWithParagraphs(planner),
@@ -410,7 +414,11 @@ async function open(
   const unsubscribeActivity = signals.on(
     'dialogue.activity',
     ({ payload }) => {
-      if (payload.running > 0) {
+      if (
+        payload.running > 0 ||
+        payload.turnActive ||
+        payload.queuedInputs > 0
+      ) {
         if (!releaseHold && longSession)
           releaseHold = registry?.hold(longSession);
       } else releaseLifetime();
@@ -424,9 +432,10 @@ async function open(
   );
   const unsubscribeSettled = signals.on(
     'dialogue.turn.settled',
-    async () => {
+    async ({ payload: { outcome, trigger } }) => {
+      turnReply = undefined;
       await outbox.flushed();
-      emit({ kind: 'settled' });
+      emit({ kind: 'settled', outcome, trigger });
     },
     { source: key },
   );
@@ -442,11 +451,16 @@ async function open(
       signals,
       planner: {
         async process(input, options) {
+          const reply = options.trace && replies.get(options.trace);
+          turnReply = undefined;
           try {
-            return await runWithContextCapture(
+            const result = await runWithContextCapture(
               { component: 'planner', sessionKey: key },
               () => turnPlanner.process(input, options),
             );
+            // The library appends this successful result before its final save.
+            if (result.ok) turnReply = reply;
+            return result;
           } finally {
             for (const task of session?.snapshot().tasks ?? []) emitTask(task);
           }
@@ -466,7 +480,27 @@ async function open(
           // turn() has recomputed plan status before persisting, including
           // turns triggered by background task events.
           emitPlan(state);
-          await outbox.add(state.pending);
+          const assistant = turnReply
+            ? [...state.conversation]
+                .reverse()
+                .find((message) => message.role === 'assistant')
+            : undefined;
+          const text = stripNoMessage(
+            typeof assistant?.content === 'string' ? assistant.content : '',
+          );
+          await outbox.upsert(
+            turnReply && text.trim()
+              ? [
+                  {
+                    id: turnReply.id,
+                    createdAt: turnReply.createdAt,
+                    text,
+                    trigger: 'user',
+                  },
+                ]
+              : [],
+            state.pending,
+          );
         },
         delete: async () => {},
       },
@@ -590,6 +624,7 @@ async function open(
     destination,
     session,
     retrievedContexts,
+    replies,
     outbox,
     state() {
       const activity = signals.last('dialogue.activity', key)?.payload;

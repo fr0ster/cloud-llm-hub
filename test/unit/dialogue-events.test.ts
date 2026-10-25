@@ -264,7 +264,7 @@ test('settled is not sent', async () => {
     res as any,
   );
   res.write.mockClear();
-  listener({ kind: 'settled' });
+  listener({ kind: 'settled', outcome: 'ok', trigger: 'event' });
   expect(res.write).not.toHaveBeenCalled();
   await outbox.add([
     { id: 'm2', text: 'complete', createdAt: 124, trigger: 'event' },

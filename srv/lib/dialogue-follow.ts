@@ -12,7 +12,8 @@ export type FollowItem =
         | 'idle'
         | 'limit'
         | 'superseded'
-        | 'disconnected';
+        | 'disconnected'
+        | 'error';
       note?: string;
     };
 type End = Extract<FollowItem, { kind: 'end' }>;
@@ -90,7 +91,11 @@ export function followDialogue(
         return;
       }
       unsubscribe = handle.subscribe((event) => {
-        if (event.kind === 'settled') evaluate = true;
+        if (event.kind === 'settled') {
+          evaluate = true;
+          if (event.outcome === 'failed')
+            forced ??= { kind: 'end', reason: 'error' };
+        }
         wake();
       });
       timer = setTimeout(

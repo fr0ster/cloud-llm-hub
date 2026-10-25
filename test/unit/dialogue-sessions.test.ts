@@ -1016,15 +1016,21 @@ test('a queued task cancelled before start releases the hold', async () => {
     await h.session.send('cancel');
     expect(h.session.snapshot().tasks[0].state).toBe('stopped');
     expect(mockRun).not.toHaveBeenCalled();
-    expect(registry.get('alice', 'key')?.lastActivity).toBe(2000);
-    setTime(3001);
+    // Cancellation leaves the planner turn holding the session until it ends.
+    expect(h.state().turnActive).toBe(true);
+    expect(registry.get('alice', 'key')?.lastActivity).toBe(0);
+    setTime(3000);
+    expect(await registry.sweep()).toBe(0);
+    await until(() => !h.state().turnActive);
+    expect(registry.get('alice', 'key')?.lastActivity).toBe(3000);
+    setTime(4001);
     expect(await registry.sweep()).toBe(1);
   } finally {
     releasePool();
   }
 });
 
-test("the hold is released at the task's terminal transition even when its event turn is delayed", async () => {
+test('the final planner turn holds the session after the last worker finishes', async () => {
   const { registry, setTime } = lifetimeRegistry();
   let finish!: () => void;
   let unblock!: () => void;
@@ -1050,10 +1056,62 @@ test("the hold is released at the task's terminal transition even when its event
       mockPlannerTurns.some((text) => text.startsWith('[task events]')),
     );
     expect(h.session.snapshot().tasks[0].state).toBe('done');
-    expect(registry.get('alice', 'key')?.lastActivity).toBe(2000);
+    expect(h.state().turnActive).toBe(true);
     setTime(3001);
+    expect(await registry.sweep()).toBe(0);
+    unblock();
+    await until(() => !h.state().turnActive);
+    expect(registry.get('alice', 'key')?.lastActivity).toBe(3001);
+    setTime(4002);
     expect(await registry.sweep()).toBe(1);
   } finally {
     unblock();
   }
 });
+
+test.each([false, true])(
+  'final save persists the registered reply before send resolves (stream: %s)',
+  async (stream) => {
+    mockPlan = { plan: 'Read', status: 'done' };
+    const { h } = await ready();
+    const trace = { traceId: 'reply-trace' };
+    h.replies.set(trace, { id: 'streamed-reply', createdAt: 123 });
+    let resolved = false;
+    let checked = false;
+    const backend = getDialogueStoreBackend();
+    const save = backend.save.bind(backend);
+    const spy = jest
+      .spyOn(backend, 'save')
+      .mockImplementation(async (user, key, row) => {
+        if (row.outbox?.some((entry) => entry.id === 'streamed-reply')) {
+          expect(resolved).toBe(false);
+          expect(row.outbox).toContainEqual({
+            id: 'streamed-reply',
+            createdAt: 123,
+            text: 'Plan updated',
+            trigger: 'user',
+          });
+          checked = true;
+        }
+        await save(user, key, row);
+      });
+    try {
+      await h.session.send('go', {
+        trace,
+        ...(stream ? { onPartial: () => {} } : {}),
+      });
+      resolved = true;
+      expect(checked).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+    await closeDialogue('alice', 'key', 'shutdown');
+    const restored = await dialogueFor('alice', 'key', 'TEST');
+    expect(restored.outbox.pending()).toContainEqual({
+      id: 'streamed-reply',
+      createdAt: 123,
+      text: 'Plan updated',
+      trigger: 'user',
+    });
+  },
+);

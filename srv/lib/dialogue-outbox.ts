@@ -129,10 +129,32 @@ export class DialogueOutbox {
       await pending.catch(() => {});
     } while (pending !== this.writes);
   }
+  /** Replace only unconfirmed replies, preserving their delivery identity. */
+  upsert(
+    messages: PlannerMessage[],
+    pending: PlannerMessage[] = [],
+  ): Promise<void> {
+    return this.addEntries(pending, messages);
+  }
   add(messages: PlannerMessage[]): Promise<void> {
+    return this.addEntries(messages, []);
+  }
+  private addEntries(
+    messages: PlannerMessage[],
+    replacements: PlannerMessage[],
+  ): Promise<void> {
     return this.write(async () => {
       for (const message of cleanMessages(messages)) {
         if (!this.seen.has(message.id)) {
+          this.messages.push(message);
+          this.seen.add(message.id);
+        }
+      }
+      for (const message of cleanMessages(replacements)) {
+        const existing = this.messages.find((entry) => entry.id === message.id);
+        if (existing) {
+          if (!existing.confirmed) existing.text = message.text;
+        } else if (!this.seen.has(message.id)) {
           this.messages.push(message);
           this.seen.add(message.id);
         }

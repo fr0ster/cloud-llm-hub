@@ -46,8 +46,9 @@ function fixture() {
     delivery,
     controller,
     start,
-    settled: () => {
-      for (const fn of listeners) fn({ kind: 'settled' });
+    settled: (outcome: 'ok' | 'failed' = 'ok') => {
+      for (const fn of listeners)
+        fn({ kind: 'settled', outcome, trigger: 'event' });
     },
     add: (id: string) =>
       outbox.add([{ id, text: id, createdAt: 1, trigger: 'event' }]),
@@ -229,4 +230,17 @@ test('replacement can start when the previous follow never started', async () =>
   });
   await old.next();
   await replacement.return?.();
+});
+
+test('failed settlement ends after progress with an error', async () => {
+  const f = fixture();
+  await f.add('progress');
+  const iterator = f.start();
+  expect((await iterator.next()).value).toMatchObject({ kind: 'message' });
+  f.settled('failed');
+  expect((await iterator.next()).value).toEqual({
+    kind: 'end',
+    reason: 'error',
+  });
+  expect((await iterator.next()).done).toBe(true);
 });
