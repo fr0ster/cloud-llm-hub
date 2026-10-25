@@ -55,6 +55,7 @@ export function dialogueChat(
     signal: AbortSignal,
     maxMs: number,
   ): AsyncIterable<FollowItem> | undefined;
+  hasFollow(): boolean;
 } {
   let followHandle: Awaited<ReturnType<typeof dialogueFor>> | undefined;
   let delivery: Delivery;
@@ -98,6 +99,7 @@ export function dialogueChat(
   };
 
   return {
+    hasFollow: () => followHandle !== undefined,
     follow(signal, maxMs) {
       return followHandle
         ? followDialogue(followHandle, { delivery, signal, maxMs })

@@ -53,6 +53,7 @@ import {
   LongSessionRegistry,
   setLongSessionsForTest,
 } from '../../srv/lib/long-session';
+import * as sessionTurns from '../../srv/lib/session-turns';
 import { handleChatCompletions } from '../../srv/openai-handler';
 import {
   getRequestHistory,
@@ -138,6 +139,70 @@ afterEach(() => {
   setLongSessionsForTest(undefined);
 });
 const visible = 'one\n\ntwo\n\nanswer';
+for (const initial of ['', 'NO_MESSAGE', 'answer']) {
+  for (const following of [false, true]) {
+    it(`openai records history and recall once: initial=${JSON.stringify(initial)}, follow=${following}`, async () => {
+      emptyPending = true;
+      const record = jest
+        .spyOn(sessionTurns, 'recordTurn')
+        .mockImplementation(() => {});
+      const handle = await dialogueFor('alice', session.key, 'DEST');
+      if (following) {
+        handle.state = () => ({
+          status: 'done',
+          turnActive: false,
+          queuedInputs: 0,
+          running: 0,
+          total: 1,
+          done: 1,
+          idle: false,
+        });
+        handle.subscribe = () => () => {};
+      }
+      send.mockImplementation(async () => {
+        expect(record).not.toHaveBeenCalled();
+        if (following) {
+          jest.mocked(outbox.pending).mockImplementation(() => {
+            // Recall must wait until the follow's visible answer is collected.
+            expect(record).not.toHaveBeenCalled();
+            return [
+              {
+                id: 'later',
+                text: 'follow answer',
+                createdAt: 3,
+                trigger: 'event',
+              },
+            ];
+          });
+        }
+        return { text: initial };
+      });
+      try {
+        await handleChatCompletions(
+          streamingRequest(),
+          fakeRes() as unknown as Response,
+        );
+        const turnText = initial === 'answer' ? initial : '';
+        const answer = following
+          ? `${turnText}${turnText ? '\n\n' : ''}follow answer`
+          : turnText;
+        expect(getSessionHistory(session.key, 'alice')).toEqual([
+          { role: 'user', content: 'hi' },
+          ...(answer ? [{ role: 'assistant', content: answer }] : []),
+        ]);
+        expect(record).toHaveBeenCalledTimes(1);
+        expect(record).toHaveBeenCalledWith(
+          session.key,
+          'alice',
+          expect.objectContaining({ role: 'user', content: 'hi' }),
+          answer,
+        );
+      } finally {
+        record.mockRestore();
+      }
+    });
+  }
+}
 for (const anthropic of [false, true])
   for (const stream of [false, true]) {
     it(`sentinel-only reply finishes (anthropic=${anthropic}, stream=${stream})`, async () => {

@@ -850,6 +850,10 @@ async function serveChatCompletions(
 
     if (body.stream && useDialogue && early) {
       let assistant: Message | undefined;
+      const lastUser = normalizedMessages
+        .filter((m) => m.role === 'user')
+        .at(-1);
+      let following = false;
       return await streamDialogue({
         stream: early,
         protocol: 'openai',
@@ -871,19 +875,32 @@ async function serveChatCompletions(
             },
           };
         },
-        onTurnEnd: (text) => {
-          const lastUser = normalizedMessages
-            .filter((m) => m.role === 'user')
-            .at(-1);
-          if (lastUser && text) {
-            assistant = { role: 'assistant', content: text };
-            appendToSession(sessionId, userId, lastUser, assistant);
-            recordTurn(sessionId, userId, lastUser, text);
+        onTurnEnd: (text, hasFollow) => {
+          following = hasFollow;
+          if (lastUser) {
+            if (text) assistant = { role: 'assistant', content: text };
+            appendToSession(
+              sessionId,
+              userId,
+              lastUser,
+              ...(assistant ? [assistant] : []),
+            );
+            if (!following) recordTurn(sessionId, userId, lastUser, text);
           }
         },
         onEnd: (text) => {
           if (assistant)
             amendSessionMessage(sessionId, userId, assistant, text);
+          else if (
+            text &&
+            lastUser &&
+            getSessionHistory(sessionId, userId).includes(lastUser)
+          ) {
+            assistant = { role: 'assistant', content: text };
+            appendToSession(sessionId, userId, assistant);
+          }
+          if (following && lastUser)
+            recordTurn(sessionId, userId, lastUser, text);
         },
       });
     }
