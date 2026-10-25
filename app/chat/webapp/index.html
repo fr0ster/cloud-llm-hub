@@ -864,6 +864,7 @@
             gif: 'image/gif', mmd: 'text/plain',
         };
         const fileArtifacts = {};
+        let artifactCounter = 0;
 
         // Lazy-loaded RAG external tool definitions (rag_add / rag_correct / rag_deprecate).
         // Schemas come from the server so they stay in sync with llm-agent — UI just opts in
@@ -1072,7 +1073,6 @@
             let state = 'passthrough';
             let buf = '';        // accumulated buffer in BUFFERING state
             let tail = '';       // partial match tail in PASSTHROUGH state
-            let cardCounter = 0;
             const BUFFER_LIMIT = 102400; // 100KB flush limit
             const TAG_START = '<file';
             const TAG_END = '</file>';
@@ -1173,7 +1173,7 @@
                             if (!attrs.path && attrs.name) attrs.path = attrs.name;
 
                             if (attrs.path) {
-                                const cardId = 'art-' + Date.now() + '-' + (cardCounter++);
+                                const cardId = 'art-' + Date.now() + '-' + (artifactCounter++);
                                 fileArtifacts[cardId] = {
                                     path: attrs.path,
                                     content: content.trim(),
@@ -1206,6 +1206,8 @@
             }
 
             function finish() {
+                // A final chunk can enter buffering with one or more complete blocks.
+                while (state === 'buffering' && buf.includes(TAG_END)) process('');
                 // Flush any remaining state
                 if (tail) { currentText += tail; tail = ''; }
                 if (buf) { currentText += escapeHtml(buf); buf = ''; state = 'passthrough'; }

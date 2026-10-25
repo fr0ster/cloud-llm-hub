@@ -5,7 +5,7 @@ const html = readFileSync('app/chat/webapp/index.html', 'utf8');
 const flush = async () => {
   for (let i = 0; i < 30; i++) await Promise.resolve();
 };
-function harness() {
+function harness(now?: number) {
   const nodes: any[] = [];
   const list = { innerHTML: '', style: {} };
   const plan = { hidden: true, open: false };
@@ -19,6 +19,14 @@ function harness() {
   const placeholders = new Map();
   const userInput = { value: '', focus: jest.fn() };
   const context = {
+    Date:
+      now === undefined
+        ? Date
+        : class extends Date {
+            static now() {
+              return now ?? Date.now();
+            }
+          },
     fetch,
     ready: true,
     sessionKey: 'key',
@@ -129,7 +137,7 @@ function harness() {
         html.indexOf('        async function sendMessage()'),
         html.indexOf('        // Quick file attach'),
       ) +
-      ';({sendMessage, renderMessageVersion, subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml, runActiveProbe, replaceSession: key => { sessionKey = key; }, ack: key => sessionAcks.get(key), view: (key, id) => messageViews.get(key + ":" + id), signOut: () => { hubSignedOut = true; }})',
+      ';({sendMessage, renderMessageVersion, subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml, runActiveProbe, fileArtifacts, replaceSession: key => { sessionKey = key; }, ack: key => sessionAcks.get(key), view: (key, id) => messageViews.get(key + ":" + id), signOut: () => { hubSignedOut = true; }})',
     context,
   );
   return {
@@ -706,6 +714,65 @@ test('framed messages parse split file blocks per id with the real parser', asyn
   expect(ui.nodes[0].innerHTML).toContain('report.txt');
   expect(ui.nodes[0].innerHTML).toContain('hello');
   expect(ui.nodes[1].innerHTML).not.toContain('file-card');
+});
+
+test('SSE-first complete messages drain all file blocks with the real parser', async () => {
+  const ui = harness();
+  const text =
+    'Before <file path="first.txt">first</file> between <file path="second.txt">second</file> after';
+  ui.fetch.mockResolvedValue(
+    stream(`id: files\nevent: message\ndata: ${JSON.stringify({ text })}\n\n`),
+  );
+  const subscription = ui.subscribeDialogueEvents('key');
+  await flush();
+  const rendered = ui.nodes[0].innerHTML;
+  expect(rendered.match(/class="file-card"/g)).toHaveLength(2);
+  expect(rendered).toContain('first.txt');
+  expect(rendered).toContain('second.txt');
+  expect(rendered).toContain('Before');
+  expect(rendered).toContain('between');
+  expect(rendered).toContain('after');
+  expect(rendered).not.toContain('&lt;file');
+  expect(Object.values(ui.fileArtifacts)).toEqual([
+    { path: 'first.txt', content: 'first', encoding: '', render: '' },
+    { path: 'second.txt', content: 'second', encoding: '', render: '' },
+  ]);
+  ui.renderMessageVersion('key', 'files', text, true);
+  expect(ui.nodes).toHaveLength(1);
+  expect(ui.nodes[0].innerHTML).toBe(rendered);
+  subscription.stop();
+});
+
+test('two messages at the same time keep distinct artifact ids and contents', () => {
+  const ui = harness(123456789);
+  ui.renderMessageVersion(
+    'key',
+    'first',
+    '<file path="a.txt">alpha</file>',
+    true,
+  );
+  ui.renderMessageVersion(
+    'key',
+    'second',
+    '<file path="b.txt">beta</file>',
+    true,
+  );
+  const ids = ui.nodes.map(
+    (node: { innerHTML: string }) =>
+      /id="file-body-(art-[^"]+)"/.exec(node.innerHTML)?.[1],
+  );
+  expect(ids[0]).toBeDefined();
+  expect(ids[1]).toBeDefined();
+  expect(ids[0]).not.toBe(ids[1]);
+  expect(Object.keys(ui.fileArtifacts)).toHaveLength(2);
+  expect(ui.fileArtifacts[ids[0]]).toMatchObject({
+    path: 'a.txt',
+    content: 'alpha',
+  });
+  expect(ui.fileArtifacts[ids[1]]).toMatchObject({
+    path: 'b.txt',
+    content: 'beta',
+  });
 });
 
 test('a pending response keeps messages and acknowledgement on its request session', async () => {
