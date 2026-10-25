@@ -1,5 +1,5 @@
+import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
-import { withRagContext } from './lib/rag-context-marker';
 /**
  * OpenAI-compatible HTTP handlers for SmartAgent.
  *
@@ -22,14 +22,12 @@ import type { Request, Response } from 'express';
 import { getAgentConfig, isAiCoreConfigured } from './agent-config';
 import {
   closeDestination,
-  getCollectionRegistry,
   getCurrentClassifierModel,
   getCurrentDestination,
   getCurrentModel,
   getCurrentPlannerModel,
   getDestinationDiscoveryState,
   getDestinationStates,
-  getQueryEmbedder,
   getSmartAgent,
   isAgentReady,
   isDestinationClosed,
@@ -38,9 +36,7 @@ import {
   runWithRequestConnection,
   setSessionDestination,
 } from './agent-manager';
-import { resolveRouteId } from './collection-ids';
 import { getAvailableModels } from './lib/ai-core-models';
-import { CollectionBackendError } from './lib/collection-persistence';
 import { detachedSink } from './lib/detached-sink';
 import { dialogueChat } from './lib/dialogue-chat';
 import { describeCaller, type ExpositionLevel } from './lib/exposition';
@@ -70,7 +66,6 @@ import {
   throttleOf,
   unverifiedWriteFor,
 } from './lib/throttle-surfacing';
-import { CollectionSearchRag } from './rag-collections';
 import { runWithSessionId } from './request-session';
 import { honouredSessionId, sessionIdOf, type WithSession } from './session-id';
 import {
@@ -616,36 +611,10 @@ async function serveChatCompletions(
     return;
   }
 
-  // Inject dynamic RAG collections from X-Rag-Collections header or body
-  const ragCollectionIds: string[] = (() => {
-    const header = req.headers['x-rag-collections'] as string | undefined;
-    if (header)
-      return header
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean);
-    // biome-ignore lint/suspicious/noExplicitAny: rag_collections is an extension field not in OpenAI spec
-    const bodyCollections = (body as any).rag_collections;
-    if (Array.isArray(bodyCollections)) return bodyCollections;
-    return [];
-  })();
-
   const chatAgent =
     useDialogue && s
-      ? dialogueChat(
-          req,
-          userId,
-          s,
-          destAfter,
-          extractText(userMessages[userMessages.length - 1].content),
-          res,
-        )
+      ? dialogueChat(req, userId, s, destAfter, res)
       : handle.agent;
-
-  // The destination agent's internal deps: its RAG stores, which are swapped
-  // in only once admitted (see there).
-  // biome-ignore lint/suspicious/noExplicitAny: access internal deps for RAG injection
-  const deps = (handle.agent as any).deps;
 
   // Admitted after the agent is resolved: a caller waiting for a destination to
   // warm waits outside the door, holding a request and no session.
@@ -680,20 +649,8 @@ async function serveChatCompletions(
     return;
   }
 
-  // Inject dynamic RAG collections per-request (save/restore pattern), and only
-  // now that the request is admitted: every pipeline on this destination runs on
-  // this same agent, so stores installed before the queue wait would be seen by
-  // every run admitted ahead of this one. Restored in the `finally` below.
-  // Wrapped with CollectionSearchRag: the agent's ragFilter (namespace,
-  // exposition) scopes tools and destination data, not collection documents.
-  // Interleaved admitted runs that both inject can still restore each other's
-  // set — a pre-existing race of mutating shared deps, left for per-request
-  // stores.
-  const originalRagStores = deps.ragStores;
-  const restoreRagStores = () => {
-    if (deps.ragStores !== originalRagStores)
-      deps.ragStores = originalRagStores;
-  };
+  // Install stores only after admission; restore them in finally.
+  const collections = collectionRetrieval(handle.agent);
 
   try {
     // Track which destination this session is using. A switch keeps the
@@ -731,172 +688,22 @@ async function serveChatCompletions(
       return [];
     })();
 
-    // Resolve each entry: bare logical names → caller's own physical id; physical
-    // ids owned by another user → dropped. Session collection shadows user
-    // collection. Reused by both the RAG store injection and semantic search below.
-    // Persistent collections are restored first; until a restore succeeds a
-    // request naming collections gets the explicit 503, not an answer quietly
-    // made without them. A chat naming only presets (each entry a preset this
-    // process holds for the caller) goes on meanwhile: presets live in this
-    // process. A session collection of the same name that the restore has not
-    // read back yet cannot shadow it then.
-    let presetsOnly: string[] | undefined;
-    if (ragCollectionIds.length > 0) {
-      try {
-        await getCollectionRegistry().ready;
-      } catch (err) {
-        if (!(err instanceof CollectionBackendError) || res.headersSent)
-          throw err;
-        const registry = getCollectionRegistry();
-        const presets = ragCollectionIds.map((entry) =>
-          registry.heldPresetFor(entry, getUserId()),
-        );
-        if (presets.every((id): id is string => id !== undefined)) {
-          presetsOnly = presets;
-        } else {
-          log.warn('Chat refused: collections unavailable', {
-            error: err.message,
-          });
-          res.writeHead(err.httpStatus, {
-            'Content-Type': 'application/json',
-          });
-          res.end(jsonError(err.message, 'service_unavailable'));
-          return;
-        }
-      }
+    const retrieval = await collections.retrieve(
+      req,
+      normalizedMessages,
+      userId,
+      sessionId,
+      log,
+      res.headersSent,
+    );
+    if (retrieval.refusal) {
+      res.writeHead(retrieval.refusal.status, {
+        'Content-Type': 'application/json',
+      });
+      res.end(jsonError(retrieval.refusal.message, retrieval.refusal.kind));
+      return;
     }
-    const resolvedCollectionIds: string[] =
-      presetsOnly ??
-      (ragCollectionIds.length > 0
-        ? await (async () => {
-            const registry = getCollectionRegistry();
-            const ids: string[] = [];
-            for (const entry of ragCollectionIds) {
-              const id = await resolveRouteId(
-                registry,
-                entry,
-                getUserId(),
-                sessionId,
-                false,
-              );
-              if (id !== undefined) ids.push(id);
-            }
-            return ids;
-          })()
-        : []);
-
-    // A named collection that cannot be searched (restored incompatible or
-    // unavailable) refuses the turn, before anything streams: 409 / 503 naming
-    // the collection and its cause — never an answer quietly made without it.
-    if (resolvedCollectionIds.length > 0) {
-      const refusal = await getCollectionRegistry().degradedOf(
-        resolvedCollectionIds,
-      );
-      if (refusal) {
-        log.warn('Chat refused: a named collection is degraded', {
-          error: refusal.message,
-        });
-        res.writeHead(refusal.httpStatus, {
-          'Content-Type': 'application/json',
-        });
-        res.end(
-          jsonError(
-            refusal.message,
-            refusal.httpStatus === 409 ? 'conflict' : 'service_unavailable',
-          ),
-        );
-        return;
-      }
-    }
-
-    if (resolvedCollectionIds.length > 0) {
-      const registry = getCollectionRegistry();
-      const dynamicStores = await registry.getRagStores(resolvedCollectionIds);
-      const injected = Object.keys(dynamicStores);
-      if (injected.length > 0) {
-        const mergedStores = { ...originalRagStores };
-        for (const [key, store] of Object.entries(dynamicStores)) {
-          mergedStores[key] = new CollectionSearchRag(store);
-        }
-        deps.ragStores = mergedStores;
-        log.info('Dynamic RAG collections injected', {
-          requested: ragCollectionIds,
-          resolved: resolvedCollectionIds,
-          injected,
-        });
-      }
-    }
-
-    // Semantic search across active RAG collections and inject relevant results.
-    // llm-agent hardcoded flow only queries RAG for "action" subprompts —
-    // chat questions classified as "chat" → RAG skipped. We do our own search.
-    if (resolvedCollectionIds.length > 0) {
-      const registry = getCollectionRegistry();
-      const userMessage = normalizedMessages
-        .filter((m) => m.role === 'user')
-        .slice(-1)[0];
-      const queryText =
-        typeof userMessage?.content === 'string' ? userMessage.content : '';
-
-      if (queryText) {
-        // Search user collections in the ORIGINAL language (no translation).
-        // User content may be in any language — translating the query would
-        // break matching (e.g., Ukrainian query → English translation won't
-        // match Ukrainian anecdote in vector space).
-        // Tool selection has its own _toEnglishForRag() in llm-agent.
-        const { QueryEmbedding, TextOnlyEmbedding } = await import(
-          '@mcp-abap-adt/llm-agent'
-        );
-        const embedder = getQueryEmbedder();
-        const embedding = embedder
-          ? new QueryEmbedding(queryText, embedder)
-          : new TextOnlyEmbedding(queryText);
-
-        const relevantTexts: string[] = [];
-        for (const colId of resolvedCollectionIds) {
-          // Degraded collections were refused above, before the turn started.
-          const store = await registry.getRagStore(colId);
-          if (!store) continue;
-          const result = await store.query(embedding, 3);
-          if (result.ok) {
-            for (const r of result.value) {
-              log.info('RAG search result', {
-                collection: colId,
-                score: r.score.toFixed(4),
-                preview: r.text.slice(0, 80),
-              });
-              const threshold = Number(process.env.RAG_SCORE_THRESHOLD) || 0.15;
-              if (r.score >= threshold) {
-                relevantTexts.push(r.text);
-              }
-            }
-          }
-        }
-
-        if (relevantTexts.length > 0) {
-          const ragContext = relevantTexts.join('\n---\n');
-          let lastUserIdx = -1;
-          for (let i = normalizedMessages.length - 1; i >= 0; i--) {
-            if (normalizedMessages[i].role === 'user') {
-              lastUserIdx = i;
-              break;
-            }
-          }
-          if (lastUserIdx >= 0) {
-            normalizedMessages = [...normalizedMessages];
-            normalizedMessages[lastUserIdx] = withRagContext(
-              normalizedMessages[lastUserIdx],
-              ragContext,
-            );
-          }
-          log.info('RAG semantic search results injected', {
-            collections: resolvedCollectionIds,
-            resultCount: relevantTexts.length,
-            contextChars: ragContext.length,
-          });
-        }
-      }
-    }
+    normalizedMessages = retrieval.messages;
 
     const pipelineLog = cds.log('smart-pipeline');
     const opts = {
@@ -1391,7 +1198,7 @@ async function serveChatCompletions(
       }),
     );
   } finally {
-    restoreRagStores();
+    collections.restore();
     // The pipeline has returned, so it starts no more calls. Wait for the ones it
     // started, then end the ADT session, then give the slot back — last.
     await pipeline.drain();

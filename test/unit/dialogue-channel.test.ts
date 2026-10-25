@@ -379,7 +379,6 @@ it.each(['before', 'before\n'])(
       'alice',
       session,
       'SAP',
-      'hi',
       res as unknown as Response,
     );
     let text = '';
@@ -441,7 +440,6 @@ it.each([
     'alice',
     session,
     'SAP',
-    'hi',
     fakeRes() as unknown as Response,
   );
   const result = await agent.process([]);
@@ -471,7 +469,6 @@ it.each([
     'alice',
     session,
     'SAP',
-    'hi',
     fakeRes() as unknown as Response,
   );
   const contents: string[] = [];
@@ -498,7 +495,6 @@ it.each(['NO_MESSAGE', 'NO_MESSAGE answer NO_MESSAGE'])(
       'alice',
       session,
       'SAP',
-      'hi',
       fakeRes() as unknown as Response,
     );
     let content = '';
@@ -507,3 +503,51 @@ it.each(['NO_MESSAGE', 'NO_MESSAGE answer NO_MESSAGE'])(
     expect(content).toBe(text === 'NO_MESSAGE' ? '' : 'answer');
   },
 );
+
+for (const anthropic of [false, true])
+  for (const stream of [false, true])
+    for (const retrieved of [false, true]) {
+      it(`planner receives current user text (anthropic=${anthropic}, stream=${stream}, retrieved=${retrieved})`, async () => {
+        const { getCollectionRegistry } = require('../../srv/agent-manager');
+        const {
+          RAG_CONTEXT_MARKER,
+        } = require('../../srv/lib/rag-context-marker');
+        const registry = getCollectionRegistry();
+        jest.spyOn(registry, 'getCollection').mockResolvedValue({
+          id: 'docs__u_alice',
+          owner: 'alice',
+          scope: 'user',
+        });
+        jest.spyOn(registry, 'degradedOf').mockResolvedValue(undefined);
+        jest.spyOn(registry, 'getRagStores').mockResolvedValue({});
+        jest.spyOn(registry, 'getRagStore').mockResolvedValue({
+          query: async () => ({
+            ok: true,
+            value: [{ text: 'knowledge', score: 1 }],
+          }),
+        });
+        try {
+          const req = fakeReq(
+            {
+              model: 'm',
+              max_tokens: 100,
+              stream,
+              messages: [{ role: 'user', content: 'hi' }],
+            },
+            session.key,
+          ) as unknown as Request & { longSession: LongSession };
+          req.longSession = session;
+          if (retrieved) req.headers['x-rag-collections'] = 'docs__u_alice';
+          await (anthropic ? handleAnthropicMessages : handleChatCompletions)(
+            req,
+            fakeRes() as unknown as Response,
+          );
+          expect(send).toHaveBeenCalledWith(
+            retrieved ? `hi${RAG_CONTEXT_MARKER}knowledge` : 'hi',
+            expect.anything(),
+          );
+        } finally {
+          jest.restoreAllMocks();
+        }
+      });
+    }

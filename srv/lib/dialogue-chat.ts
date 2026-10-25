@@ -12,6 +12,7 @@ import { setSessionDestination } from '../agent-manager';
 import { dialogueFor } from './dialogue-sessions';
 import type { LongSession } from './long-session';
 import { NoMessageFilter, stripNoMessage } from './no-message';
+import { extractText } from './session-turns';
 
 /** Adapt planner turns to the existing chat response/error and history paths. */
 export function dialogueChat(
@@ -19,7 +20,6 @@ export function dialogueChat(
   userId: string,
   session: LongSession,
   destination: string,
-  lastUserText: string,
   response: Response,
 ): {
   process(
@@ -62,14 +62,19 @@ export function dialogueChat(
   };
 
   return {
-    async process(_messages, opts) {
+    async process(messages, opts) {
       try {
         const { handle, prefix, complete } = await open();
         const answer = await handle.session
-          .send(lastUserText, {
-            signal: opts?.signal,
-            trace: opts?.trace,
-          })
+          .send(
+            extractText(
+              messages.filter((m) => m.role === 'user').at(-1)?.content,
+            ),
+            {
+              signal: opts?.signal,
+              trace: opts?.trace,
+            },
+          )
           .finally(() => handle.drainPending());
         complete();
         return {
@@ -85,7 +90,7 @@ export function dialogueChat(
         return { ok: false, error: plannerError(error) };
       }
     },
-    async *streamProcess(_messages, opts) {
+    async *streamProcess(messages, opts) {
       const { handle, prefix, complete } = await open();
       if (prefix) yield { ok: true, value: { content: prefix } };
       // Callback deltas must reach the socket while send is still running.
@@ -100,18 +105,23 @@ export function dialogueChat(
         wake?.();
       };
       const sending = handle.session
-        .send(lastUserText, {
-          signal: opts?.signal,
-          trace: opts?.trace,
-          onPartial(chunk) {
-            if (chunk.kind === 'content') {
-              if (!chunk.delta) return;
-              receivedPartial = true;
-              const content = filter.push(chunk.delta);
-              if (content) push({ ok: true, value: { content } });
-            }
+        .send(
+          extractText(
+            messages.filter((m) => m.role === 'user').at(-1)?.content,
+          ),
+          {
+            signal: opts?.signal,
+            trace: opts?.trace,
+            onPartial(chunk) {
+              if (chunk.kind === 'content') {
+                if (!chunk.delta) return;
+                receivedPartial = true;
+                const content = filter.push(chunk.delta);
+                if (content) push({ ok: true, value: { content } });
+              }
+            },
           },
-        })
+        )
         .then(
           (answer) => {
             const content = receivedPartial
