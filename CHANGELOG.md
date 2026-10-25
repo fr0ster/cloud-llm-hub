@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [9.5.0] - 2026-10-25
+
 ### Added
 
 - Streaming dialogue follow phase after admission release, with settled plan stops, disconnect/supersession handling and `LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS` (default 30 minutes).
