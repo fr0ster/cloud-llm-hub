@@ -1,3 +1,9 @@
+import {
+  DialogueTurnContext,
+  plannerWithEnvironment,
+  plannerWithRetrievedContext,
+} from '../../srv/lib/dialogue-planner-content';
+
 jest.mock('@sap/cds', () => ({
   __esModule: true,
   default: { log: () => ({ warn: jest.fn(), debug: jest.fn() }) },
@@ -284,5 +290,41 @@ it('dialogue activity touches persistence at most once per 60 seconds', async ()
   } finally {
     now.mockRestore();
     save.mockRestore();
+  }
+});
+
+it('saves dialogue state when temporary retrieved context exceeds the message limit', async () => {
+  const context = new DialogueTurnContext();
+  const knowledge = 'retrieved knowledge '.repeat(6000);
+  const inputs: string[] = [];
+  const store = createDialogueStateStore('alice', 'large-context');
+  const session = await DialogueSession.open({
+    id: 'large-context',
+    store,
+    planner: plannerWithEnvironment(
+      plannerWithRetrievedContext(
+        {
+          async process(input) {
+            inputs.push(JSON.stringify(input));
+            return { ok: true, value: { content: 'answer' } };
+          },
+        },
+        context,
+      ),
+      () => 'Hub',
+    ),
+    board: { workers: new Map(), maxConcurrent: 1 },
+  });
+  try {
+    await context.run(knowledge, () => session.send('hello'));
+    expect(inputs[0]).toContain(knowledge);
+    const snapshot = session.snapshot();
+    expect(JSON.stringify(snapshot)).not.toContain('retrieved knowledge');
+    expect(await store.load('large-context')).toEqual(snapshot);
+    await session.send('next');
+    expect(inputs.at(-1)).not.toContain('[retrieved context]');
+    expect(await store.load('large-context')).toEqual(session.snapshot());
+  } finally {
+    await session.close();
   }
 });

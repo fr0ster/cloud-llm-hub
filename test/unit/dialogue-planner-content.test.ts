@@ -4,8 +4,10 @@ import {
   type PlannerAgent,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
+  DialogueTurnContext,
   plannerWithEnvironment,
   plannerWithParagraphs,
+  plannerWithRetrievedContext,
 } from '../../srv/lib/dialogue-planner-content';
 
 test('wrappers preserve paragraph content when DialogueSession buffers content partials', async () => {
@@ -109,3 +111,69 @@ test.each([undefined, jest.fn()])(
       ).toBe('Before.\n\nAfter.');
   },
 );
+
+test.each([false, true])(
+  'turn context clears after send settles (reject=%s)',
+  async (reject) => {
+    const context = new DialogueTurnContext();
+    const process = jest.fn<
+      ReturnType<PlannerAgent['process']>,
+      Parameters<PlannerAgent['process']>
+    >(async () => ({ ok: true as const, value: { content: 'ok' } }));
+    const planner = plannerWithEnvironment(
+      plannerWithRetrievedContext({ process }, context),
+      () => 'Hub',
+    );
+    const input = [{ role: 'user' as const, content: 'hello' }];
+    const sending = context.run('knowledge', async () => {
+      for (let turn = 0; turn < 2; turn++) {
+        await planner.process(input, {});
+        const messages = process.mock.calls.at(-1)?.[0];
+        expect(messages).toEqual([
+          { role: 'user', content: '[environment]\nHub' },
+          {
+            role: 'user',
+            content: expect.stringContaining('[retrieved context]'),
+          },
+          ...input,
+        ]);
+      }
+      if (reject) throw new Error('aborted');
+    });
+    if (reject) await expect(sending).rejects.toThrow('aborted');
+    else await sending;
+    expect(context.text).toBeUndefined();
+    await planner.process(input, {});
+    expect(process.mock.calls.at(-1)?.[0]).toEqual([
+      { role: 'user', content: '[environment]\nHub' },
+      ...input,
+    ]);
+    expect(input).toEqual([{ role: 'user', content: 'hello' }]);
+  },
+);
+
+test('settling an older request cannot clear an overlapping request context', async () => {
+  const context = new DialogueTurnContext();
+  let finishFirst!: () => void;
+  let finishSecond!: () => void;
+  const first = context.run(
+    'first',
+    () =>
+      new Promise<void>((resolve) => {
+        finishFirst = resolve;
+      }),
+  );
+  const second = context.run(
+    'second',
+    () =>
+      new Promise<void>((resolve) => {
+        finishSecond = resolve;
+      }),
+  );
+  finishFirst();
+  await first;
+  expect(context.text).toBe('second');
+  finishSecond();
+  await second;
+  expect(context.text).toBeUndefined();
+});

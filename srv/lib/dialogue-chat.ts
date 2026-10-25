@@ -12,6 +12,7 @@ import { setSessionDestination } from '../agent-manager';
 import { dialogueFor } from './dialogue-sessions';
 import type { LongSession } from './long-session';
 import { NoMessageFilter, stripNoMessage } from './no-message';
+import { ragContextOf, userTextOf } from './rag-context-marker';
 import { extractText } from './session-turns';
 
 /** Adapt planner turns to the existing chat response/error and history paths. */
@@ -65,15 +66,13 @@ export function dialogueChat(
     async process(messages, opts) {
       try {
         const { handle, prefix, complete } = await open();
-        const answer = await handle.session
-          .send(
-            extractText(
-              messages.filter((m) => m.role === 'user').at(-1)?.content,
-            ),
-            {
+        const message = messages.filter((m) => m.role === 'user').at(-1);
+        const answer = await handle.turnContext
+          .run(message && ragContextOf(message), () =>
+            handle.session.send(userText(message), {
               signal: opts?.signal,
               trace: opts?.trace,
-            },
+            }),
           )
           .finally(() => handle.drainPending());
         complete();
@@ -104,12 +103,10 @@ export function dialogueChat(
         queue.push(chunk);
         wake?.();
       };
-      const sending = handle.session
-        .send(
-          extractText(
-            messages.filter((m) => m.role === 'user').at(-1)?.content,
-          ),
-          {
+      const message = messages.filter((m) => m.role === 'user').at(-1);
+      const sending = handle.turnContext
+        .run(message && ragContextOf(message), () =>
+          handle.session.send(userText(message), {
             signal: opts?.signal,
             trace: opts?.trace,
             onPartial(chunk) {
@@ -120,7 +117,7 @@ export function dialogueChat(
                 if (content) push({ ok: true, value: { content } });
               }
             },
-          },
+          }),
         )
         .then(
           (answer) => {
@@ -160,4 +157,11 @@ function plannerError(error: unknown): OrchestratorError {
   return Object.assign(cause, {
     code: (cause as { code?: string }).code ?? 'PLANNER_ERROR',
   });
+}
+
+function userText(message: Message | undefined): string {
+  if (!message) return '';
+  return typeof message.content === 'string' || message.content === null
+    ? userTextOf(message as { content: string | null })
+    : extractText(message.content);
 }

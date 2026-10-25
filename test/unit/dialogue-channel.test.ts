@@ -1,3 +1,7 @@
+import {
+  DialogueTurnContext,
+  plannerWithRetrievedContext,
+} from '../../srv/lib/dialogue-planner-content';
 import { resetGatekeeperForTest } from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
 
@@ -59,6 +63,7 @@ const refresh = jest.fn();
 const ack = jest.fn(async () => {});
 let subscribed = false;
 const send = jest.fn();
+let turnContext: DialogueTurnContext;
 beforeEach(() => {
   process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = '4';
   clearGatekeeperConfig();
@@ -68,6 +73,7 @@ beforeEach(() => {
   ack.mockClear();
   subscribed = false;
   send.mockReset();
+  turnContext = new DialogueTurnContext();
   const registry = new LongSessionRegistry(
     { ttlMs: 60000, maxSessions: 10, maxPerUser: 5, queueLength: 2 },
     { onClose: async () => {} },
@@ -75,6 +81,7 @@ beforeEach(() => {
   setLongSessionsForTest(registry);
   session = registry.open('alice', {}) as LongSession;
   jest.mocked(dialogueFor).mockResolvedValue({
+    turnContext,
     factory: { refresh },
     drainPending: async () => {},
     hasSubscribers: () => subscribed,
@@ -509,9 +516,17 @@ for (const anthropic of [false, true])
     for (const retrieved of [false, true]) {
       it(`planner receives current user text (anthropic=${anthropic}, stream=${stream}, retrieved=${retrieved})`, async () => {
         const { getCollectionRegistry } = require('../../srv/agent-manager');
-        const {
-          RAG_CONTEXT_MARKER,
-        } = require('../../srv/lib/rag-context-marker');
+        const plannerProcess = jest.fn(async () => ({
+          ok: true as const,
+          value: { content: 'answer' },
+        }));
+        send.mockImplementation(async (text, opts) => {
+          await plannerWithRetrievedContext(
+            { process: plannerProcess },
+            turnContext,
+          ).process([{ role: 'user', content: text }], opts);
+          return { text: 'answer' };
+        });
         const registry = getCollectionRegistry();
         jest.spyOn(registry, 'getCollection').mockResolvedValue({
           id: 'docs__u_alice',
@@ -542,10 +557,13 @@ for (const anthropic of [false, true])
             req,
             fakeRes() as unknown as Response,
           );
-          expect(send).toHaveBeenCalledWith(
-            retrieved ? `hi${RAG_CONTEXT_MARKER}knowledge` : 'hi',
-            expect.anything(),
-          );
+          expect(send).toHaveBeenCalledWith('hi', expect.anything());
+          const input = JSON.stringify(plannerProcess.mock.calls);
+          if (retrieved) {
+            expect(input).toContain('[retrieved context]');
+            expect(input).toContain('knowledge');
+          } else expect(input).not.toContain('[retrieved context]');
+          expect(turnContext.text).toBeUndefined();
         } finally {
           jest.restoreAllMocks();
         }
