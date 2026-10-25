@@ -11,7 +11,7 @@ All notable changes to this project will be documented in this file. The format 
 ### Removed
 
 - `MCP_Full` (never assigned; no migration).
-- `MCP_Analyst` and MCP Analyst Access. **Before deploying**, give every holder MCP Reader Access through the same assignment path (user, group or mapping), verify with a fresh sign-in, then remove the old assignments; see `docs/deployment/INSTALLATION_PLAN.md`, "Upgrading a deployment that has MCP Analyst Access". The update does not reassign anyone.
+- `MCP_Analyst` and MCP Analyst Access (never assigned; no migration). Tokens of Developer users no longer carry the Analyst scope, which only came from the Developer template.
 
 ## [9.5.1] - 2026-10-25
 
