@@ -21,7 +21,9 @@
 **Headers and comments**
 - Request header `x-clh-ack`: a message id or `none`.
 - Non-streaming response header `x-clh-last-message`: the id of the last message in that response.
-- Each message id goes out on the stream as the SSE comment line `: message-id <id>` immediately before that message's first content delta.
+- Each message id goes out on the stream as the SSE comment line `: message-id <id>` immediately before that message's first content delta. The comment `: message-end <id>` follows right after its last delta.
+- The comment `: turn-end` is written once, when the request's own planner turn has ended (its reply, if any, is complete) and before the follow starts.
+- Content outside a `message-id`…`message-end` pair is a response note (limit or supersede line). It belongs to no message.
 
 **Stream lifecycle**
 - Keep-alive: an SSE comment `: keep-alive` written at once when the stream opens, then every 10 000 ms, in both handlers. The stream opens before agent initialization and admission.
@@ -55,6 +57,7 @@
 
 **Files (repo `../llm-agent`, branch `feat/dialogue-observation`):**
 - Modify: `packages/llm-agent-libs/src/coordinator/dialogue/dialogue-session.ts`
+- Modify: `packages/llm-agent-libs/src/coordinator/dialogue/task-board.ts` (state callback when a record is created as `queued` and on every later transition)
 - Test: the package's existing dialogue-session tests
 
 **Interfaces (Produces, exported from `@mcp-abap-adt/llm-agent-libs`):**
@@ -63,7 +66,7 @@
   - For an event turn, also after its `onMessage` call.
   - Never called for a save that `takePending()` triggers.
 - **`DialogueSessionOptions.onTaskState?: (task: TaskRecord) => void`**
-  - Called after the TaskBoard record changed state, including the terminal transition and the cancellation of a queued task.
+  - Called when a TaskBoard record is created (`queued`) and after every later state change, including the terminal transition and the cancellation of a queued task. `TaskBoard` gets a matching `onState` option that DialogueSession forwards.
 - **`DialogueSession.activity(): { turnActive: boolean; queuedInputs: number; running: number; ready: number }`**
   - `turnActive`: a library turn is in progress, corrections included.
   - `queuedInputs`: waiting user sends plus waiting task events.
@@ -74,7 +77,7 @@
 - [ ] **Step 1: Failing tests:**
   - `onSettled fires once per user turn after its final save, not for takePending saves`;
   - `onSettled fires after an event turn's onMessage`;
-  - `onTaskState reports a terminal state after the board record changed`;
+  - `onTaskState reports queued at creation for a task blocked on the shared pool, and a terminal state after the board record changed`;
   - `activity counts ready steps left after maxCorrections is exhausted`.
 - [ ] **Steps 2–5:** FAIL → implement → PASS → commit `feat(dialogue): settled, task-state and activity observation`, then open the draft PR.
 
@@ -174,7 +177,7 @@
   - `supersedeFollow(handle: DialogueHandle): Promise<void>`.
 - **Behaviour:**
   - **Messages:** yield, in outbox order, every pending (unconfirmed) outbox message for which `!delivery.has(id)`, as it arrives. Select by the carried set, never by a cursor, so a message that entered the outbox before the reply is not skipped. The consumer calls `item.written()` after writing the message completely; `written()` calls `delivery.carried(id)`.
-  - **Stop evaluation:** evaluate the stop on each `settled` event and once at start. End with `done`, `waiting_user` or `idle` from `state()`, and only after every message that the outbox holds at that moment has been yielded.
+  - **Stop evaluation:** evaluate the stop on each `settled` event and once at start, but only when `activity()` reports `!turnActive` and `queuedInputs === 0`; otherwise wait for the next `settled`. End with `done`, `waiting_user` or `idle` from `state()`, and only after every message that the outbox holds at that moment has been yielded.
   - **Limit:** `limit` at `maxMs` from the follow start. Its note is `still running: <done> of <total> steps done`, or `still running` when `total === 0`.
   - **Disconnect:** `disconnected` when the signal aborts.
   - **One follow per session:** a new `followDialogue` or `supersedeFollow` call ends the previous follow with `superseded` and the note `A new message arrived; the work continues in its response.`, and resolves after that previous follow has yielded its end.
@@ -183,6 +186,7 @@
   - `a message added before the reply is still streamed`: pending snapshot taken, a background message added, the reply added after it → the follow yields the background message.
   - `streams messages and ends on done only after the turn's message`: emit the `plan(done)` event, then the message, then `settled`. The iterator yields the message, then end `done`.
   - `ends on waiting_user after the question message`.
+  - `does not stop at start while an event turn is unsettled`: the plan already shows `done` but `turnActive` is true → no end until that turn's `settled`, and its message comes first.
   - `ends idle only on a settled state with nothing running`.
   - `limit ends with the exact status line`: 3 of 5 done → note `still running: 3 of 5 steps done`.
   - `supersede ends the old follow with the exact note before the new one starts`.
@@ -198,7 +202,7 @@
 **Interfaces:**
 - **Consumes:** Task 1 and Task 4 (`supersedeFollow`).
 - **Produces:** `dialogueChat(req, userId, session, destination, response)` returns `{ process, streamProcess, follow }`. Here `follow(signal: AbortSignal, maxMs: number): AsyncIterable<FollowItem> | undefined` is undefined when no follow is due.
-- **Stream chunks** carry the internal extension `value.clhMessageId?: string`, a chunk with empty content that tells the handler to write `: message-id <id>` (Task 6).
+- **Stream chunks** carry the internal extensions `value.clhMessageId?: string`, `value.clhMessageEnd?: string` and `value.clhTurnEnd?: true`. These are chunks with empty content that tell the handler to write `: message-id <id>`, `: message-end <id>` and `: turn-end` (Task 6).
 - **On `open()`, in this order:**
   1. `await supersedeFollow(handle)`.
   2. Read `x-clh-ack`: `none` → `enterAckMode()`; an id → `enterAckMode()` then `confirmUpTo(id)`; absent → `confirmByArrival()`.
@@ -209,7 +213,8 @@
 - **The reply id:** `replyId = randomUUID()`, created before `send`.
 - **Streaming order:**
   - For each pending message: chunk `clhMessageId`, then the message text, then `\n\n`. Call `delivery.carried(id)` after its text chunk was yielded.
-  - Then `clhMessageId: replyId` before the reply's first non-empty delta.
+  - Then `clhMessageId: replyId` before the reply's first non-empty delta, and `clhMessageEnd: replyId` after its last delta. Pending messages get the same end chunk.
+  - After the turn, one `clhTurnEnd: true` chunk.
   - When the turn ends with non-empty text, `outbox.add([{ id: replyId, text, createdAt, trigger: 'user' }])` and `delivery.carried(replyId)`.
 - **Non-streaming:** the same order in one content, and `response.setHeader('x-clh-last-message', lastId)` when there is a last message.
 - **`follow`:** returns `followDialogue(handle, { delivery, signal, maxMs })` only when the stream request ended its turn with `state().status` set (a plan exists). Otherwise it returns `undefined`.
@@ -239,14 +244,14 @@
   - Admission refusals and collection refusals after the stream opened become the stream error form.
 - **Turn and follow split:**
   - `serve*` returns `Promise<(() => Promise<void>) | void>`. The continuation runs after `longSessions().run` resolves and after `pipeline.release()`.
-  - It iterates `follow(callerLeft.signal, followMaxMs)` and writes each message: id comment, `\n\n` separator, content delta, then calls `item.written()`.
-  - It writes `note` as a final paragraph.
+  - It iterates `follow(callerLeft.signal, followMaxMs)` and writes each message: `\n\n` separator, `: message-id`, content delta, `: message-end`, then calls `item.written()`.
+  - It writes `note` as a final paragraph outside any id pair.
   - It touches the session on each keep-alive and then writes the one terminal.
   - Non-dialogue and non-streaming requests return no continuation and keep today's flow.
 - **Terminal and errors:**
   - `[DONE]` / `message_stop` is written exactly once, by the code that ends the response.
   - After a stream error form nothing else is written, which fixes OpenAI writing `finish_reason` and `[DONE]` after an error chunk (l.859-862, 1000-1002).
-- **Anthropic:** the `observed` generator writes `: message-id <id>\n\n` when it sees a `clhMessageId` chunk and does not pass that chunk to `transformStream`. Follow messages are fed through the same `transformStream` so they stay in one text block.
+- **Anthropic:** the `observed` generator writes the matching comment line when it sees a `clhMessageId`, `clhMessageEnd` or `clhTurnEnd` chunk, and does not pass that chunk to `transformStream`. Follow messages are fed through the same `transformStream` so they stay in one text block.
 - **History:** OpenAI `appendToSession` / `recordTurn` records the accumulated content of turn plus follow when the response ends. Anthropic stays without history.
 
 - [ ] **Step 1: Failing tests:**
@@ -257,7 +262,7 @@
   - `the follow runs after admission is released`: a second request of another session is admitted while the first follows.
   - `exactly one terminal sequence after turn + follow` (both handlers).
   - `an error during the follow writes the error form and no success terminal` (both handlers).
-  - `id comments precede their message's first delta` (both handlers).
+  - `id comments precede their message's first delta and message-end follows its last; turn-end comes once, before the follow` (both handlers).
 - [ ] **Steps 2–5:** FAIL → implement → PASS (full suite) → commit `feat(chat): early stream, follow phase and message ids in both handlers`.
 
 ### Task 7: SSE becomes a view
@@ -284,14 +289,15 @@
 
 **Interfaces:**
 - **One rendering per id:** a map `messageViews: Map<string, { node: Element; complete: boolean }>`, shared by the SSE consumer and `sendMessage`.
-  - A complete version (an SSE `message`, or a stream segment that ended because the next `: message-id` came or the terminal came) replaces a partial one.
+  - A complete version (an SSE `message`, or a stream segment closed by its `: message-end <id>`) replaces a partial one.
+  - Text outside an id pair is a response note. It renders as its own system line and never joins a message's rendering.
   - A partial version never replaces a complete one.
   - A segment cut by a broken stream stays partial until a complete version arrives.
 - **Acknowledgement:**
   - `sendMessage` sends `x-clh-ack: none` on the first request of a session, and afterwards the id of the last message it received complete.
   - Remember the id per session key in memory; on a page reload start with `none`.
   - Remove the SSE ack call (l.595).
-- **Corrections during a follow:** input is no longer locked for the whole response. `lockInput('chat-pending')` (l.1820) is released when the first id segment of the response completes or the stream ends. Each `sendMessage` call keeps its own response state (reader, placeholder, segments). A new send while an older response is still following is allowed; the older response then ends with the supersede note from the hub.
+- **Corrections during a follow:** input is no longer locked for the whole response. `lockInput('chat-pending')` (l.1820) is released at `: turn-end` or when the stream ends. Each `sendMessage` call keeps its own response state (reader, placeholder, segments). A new send while an older response is still following is allowed; the older response then ends with the supersede note from the hub.
 - **Stream segments:** `sendMessage` splits the stream into segments at `: message-id <id>` comments. Each segment renders into its own AGENT block keyed by id. Content before the first id comment keeps today's placeholder behaviour, for non-dialogue answers.
 
 - [ ] **Step 1: Failing tests** (vm harness):
@@ -300,6 +306,8 @@
   - `sends x-clh-ack none first, then the last complete id`;
   - `no SSE ack request is made`.
   - `a second message can be sent while the first response is still open`, and both responses render into their own blocks.
+  - `input unlocks at turn-end while the follow is silent`.
+  - `a supersede or limit note never becomes part of a message`, in both SSE-first and stream-first orders.
 - [ ] **Steps 2–5:** FAIL → implement → PASS → commit `feat(webui): render by message id, x-clh-ack, no SSE ack`.
 
 ### Task 9: Configuration, documentation, CHANGELOG
