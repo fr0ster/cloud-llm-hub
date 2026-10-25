@@ -35,6 +35,7 @@ import {
   plannerWithRetrievedContext,
 } from './dialogue-planner-content';
 import { runWithDialogueRagTools } from './dialogue-rag-tools';
+import { dialogueSignals } from './dialogue-signals';
 import {
   createDialogueStateStore,
   deleteDialogueState,
@@ -389,6 +390,7 @@ async function open(
   try {
     session = await DialogueSession.open({
       id: key,
+      signals: dialogueSignals(),
       planner: {
         async process(input, options) {
           try {
