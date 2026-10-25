@@ -96,6 +96,7 @@ export interface DialogueHandle {
   outbox: DialogueOutbox;
   state(): {
     turnActive: boolean;
+    queuedInputs?: number;
     running: number;
     total: number;
     done: number;
@@ -595,6 +596,7 @@ async function open(
       const plan = signals.last('dialogue.plan.changed', key)?.payload;
       return {
         turnActive: activity?.turnActive ?? false,
+        queuedInputs: activity?.queuedInputs,
         running: activity?.running ?? 0,
         total: plan?.total ?? 0,
         done: plan?.done ?? 0,

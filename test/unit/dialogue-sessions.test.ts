@@ -312,6 +312,7 @@ test('idle is false between a task end and its event turn and while ready steps 
   bus.emit('dialogue.activity', { ...activity, queuedInputs: 0 }, 'key');
   expect(h.state()).toEqual({
     turnActive: false,
+    queuedInputs: 0,
     running: 0,
     total: 3,
     done: 1,

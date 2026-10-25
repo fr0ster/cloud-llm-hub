@@ -92,6 +92,7 @@ const config: AgentConfig = {
       executorPool: 6,
       maxTasks: 50,
       maxCorrections: 2,
+      followMaxMs: 1_800_000,
     },
     chatCoordinator: 'fixed',
     mode: 'smart',
