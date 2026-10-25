@@ -10,9 +10,9 @@
 - **Two phases.** The request's planner turn runs under session admission as today. A follow phase then runs after admission is released and streams new outbox messages on the same response until a stop condition.
 - **Outbox.** The outbox keeps every message, marking each as pending or confirmed. Per-response delivery records decide what a confirmation may remove from pending, either by a later arrival or by `x-clh-ack`.
 - **SSE.** The SSE channel becomes a read-only view.
-- **Library.** llm-agent gains three observation points (Task 0): a settled-turn callback, an activity snapshot that includes ready steps, and authoritative task-state callbacks. The hub assigns the user-turn reply's id itself when the turn starts.
+- **Library.** The hub consumes the dialogue signals of `@mcp-abap-adt/llm-signals` (design: llm-agent `docs/superpowers/specs/2026-10-25-llm-signals-design.md`): `dialogue.turn.settled`, `dialogue.task.state`, `dialogue.activity`, `dialogue.plan.changed`. It adds no hub-specific signal to the library. The hub assigns the user-turn reply's id itself when the turn starts.
 
-**Tech Stack:** TypeScript, SAP CAP, Express, Jest (`--maxWorkers=1`), `@mcp-abap-adt/llm-agent(-libs)` 30.10.0 (Task 0, published by the user), the WebUI single file `app/chat/webapp/index.html`.
+**Tech Stack:** TypeScript, SAP CAP, Express, Jest (`--maxWorkers=1`), `@mcp-abap-adt/llm-agent(-libs)` and `@mcp-abap-adt/llm-signals` at the release that contains the signals (published by the user), the WebUI single file `app/chat/webapp/index.html`.
 
 **Spec:** `docs/superpowers/specs/2026-10-24-client-protocol-design.md`, sections 4 (streaming part), 5 and 6; rollout step 2. The non-streaming budget and queued status (rollout step 3) and the session key in the conversation (step 4) are out of scope.
 
@@ -53,33 +53,27 @@
 
 ---
 
-### Task 0: llm-agent observation points (draft PR in fr0ster/llm-agent)
+### Task 0: Wire the dialogue signals into the hub
 
-**Files (repo `../llm-agent`, branch `feat/dialogue-observation`):**
-- Modify: `packages/llm-agent-libs/src/coordinator/dialogue/dialogue-session.ts`
-- Modify: `packages/llm-agent-libs/src/coordinator/dialogue/task-board.ts` (state callback when a record is created as `queued` and on every later transition)
-- Test: the package's existing dialogue-session tests
+**Files:**
+- Modify: `package.json` (bump `@mcp-abap-adt/llm-agent`, `@mcp-abap-adt/llm-agent-libs`; add `@mcp-abap-adt/llm-signals`)
+- Create: `srv/lib/dialogue-signals.ts`
+- Modify: `srv/lib/dialogue-sessions.ts` (pass the bus to `DialogueSession.open`)
+- Test: `test/unit/dialogue-signals.test.ts`
 
-**Interfaces (Produces, exported from `@mcp-abap-adt/llm-agent-libs`):**
-- **`DialogueSessionOptions.onSettled?: (e: { trigger: 'user' | 'event' }) => void`**
-  - Called once per library turn: after the correction loop, status recomputation and the turn's final `persist()` resolved.
-  - For an event turn, also after its `onMessage` call.
-  - Never called for a save that `takePending()` triggers.
-- **`DialogueSessionOptions.onTaskState?: (task: TaskRecord) => void`**
-  - Called when a TaskBoard record is created (`queued`) and after every later state change, including the terminal transition and the cancellation of a queued task. `TaskBoard` gets a matching `onState` option that DialogueSession forwards.
-- **`DialogueSession.activity(): { turnActive: boolean; queuedInputs: number; running: number; ready: number }`**
-  - `turnActive`: a library turn is in progress, corrections included.
-  - `queuedInputs`: waiting user sends plus waiting task events.
-  - `running`: tasks `queued` or `running`.
-  - `ready`: `readySteps(plan).length`.
-- Release as a minor version (30.10.0). The user publishes; the hub bumps the dependency in Task 2.
+**Interfaces:**
+- **Consumes:** the contracts from `@mcp-abap-adt/llm-agent`: `ISignalBus`, `Signal`, `DialogueSignals`, `DIALOGUE_SIGNALS_VERSION`. Also `createSignalBus` from `@mcp-abap-adt/llm-signals`.
+- **Produces:**
+  - **`dialogueSignals(): ISignalBus<DialogueSignals>`** — one process-wide bus, created lazily with `onHandlerError` logging to `cds.log('dialogue-signals')` without payload text.
+  - **`setDialogueSignalsForTest(bus)`.**
+  - **`DialogueSession.open({ ..., signals: dialogueSignals() })`** in `dialogue-sessions.ts`. The source is the session key, the `id` already passed.
+- **Startup check:** `DIALOGUE_SIGNALS_VERSION >= 1`.
+- **Handler rules:** hub handlers never emit into the `dialogue.` namespace; they only subscribe.
 
 - [ ] **Step 1: Failing tests:**
-  - `onSettled fires once per user turn after its final save, not for takePending saves`;
-  - `onSettled fires after an event turn's onMessage`;
-  - `onTaskState reports queued at creation for a task blocked on the shared pool, and a terminal state after the board record changed`;
-  - `activity counts ready steps left after maxCorrections is exhausted`.
-- [ ] **Steps 2–5:** FAIL → implement → PASS → commit `feat(dialogue): settled, task-state and activity observation`, then open the draft PR.
+  - `a dialogue session publishes to the hub bus`: open a session with a fake planner, send one message → `dialogueSignals().last('dialogue.turn.settled', key)` exists with `outcome: 'ok'`;
+  - `closing retires the source`: `lastAll(key)` is empty after close.
+- [ ] **Steps 2–5:** FAIL → implement → PASS → commit `feat(dialogue): consume llm-signals dialogue signals`.
 
 ### Task 1: Outbox keeps history, delivery records and the acknowledgement mode
 
@@ -129,9 +123,9 @@
 - Test: `test/unit/long-session.test.ts`, `test/unit/dialogue-sessions.test.ts`
 
 **Interfaces:**
-- Consumes: Task 0 `onTaskState`.
+- Consumes: Task 0 bus: `dialogue.task.state` (keyed by task id) and `last('dialogue.activity', key).payload.running`.
 - Produces `LongSessionRegistry.hold(s: LongSession): () => void`. The returned release function is idempotent. It decrements the count and calls `touch(s.userId, s.key)`.
-- In `dialogue-sessions.ts`, bump `@mcp-abap-adt/llm-agent(-libs)` to `^30.10.0`. A session holds exactly one hold while any task is `queued` or `running`, according to the `onTaskState` transitions, not `snapshot()` inside `wrapRun`. Acquire on the 0→1 transition and release on 1→0. Release on close.
+- In `dialogue-sessions.ts`, subscribe per session (`on('dialogue.activity', …, { source: key })`): a session holds exactly one hold while `running > 0`. Acquire on 0→1 and release on 1→0, never from `snapshot()` inside `wrapRun`. Release on `dialogue.session.closed` and on close.
 
 - [ ] **Step 1: Failing tests:**
   - `sweep keeps a held session past the TTL`;
@@ -147,12 +141,12 @@
 - Test: `test/unit/dialogue-sessions.test.ts`
 
 **Interfaces:**
-- Consumes: Task 0 `onSettled` and `activity()`; Task 1 outbox.
-- **New event kind:** `DialogueEvent` gains `{ kind: 'settled' }`. It is emitted from `onSettled`, after awaiting `outbox.flushed(): Promise<void>` (new on the outbox: it resolves when every queued `add` and write has finished). It is never sent to SSE clients (Task 7 filters it). Store saves themselves emit nothing new.
+- Consumes: Task 0 bus (`dialogue.turn.settled`, `dialogue.activity`, `dialogue.plan.changed`); Task 1 outbox.
+- **New event kind:** `DialogueEvent` gains `{ kind: 'settled' }`. It is emitted when `dialogue.turn.settled` arrives for this session, after awaiting `outbox.flushed(): Promise<void>` (new on the outbox: it resolves when every queued `add` and write has finished). It is never sent to SSE clients (Task 7 filters it). Store saves themselves emit nothing new.
 - **`DialogueHandle` gains `state(): { turnActive: boolean; running: number; total: number; done: number; status?: 'active' | 'waiting_user' | 'done'; idle: boolean }`:**
-  - `turnActive`, `running`: from `session.activity()`.
+  - `turnActive`, `running`: from `last('dialogue.activity', key)`; `total`, `done`, `status`: from `last('dialogue.plan.changed', key)`.
   - `total` and `done`: plan steps total, and plan steps with state `done`.
-  - `idle` is true when status is `active` and `activity()` reports `!turnActive`, `queuedInputs === 0`, `running === 0` and `ready === 0`.
+  - `idle` is true when status is `active` and the retained `dialogue.activity` reports `!turnActive`, `queuedInputs === 0`, `running === 0` and `ready === 0`.
 - **Plain replies:** an ordinary reply without a plan reports `status: undefined`. The follow (Task 4) does not start then.
 
 - [ ] **Step 1: Failing tests:**
@@ -177,7 +171,7 @@
   - `supersedeFollow(handle: DialogueHandle): Promise<void>`.
 - **Behaviour:**
   - **Messages:** yield, in outbox order, every pending (unconfirmed) outbox message for which `!delivery.has(id)`, as it arrives. Select by the carried set, never by a cursor, so a message that entered the outbox before the reply is not skipped. The consumer calls `item.written()` after writing the message completely; `written()` calls `delivery.carried(id)`.
-  - **Stop evaluation:** evaluate the stop on each `settled` event and once at start, but only when `activity()` reports `!turnActive` and `queuedInputs === 0`; otherwise wait for the next `settled`. End with `done`, `waiting_user` or `idle` from `state()`, and only after every message that the outbox holds at that moment has been yielded.
+  - **Stop evaluation:** evaluate the stop on each `settled` event and once at start, but only when the retained `dialogue.activity` reports `!turnActive` and `queuedInputs === 0`; otherwise wait for the next `settled`. End with `done`, `waiting_user` or `idle` from `state()`, and only after every message that the outbox holds at that moment has been yielded.
   - **Limit:** `limit` at `maxMs` from the follow start. Its note is `still running: <done> of <total> steps done`, or `still running` when `total === 0`.
   - **Disconnect:** `disconnected` when the signal aborts.
   - **One follow per session:** a new `followDialogue` or `supersedeFollow` call ends the previous follow with `superseded` and the note `A new message arrived; the work continues in its response.`, and resolves after that previous follow has yielded its end.
