@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type {
   AgentCallOptions,
   LlmStreamChunk,
@@ -12,6 +13,7 @@ import { setSessionDestination } from '../agent-manager';
 import { dialogueFor } from './dialogue-sessions';
 import type { LongSession } from './long-session';
 import { NoMessageFilter, stripNoMessage } from './no-message';
+import { ragContextOf, userTextOf } from './rag-context-marker';
 import { extractText } from './session-turns';
 
 /** Adapt planner turns to the existing chat response/error and history paths. */
@@ -65,16 +67,19 @@ export function dialogueChat(
     async process(messages, opts) {
       try {
         const { handle, prefix, complete } = await open();
+        const message = messages.filter((m) => m.role === 'user').at(-1);
+        const trace = {
+          ...opts?.trace,
+          traceId: opts?.trace?.traceId ?? randomUUID(),
+        };
+        const context = message && ragContextOf(message);
+        if (context) handle.retrievedContexts.set(trace, context);
         const answer = await handle.session
-          .send(
-            extractText(
-              messages.filter((m) => m.role === 'user').at(-1)?.content,
-            ),
-            {
-              signal: opts?.signal,
-              trace: opts?.trace,
-            },
-          )
+          .send(userText(message), {
+            signal: opts?.signal,
+            trace,
+          })
+          .finally(() => handle.retrievedContexts.delete(trace))
           .finally(() => handle.drainPending());
         complete();
         return {
@@ -104,24 +109,27 @@ export function dialogueChat(
         queue.push(chunk);
         wake?.();
       };
+      const message = messages.filter((m) => m.role === 'user').at(-1);
+      const trace = {
+        ...opts?.trace,
+        traceId: opts?.trace?.traceId ?? randomUUID(),
+      };
+      const context = message && ragContextOf(message);
+      if (context) handle.retrievedContexts.set(trace, context);
       const sending = handle.session
-        .send(
-          extractText(
-            messages.filter((m) => m.role === 'user').at(-1)?.content,
-          ),
-          {
-            signal: opts?.signal,
-            trace: opts?.trace,
-            onPartial(chunk) {
-              if (chunk.kind === 'content') {
-                if (!chunk.delta) return;
-                receivedPartial = true;
-                const content = filter.push(chunk.delta);
-                if (content) push({ ok: true, value: { content } });
-              }
-            },
+        .send(userText(message), {
+          signal: opts?.signal,
+          trace,
+          onPartial(chunk) {
+            if (chunk.kind === 'content') {
+              if (!chunk.delta) return;
+              receivedPartial = true;
+              const content = filter.push(chunk.delta);
+              if (content) push({ ok: true, value: { content } });
+            }
           },
-        )
+        })
+        .finally(() => handle.retrievedContexts.delete(trace))
         .then(
           (answer) => {
             const content = receivedPartial
@@ -160,4 +168,11 @@ function plannerError(error: unknown): OrchestratorError {
   return Object.assign(cause, {
     code: (cause as { code?: string }).code ?? 'PLANNER_ERROR',
   });
+}
+
+function userText(message: Message | undefined): string {
+  if (!message) return '';
+  return typeof message.content === 'string' || message.content === null
+    ? userTextOf(message as { content: string | null })
+    : extractText(message.content);
 }

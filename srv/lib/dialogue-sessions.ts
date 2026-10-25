@@ -32,6 +32,7 @@ import { DialogueOutbox } from './dialogue-outbox';
 import {
   plannerWithEnvironment,
   plannerWithParagraphs,
+  plannerWithRetrievedContext,
 } from './dialogue-planner-content';
 import { runWithDialogueRagTools } from './dialogue-rag-tools';
 import {
@@ -89,6 +90,7 @@ export function dialoguePlan(
 export interface DialogueHandle {
   destination: string;
   session: DialogueSession;
+  retrievedContexts: WeakMap<object, string>;
   outbox: DialogueOutbox;
   hasSubscribers(): boolean;
   drainPending(): Promise<void>;
@@ -210,8 +212,12 @@ async function open(
     throw new Error('Destination executor workers unavailable');
   const planner = await buildPlannerAgent(config);
   const factory = new SessionConnectionFactory(userId, key);
+  const retrievedContexts = new WeakMap<object, string>();
   const turnPlanner = plannerWithEnvironment(
-    plannerWithParagraphs(planner),
+    plannerWithRetrievedContext(
+      plannerWithParagraphs(planner),
+      retrievedContexts,
+    ),
     () => {
       const connection = longSessionsIfReady()?.get(userId, key)?.connection;
       const identity = connection
@@ -531,6 +537,7 @@ async function open(
   return {
     destination,
     session,
+    retrievedContexts,
     outbox,
     drainPending,
     hasSubscribers: () => subscribers.size > 0,

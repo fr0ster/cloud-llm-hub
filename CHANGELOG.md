@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- Dialogue sessions with large selected collections keep their saved state, and retrieved context is used for the current turn only.
+
 ## [9.4.0] - 2026-10-25
 
 ### Fixed
