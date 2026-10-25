@@ -45,6 +45,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "^1.3.0",
     "@biomejs/biome": "^2.5.15",
     "@cap-js/cds-typer": "^0.41.1",
     "@cap-js/cds-types": "^0.20.0",
@@ -60,6 +61,7 @@
     "husky": "^9.1.7",
     "jest": "^30.4.0",
     "mbt": "1.2.49",
+    "openai": "^7.43.0",
     "ts-jest": "^29.4.9",
     "tsx": "^4",
     "typescript": "^6.0.3"
