@@ -429,6 +429,13 @@ async function serveMessages(
                 out.write(`: status ${JSON.stringify(chunk.value.status)}\n\n`);
                 continue;
               }
+              if (
+                chunk.ok &&
+                ('clhMessageId' in chunk.value ||
+                  'clhMessageEnd' in chunk.value ||
+                  'clhTurnEnd' in chunk.value)
+              )
+                continue;
               yield chunk;
             }
           })();

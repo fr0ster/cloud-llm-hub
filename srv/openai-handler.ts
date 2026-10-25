@@ -863,6 +863,12 @@ async function serveChatCompletions(
                       }
 
                       const v = chunk.value;
+                      if (
+                        'clhMessageId' in v ||
+                        'clhMessageEnd' in v ||
+                        'clhTurnEnd' in v
+                      )
+                        continue;
 
                       // Forward heartbeats as SSE comments to keep the connection alive.
                       // Without this, CF Router / Cloud Connector may close idle TCP

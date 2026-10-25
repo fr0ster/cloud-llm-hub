@@ -1,3 +1,8 @@
+import {
+  type DialogueStreamChunk,
+  dialogueChat,
+} from '../../srv/lib/dialogue-chat';
+import { DialogueOutbox } from '../../srv/lib/dialogue-outbox';
 import { plannerWithRetrievedContext } from '../../srv/lib/dialogue-planner-content';
 import { resetGatekeeperForTest } from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
@@ -58,7 +63,9 @@ import {
 let session: LongSession;
 const refresh = jest.fn();
 const confirmUpTo = jest.fn(async () => {});
-let subscribed = false;
+let emptyPending = false;
+let outbox: DialogueOutbox;
+const ended = jest.fn();
 const send = jest.fn();
 let turnContext: WeakMap<object, string>;
 beforeEach(() => {
@@ -68,7 +75,21 @@ beforeEach(() => {
   harness.reset();
   refresh.mockClear();
   confirmUpTo.mockClear();
-  subscribed = false;
+  emptyPending = false;
+  ended.mockClear();
+  outbox = new DialogueOutbox([], async () => {});
+  const begin = outbox.beginDelivery.bind(outbox);
+  jest.spyOn(outbox, 'beginDelivery').mockImplementation(() => {
+    const delivery = begin();
+    return {
+      ...delivery,
+      ended() {
+        ended();
+        delivery.ended();
+      },
+    };
+  });
+  jest.spyOn(outbox, 'confirmUpTo').mockImplementation(confirmUpTo);
   send.mockReset();
   turnContext = new WeakMap<object, string>();
   const registry = new LongSessionRegistry(
@@ -81,16 +102,19 @@ beforeEach(() => {
     retrievedContexts: turnContext,
     factory: { refresh },
     drainPending: async () => {},
-    hasSubscribers: () => subscribed,
-    outbox: {
-      pending: () => [
-        { id: 'one', text: 'one' },
-        { id: 'two', text: 'two' },
-      ],
-      confirmUpTo,
-    },
+    hasSubscribers: () => true,
+    state: () => ({}),
+    outbox,
     session: { takePending: () => [{ text: 'one' }, { text: 'two' }], send },
   } as never);
+  jest.spyOn(outbox, 'pending').mockImplementation(() =>
+    emptyPending
+      ? []
+      : [
+          { id: 'one', text: 'one', createdAt: 1, trigger: 'event' },
+          { id: 'two', text: 'two', createdAt: 2, trigger: 'event' },
+        ],
+  );
   send.mockImplementation(async (_text, opts) => {
     expect(getRequestSessionId()).toBe(session.key);
     expect(getRequestUserId()).toBe('alice');
@@ -105,11 +129,11 @@ afterEach(() => {
   clearSession(session.key, 'alice');
   setLongSessionsForTest(undefined);
 });
-const visible = '**Planner:** one\n\n**Planner:** two\n\nanswer';
+const visible = 'one\n\ntwo\n\nanswer';
 for (const anthropic of [false, true])
   for (const stream of [false, true]) {
     it(`sentinel-only reply finishes (anthropic=${anthropic}, stream=${stream})`, async () => {
-      subscribed = true;
+      emptyPending = true;
       send.mockImplementation(async (_text, opts) => {
         opts.onPartial?.({ kind: 'content', delta: 'NO_' });
         opts.onPartial?.({ kind: 'content', delta: 'MESSAGE' });
@@ -176,7 +200,7 @@ for (const anthropic of [false, true])
         }),
       );
       if (stream) {
-        expect(res.body.indexOf('**Planner:** one')).toBeLessThan(
+        expect(res.body.indexOf('one')).toBeLessThan(
           res.body.indexOf('answer'),
         );
       } else {
@@ -187,7 +211,7 @@ for (const anthropic of [false, true])
             : payload.choices[0].message.content,
         ).toBe(visible);
       }
-      expect(confirmUpTo).toHaveBeenCalledWith('two');
+      expect(ended).toHaveBeenCalledTimes(1);
       const history = getSessionHistory(session.key, 'alice');
       expect(history).toHaveLength(anthropic ? 0 : 2);
       if (!anthropic) expect(history[1].content).toBe(visible);
@@ -294,9 +318,9 @@ it.each([false, true])(
 );
 
 it.each([false, true])(
-  'active subscriber excludes outbox from chat (stream=%s)',
+  'active subscriber still receives outbox in chat (stream=%s)',
   async (stream) => {
-    subscribed = true;
+    emptyPending = false;
     const req = fakeReq(
       { stream, messages: [{ role: 'user', content: 'hi' }] },
       session.key,
@@ -305,6 +329,7 @@ it.each([false, true])(
     const res = fakeRes();
     await handleChatCompletions(req, res as unknown as Response);
     expect(res.body).toContain('answer');
+    expect(res.body).toContain('one');
     expect(res.body).not.toContain('**Planner:**');
     expect(confirmUpTo).not.toHaveBeenCalled();
   },
@@ -436,7 +461,7 @@ it.each([
     'NO_MESSAGEish and inner NO_MESSAGE mention',
   ],
 ])('cleans direct planner reply %j', async (text, expected) => {
-  subscribed = true;
+  emptyPending = true;
   send.mockResolvedValue({ text });
   const { dialogueChat } = await import('../../srv/lib/dialogue-chat');
   const agent = dialogueChat(
@@ -462,7 +487,7 @@ it.each([
   [['NO_MESSAGE\n', '    ', 'answer'], 'answer'],
   [['answer', '  '], 'answer  '],
 ])('filters streamed boundary sentinels %j', async (deltas, expected) => {
-  subscribed = true;
+  emptyPending = true;
   send.mockImplementation(async (_text, opts) => {
     for (const delta of deltas) opts.onPartial({ kind: 'content', delta });
     return { text: deltas.join('') };
@@ -491,7 +516,7 @@ it.each([
 it.each(['NO_MESSAGE', 'NO_MESSAGE answer NO_MESSAGE'])(
   'cleans streaming fallback without partials %j',
   async (text) => {
-    subscribed = true;
+    emptyPending = true;
     send.mockResolvedValue({ text });
     const { dialogueChat } = await import('../../srv/lib/dialogue-chat');
     const agent = dialogueChat(
@@ -568,3 +593,170 @@ for (const anthropic of [false, true])
         }
       });
     }
+
+function directChat(ack?: string) {
+  const req = fakeReq({}, session.key) as unknown as Request;
+  if (ack !== undefined) req.headers['x-clh-ack'] = ack;
+  const res = fakeRes();
+  return {
+    res,
+    agent: dialogueChat(
+      req,
+      'alice',
+      session,
+      'SAP',
+      res as unknown as Response,
+    ),
+  };
+}
+async function chunksOf(agent: ReturnType<typeof dialogueChat>) {
+  const chunks: DialogueStreamChunk[] = [];
+  for await (const chunk of agent.streamProcess([])) {
+    if (!chunk.ok) throw chunk.error;
+    chunks.push(chunk.value);
+  }
+  return chunks;
+}
+function directAnswer() {
+  send.mockImplementation(async (_text, opts) => {
+    opts.onPartial?.({ kind: 'content', delta: 'answer' });
+    return { text: 'answer' };
+  });
+}
+it('streams pending messages then the reply, with matching framing', async () => {
+  directAnswer();
+  const { agent } = directChat();
+  const chunks = await chunksOf(agent);
+  const ids = chunks.flatMap((c) => (c.clhMessageId ? [c.clhMessageId] : []));
+  expect(ids).toEqual(['one', 'two', expect.any(String)]);
+  expect(
+    chunks.filter((c) => c.clhMessageEnd).map((c) => c.clhMessageEnd),
+  ).toEqual(ids);
+  expect(chunks.filter((c) => c.clhTurnEnd)).toHaveLength(1);
+  for (const id of ids) {
+    const start = chunks.findIndex((c) => c.clhMessageId === id);
+    const end = chunks.findIndex((c) => c.clhMessageEnd === id);
+    expect(chunks[start].content).toBe('');
+    expect(end).toBeGreaterThan(start + 1);
+    expect(chunks[end + 1]?.clhMessageId).toBeUndefined();
+  }
+  expect(chunks.map((c) => c.content || '').join('')).toBe(visible);
+  expect(outbox.history().at(-1)).toMatchObject({
+    id: ids[2],
+    text: 'answer',
+    trigger: 'user',
+  });
+});
+it.each(['', 'NO_MESSAGE'])(
+  'reply %j adds nothing and emits no reply id or empty paragraph',
+  async (text) => {
+    send.mockResolvedValue({ text });
+    const chunks = await chunksOf(directChat().agent);
+    expect(
+      chunks.filter((c) => c.clhMessageId).map((c) => c.clhMessageId),
+    ).toEqual(['one', 'two']);
+    expect(chunks.map((c) => c.content || '').join('')).toBe('one\n\ntwo');
+    expect(outbox.history()).toEqual([]);
+  },
+);
+it.each([
+  [false, false],
+  [false, true],
+  [true, false],
+  [true, true],
+])(
+  'later arrival confirms only an ended response (cut=%s, stream=%s)',
+  async (cut, stream) => {
+    jest.mocked(outbox.pending).mockRestore();
+    directAnswer();
+    const first = directChat();
+    if (stream) await chunksOf(first.agent);
+    else {
+      const result = await first.agent.process([]);
+      expect(result.ok).toBe(true);
+    }
+    const id = outbox.pending()[0].id;
+    if (!stream) expect(first.res.headers['x-clh-last-message']).toBe(id);
+    if (cut) first.res.disconnect();
+    first.res.end();
+    const second = directChat();
+    const next = await second.agent.process([]);
+    expect(next.ok && next.value.content).toBe(
+      cut ? 'answer\n\nanswer' : 'answer',
+    );
+    expect(outbox.pending().some((m) => m.id === id)).toBe(cut);
+  },
+);
+it('x-clh-ack none enters ack mode; an id confirms up to it', async () => {
+  jest.mocked(outbox.pending).mockRestore();
+  jest.mocked(outbox.confirmUpTo).mockRestore();
+  directAnswer();
+  const first = directChat('none');
+  await first.agent.process([]);
+  first.res.end();
+  const id = outbox.pending()[0].id;
+  expect(outbox.ackMode).toBe(true);
+  await directChat().agent.process([]);
+  expect(outbox.pending().some((m) => m.id === id)).toBe(true);
+  await directChat(id).agent.process([]);
+  expect(outbox.pending().some((m) => m.id === id)).toBe(false);
+});
+it('a new request supersedes an open follow before reading pending', async () => {
+  directAnswer();
+  const handle = await dialogueFor('alice', session.key, 'SAP');
+  handle.state = () => ({
+    status: 'active',
+    turnActive: false,
+    queuedInputs: 0,
+    running: 1,
+    total: 1,
+    done: 0,
+    idle: false,
+  });
+  handle.subscribe = () => () => {};
+  const first = directChat();
+  await chunksOf(first.agent);
+  const follow = first.agent.follow(new AbortController().signal, 10000);
+  expect(follow).toBeDefined();
+  if (!follow) throw new Error('expected a follow');
+  const iterator = follow[Symbol.asyncIterator]();
+  const end = iterator.next();
+  await tick();
+  const pending = jest.mocked(outbox.pending);
+  pending.mockClear();
+  let superseded = false;
+  const observed = end.then((item) => {
+    superseded =
+      item.value?.kind === 'end' && item.value.reason === 'superseded';
+  });
+  pending.mockImplementation(() => {
+    expect(superseded).toBe(true);
+    return [];
+  });
+  await directChat().agent.process([]);
+  await observed;
+  expect(superseded).toBe(true);
+  await iterator.return?.();
+});
+
+it('follow is absent for a plain reply and for a non-streaming turn', async () => {
+  directAnswer();
+  const { agent } = directChat();
+  await chunksOf(agent);
+  expect(agent.follow(new AbortController().signal, 100)).toBeUndefined();
+  const handle = await dialogueFor('alice', session.key, 'SAP');
+  handle.state = () => ({
+    status: 'done',
+    turnActive: false,
+    queuedInputs: 0,
+    running: 0,
+    total: 1,
+    done: 1,
+    idle: false,
+  });
+  const nonStreaming = directChat().agent;
+  await nonStreaming.process([]);
+  expect(
+    nonStreaming.follow(new AbortController().signal, 100),
+  ).toBeUndefined();
+});
