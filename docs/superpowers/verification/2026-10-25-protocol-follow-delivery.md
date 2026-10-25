@@ -24,16 +24,34 @@ Date: 2026-10-25.
 
 | Scenario (spec acceptance) | Client | Result |
 |---|---|---|
-| 1. Multi-step read task: reply, `: turn-end`, follow, background result, one `[DONE]` | WebUI, OpenAI SDK stream, Anthropic SDK stream, `llm` CLI | pass |
-| 3. Correction while a follow is open: old stream ends with the supersede note and one `[DONE]`; the new request is admitted at once | WebUI, plain client | pass |
-| 7. Keep-alive written on open (7 ms after the request) and every 10 s; one terminal sequence | WebUI | pass |
+| 1 (partial: read-only; collection writes, scopes and the checker not exercised). Multi-step read task: reply, `: turn-end`, follow, background result, one `[DONE]` | WebUI, OpenAI SDK stream, Anthropic SDK stream, `llm` CLI | pass |
+| 3 (partial: protocol side only; whether the planner applied the correction was not judged). Correction while a follow is open: old stream ends with the supersede note and one `[DONE]`; the new request is admitted at once | WebUI, plain client | pass |
+| 7 (partial: no forced long admission or initialization wait; no initialization error). Keep-alive written on open (7 ms after the request) and every 10 s through a 23 s silent follow; one terminal sequence | WebUI | pass |
 | 10. Cut right after `: turn-end`: the next response delivers the cut response's complete reply again, then the messages produced meanwhile | plain client | pass |
-| 14. Two tabs on one session: the stream tab and the SSE-view tab show every message once | WebUI | pass |
+| 14 (partial: SSE-view tab attached after and during a stream; no cut stream in either tab). Two tabs on one session: the stream tab and the SSE-view tab show every message once | WebUI | pass |
 | 15/16. Supersede with and without `x-clh-ack`: no message the old response carried is delivered again | plain client | pass on 9.5.1, fail on 9.5.0 (fixed by #78) |
 | 17. Implicit mode, normal path: no duplicates | plain client | pass |
 | Non-streaming: one message, `x-clh-last-message` set, `finish_reason: stop` | OpenAI SDK | pass |
 | SSE view: every message once, with its `trigger` (user/event), in outbox order | WebUI SSE probe | pass |
 | WebUI acknowledgement: `x-clh-ack: none` first, then the id of the last complete message | WebUI tap | pass |
+
+## Not run
+
+- **Spec scenarios:** 2 (a question ends the turn), 8 and 8a (failed steps; a pause before the turn's outbox write), 9 (a hub error after partial follow content), 10a (TTL shorter than the run), 15a (a reply still streaming while another tab acknowledges).
+  - These are covered by unit tests on the branch; they were not reproduced live.
+- **Client combinations:** OpenAI and Anthropic non-streaming with a follow-length task, and the Anthropic SDK in explicit acknowledgement mode.
+
+## Evidence (sanitized)
+
+Ids are truncated; times are milliseconds from the response start.
+
+- **Scenario 1, WebUI stream.** `: keep-alive` at 7 and 10008 → `: message-id 3fe2…`/`: message-end 3fe2…` at 14478 → `: turn-end` at 14478 → `: keep-alive` at 19992 and 30009 → `: message-id 9ff3…`/`: message-end 9ff3…` at 37825 → final chunk and `data: [DONE]` at 37825.
+- **Supersede, plain client.**
+  - On 9.5.0, the new request with `x-clh-ack: 9067…` streamed `: message-id 9067…` again.
+  - On 9.5.1, in both modes: old stream with note + `[DONE]`; new stream ids `{8fa8…, 28d8…}` and `{040d…, 0e5d…}`, none of the old ones.
+- **Cut, plain client.** The cut response carried `4a0d…` and was aborted at `: turn-end`. The next response streamed `4a0d…`, `4a56…`, `f53a…`, `[DONE]`.
+- **Non-streaming, OpenAI SDK.** Status 200, `x-clh-last-message: dc27…`, `finish_reason: stop`.
+- **SSE view.** Messages with `trigger` user/event in outbox order. Each id appeared once in both tabs.
 
 ## Found and fixed during the run
 
