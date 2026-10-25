@@ -10,9 +10,9 @@
 - **Two phases.** The request's planner turn runs under session admission as today. A follow phase then runs after admission is released and streams new outbox messages on the same response until a stop condition.
 - **Outbox.** The outbox keeps every message, marking each as pending or confirmed. Per-response delivery records decide what a confirmation may remove from pending, either by a later arrival or by `x-clh-ack`.
 - **SSE.** The SSE channel becomes a read-only view.
-- **Library.** The hub consumes the dialogue signals of the llm-agent package `llm-signals` (design: llm-agent `docs/superpowers/specs/2026-10-25-llm-signals-design.md`): `dialogue.turn.settled`, `dialogue.task.state`, `dialogue.activity`, `dialogue.plan.changed`. It adds no hub-specific signal to the library. The hub assigns the user-turn reply's id itself when the turn starts.
+- **Library.** The hub consumes the dialogue signals of `@mcp-abap-adt/llm-signals` (design: llm-agent `docs/superpowers/specs/2026-10-25-llm-signals-design.md`): `dialogue.turn.settled`, `dialogue.task.state`, `dialogue.activity`, `dialogue.plan.changed`. It adds no hub-specific signal to the library. The hub assigns the user-turn reply's id itself when the turn starts.
 
-**Tech Stack:** TypeScript, SAP CAP, Express, Jest (`--maxWorkers=1`), `@mcp-abap-adt/llm-agent(-libs)` and the llm-agent package `llm-signals` at the release that contains the signals (published by the user), the WebUI single file `app/chat/webapp/index.html`.
+**Tech Stack:** TypeScript, SAP CAP, Express, Jest (`--maxWorkers=1`), `@mcp-abap-adt/llm-agent(-libs)` and `@mcp-abap-adt/llm-signals` at the release that contains the signals (published by the user), the WebUI single file `app/chat/webapp/index.html`.
 
 **Spec:** `docs/superpowers/specs/2026-10-24-client-protocol-design.md`, sections 4 (streaming part), 5 and 6; rollout step 2. The non-streaming budget and queued status (rollout step 3) and the session key in the conversation (step 4) are out of scope.
 
@@ -56,13 +56,13 @@
 ### Task 0: Wire the dialogue signals into the hub
 
 **Files:**
-- Modify: `package.json` (bump `@mcp-abap-adt/llm-agent`, `@mcp-abap-adt/llm-agent-libs`; add the llm-agent package `llm-signals`)
+- Modify: `package.json` (bump `@mcp-abap-adt/llm-agent`, `@mcp-abap-adt/llm-agent-libs`; add `@mcp-abap-adt/llm-signals`)
 - Create: `srv/lib/dialogue-signals.ts`
 - Modify: `srv/lib/dialogue-sessions.ts` (pass the bus to `DialogueSession.open`)
 - Test: `test/unit/dialogue-signals.test.ts`
 
 **Interfaces:**
-- **Consumes:** the contracts from `@mcp-abap-adt/llm-agent`: `ISignalBus`, `Signal`, `DialogueSignals`, `DIALOGUE_SIGNALS_VERSION`. Also `createSignalBus` from the llm-agent package `llm-signals`.
+- **Consumes:** the contracts from `@mcp-abap-adt/llm-agent`: `ISignalBus`, `Signal`, `DialogueSignals`, `DIALOGUE_SIGNALS_VERSION`. Also `createSignalBus` from `@mcp-abap-adt/llm-signals`.
 - **Produces:**
   - **`dialogueSignals(): ISignalBus<DialogueSignals>`** — one process-wide bus, created lazily with `onHandlerError` logging to `cds.log('dialogue-signals')` without payload text.
   - **`setDialogueSignalsForTest(bus)`.**

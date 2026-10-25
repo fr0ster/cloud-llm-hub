@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- Dialogue sessions publish llm-agent dialogue signals on a process-wide bus (llm-agent 30.10.0, llm-signals 1.0.1).
+
 ## [9.4.1] - 2026-10-25
 
 ### Fixed
