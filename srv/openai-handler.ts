@@ -688,8 +688,9 @@ async function serveChatCompletions(
       return [];
     })();
 
+    // The parsed body: a raw request carries it only in `body`, not `req.body`.
     const retrieval = await collections.retrieve(
-      req,
+      { headers: req.headers, body },
       normalizedMessages,
       userId,
       sessionId,
