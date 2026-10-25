@@ -29,7 +29,7 @@ Date: 2026-10-25.
 | 7 (partial: no forced long admission or initialization wait; no initialization error). Keep-alive written on open (7 ms after the request) and every 10 s through a 23 s silent follow; one terminal sequence | WebUI | pass |
 | 10. Cut right after `: turn-end`: the next response delivers the cut response's complete reply again, then the messages produced meanwhile | plain client | pass |
 | 14 (partial: SSE-view tab attached after and during a stream; no cut stream in either tab). Two tabs on one session: the stream tab and the SSE-view tab show every message once | WebUI | pass |
-| 15/16. Supersede with and without `x-clh-ack`: no message the old response carried is delivered again | plain client | pass on 9.5.1, fail on 9.5.0 (fixed by #78) |
+| Supersede regression (not a spec scenario): with and without `x-clh-ack`, no message the old response carried is delivered again | plain client | pass on 9.5.1, fail on 9.5.0 (fixed by #78) |
 | 17. Implicit mode, normal path: no duplicates | plain client | pass |
 | Non-streaming: one message, `x-clh-last-message` set, `finish_reason: stop` | OpenAI SDK | pass |
 | SSE view: every message once, with its `trigger` (user/event), in outbox order | WebUI SSE probe | pass |
@@ -37,7 +37,7 @@ Date: 2026-10-25.
 
 ## Not run
 
-- **Spec scenarios:** 2 (a question ends the turn), 8 and 8a (failed steps; a pause before the turn's outbox write), 9 (a hub error after partial follow content), 10a (TTL shorter than the run), 15a (a reply still streaming while another tab acknowledges).
+- **Spec scenarios:** 15 (a cut after the last delta but before the terminal) and 16 (a lost completed response, then missing and older acknowledgements, streaming and non-streaming): only the supersede regression above was run. Also 2 (a question ends the turn), 8 and 8a (failed steps; a pause before the turn's outbox write), 9 (a hub error after partial follow content), 10a (TTL shorter than the run), 15a (a reply still streaming while another tab acknowledges).
   - These are covered by unit tests on the branch; they were not reproduced live.
 - **Client combinations:** OpenAI and Anthropic non-streaming with a follow-length task, and the Anthropic SDK in explicit acknowledgement mode.
 
