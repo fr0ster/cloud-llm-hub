@@ -15,7 +15,7 @@ type Chunk =
   | { ok: false; error: Error };
 
 export const harness = {
-  user: { id: 'alice', is: () => true, roles: ['MCP_Full'] } as {
+  user: { id: 'alice', is: () => true, roles: ['MCP_Developer'] } as {
     id: string;
     is: (r: string) => boolean;
     roles: string[];

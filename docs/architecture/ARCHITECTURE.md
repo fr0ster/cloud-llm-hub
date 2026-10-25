@@ -343,7 +343,7 @@ graph TD
 
 | Module | File | Responsibility |
 |--------|------|---------------|
-| **CAP Bootstrap** | `server.ts` | Registers Express middleware on `cds.on('bootstrap')`. Mounts `/mcp/stream/http`, `/mcp/agent/stream/http`, and all `/v1/*` routes. Handles Content-Type normalization for Cline. Guards `/mcp/*` and `/v1/*` with a manual Express middleware chain — `context` (CAP `cds.context`) → `wrappedAuth` (`createBasicToBearerMiddleware` over CAP's built-in auth) → `requireMcpRole` (local: 401 if `user.is('anonymous')`, 403 unless `user.is()` matches an `MCP_*` role) → `authJsonErrorHandler`. It does **not** call the `AuthService` OData handlers. |
+| **CAP Bootstrap** | `server.ts` | Registers Express middleware on `cds.on('bootstrap')`. Mounts `/mcp/stream/http`, `/mcp/agent/stream/http`, and all `/v1/*` routes. Handles Content-Type normalization for Cline. Guards `/mcp/*` and `/v1/*` with a manual Express middleware chain — `context` (CAP `cds.context`) → `wrappedAuth` (`createBasicToBearerMiddleware` over CAP's built-in auth) → `requireMcpRole` (from `lib/require-mcp-role.ts`: 401 if `user.is('anonymous')`, 403 unless `user.is()` matches a tool role (`MCP_Reader` or `MCP_Developer`)) → `authJsonErrorHandler`. It does **not** call the `AuthService` OData handlers. |
 | **MCP Proxy Service** | `mcp-proxy.ts` + `.cds` | CAP service annotated `@path: 'mcp-proxy'` (mounted at `/odata/v4/mcp-proxy/`). Exposes `Health()`, `ProbeDestination(destination)`, `ListDestinations()`, `DiagnoseDestinations()`, `ProbeActiveDestination()`, `InvokeTool()` (deprecated). Uses SAP Cloud SDK `executeHttpRequest` for destination probing. |
 | **MCP Manager** | `mcp-manager.ts` | Core factory for the raw-tools path. `extractSapContext()` reads SAP config from HTTP headers (destination or direct). `createMCPServerForRequest()` creates fresh Connection → EmbeddableMcpServer → StreamableHTTPServerTransport per request. |
 | **Agent MCP** | `agent-mcp.ts` | `POST /mcp/agent/stream/http` planner/controller surface — exposes `list_destinations` and `execute_step` (delegate ONE step to the SmartAgent executor via `getSmartAgent`). Connection built lazily per call from `x-sap-*` headers; counts against the gatekeeper's door when `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` is set, and is otherwise capped at two by `Semaphore`. This is a **primary** agent entry point. |
@@ -624,7 +624,7 @@ sequenceDiagram
     Client->>AR: POST /mcp/stream/http
     AR->>MW: Forward with JWT
     MW->>MW: wrappedAuth (basic→bearer, populates cds.context.user)
-    MW->>MW: requireMcpRole — 401 if anonymous,<br/>403 unless user.is(MCP_* role)
+    MW->>MW: requireMcpRole — 401 if anonymous,<br/>403 unless user.is(tool role)
     MW->>MW: handleStreamHTTP(req, res)
 ```
 
@@ -820,27 +820,17 @@ The WebUI subscribes using streaming `fetch` with session headers and reconnects
 
 ```mermaid
 graph TB
-    subgraph XSUAA["XSUAA Security Model (tiered, cumulative scopes)"]
-        S1["MCP_Reader<br/>scope"]
-        S2["MCP_Analyst<br/>scope"]
-        S3["MCP_Developer<br/>scope"]
-        S4["MCP_Full<br/>scope"]
-
-        RT1["MCP_Reader<br/>Role Template"] --> S1
-        RT2["MCP_Analyst<br/>Role Template"] --> S1
-        RT2 --> S2
-        RT3["MCP_Developer<br/>Role Template"] --> S1
-        RT3 --> S2
+    subgraph XSUAA["XSUAA Security Model"]
+        S1["MCP_Reader scope"]
+        S3["MCP_Developer scope"]
+        S4["MCP_Admin scope"]
+        RT1["MCP_Reader Role Template"] --> S1
+        RT3["MCP_Developer Role Template"] --> S1
         RT3 --> S3
-        RT4["MCP_Full<br/>Role Template"] --> S1
-        RT4 --> S2
-        RT4 --> S3
-        RT4 --> S4
-
+        RT4["MCP_Admin Role Template"] --> S4
         RC1["MCP Reader Access"] --> RT1
-        RC2["MCP Analyst Access"] --> RT2
         RC3["MCP Developer Access"] --> RT3
-        RC4["MCP Full Access"] --> RT4
+        RC4["MCP Admin Access"] --> RT4
     end
 
     subgraph AUTH_FLOW["Runtime Auth Flow (/mcp, /v1)"]
@@ -855,12 +845,11 @@ graph TB
         REQ --> WA
         WA -->|user.is('anonymous')| REJECT401["401 Unauthorized"]
         WA -->|authenticated| RMR
-        RMR -->|no MCP_* role| REJECT403["403 Forbidden"]
-        RMR -->|user.is(MCP_* role)| HANDLER["MCP / Agent / v1 Handler"]
+        RMR -->|no tool role| REJECT403["403 Forbidden"]
+        RMR -->|user.is(tool role)| HANDLER["MCP / Agent / v1 Handler"]
     end
 
     style RC1 fill:#f59e0b,color:#000
-    style RC2 fill:#f59e0b,color:#000
     style RC3 fill:#f59e0b,color:#000
     style RC4 fill:#f59e0b,color:#000
     style RMR fill:#16a34a,color:#fff
@@ -884,8 +873,8 @@ graph TB
 
 | Environment | Auth Kind | Details |
 |------------|-----------|---------|
-| **Development** (`cds watch`) | Mocked | Tiered mock users (`package.json`): `alice` (`MCP_Full`+`MCP_Developer`+`MCP_Analyst`+`MCP_Reader`), `bob` (`MCP_Developer`+`MCP_Analyst`+`MCP_Reader`), `carol` (`MCP_Analyst`+`MCP_Reader`), `dave` (`MCP_Reader` only) |
-| **Production** (BTP) | XSUAA JWT | Token validated by CAP middleware; roles from JWT claims — one of `MCP_Reader` / `MCP_Analyst` / `MCP_Developer` / `MCP_Full` (cumulative), enforced by `requireMcpRole` |
+| **Development** (`cds watch`) | Mocked | Tiered mock users (`package.json`): `alice` (`MCP_Admin`+`MCP_Developer`+`MCP_Reader`), `bob` (`MCP_Developer`+`MCP_Reader`), `carol` (`MCP_Reader`), `dave` (`MCP_Reader` only) |
+| **Production** (BTP) | XSUAA JWT | Token validated by CAP middleware; roles from JWT claims — one of `MCP_Reader` / `MCP_Developer` for tools; independent `MCP_Admin` for administration, enforced by `requireMcpRole` |
 
 ---
 

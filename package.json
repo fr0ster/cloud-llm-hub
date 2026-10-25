@@ -134,22 +134,19 @@
           "users": {
             "alice": {
               "roles": [
-                "MCP_Full",
+                "MCP_Admin",
                 "MCP_Developer",
-                "MCP_Analyst",
                 "MCP_Reader"
               ]
             },
             "bob": {
               "roles": [
                 "MCP_Developer",
-                "MCP_Analyst",
                 "MCP_Reader"
               ]
             },
             "carol": {
               "roles": [
-                "MCP_Analyst",
                 "MCP_Reader"
               ]
             },

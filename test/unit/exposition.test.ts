@@ -7,8 +7,7 @@ import {
 
 // Two levels, split by EFFECT rather than by the upstream group's API level:
 // Reader gets everything that changes nothing, Developer adds everything that
-// changes something. The four XSUAA roles map onto those two so that nobody
-// already assigned a role collection loses access.
+// changes something. Admin is independent and grants no tool access.
 describe('resolveExposition', () => {
   const READER = ['readonly', 'search', 'system'];
   const DEVELOPER = [...READER, 'high'];
@@ -22,15 +21,16 @@ describe('resolveExposition', () => {
 
   it.each([
     ['MCP_Reader', READER],
-    ['MCP_Analyst', READER],
+    ['MCP_Analyst', []],
     ['MCP_Developer', DEVELOPER],
-    ['MCP_Full', DEVELOPER],
+    ['MCP_Full', []],
+    ['MCP_Admin', []],
   ])('%s resolves to its level', (role, expected) => {
     expect(sorted(resolveExposition([role]))).toEqual(sorted(expected));
   });
 
   it('is additive — the union of whatever the caller holds', () => {
-    expect(sorted(resolveExposition(['MCP_Reader', 'MCP_Developer']))).toEqual(
+    expect(sorted(resolveExposition(['MCP_Admin', 'MCP_Developer']))).toEqual(
       sorted(DEVELOPER),
     );
   });
@@ -69,11 +69,11 @@ describe('describeCaller', () => {
 
   it('marks a technical caller, whatever scope it happens to hold', () => {
     // CAP sets id 'system' and role 'system-user' for client_credentials.
-    const c = describeCaller(userWith('system', 'system-user', 'MCP_Analyst'));
+    const c = describeCaller(userWith('system', 'system-user', 'MCP_Reader'));
     expect(c.technical).toBe(true);
     expect(c.id).toBe('system');
-    expect(c.roles).toEqual(['MCP_Analyst']);
-    // Analyst is reader-level: no write groups, which is what "cannot find the
+    expect(c.roles).toEqual(['MCP_Reader']);
+    // The consumer is reader-level: no write groups, which is what "cannot find the
     // create tools" looks like from the consumer's side.
     expect(c.exposition).not.toContain('high');
   });

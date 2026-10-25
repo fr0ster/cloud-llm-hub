@@ -172,7 +172,7 @@ describe('role-scoped tool collections', () => {
   // Measured on prod: the pipeline runs tool selection twice, and the second
   // run — the one whose result reaches the model — rebuilds its own options and
   // arrives with no ragFilter. Falling back to Reader there hid every write tool
-  // from every role, so a caller holding MCP_Full was told no tool creates a
+  // from every role, so a caller holding MCP_Developer was told no tool creates a
   // domain. The request store carries the same value the execution check
   // enforces on, so it answers when the options do not.
   it('falls back to the request store when the options lose the filter', async () => {

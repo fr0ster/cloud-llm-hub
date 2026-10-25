@@ -39,7 +39,7 @@ cds.on('bootstrap', (app: Application) => {
     // cds.context.user is now available
     const user = cds.context.user;
     console.log(user.id);            // e.g. "alice" or "john@example.com"
-    console.log(user.is('MCP_Full')); // true/false based on XSUAA scopes
+    console.log(user.is('MCP_Admin')); // true/false based on XSUAA scopes
   });
 });
 ```
@@ -72,7 +72,7 @@ Auth middleware reads Basic header, looks up user in `cds.env.requires.auth.user
         "[development]": {
           "kind": "mocked",
           "users": {
-            "alice": { "roles": ["MCP_Full", "MCP_Developer"] }
+            "alice": { "roles": ["MCP_Admin", "MCP_Developer"] }
           }
         }
       }
@@ -85,7 +85,7 @@ Auth middleware reads Basic header, looks up user in `cds.env.requires.auth.user
 
 Auth middleware uses `@sap/xssec` to:
 1. Validate JWT signature against XSUAA public keys
-2. Extract scopes (e.g., `xsappname.MCP_Full`) and map them to roles (`MCP_Full`)
+2. Extract scopes (e.g., `xsappname.MCP_Admin`) and map them to roles (`MCP_Admin`)
 3. Extract tenant ID for multi-tenancy
 4. Create `cds.User` with proper `is()` method for role checks
 
@@ -142,7 +142,7 @@ After applying CAP middleware, use `cds.context.user` (not `req.user`):
 ```typescript
 // Correct: use cds.context
 const user = cds.context?.user;
-const isAdmin = user?.is('MCP_Full');
+const isAdmin = user?.is('MCP_Admin');
 const userId = user?.id;
 
 // Incorrect: req.user may not be populated for custom routes
@@ -155,7 +155,7 @@ MCP tool exposition is resolved based on user roles in `mcp-manager.ts`:
 
 ```typescript
 const user = cds.context?.user;
-const allMcpRoles = ['MCP_Reader', 'MCP_Analyst', 'MCP_Developer', 'MCP_Full'];
+const allMcpRoles = ['MCP_Reader', 'MCP_Developer'];
 const userRoles = allMcpRoles.filter(role => user?.is?.(role) ?? false);
 const exposition = resolveExposition(userRoles);
 ```

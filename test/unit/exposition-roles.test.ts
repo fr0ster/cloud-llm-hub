@@ -12,9 +12,8 @@ import { buildToolExpositionMap } from '../../srv/lib/tool-exposition-map';
 // needs the re-tag below and why `low` — 87 of its 116 tools write — is
 // granted to nobody.
 const reader = resolveExposition(['MCP_Reader']);
-const analyst = resolveExposition(['MCP_Analyst']);
 const developer = resolveExposition(['MCP_Developer']);
-const full = resolveExposition(['MCP_Full']);
+const admin = resolveExposition(['MCP_Admin']);
 
 describe('the boundary, exercised through the execution check', () => {
   it('lets a reader run system diagnostics', () => {
@@ -43,7 +42,7 @@ describe('the boundary, exercised through the execution check', () => {
 
   it('refuses EVERYONE a low-level tool: it is in no group', () => {
     const map = buildToolExpositionMap();
-    for (const level of [reader, developer, full]) {
+    for (const level of [reader, developer, admin]) {
       expect(() =>
         assertToolAllowed(
           'DeletePackageLow',

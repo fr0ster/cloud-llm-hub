@@ -12,20 +12,20 @@ const SAP_JWT_TOKEN = process.env.SAP_JWT_TOKEN;
 /** Mocked users from package.json cds.requires.auth */
 const USERS = {
   alice: {
-    roles: ['MCP_Full', 'MCP_Developer', 'MCP_Analyst', 'MCP_Reader'],
+    roles: ['MCP_Admin', 'MCP_Developer', 'MCP_Reader'],
     expectedGroups: ['readonly', 'search', 'system', 'high'],
   },
   bob: {
-    roles: ['MCP_Developer', 'MCP_Analyst', 'MCP_Reader'],
+    roles: ['MCP_Developer', 'MCP_Reader'],
     expectedGroups: ['readonly', 'search', 'system', 'high'],
   },
   carol: {
-    roles: ['MCP_Analyst', 'MCP_Reader'],
+    roles: ['MCP_Reader'],
     expectedGroups: ['readonly', 'search', 'system'],
   },
   dave: {
     roles: ['MCP_Reader'],
-    expectedGroups: ['readonly', 'search'],
+    expectedGroups: ['readonly', 'search', 'system'],
   },
 };
 
@@ -138,26 +138,11 @@ describeIfConfigured('Role-based exposition (integration)', () => {
         });
       }
 
-      if (!config.roles.includes('MCP_Analyst')) {
-        it('should NOT include system tools', () => {
-          const systemTools = toolNames.filter(
-            (t) =>
-              t.startsWith('GetTypeInfo') ||
-              t.startsWith('GetWhereUsed') ||
-              t.startsWith('GetSqlQuery'),
-          );
-          expect(systemTools).toEqual([]);
-        });
-      }
-
-      if (config.roles.includes('MCP_Analyst')) {
-        it('should include system tools', () => {
-          const hasSystem = toolNames.some(
-            (t) => t === 'GetWhereUsed' || t === 'GetSqlQuery',
-          );
-          expect(hasSystem).toBe(true);
-        });
-      }
+      it('should include system diagnostics', () => {
+        expect(
+          toolNames.some((t) => t === 'GetWhereUsed' || t === 'GetSqlQuery'),
+        ).toBe(true);
+      });
 
       // The hub serves no compact facade tool, to any role.
       it('should NOT include compact handler tools', () => {
@@ -189,9 +174,9 @@ describeIfConfigured('Role-based exposition (integration)', () => {
       counts[user] = getToolCount(list.body);
     }
 
-    // dave(Reader) < carol(Analyst) < bob(Developer) < alice(Full)
-    expect(counts.dave).toBeLessThan(counts.carol);
+    // Admin adds no tools; both Reader users expose the same tools.
+    expect(counts.dave).toBe(counts.carol);
     expect(counts.carol).toBeLessThan(counts.bob);
-    expect(counts.bob).toBeLessThan(counts.alice);
+    expect(counts.bob).toBe(counts.alice);
   });
 });

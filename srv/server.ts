@@ -67,6 +67,7 @@ import {
 } from './lib/mcp-destination-guard';
 import { needsSapConnection } from './lib/mcp-request';
 import { startProviders } from './lib/providers';
+import { requireMcpRole } from './lib/require-mcp-role';
 import { initializeRunRecordStore } from './lib/run-record-store';
 import { sessionConfig } from './lib/session-config';
 import type { LongSessionRequest } from './lib/session-connection';
@@ -553,37 +554,6 @@ cds.on('bootstrap', (app: Application) => {
   // See: docs/development/CAP_EXPRESS_AUTH.md
   const [context, , auth] = cds.middlewares.before;
   const wrappedAuth = createBasicToBearerMiddleware(auth);
-
-  const MCP_ROLES = ['MCP_Reader', 'MCP_Analyst', 'MCP_Developer', 'MCP_Full'];
-
-  /** Auth + role check middleware: user must be authenticated AND have at least one MCP_* role */
-  const requireMcpRole = (_req: Request, res: Response, next: NextFunction) => {
-    const user = cds.context?.user;
-    if (!user || user.is('anonymous')) {
-      res.status(401).json({
-        error: 'Unauthorized',
-        message: 'Missing or invalid Authorization header',
-      });
-      return;
-    }
-    const hasRole = MCP_ROLES.some((role) => user.is(role));
-    if (!hasRole) {
-      // A technical token gets a different message on purpose. Telling the
-      // operator of a client_credentials client to "assign a role collection"
-      // sends them to their own BTP user, where the roles already are and
-      // where changing them cannot help — the token carries the CLIENT's
-      // scopes, not theirs.
-      const technical = user.is('system-user');
-      res.status(403).json({
-        error: 'Forbidden',
-        message: technical
-          ? `Access denied: authenticated as technical client "${user.id}" (client_credentials). Its xsuaa client holds no MCP scope; a human's role collections do not apply. Grant the scope to the client, or authenticate as a user.`
-          : 'Access denied: user has no MCP roles. Assign MCP_Reader, MCP_Analyst, MCP_Developer, or MCP_Full role collection.',
-      });
-      return;
-    }
-    next();
-  };
 
   // CAP's jwt-auth middleware calls next(401) / next(403) (passing the
   // numeric status as the error argument) on missing/invalid/expired JWT.

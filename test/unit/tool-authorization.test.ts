@@ -10,7 +10,6 @@ import {
 describe('assertToolAllowed', () => {
   const reader = resolveExposition(['MCP_Reader']);
   const developer = resolveExposition(['MCP_Developer']);
-  const full = resolveExposition(['MCP_Full']);
 
   it('lets a reader run a read-only tool', () => {
     expect(() =>
@@ -18,16 +17,16 @@ describe('assertToolAllowed', () => {
     ).not.toThrow();
   });
 
-  it('lets every role run search and system tools', () => {
-    for (const roles of [reader, developer, full]) {
+  it('lets every tool role run search and system tools', () => {
+    for (const roles of [reader, developer]) {
       expect(() =>
         assertToolAllowed('SearchObject', 'search', roles),
       ).not.toThrow();
     }
-    // `system` is diagnostics — it changes nothing, so every role reaches it.
+    // `system` is diagnostics — it changes nothing, so every tool role reaches it.
     // The tools in that group that DO change something are re-tagged to `high`
     // (see exposition-roles.test.ts).
-    for (const roles of [reader, developer, full]) {
+    for (const roles of [reader, developer]) {
       expect(() =>
         assertToolAllowed('GetSqlQuery', 'system', roles),
       ).not.toThrow();
@@ -52,10 +51,10 @@ describe('assertToolAllowed', () => {
     ).not.toThrow();
   });
 
-  it('grants a low-level tool to nobody, not even MCP_Full', () => {
+  it('grants a low-level tool to nobody, including Developer', () => {
     // The hub serves no low-level tool, so none carries a group; a tool with
-    // no group is refused to every role.
-    for (const roles of [reader, developer, full]) {
+    // no group is refused to every tool role.
+    for (const roles of [reader, developer]) {
       expect(() => assertToolAllowed('AdtRequest', undefined, roles)).toThrow(
         ToolAuthorizationError,
       );
@@ -74,9 +73,9 @@ describe('assertToolAllowed', () => {
 
   it('refuses a tool that carries no exposition group', () => {
     // An unclassified tool must not inherit access by being unclassified.
-    expect(() => assertToolAllowed('MysteryTool', undefined, full)).toThrow(
-      ToolAuthorizationError,
-    );
+    expect(() =>
+      assertToolAllowed('MysteryTool', undefined, developer),
+    ).toThrow(ToolAuthorizationError);
   });
 
   it('refuses a caller with no MCP role at all', () => {
