@@ -1,4 +1,5 @@
 import { lookupDialogue } from './lib/dialogue-sessions';
+import { withRagContext } from './lib/rag-context-marker';
 /**
  * OpenAI-compatible HTTP handlers for SmartAgent.
  *
@@ -882,14 +883,11 @@ async function serveChatCompletions(
             }
           }
           if (lastUserIdx >= 0) {
-            const original = normalizedMessages[lastUserIdx];
-            const originalContent =
-              typeof original.content === 'string' ? original.content : '';
             normalizedMessages = [...normalizedMessages];
-            normalizedMessages[lastUserIdx] = {
-              ...original,
-              content: `${originalContent}\n\n[Context from knowledge base — answer based on this, in your own words]\n${ragContext}`,
-            };
+            normalizedMessages[lastUserIdx] = withRagContext(
+              normalizedMessages[lastUserIdx],
+              ragContext,
+            );
           }
           log.info('RAG semantic search results injected', {
             collections: resolvedCollectionIds,
