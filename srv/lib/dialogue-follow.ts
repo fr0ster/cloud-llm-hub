@@ -19,7 +19,7 @@ export type FollowItem =
 type End = Extract<FollowItem, { kind: 'end' }>;
 const follows = new WeakMap<
   DialogueHandle,
-  { stop(): void; ended: Promise<void> }
+  { stop(): void; ended: Promise<void>; responseEnded?: Promise<void> }
 >();
 const superseded: End = {
   kind: 'end',
@@ -29,14 +29,26 @@ const superseded: End = {
 
 export async function supersedeFollow(handle: DialogueHandle): Promise<void> {
   const previous = follows.get(handle);
-  previous?.stop();
-  await previous?.ended;
+  if (!previous) return;
+  previous.stop();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      previous.responseEnded ?? previous.ended,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 5000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function followDialogue(
   handle: DialogueHandle,
   opts: {
     delivery: Delivery;
+    responseEnded?: Promise<void>;
     since: number;
     signal: AbortSignal;
     maxMs: number;
@@ -59,7 +71,8 @@ export function followDialogue(
     clearTimeout(timer);
     unsubscribe();
     opts.signal.removeEventListener('abort', abort);
-    if (follows.get(handle) === current) follows.delete(handle);
+    if (!opts.responseEnded && follows.get(handle) === current)
+      follows.delete(handle);
     resolveEnded();
   };
   const abort = () => {
@@ -74,8 +87,12 @@ export function followDialogue(
       wake();
     },
     ended,
+    responseEnded: opts.responseEnded,
   };
   follows.set(handle, current);
+  void opts.responseEnded?.then(() => {
+    if (follows.get(handle) === current) follows.delete(handle);
+  });
   opts.signal.addEventListener('abort', abort, { once: true });
   if (opts.signal.aborted) abort();
   const iterator = (async function* (): AsyncGenerator<FollowItem, void> {
