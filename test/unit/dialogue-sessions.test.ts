@@ -194,54 +194,62 @@ afterEach(async () => {
   setLongSessionsForTest(undefined);
 });
 
-test('settled is emitted after the outbox write of the turn', async () => {
-  let finish!: () => void;
-  mockRun.mockImplementation(
-    () =>
-      new Promise((resolve) => {
-        finish = () => resolve({ output: 'done' });
-      }),
-  );
-  const { h } = await ready();
-  await h.session.send('go');
-  await until(() => !!finish);
-  await h.outbox.flushed();
-  mockPlan = {
-    plan: 'Read records',
-    status: 'waiting_user',
-    question: 'Proceed?',
-  };
-  const events: DialogueEvent[] = [];
-  h.subscribe((event) => events.push(event));
-  let release!: () => void;
-  const blocked = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const backend = getDialogueStoreBackend();
-  const save = backend.save.bind(backend);
-  const spy = jest
-    .spyOn(backend, 'save')
-    .mockImplementation(async (...args) => {
-      await blocked;
-      await save(...args);
-    });
-  finish();
-  try {
-    await until(() => events.some((event) => event.kind === 'plan'));
-    expect(events.some((event) => event.kind === 'settled')).toBe(false);
-    release();
-    await until(() => events.some((event) => event.kind === 'settled'));
-    expect(
-      events
-        .filter((event) => event.kind !== 'task')
-        .map((event) => event.kind),
-    ).toEqual(['plan', 'message', 'settled']);
-  } finally {
-    release();
+test.each([false, true])(
+  'settled is emitted after the outbox write of the turn (save fails: %s)',
+  async (saveFails) => {
+    let finish!: () => void;
+    mockRun.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve({ output: 'done' });
+        }),
+    );
+    const { h } = await ready();
+    await h.session.send('go');
+    await until(() => !!finish);
     await h.outbox.flushed();
-    spy.mockRestore();
-  }
-});
+    mockPlan = {
+      plan: 'Read records',
+      status: 'waiting_user',
+      question: 'Proceed?',
+    };
+    const events: DialogueEvent[] = [];
+    h.subscribe((event) => events.push(event));
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const backend = getDialogueStoreBackend();
+    const save = backend.save.bind(backend);
+    const spy = jest
+      .spyOn(backend, 'save')
+      .mockImplementation(async (...args) => {
+        await blocked;
+        if (saveFails) throw new Error('store unavailable');
+        await save(...args);
+      });
+    finish();
+    try {
+      await until(() => events.some((event) => event.kind === 'plan'));
+      expect(events.some((event) => event.kind === 'settled')).toBe(false);
+      release();
+      await until(() => events.some((event) => event.kind === 'settled'));
+      expect(
+        events
+          .filter((event) => event.kind !== 'task')
+          .map((event) => event.kind),
+      ).toEqual(['plan', 'message', 'settled']);
+      const message = events.find((event) => event.kind === 'message');
+      expect(message).toBeDefined();
+      if (message?.kind === 'message')
+        expect(h.outbox.pending()).toContainEqual(message.message);
+    } finally {
+      release();
+      await h.outbox.flushed();
+      spy.mockRestore();
+    }
+  },
+);
 
 test('a save during the turn emits no settled', async () => {
   const { h } = await ready();

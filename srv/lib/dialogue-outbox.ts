@@ -124,7 +124,9 @@ export class DialogueOutbox {
     let pending: Promise<void>;
     do {
       pending = this.writes;
-      await pending;
+      // Flushing waits for publication even when persistence failed. Callers
+      // of the individual write still receive its error.
+      await pending.catch(() => {});
     } while (pending !== this.writes);
   }
   add(messages: PlannerMessage[]): Promise<void> {
