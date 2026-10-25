@@ -10,9 +10,9 @@
 - **Two phases.** The request's planner turn runs under session admission as today. A follow phase then runs after admission is released and streams new outbox messages on the same response until a stop condition.
 - **Outbox.** The outbox keeps every message, marking each as pending or confirmed. Per-response delivery records decide what a confirmation may remove from pending, either by a later arrival or by `x-clh-ack`.
 - **SSE.** The SSE channel becomes a read-only view.
-- **Library.** No llm-agent change. The hub assigns the user-turn reply's id itself when the turn starts.
+- **Library.** llm-agent gains three observation points (Task 0): a settled-turn callback, an activity snapshot that includes ready steps, and authoritative task-state callbacks. The hub assigns the user-turn reply's id itself when the turn starts.
 
-**Tech Stack:** TypeScript, SAP CAP, Express, Jest (`--maxWorkers=1`), `@mcp-abap-adt/llm-agent(-libs)` 30.9.1, the WebUI single file `app/chat/webapp/index.html`.
+**Tech Stack:** TypeScript, SAP CAP, Express, Jest (`--maxWorkers=1`), `@mcp-abap-adt/llm-agent(-libs)` 30.10.0 (Task 0, published by the user), the WebUI single file `app/chat/webapp/index.html`.
 
 **Spec:** `docs/superpowers/specs/2026-10-24-client-protocol-design.md`, sections 4 (streaming part), 5 and 6; rollout step 2. The non-streaming budget and queued status (rollout step 3) and the session key in the conversation (step 4) are out of scope.
 
@@ -24,7 +24,7 @@
 - Each message id goes out on the stream as the SSE comment line `: message-id <id>` immediately before that message's first content delta.
 
 **Stream lifecycle**
-- Keep-alive: an SSE comment `: keep-alive` every 10 000 ms in both handlers. It starts when the stream opens, and the stream opens before agent initialization and admission.
+- Keep-alive: an SSE comment `: keep-alive` written at once when the stream opens, then every 10 000 ms, in both handlers. The stream opens before agent initialization and admission.
 - Messages of one response are content deltas of one completion or text block, separated by a paragraph break `\n\n`. The `**Planner:** ` prefix goes away.
 - One terminal sequence per stream:
   - OpenAI: `finish_reason: "stop"`, then the usage chunk when there is usage, then `data: [DONE]`.
@@ -46,10 +46,37 @@
 1. **Disconnect then an immediate new request.** The messages that the cut stream carried are delivered again, and confirmed ones are not. Owned by Task 1 and Task 5 tests.
 2. **Gap between a task ending and its event turn starting.** The follow must not end as idle in this gap. Owned by Task 3.
 3. **Empty or `NO_MESSAGE` user-turn reply.** No outbox entry, no `: message-id` comment and no empty paragraph. Owned by Task 5.
-4. **SDK parsing.** The official OpenAI and Anthropic SDKs must parse a stream with `: message-id` comments between events, and a stream cut before the terminal, without error. Owned by Task 6 (frame-level tests) and Task 10 (live SDK runs).
+4. **SDK parsing.** The official OpenAI and Anthropic SDKs must parse a stream with `: message-id` comments between events, and a stream cut before the terminal, without error. Owned by Task 6 (SDK parser tests) and Task 10 (live SDK and third-party client runs).
 5. **Restart during an open follow.** The acknowledgement mode survives in the persisted row, and unconfirmed messages come again. Owned by Task 1.
 
 ---
+
+### Task 0: llm-agent observation points (draft PR in fr0ster/llm-agent)
+
+**Files (repo `../llm-agent`, branch `feat/dialogue-observation`):**
+- Modify: `packages/llm-agent-libs/src/coordinator/dialogue/dialogue-session.ts`
+- Test: the package's existing dialogue-session tests
+
+**Interfaces (Produces, exported from `@mcp-abap-adt/llm-agent-libs`):**
+- **`DialogueSessionOptions.onSettled?: (e: { trigger: 'user' | 'event' }) => void`**
+  - Called once per library turn: after the correction loop, status recomputation and the turn's final `persist()` resolved.
+  - For an event turn, also after its `onMessage` call.
+  - Never called for a save that `takePending()` triggers.
+- **`DialogueSessionOptions.onTaskState?: (task: TaskRecord) => void`**
+  - Called after the TaskBoard record changed state, including the terminal transition and the cancellation of a queued task.
+- **`DialogueSession.activity(): { turnActive: boolean; queuedInputs: number; running: number; ready: number }`**
+  - `turnActive`: a library turn is in progress, corrections included.
+  - `queuedInputs`: waiting user sends plus waiting task events.
+  - `running`: tasks `queued` or `running`.
+  - `ready`: `readySteps(plan).length`.
+- Release as a minor version (30.10.0). The user publishes; the hub bumps the dependency in Task 2.
+
+- [ ] **Step 1: Failing tests:**
+  - `onSettled fires once per user turn after its final save, not for takePending saves`;
+  - `onSettled fires after an event turn's onMessage`;
+  - `onTaskState reports a terminal state after the board record changed`;
+  - `activity counts ready steps left after maxCorrections is exhausted`.
+- [ ] **Steps 2–5:** FAIL → implement → PASS → commit `feat(dialogue): settled, task-state and activity observation`, then open the draft PR.
 
 ### Task 1: Outbox keeps history, delivery records and the acknowledgement mode
 
@@ -63,7 +90,7 @@
 - Produces, in `dialogue-outbox.ts`:
   - **Types:**
     - `type OutboxEntry = PlannerMessage & { confirmed?: boolean }`;
-    - `interface Delivery { readonly id: string; carried(messageId: string): void; ended(): void }`.
+    - `interface Delivery { readonly id: string; carried(messageId: string): void; has(messageId: string): boolean; ended(): void }`.
   - **Constructor:** `constructor(entries: OutboxEntry[], persist: (entries: OutboxEntry[], ackMode: boolean) => Promise<void>, ackMode = false)`.
   - **Methods:**
     - `add(messages: PlannerMessage[]): Promise<void>`. Existing dedupe by id and `cleanMessages` are kept.
@@ -99,14 +126,15 @@
 - Test: `test/unit/long-session.test.ts`, `test/unit/dialogue-sessions.test.ts`
 
 **Interfaces:**
+- Consumes: Task 0 `onTaskState`.
 - Produces `LongSessionRegistry.hold(s: LongSession): () => void`. The returned release function is idempotent. It decrements the count and calls `touch(s.userId, s.key)`.
-- In `dialogue-sessions.ts`, a session holds exactly one hold while any task in `snapshot().tasks` is `queued` or `running`. Recompute where `emitTask` runs (l.400, 445, 499): acquire on the 0→1 transition and release on 1→0. Release on close.
+- In `dialogue-sessions.ts`, bump `@mcp-abap-adt/llm-agent(-libs)` to `^30.10.0`. A session holds exactly one hold while any task is `queued` or `running`, according to the `onTaskState` transitions, not `snapshot()` inside `wrapRun`. Acquire on the 0→1 transition and release on 1→0. Release on close.
 
 - [ ] **Step 1: Failing tests:**
   - `sweep keeps a held session past the TTL`;
   - `release touches, so the TTL counts from release`;
   - `double release is harmless`;
-  - in `dialogue-sessions.test.ts`: `a running task holds the session; finishing all tasks releases it`.
+  - in `dialogue-sessions.test.ts`: `a running task holds the session; finishing all tasks releases it`, `a queued task cancelled before start releases the hold`, and `the hold is released at the task's terminal transition even when its event turn is delayed`.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** PASS. **Step 5:** Commit `feat(session): lifetime hold while dialogue tasks run`.
 
 ### Task 3: Settled turns and idle state on the dialogue handle
@@ -116,21 +144,18 @@
 - Test: `test/unit/dialogue-sessions.test.ts`
 
 **Interfaces:**
-- **New event kind:** `DialogueEvent` gains `{ kind: 'settled' }`. It is emitted to subscribers in the store's `save` after `await outbox.add(state.pending)` (after l.418). It is never sent to SSE clients (Task 7 filters it).
+- Consumes: Task 0 `onSettled` and `activity()`; Task 1 outbox.
+- **New event kind:** `DialogueEvent` gains `{ kind: 'settled' }`. It is emitted from `onSettled`, after awaiting `outbox.flushed(): Promise<void>` (new on the outbox: it resolves when every queued `add` and write has finished). It is never sent to SSE clients (Task 7 filters it). Store saves themselves emit nothing new.
 - **`DialogueHandle` gains `state(): { turnActive: boolean; running: number; total: number; done: number; status?: 'active' | 'waiting_user' | 'done'; idle: boolean }`:**
-  - `turnActive`: a counter incremented around the planner `process` wrapper (l.387-401).
-  - `running`: the number of `queued` or `running` tasks.
+  - `turnActive`, `running`: from `session.activity()`.
   - `total` and `done`: plan steps total, and plan steps with state `done`.
-  - `idle` is true when all of these hold:
-    - `!turnActive`;
-    - `running === 0`;
-    - status is `active`;
-    - no task reached a terminal state after the start of the last settled planner turn. Track `lastTaskEndAt` in `wrapRun`'s final `finally` and `lastSettledTurnStartedAt`.
+  - `idle` is true when status is `active` and `activity()` reports `!turnActive`, `queuedInputs === 0`, `running === 0` and `ready === 0`.
 - **Plain replies:** an ordinary reply without a plan reports `status: undefined`. The follow (Task 4) does not start then.
 
 - [ ] **Step 1: Failing tests:**
   - `settled is emitted after the outbox write of the turn`: a subscriber records the order of the `plan`, `message` and `settled` events. `settled` comes last, after the message.
-  - `idle is false between a task end and its event turn`: finish a task with the planner blocked on a deferred → `idle === false`; let the event turn settle → `idle === true` if nothing else runs.
+  - `a save during the turn emits no settled`: a `takePending` save while the planner is blocked emits nothing.
+  - `idle is false between a task end and its event turn` (`queuedInputs > 0`), and `idle is false while ready steps remain after corrections are exhausted`.
   - `waiting_user and done are reported`.
 - [ ] **Steps 2–5:** FAIL → implement → PASS → commit `feat(dialogue): settled event and idle state`.
 
@@ -144,17 +169,18 @@
 **Interfaces:**
 - Consumes: Task 1 `history`, `pending` and `Delivery`; Task 3 `state()` and the `settled` event; `DialogueHandle.subscribe`.
 - **Produces:**
-  - `followDialogue(handle: DialogueHandle, opts: { delivery: Delivery; after?: string; signal: AbortSignal; maxMs: number; now?: () => number }): AsyncIterable<FollowItem>`.
-  - `type FollowItem = { kind: 'message'; message: PlannerMessage } | { kind: 'end'; reason: 'done' | 'waiting_user' | 'idle' | 'limit' | 'superseded' | 'disconnected'; note?: string }`.
+  - `followDialogue(handle: DialogueHandle, opts: { delivery: Delivery; signal: AbortSignal; maxMs: number; now?: () => number }): AsyncIterable<FollowItem>`.
+  - `type FollowItem = { kind: 'message'; message: PlannerMessage; written(): void } | { kind: 'end'; reason: 'done' | 'waiting_user' | 'idle' | 'limit' | 'superseded' | 'disconnected'; note?: string }`.
   - `supersedeFollow(handle: DialogueHandle): Promise<void>`.
 - **Behaviour:**
-  - **Messages:** yield every outbox message after `after` (the last id this response already carried) as it arrives. Call `delivery.carried(id)` only after the consumer has written it; the handler calls back (see Task 6).
+  - **Messages:** yield, in outbox order, every pending (unconfirmed) outbox message for which `!delivery.has(id)`, as it arrives. Select by the carried set, never by a cursor, so a message that entered the outbox before the reply is not skipped. The consumer calls `item.written()` after writing the message completely; `written()` calls `delivery.carried(id)`.
   - **Stop evaluation:** evaluate the stop on each `settled` event and once at start. End with `done`, `waiting_user` or `idle` from `state()`, and only after every message that the outbox holds at that moment has been yielded.
   - **Limit:** `limit` at `maxMs` from the follow start. Its note is `still running: <done> of <total> steps done`, or `still running` when `total === 0`.
   - **Disconnect:** `disconnected` when the signal aborts.
   - **One follow per session:** a new `followDialogue` or `supersedeFollow` call ends the previous follow with `superseded` and the note `A new message arrived; the work continues in its response.`, and resolves after that previous follow has yielded its end.
 
 - [ ] **Step 1: Failing tests,** each with a fake handle and fake timers:
+  - `a message added before the reply is still streamed`: pending snapshot taken, a background message added, the reply added after it → the follow yields the background message.
   - `streams messages and ends on done only after the turn's message`: emit the `plan(done)` event, then the message, then `settled`. The iterator yields the message, then end `done`.
   - `ends on waiting_user after the question message`.
   - `ends idle only on a settled state with nothing running`.
@@ -186,7 +212,7 @@
   - Then `clhMessageId: replyId` before the reply's first non-empty delta.
   - When the turn ends with non-empty text, `outbox.add([{ id: replyId, text, createdAt, trigger: 'user' }])` and `delivery.carried(replyId)`.
 - **Non-streaming:** the same order in one content, and `response.setHeader('x-clh-last-message', lastId)` when there is a last message.
-- **`follow`:** returns `followDialogue(handle, { delivery, after: lastCarriedId, signal, maxMs })` only when the stream request ended its turn with `state().status` set (a plan exists). Otherwise it returns `undefined`.
+- **`follow`:** returns `followDialogue(handle, { delivery, signal, maxMs })` only when the stream request ended its turn with `state().status` set (a plan exists). Otherwise it returns `undefined`.
 
 - [ ] **Step 1: Failing tests:**
   - `streams pending messages then the reply, each preceded by its id chunk`;
@@ -213,7 +239,7 @@
   - Admission refusals and collection refusals after the stream opened become the stream error form.
 - **Turn and follow split:**
   - `serve*` returns `Promise<(() => Promise<void>) | void>`. The continuation runs after `longSessions().run` resolves and after `pipeline.release()`.
-  - It iterates `follow(callerLeft.signal, followMaxMs)` and writes each message: id comment, `\n\n` separator, content delta. It calls `delivery.carried` through the iterator's contract.
+  - It iterates `follow(callerLeft.signal, followMaxMs)` and writes each message: id comment, `\n\n` separator, content delta, then calls `item.written()`.
   - It writes `note` as a final paragraph.
   - It touches the session on each keep-alive and then writes the one terminal.
   - Non-dialogue and non-streaming requests return no continuation and keep today's flow.
@@ -224,7 +250,8 @@
 - **History:** OpenAI `appendToSession` / `recordTurn` records the accumulated content of turn plus follow when the response ends. Anthropic stays without history.
 
 - [ ] **Step 1: Failing tests:**
-  - `headers and a keep-alive go out before agent initialization`: getSmartAgent blocked on a deferred → `res.headersSent` true and the body contains `: keep-alive` after advancing 10 000 ms.
+  - `headers and a keep-alive go out before agent initialization`: getSmartAgent blocked on a deferred → `res.headersSent` true and the body already contains one `: keep-alive`, then a second after advancing 10 000 ms.
+  - `the official SDKs parse the stream`: add devDependencies `openai` and `@anthropic-ai/sdk`. Feed a handler's body (pending message, reply, follow message, id comments, terminal) through `Stream.fromSSEResponse` of each SDK. The text equals the concatenation and no error is thrown. A body cut before the terminal ends the SDK iteration without a parse error.
   - `an initialization failure after the stream opened is the stream error form with no [DONE]`.
   - `a closed destination before the stream is still HTTP 503 with Retry-After`.
   - `the follow runs after admission is released`: a second request of another session is admitted while the first follows.
@@ -264,6 +291,7 @@
   - `sendMessage` sends `x-clh-ack: none` on the first request of a session, and afterwards the id of the last message it received complete.
   - Remember the id per session key in memory; on a page reload start with `none`.
   - Remove the SSE ack call (l.595).
+- **Corrections during a follow:** input is no longer locked for the whole response. `lockInput('chat-pending')` (l.1820) is released when the first id segment of the response completes or the stream ends. Each `sendMessage` call keeps its own response state (reader, placeholder, segments). A new send while an older response is still following is allowed; the older response then ends with the supersede note from the hub.
 - **Stream segments:** `sendMessage` splits the stream into segments at `: message-id <id>` comments. Each segment renders into its own AGENT block keyed by id. Content before the first id comment keeps today's placeholder behaviour, for non-dialogue answers.
 
 - [ ] **Step 1: Failing tests** (vm harness):
@@ -271,6 +299,7 @@
   - `a complete SSE message replaces a cut stream segment`;
   - `sends x-clh-ack none first, then the last complete id`;
   - `no SSE ack request is made`.
+  - `a second message can be sent while the first response is still open`, and both responses render into their own blocks.
 - [ ] **Steps 2–5:** FAIL → implement → PASS → commit `feat(webui): render by message id, x-clh-ack, no SSE ack`.
 
 ### Task 9: Configuration, documentation, CHANGELOG
@@ -287,7 +316,7 @@
 
 ### Task 10: Live verification on the POC
 
-No code. After release and deploy (with the user's go-ahead), run the spec's acceptance scenarios that this step covers, through the Playwright MCP browser and the OpenAI and Anthropic SDK scripts in `$TEMP/oai`:
+No code. After release and deploy (with the user's go-ahead), run the spec's acceptance scenarios that this step covers, through the Playwright MCP browser, the OpenAI and Anthropic SDK scripts in `$TEMP/oai` (streaming and non-streaming), and one third-party client: the `llm` CLI with an OpenAI-compatible model entry pointing at the hub (streaming):
 
 - **Main flow:** 1, 2, 3.
 - **Stream lifecycle:** 7, 8, 8a, 9, 10, 10a.
