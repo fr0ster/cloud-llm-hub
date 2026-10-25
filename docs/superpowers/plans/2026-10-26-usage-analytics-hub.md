@@ -142,7 +142,12 @@ The hub's status must report unconfirmed records. The published recorder's `stat
   - **plain sessions:**
     - The owner is `SessionRetention` (`srv/lib/session-retention.ts`). It tracks every retained plain session, whatever created it: chat history, `rag-handler.ts` session collections, or dialogue state.
     - **Open:** the shared once-only hook `onSessionRetained(userId, sessionId)`, called when `lease` creates a new entry.
-    - **Close:** `onSessionReleased(userId, sessionId, reason)`, called when the entry ends: eviction (synchronous `deleteAll` inside `lease`, reason `evicted`), or `forgetEmptySessions` when no state remains (reason `ttl`). A closed-set guard makes it once-only.
+    - **Close:** `onSessionReleased(userId, sessionId, reason)`. Every path that removes a retention entry calls it through one private remove function, so no path is missed:
+      - eviction (synchronous `deleteAll` inside `lease`): reason `evicted`;
+      - explicit `close()` (user deletion or logout): reason `explicit`;
+      - `settle()` when the last lease releases without remaining state: reason `ttl`;
+      - `forgetEmptySessions`: reason `ttl`.
+      A closed-set guard makes it once-only.
     - History expiry in `srv/session-store.ts` only shrinks storage. It is not a close.
   - Collection sweeps only affect storage measures, not the session lifecycle.
   - the request ends in `srv/openai-handler.ts`, `srv/anthropic-handler.ts` and `srv/agent-mcp.ts`.
@@ -166,6 +171,7 @@ The hub's status must report unconfirmed records. The published recorder's `stat
   - shutdown order, including a live plain session;
   - **eviction while a measurement is slow:** a delayed storage measurement does not block `lease`; the evicted session's close uses the cached snapshot; another admission reuses the slot at once;
   - each plain-session close path emits exactly one close;
+  - explicit deletion and last-lease empty cleanup (`settle`) each emit one close with their reason;
   - history expiry while dialogue state or session collections remain: no close, and the next storage snapshot shows the smaller history;
   - a session created only through `rag-handler.ts` session collections (no chat): it gets an open, storage measurements and, on eviction, a close.
 - [ ] **Steps 2–5:** fail → implement → pass → commit `feat(usage): session and request records`.
