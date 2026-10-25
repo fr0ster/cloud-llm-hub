@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [9.5.1] - 2026-10-25
+
 ### Fixed
 
 - Superseding dialogue requests wait up to five seconds for the previous response to finish before confirming delivery; interrupted responses keep messages pending.
