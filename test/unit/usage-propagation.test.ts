@@ -351,30 +351,14 @@ function fakeLlm(
     },
   );
 }
-async function sdkResponse(
-  count = 1,
-  indexes = Array.from(
-    { length: count },
-    (_: undefined, index: number) => index,
-  ),
-) {
+async function sdkResponse() {
   const response: Awaited<ReturnType<OrchestrationEmbeddingClient['embed']>> =
     new (
       await import('@sap-ai-sdk/orchestration')
     ).OrchestrationEmbeddingResponse({
       data: {
         final_result: {
-          data: Array.from(
-            { length: count },
-            (
-              _: undefined,
-              index: number,
-            ): { embedding: number[]; index: number; object: string } => ({
-              embedding: count === 1 ? [1, 2] : [indexes[index], 2],
-              index: indexes[index],
-              object: 'embedding',
-            }),
-          ),
+          data: [{ embedding: [1, 2], index: 0, object: 'embedding' }],
           usage: { prompt_tokens: 1, total_tokens: 1 },
         },
       },
@@ -856,7 +840,7 @@ test('step reviewer and guard pass helper labels and preserve request shape', as
   expect(JSON.stringify(calls)).not.toMatch(/PROMPT_SENTINEL|RESULT_SENTINEL/);
 });
 
-test('SAP embedder records sdk calls once for success, error, abort and batch; call recorder wins over construction recorder', async (): Promise<void> => {
+test('SAP embedder records sdk calls once for success, error and abort; call recorder wins over construction recorder', async (): Promise<void> => {
   const embed = jest.spyOn(OrchestrationEmbeddingClient.prototype, 'embed');
   const clientResponse = await sdkResponse();
   embed.mockResolvedValue(clientResponse);
@@ -883,9 +867,16 @@ test('SAP embedder records sdk calls once for success, error, abort and batch; c
     await expect(
       sap.embed('DOCUMENT_SENTINEL', { usage, signal: ctrl.signal }),
     ).rejects.toThrow();
-    embed.mockResolvedValueOnce(await sdkResponse(2));
+    embed.mockRejectedValueOnce(new Error('SECRET_SENTINEL'));
+    await expect(
+      sap.embed('DOCUMENT_SENTINEL', { usage, signal: ctrl.signal }),
+    ).rejects.toThrow('SECRET_SENTINEL');
+    embed.mockRejectedValueOnce(
+      new DOMException('SECRET_SENTINEL', 'AbortError'),
+    );
+    await expect(sap.embed('DOCUMENT_SENTINEL', { usage })).rejects.toThrow();
     const operation = startOperation();
-    await sap.embedBatch(['DOCUMENT_SENTINEL', 'DOCUMENT_SENTINEL'], {
+    await sap.embed('DOCUMENT_SENTINEL', {
       usage,
       usageOp: operation,
     });
@@ -894,18 +885,18 @@ test('SAP embedder records sdk calls once for success, error, abort and batch; c
         r.kind === 'embedding.call' && r.context.sessionId === 'sap',
     );
     expect(calls[1]).toMatchObject({ errorCode: 'ERR_SDK' });
-    expect(embed.mock.calls[2][1]?.signal).toBe(ctrl.signal);
+    expect(embed.mock.calls[2]).toEqual([{ input: 'DOCUMENT_SENTINEL' }]);
     expect(
       calls.map((r: UsageRecord): 'error' | 'ok' | 'aborted' => r.outcome),
-    ).toEqual(['ok', 'error', 'aborted', 'ok']);
-    for (const [index, row] of calls.entries())
+    ).toEqual(['ok', 'error', 'aborted', 'aborted', 'aborted', 'ok']);
+    for (const row of calls)
       expect(row).toMatchObject({
         granularity: 'sdk-call',
         retriesVisible: false,
-        inputs: index === 3 ? 2 : 1,
-        inputChars: index === 3 ? 34 : 17,
+        inputs: 1,
+        inputChars: 17,
       });
-    expect(calls[3]).toMatchObject({
+    expect(calls[5]).toMatchObject({
       operationId: operation.operationId,
       physicalSeq: 0,
       inputTokens: 1,
@@ -1015,29 +1006,24 @@ test('revived dialogues bind a new session recorder and usage off passes none to
   expect((await rows()).length).toBe(before);
 });
 
-test('SAP batch reconstructs indexed vectors and rejects missing, duplicate and invalid indexes with error records', async (): Promise<void> => {
-  const embed = jest.spyOn(OrchestrationEmbeddingClient.prototype, 'embed');
-  const sap = new SapAiCoreEmbedder({
-    model: 'text-embedding-3-small',
-    usage: runtime.forSession({ sessionId: 'sap-indexes', userId: 'alice' }),
-  });
-  embed.mockResolvedValueOnce(await sdkResponse(2, [1, 0]));
-  expect(await sap.embedBatch(['first', 'second'])).toEqual([
-    { vector: [0, 2] },
-    { vector: [1, 2] },
-  ]);
-  for (const indexes of [[0], [0, 0], [0, 2], [0, -1], [0, 0.5]]) {
-    embed.mockResolvedValueOnce(await sdkResponse(indexes.length, indexes));
-    await expect(sap.embedBatch(['first', 'second'])).rejects.toThrow();
-  }
-  const records = (await rows()).filter(
-    (r: UsageRecord): boolean =>
-      r.kind === 'embedding.call' && r.context.sessionId === 'sap-indexes',
+test('SAP usage off returns embeddings for an aborted caller without passing a signal to the SDK', async (): Promise<void> => {
+  const off = await initUsage(readUsageConfig({ LLM_AGENT_USAGE: 'off' }));
+  setUsageRuntimeForTest(off);
+  const before = (await rows()).length;
+  const embed = jest
+    .spyOn(OrchestrationEmbeddingClient.prototype, 'embed')
+    .mockResolvedValue(await sdkResponse());
+  const sap = new SapAiCoreEmbedder({ model: 'text-embedding-3-small' });
+  const ctrl = new AbortController();
+  ctrl.abort();
+
+  expect(await sap.embed('DOCUMENT_SENTINEL', { signal: ctrl.signal })).toEqual(
+    {
+      vector: [1, 2],
+    },
   );
-  expect(
-    records.map((r: UsageRecord): 'error' | 'ok' | 'aborted' => r.outcome),
-  ).toEqual(['ok', 'error', 'error', 'error', 'error', 'error']);
-  expect(records).toHaveLength(embed.mock.calls.length);
+  expect(embed.mock.calls).toEqual([[{ input: 'DOCUMENT_SENTINEL' }]]);
+  expect((await rows()).length).toBe(before);
 });
 
 test.each([
