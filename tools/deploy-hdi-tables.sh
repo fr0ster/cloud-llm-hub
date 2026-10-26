@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Deploy the shared RAG tables (RAG_DOCUMENTS, RAG_COLLECTIONS) of
-# @mcp-abap-adt/hana-vector-rag into an existing HDI container, through a
+# Deploy the shared RAG and usage tables into an existing HDI container, through a
 # throwaway @sap/hdi-deploy app. Needs: cf (logged in, target space set) and npm.
 #
 #   tools/deploy-hdi-tables.sh [hdi-service-name]     (default: hdi-llm)
@@ -23,7 +22,8 @@ POLL_STEP=10
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMPLATE="$ROOT/tools/hdi-deployer"
 DDL="$ROOT/node_modules/@mcp-abap-adt/hana-vector-rag/ddl"
-FILES=(.hdiconfig RAG_DOCUMENTS.hdbtable RAG_COLLECTIONS.hdbtable)
+FILES=(RAG_DOCUMENTS.hdbtable RAG_COLLECTIONS.hdbtable)
+USAGE_FILES=(.hdiconfig USAGE_RECORDS.hdbtable USAGE_RECORDS_AT_IDX.hdbindex USAGE_RECORDS_SESSION_ID_IDX.hdbindex USAGE_RECORDS_KIND_IDX.hdbindex)
 
 run() {
   if [ "$DRY_RUN" = 1 ]; then echo "[dry-run] $*"; else "$@"; fi
@@ -32,6 +32,9 @@ run() {
 if [ "$DRY_RUN" = 0 ]; then
   for f in "${FILES[@]}"; do
     [ -f "$DDL/$f" ] || { echo "Missing $DDL/$f - run npm ci first" >&2; exit 1; }
+  done
+  for f in "${USAGE_FILES[@]}"; do
+    [ -f "$TEMPLATE/src/$f" ] || { echo "Missing $TEMPLATE/src/$f" >&2; exit 1; }
   done
 fi
 
@@ -57,6 +60,14 @@ for f in "${FILES[@]}"; do
     echo "[dry-run] cp $DDL/$f -> src/$f"
   else
     cp "$DDL/$f" "$WORK/src/$f"
+  fi
+done
+
+for f in "${USAGE_FILES[@]}"; do
+  if [ "$DRY_RUN" = 1 ]; then
+    echo "[dry-run] cp $TEMPLATE/src/$f -> src/$f"
+  else
+    cp "$TEMPLATE/src/$f" "$WORK/src/$f"
   fi
 done
 

@@ -3,8 +3,10 @@
  * Components receive what is built here; none of them read configuration.
  */
 import {
+  type CallOptions,
   CircuitBreaker,
   CircuitBreakerEmbedder,
+  type IEmbedResult,
   type IQueryEmbedder,
   type IRagProvider,
   type IRetrievalEmbedder,
@@ -14,8 +16,9 @@ import { wrapEmbedder } from '@mcp-abap-adt/llm-agent-libs';
 import {
   composeEmbedder,
   prefetchEmbedderFactories,
-  resolveEmbedder,
 } from '@mcp-abap-adt/llm-agent-rag';
+import type { OllamaEmbedder } from '@mcp-abap-adt/ollama-embedder';
+import type { OpenAiEmbedder } from '@mcp-abap-adt/openai-embedder';
 import type { AgentConfig, EmbedderConfig } from '../agent-config';
 import { setDestinationSource } from './btp-destinations';
 import {
@@ -29,6 +32,7 @@ import {
   type RagStoreFactory,
 } from './rag-store-factory';
 import { SapAiCoreEmbedder } from './sap-ai-core-embedder';
+import { usageRuntime } from './usage/runtime';
 
 export interface EmbedderFingerprint {
   provider: string;
@@ -65,36 +69,65 @@ export function embedderFingerprint(cfg: EmbedderConfig): EmbedderFingerprint {
   };
 }
 
+let OpenAiConstructor: typeof OpenAiEmbedder | undefined;
+let OllamaConstructor: typeof OllamaEmbedder | undefined;
+
 /** `resolveEmbedder` requires its peers loaded first; awaited once at startup. */
 export async function prefetchEmbedder(
   cfg: EmbedderConfig | null,
 ): Promise<void> {
-  if (cfg && cfg.kind !== 'sap-ai-core')
-    await prefetchEmbedderFactories([cfg.kind]);
+  if (!cfg || cfg.kind === 'sap-ai-core') return;
+  await prefetchEmbedderFactories([cfg.kind]);
+  if (cfg.kind === 'openai')
+    OpenAiConstructor = (await import('@mcp-abap-adt/openai-embedder'))
+      .OpenAiEmbedder;
+  else
+    OllamaConstructor = (await import('@mcp-abap-adt/ollama-embedder'))
+      .OllamaEmbedder;
 }
 
 export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
   if (!cfg) return null;
-  const raw =
-    cfg.kind === 'sap-ai-core'
-      ? composeEmbedder(
-          new SapAiCoreEmbedder({
-            model: cfg.model,
-            resourceGroup: cfg.resourceGroup,
-          }),
-        )
-      : cfg.kind === 'openai'
-        ? resolveEmbedder({
-            provider: 'openai',
-            model: cfg.model,
-            credential: apiKeyCredential(cfg.apiKey ?? ''),
-            ...(cfg.url ? { url: cfg.url } : {}),
-          })
-        : resolveEmbedder({
-            provider: 'ollama',
-            model: cfg.model,
-            ...(cfg.url ? { url: cfg.url } : {}),
-          });
+  const usage = usageRuntime()?.recorder;
+  const recording = usage ? { usage } : {};
+  const raw = composeEmbedder(createEmbedder());
+  function createEmbedder() {
+    switch (cfg?.kind) {
+      case 'sap-ai-core':
+        return new SapAiCoreEmbedder({
+          ...recording,
+          model: cfg.model,
+          resourceGroup: cfg.resourceGroup,
+        });
+      case 'openai': {
+        const OpenAiEmbedder = OpenAiConstructor;
+        if (!OpenAiEmbedder)
+          throw new Error(
+            'OpenAI embedder not prefetched; await prefetchEmbedder first',
+          );
+        return new OpenAiEmbedder({
+          ...recording,
+          model: cfg.model,
+          credential: apiKeyCredential(cfg.apiKey ?? ''),
+          ...(cfg.url ? { baseURL: cfg.url } : {}),
+        });
+      }
+      case 'ollama': {
+        const OllamaEmbedder = OllamaConstructor;
+        if (!OllamaEmbedder)
+          throw new Error(
+            'Ollama embedder not prefetched; await prefetchEmbedder first',
+          );
+        return new OllamaEmbedder({
+          ...recording,
+          model: cfg.model,
+          ...(cfg.url ? { ollamaUrl: cfg.url } : {}),
+        });
+      }
+      default:
+        throw new Error('Missing embedder configuration');
+    }
+  }
   // Same breaker settings as today's getOrCreateEmbedder.
   const breaker = new CircuitBreaker({
     failureThreshold: 30,
@@ -114,8 +147,24 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
  * embedding usage itself; `wrapEmbedder` on the provider underneath keeps the
  * per-request `embedding` usage entries the agent logged before.
  */
-export function agentQueryEmbedder(e: Embedding): IQueryEmbedder {
-  return symmetricEmbedder(wrapEmbedder(e.embedder));
+export function agentQueryEmbedder(
+  e: Embedding,
+  component: 'query-embedder' | 'collection-retrieval' = 'query-embedder',
+): IQueryEmbedder {
+  const query = symmetricEmbedder(wrapEmbedder(e.embedder));
+  return {
+    embedQuery(
+      text: string,
+      options: CallOptions | undefined,
+    ): Promise<IEmbedResult> {
+      return query.embedQuery(text, {
+        ...options,
+        ...(options?.usage
+          ? { usage: options.usage.with({ role: 'embedding', component }) }
+          : {}),
+      });
+    },
+  };
 }
 
 export interface Providers {

@@ -236,3 +236,43 @@ Planning and revision route every check targeting a worker other than self to th
 `LLM_AGENT_TOOL_GATE` defaults to `classifier`; `off` always offers tools and skills: the same single call still classifies and translates, but its decision is ignored. The first tool search of a request of at least 3 characters waits for this call, English included; English is returned verbatim and all other languages, including transliteration, are translated without a language heuristic. Shorter requests skip the call and keep tools. One call per request; later re-selection searches in the same request reuse its decision and search untranslated. Concurrent first searches share the pending decision in request scope, independent of session identity. Hard mode (`LLM_AGENT_MODE=hard`) always keeps tools and skills. `LLM_AGENT_TOOL_GATE_TIMEOUT_MS` bounds factory creation plus chat (default 4000 ms, positive integer; invalid values warn and use the default). Timeout or external abort keeps tools and the original text, is not cached, and clears pending analysis so the next request retries; underlying chat is aborted where supported. With `classifier`, a confident decision that the ABAP system is unnecessary removes tools and skills. Any doubt or error keeps them, and `execute_step` always bypasses the gate. Other values are rejected.
 
 Unexpired run records count as retention state even without chat history, preserving plain Anthropic sessions across release. The synchronous owner/session index uses the record save timestamp and session TTL; reads do not extend it. Provider save/load populates the index, while deletion and expiry remove entries.
+
+### Usage analytics
+
+Recording is off by default. Set `LLM_AGENT_USAGE=on` to store resource statistics with session and request context. Records contain numbers, labels and flags, excluding messages, documents, SAP data, tool arguments and results, credentials and tokens. User IDs are hashed by default. The transport is always `direct`.
+
+The default sink follows `LLM_AGENT_SESSION_STORE`: `hana-vector` selects `hana`, `pg-vector` selects `pg`, and `sqlite` or `none` selects `sqlite`. `LLM_AGENT_USAGE_SINKS` overrides this choice and can select several sinks. An explicit sink without its configured backend fails startup.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `LLM_AGENT_USAGE` | `off` | `on` enables recording |
+| `LLM_AGENT_USAGE_SINKS` | from the session store (above) | comma list of `hana`, `pg`, `sqlite`, `jsonl`, `memory` |
+| `LLM_AGENT_USAGE_MEASURE` | `all` | comma list of `llm`, `embedding`, `tool`, `task`, `session`, `request`, `storage`, `process` |
+| `LLM_AGENT_USAGE_SQLITE_PATH` | `usage.sqlite` in the app's working directory | SQLite file |
+| `LLM_AGENT_USAGE_JSONL_PATH` / `LLM_AGENT_USAGE_JSONL_ROTATE_BYTES` | (unset) / `104857600` | JSONL file and rotation |
+| `LLM_AGENT_USAGE_MEMORY_LIMIT` | `100000` | records kept by the `memory` sink |
+| `LLM_AGENT_USAGE_PROCESS_INTERVAL_MS` | `30000` | process snapshot interval |
+| `LLM_AGENT_USAGE_STORAGE_INTERVAL_MS` | `600000` | storage snapshot interval |
+| `LLM_AGENT_USAGE_RETENTION_DAYS` | `90` | retention |
+| `LLM_AGENT_USAGE_USER_ID` | `hash` | `hash` or `plain` |
+
+SQLite on the container disk is lost on every restart, restage, redeploy or instance move. Disk quota and retention bound the file. If `node:sqlite` is unavailable, the hub logs the failure, reports it in status and falls back to bounded memory.
+
+Before using HANA, deploy the usage table and indexes into the shared HDI container with `bash tools/deploy-hdi-tables.sh <hdi-service-name>`; `--dry-run` previews the operation. The script also deploys the vector-store tables. Automatic schema creation is disabled. When the usage table is missing, recording uses a bounded memory buffer that never evicts: full buffers reject new batches, and the recorder accounts for losses in stored `x.usage.lost` records. Every five minutes the hub checks again, copies buffered records idempotently to HANA, and switches only after the complete copy succeeds. Failed copies keep the buffer for a later retry.
+
+Retention runs at startup and daily on configured database sinks that support deletion. Memory is bounded by its record limit; JSONL is bounded by rotation.
+
+`GET /v1/usage/status` requires `MCP_Admin`, independently of tool roles and session resolution. It reports configured sinks, fallback state, buffered/delivered/unconfirmed/lost counts, the last error code and SQLite file size. Recording off returns 404.
+
+An administrator with `MCP_Admin` can open `https://<approuter-host>/v1/usage/sqlite` in a browser after signing in to download a consistent SQLite copy. The existing authenticated `/v1/*` approuter route forwards the download. This option exists only for SQLite because the instance disk is ephemeral; there is no general REST export. Recording off, no active SQLite sink, or memory fallback returns 404.
+
+Each CF instance has its own file. Download from each instance before restarting, using the backend application route and `X-CF-APP-INSTANCE` with its app GUID (from `cf app <app-name> --guid`) and instance index:
+
+```sh
+curl --fail --show-error \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-CF-APP-INSTANCE: $APP_GUID:0" \
+  -OJ "https://<backend-app-host>/v1/usage/sqlite"
+```
+
+Use a token carrying `MCP_Admin`; repeat for each index. Browser downloads through the approuter select an instance through normal routing; use the targeted backend request above to retrieve every instance. Files are named `usage-<instance>-<UTC yyyyMMddTHHmmssZ>.sqlite` and can be opened locally with SQLite tools.

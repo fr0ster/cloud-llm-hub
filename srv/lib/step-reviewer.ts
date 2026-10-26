@@ -1,4 +1,8 @@
-import type { ILlm, ToolCallRecord } from '@mcp-abap-adt/llm-agent';
+import type {
+  ILlm,
+  IUsageRecorder,
+  ToolCallRecord,
+} from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { suspicion, tokenStats } from './review-signals';
 import {
@@ -213,7 +217,7 @@ export async function reviewStep(
     content: string;
     history?: ReviewTurn[];
   },
-  deps: { llm: ILlm; timeoutMs?: number },
+  deps: { llm: ILlm; timeoutMs?: number; usage?: IUsageRecorder },
 ): Promise<StepReview | null> {
   const timeoutMs = deps.timeoutMs ?? 8000;
   const ctrl = new AbortController();
@@ -229,6 +233,14 @@ export async function reviewStep(
   try {
     const res = await Promise.race([
       deps.llm.chat(buildReviewMessages(input), undefined, {
+        ...(deps.usage
+          ? {
+              usage: deps.usage.with({
+                role: 'reviewer',
+                component: 'step-reviewer',
+              }),
+            }
+          : {}),
         signal: ctrl.signal,
       }),
       timeout,
@@ -268,6 +280,7 @@ export async function evaluateGated(input: {
   model?: string;
   records: ToolCallRecord[];
   llm: ILlm;
+  usage?: IUsageRecorder;
   /** What the USER asked, verbatim. */
   request?: string;
   /** The coordinator's composed task. Empty means the caller did not record it. */
@@ -300,7 +313,11 @@ export async function evaluateGated(input: {
         content: input.content,
         history: input.history,
       },
-      { llm: input.llm, timeoutMs: loadStepReviewTimeoutMs(process.env) },
+      {
+        llm: input.llm,
+        usage: input.usage,
+        timeoutMs: loadStepReviewTimeoutMs(process.env),
+      },
     );
   } catch {
     review = null;

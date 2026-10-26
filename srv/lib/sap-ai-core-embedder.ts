@@ -5,7 +5,13 @@
  * Authentication: reads AICORE_SERVICE_KEY env var automatically (same as LLM provider).
  */
 
-import type { CallOptions, IEmbedder } from '@mcp-abap-adt/llm-agent';
+import {
+  beginEmbeddingRequest,
+  type CallOptions,
+  type IEmbedder,
+  type IUsageRecorder,
+  startOperation,
+} from '@mcp-abap-adt/llm-agent';
 import {
   type EmbeddingModel,
   OrchestrationEmbeddingClient,
@@ -16,38 +22,89 @@ export interface SapAiCoreEmbedderConfig {
   model: string;
   /** SAP AI Core resource group (optional) */
   resourceGroup?: string;
+  usage?: IUsageRecorder;
 }
 
 export class SapAiCoreEmbedder implements IEmbedder {
   private readonly model: string;
   private readonly resourceGroup?: string;
+  private readonly usage?: IUsageRecorder;
 
   constructor(config: SapAiCoreEmbedderConfig) {
+    this.usage = config.usage;
     this.model = config.model;
     this.resourceGroup = config.resourceGroup;
   }
 
   async embed(
     text: string,
-    _options?: CallOptions,
+    options?: CallOptions,
   ): Promise<{
     vector: number[];
     usage?: { promptTokens: number; totalTokens: number };
   }> {
-    const client = new OrchestrationEmbeddingClient(
-      { embeddings: { model: { name: this.model as EmbeddingModel } } },
-      this.resourceGroup ? { resourceGroup: this.resourceGroup } : undefined,
+    const createClient = (): OrchestrationEmbeddingClient =>
+      new OrchestrationEmbeddingClient(
+        { embeddings: { model: { name: this.model as EmbeddingModel } } },
+        this.resourceGroup ? { resourceGroup: this.resourceGroup } : undefined,
+      );
+    if (!(options?.usage ?? this.usage)) {
+      const client = createClient();
+      const response = await client.embed({ input: text });
+      return this.decode(response);
+    }
+
+    const request = beginEmbeddingRequest(
+      options,
+      startOperation(options),
+      {
+        provider: 'sap-ai-sdk',
+        model: this.model,
+        inputs: 1,
+        inputChars: text.length,
+        granularity: 'sdk-call',
+        retriesVisible: false,
+      },
+      this.usage,
     );
+    let outcome: 'ok' | 'error' | 'aborted' = 'error';
+    let failure: Error | undefined;
+    let inputTokens: number | undefined;
+    try {
+      const client = createClient();
+      const response = await client.embed({ input: text });
+      inputTokens = response.getTokenUsage()?.prompt_tokens;
+      const result = this.decode(response);
+      outcome = 'ok';
+      return result;
+    } catch (error) {
+      if (error instanceof Error) failure = error;
+      outcome =
+        options?.signal?.aborted ||
+        ((error instanceof Error || error instanceof DOMException) &&
+          error.name === 'AbortError')
+          ? 'aborted'
+          : 'error';
+      throw error;
+    } finally {
+      request.end({
+        outcome,
+        error: failure,
+        inputTokens,
+        tokensSource: inputTokens === undefined ? 'unknown' : 'provider',
+      });
+    }
+  }
 
-    const response = await client.embed({ input: text });
+  private decode(
+    response: Awaited<ReturnType<OrchestrationEmbeddingClient['embed']>>,
+  ): { vector: number[] } {
     const embeddings = response.getEmbeddings();
-
     if (!embeddings || embeddings.length === 0) {
       throw new Error('No embeddings returned from SAP AI Core');
     }
 
     const embedding = embeddings[0].embedding;
-
     // Handle base64-encoded embeddings
     if (typeof embedding === 'string') {
       const buffer = Buffer.from(embedding, 'base64');
@@ -58,7 +115,6 @@ export class SapAiCoreEmbedder implements IEmbedder {
       );
       return { vector: Array.from(float32) };
     }
-
     return { vector: embedding };
   }
 }

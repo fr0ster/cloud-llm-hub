@@ -3,6 +3,7 @@ import {
   bindSystemIdentity,
   warmSystemIdentity,
 } from './lib/system-identity-cache';
+import { processConnectionOpened } from './lib/usage/process-resources';
 // Import env setup FIRST to ensure MCP_SKIP_ENV_LOAD is set before submodule imports
 import './env-setup';
 
@@ -375,6 +376,7 @@ export async function createMCPServerForRequest(
         // and costs nothing on the ABAP side.
         if (establish) {
           await connection.connect();
+          processConnectionOpened(connection);
           bindSystemIdentity(connection, {
             systemType,
             sapConfig,

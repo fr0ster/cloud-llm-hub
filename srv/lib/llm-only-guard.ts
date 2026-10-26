@@ -141,7 +141,18 @@ export function guardLlmOnlyAgent<T extends ISmartAgent>(
                 { role: 'user', content: part },
               ],
               undefined,
-              { signal: controller.signal, trace: opts?.trace },
+              {
+                signal: controller.signal,
+                trace: opts?.trace,
+                ...(opts?.usage
+                  ? {
+                      usage: opts.usage.with({
+                        role: 'classifier',
+                        component: 'llm-only-guard',
+                      }),
+                    }
+                  : {}),
+              },
             );
             if (!result.ok)
               throw new Error('Classification LLM returned an error');

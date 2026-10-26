@@ -6,6 +6,7 @@ import type {
   ILlm,
   ISubAgent,
   ISubAgentResult,
+  IUsageRecorder,
   PlannerMessage,
   TaskRecord,
 } from '@mcp-abap-adt/llm-agent';
@@ -58,6 +59,7 @@ import {
 import { evaluateGated } from './step-reviewer';
 import { cachedSystemIdentity } from './system-identity-cache';
 import { type TaskView, taskView } from './task-view';
+import { usageRuntime } from './usage/runtime';
 
 type Plan = Exclude<DialogueState['plan'], string | undefined>;
 type PlanStep = Plan['steps'][number];
@@ -93,6 +95,7 @@ export function dialoguePlan(
 export interface DialogueHandle {
   destination: string;
   session: DialogueSession;
+  usage?: IUsageRecorder;
   retrievedContexts: WeakMap<object, string>;
   replies: WeakMap<object, { id: string; createdAt: number }>;
   outbox: DialogueOutbox;
@@ -226,6 +229,11 @@ async function open(
   if (!destinationHandle.workers)
     throw new Error('Destination executor workers unavailable');
   const planner = await buildPlannerAgent(config);
+  const usage = usageRuntime()?.forSession({
+    sessionId: key,
+    userId,
+    destination,
+  });
   const factory = new SessionConnectionFactory(userId, key);
   const retrievedContexts = new WeakMap<object, string>();
   const replies = new WeakMap<object, { id: string; createdAt: number }>();
@@ -349,6 +357,7 @@ async function open(
                   )
                     return result;
                   const verdict = await evaluateGated({
+                    usage: input.usage,
                     content: result.output,
                     records: destinationHandle.recMcp.getToolRecords(
                       ctx.traceId,
@@ -453,6 +462,7 @@ async function open(
   };
   try {
     session = await DialogueSession.open({
+      ...(usage ? { usage } : {}),
       id: key,
       signals,
       planner: {
@@ -629,6 +639,7 @@ async function open(
   return {
     destination,
     session,
+    ...(usage ? { usage } : {}),
     retrievedContexts,
     replies,
     outbox,

@@ -1,4 +1,4 @@
-import type { Message } from '@mcp-abap-adt/llm-agent';
+import type { IUsageRecorder, Message } from '@mcp-abap-adt/llm-agent';
 import type cds from '@sap/cds';
 import type { Request } from 'express';
 import { getCollectionRegistry, getQueryEmbedder } from '../agent-manager';
@@ -6,6 +6,8 @@ import { resolveRouteId } from '../collection-ids';
 import { CollectionSearchRag } from '../rag-collections';
 import { CollectionBackendError } from './collection-persistence';
 import { withRagContext } from './rag-context-marker';
+import { retrievalRecord } from './usage/hub-records';
+import { usageRuntime } from './usage/runtime';
 
 export function requestedCollectionIds(
   req: Pick<Request, 'headers' | 'body'>,
@@ -41,7 +43,8 @@ export function collectionRetrieval(agent: unknown) {
       userId: string,
       sessionId: string | undefined,
       log: ReturnType<typeof cds.log>,
-      headersSent = false,
+      headersSent: boolean = false,
+      usage?: IUsageRecorder,
     ): Promise<
       | { messages: Message[]; refusal?: never }
       | {
@@ -53,6 +56,9 @@ export function collectionRetrieval(agent: unknown) {
           messages?: never;
         }
     > {
+      const measureRetrieval = usage && usageRuntime()?.enabled('request');
+      let chunks = 0;
+      let chars = 0;
       const ragCollectionIds = requestedCollectionIds(req);
       // Resolve each entry: bare logical names → caller's own physical id; physical
       // ids owned by another user → dropped. Session collection shadows user
@@ -174,7 +180,18 @@ export function collectionRetrieval(agent: unknown) {
           );
           const embedder = getQueryEmbedder();
           const embedding = embedder
-            ? new QueryEmbedding(queryText, embedder)
+            ? new QueryEmbedding(
+                queryText,
+                embedder,
+                usage
+                  ? {
+                      usage: usage.with({
+                        role: 'embedding',
+                        component: 'collection-retrieval',
+                      }),
+                    }
+                  : undefined,
+              )
             : new TextOnlyEmbedding(queryText);
 
           const relevantTexts: string[] = [];
@@ -209,6 +226,10 @@ export function collectionRetrieval(agent: unknown) {
               }
             }
             if (lastUserIdx >= 0) {
+              if (measureRetrieval) {
+                chunks = relevantTexts.length;
+                chars = ragContext.length;
+              }
               messages = [...messages];
               messages[lastUserIdx] = withRagContext(
                 messages[lastUserIdx],
@@ -224,6 +245,13 @@ export function collectionRetrieval(agent: unknown) {
         }
       }
 
+      if (usage && measureRetrieval)
+        retrievalRecord(usage, {
+          collections: resolvedCollectionIds.length,
+          chunks,
+          chars,
+          injected: chunks > 0,
+        });
       return { messages };
     },
   };

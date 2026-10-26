@@ -1,3 +1,8 @@
+import {
+  measureRequest,
+  requestMeasurement,
+} from './lib/usage/request-records';
+import type { UsageSession } from './lib/usage/storage-snapshot';
 /**
  * Planner/controller MCP surface — a SEPARATE MCP endpoint that exposes
  * tools for an external planner (e.g. Claude Code):
@@ -87,6 +92,7 @@ import {
   throttleOf,
   unverifiedWriteFor,
 } from './lib/throttle-surfacing';
+import { usageRuntime } from './lib/usage/runtime';
 import {
   getRequestHistory,
   runWithSessionId,
@@ -169,7 +175,94 @@ export interface StepCaller {
  * admitted, the pipeline runs under the admission's signal, which only shutdown
  * aborts.
  */
-export async function executeStep(
+export function executeStep(
+  req: Request,
+  caller: StepCaller,
+  input: { session?: string; destination?: string; task: string },
+  signal?: AbortSignal,
+) {
+  const runtime = usageRuntime();
+  if (!runtime || (!runtime.enabled('request') && !runtime.enabled('session')))
+    return executeStepMeasured(req, caller, input, signal);
+  return measureAgentTool(
+    req,
+    {
+      userId: caller.userId,
+      sessionId: input.session ?? '',
+      destination: input.destination,
+    },
+    'execute_step',
+    (): Promise<{
+      isError?: boolean | undefined;
+      content: { type: 'text'; text: string }[];
+    }> => executeStepMeasured(req, caller, input, signal),
+    signal,
+  );
+}
+
+function measuredAgentCallback<
+  T extends { session?: string; destination?: string },
+>(
+  req: Request,
+  userId: string,
+  tool: 'session_open' | 'session_close' | 'list_destinations',
+  run: (args: T) => Promise<ReturnType<typeof textResult>>,
+): (args: T) => Promise<ReturnType<typeof textResult>> {
+  const runtime = usageRuntime();
+  if (!runtime || (!runtime.enabled('request') && !runtime.enabled('session')))
+    return run;
+  return (
+    args: T,
+  ): Promise<{
+    isError?: boolean | undefined;
+    content: { type: 'text'; text: string }[];
+  }> =>
+    measureAgentTool(
+      req,
+      { userId, sessionId: args.session ?? '', destination: args.destination },
+      tool,
+      (): Promise<{
+        isError?: boolean | undefined;
+        content: { type: 'text'; text: string }[];
+      }> => run(args),
+    );
+}
+
+async function measureAgentTool(
+  req: Request,
+  session: UsageSession,
+  tool: 'execute_step' | 'session_open' | 'session_close' | 'list_destinations',
+  run: () => Promise<ReturnType<typeof textResult>>,
+  signal?: AbortSignal,
+) {
+  const measurement = measureRequest(
+    req,
+    req.res,
+    session,
+    'mcp-agent',
+    false,
+    tool,
+  );
+  if (!measurement) return run();
+  const disconnected = (): void => measurement.responseEnded('disconnected');
+  if (signal?.aborted) disconnected();
+  signal?.addEventListener('abort', disconnected, { once: true });
+  try {
+    const result = await run();
+    if (result.isError) measurement?.end('error');
+    if (!req.res)
+      measurement?.outputBytes(Buffer.byteLength(JSON.stringify(result)));
+    return result;
+  } catch (error) {
+    measurement?.end('error');
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', disconnected);
+    measurement?.finish();
+  }
+}
+
+async function executeStepMeasured(
   req: Request,
   caller: StepCaller,
   args: { session?: string; destination?: string; task: string },
@@ -219,6 +312,7 @@ async function executeStepRun(
   callerSignal?: AbortSignal,
   longSession?: LongSession,
 ) {
+  const measurement = requestMeasurement(req);
   const log = cds.log('agent-mcp');
   const { userId, exposition } = caller;
   // With a door, this route counts against it; without one, today's semaphore.
@@ -275,7 +369,7 @@ async function executeStepRun(
     // Ephemeral session per call → the executor loads/saves no history.
     // Doubles as the per-trace telemetry id (Verified fact 10): unique per
     // call, threaded below as `trace.traceId`, dropped in the `finally`.
-    traceId = `agent-step-${randomUUID()}`;
+    traceId = requestMeasurement(req)?.traceId ?? `agent-step-${randomUUID()}`;
     const sessionId = longSession?.key ?? traceId;
 
     // Admitted after the agent is resolved, like every channel, and before a
@@ -333,6 +427,19 @@ async function executeStepRun(
       dumpScope = dumpScopeForConnection(built, userId);
     }
 
+    const usage = usageRuntime()
+      ?.forSession({
+        sessionId: sessionId ?? traceId,
+        userId,
+        destination: targetDestination,
+      })
+      .with({ requestId: traceId, traceId });
+    requestMeasurement(req)?.bind(usage, {
+      userId,
+      sessionId,
+      destination: targetDestination,
+    });
+    measurement?.admitted();
     const opts = {
       stream: false,
       externalTools: [],
@@ -342,6 +449,7 @@ async function executeStepRun(
         exposition,
       },
       trace: { traceId },
+      ...(usage ? { usage } : {}),
       // Surface skill selection on the planner path (chat has its own
       // sessionLogger; execute_step had none, so skill matching was invisible).
       sessionLogger: {
@@ -383,6 +491,7 @@ async function executeStepRun(
                 );
                 if (result.ok && agentHandle.executor) {
                   const verdict = await evaluateGated({
+                    usage: opts.usage,
                     content: result.value.content ?? '',
                     records: agentHandle.recMcp.getToolRecords(traceId),
                     ...getReviewSignals(),
@@ -440,6 +549,8 @@ async function executeStepRun(
     // gets. Diagnostics stay server-side in the log below.
     //
     const rawContent = r.value.content ?? '';
+    if (measurement && /\S/.test(rawContent) && !callerSignal?.aborted)
+      measurement?.deliverOnResponseEnd();
     log.info('execute_step done', {
       ok: true,
       destination: targetDestination,
@@ -465,6 +576,7 @@ async function executeStepRun(
     const unverified = unverifiedWriteFor(handle, traceId, err);
     const message =
       unverified ?? (err instanceof Error ? err.message : String(err));
+    measurement?.end('error');
     log.warn('execute_step failed', { destination, error: message });
     return textResult(`ERROR: ${message}`, true);
   } finally {
@@ -524,15 +636,17 @@ export async function createAgentMcpServerForRequest(
         'List the SAP systems (destinations) this instance can reach. Pick one and pass its `name` as the `destination` argument of execute_step. Reachability is confirmed when you actually run a step — if a destination is down the executor reports it.',
       inputSchema: {},
     },
-    async () => {
+    measuredAgentCallback(req, userId, 'list_destinations', async () => {
       const dests = await getAvailableDestinations();
-      const list = dests.map((d) => ({
-        name: d.name,
-        proxyType: d.proxyType,
-        authentication: d.authentication,
-      }));
+      const list = dests.map(
+        (d: Awaited<ReturnType<typeof getAvailableDestinations>>[number]) => ({
+          name: d.name,
+          proxyType: d.proxyType,
+          authentication: d.authentication,
+        }),
+      );
       return textResult(JSON.stringify({ destinations: list }, null, 2));
-    },
+    }),
   );
 
   server.registerTool(
@@ -542,21 +656,42 @@ export async function createAgentMcpServerForRequest(
         'Open a session for multi-step work sharing conversation and ABAP connection.',
       inputSchema: { destination: z.string().optional() },
     },
-    async ({ destination }) => {
-      const target =
-        destination?.trim() ||
-        (req.headers['x-sap-destination'] as string | undefined)?.trim();
-      const s = await openSession(userId, target);
-      return 'refused' in s
-        ? textResult(s.refused, true)
-        : textResult(
-            JSON.stringify({
-              session: s.key,
-              ttlSeconds: longSessions().ttlMs / 1000,
-              destination: s.destination,
-            }),
-          );
-    },
+    measuredAgentCallback(
+      req,
+      userId,
+      'session_open',
+      async ({
+        destination,
+      }: {
+        destination?: string;
+      }): Promise<{
+        isError?: boolean | undefined;
+        content: { type: 'text'; text: string }[];
+      }> => {
+        const headerDestination = req.headers['x-sap-destination'];
+        const target =
+          destination?.trim() ||
+          (typeof headerDestination === 'string'
+            ? headerDestination.trim()
+            : undefined);
+        const s = await openSession(userId, target);
+        if (!('refused' in s))
+          requestMeasurement(req)?.bind(undefined, {
+            userId,
+            sessionId: s.key,
+            destination: s.destination,
+          });
+        return 'refused' in s
+          ? textResult(s.refused, true)
+          : textResult(
+              JSON.stringify({
+                session: s.key,
+                ttlSeconds: longSessions().ttlMs / 1000,
+                destination: s.destination,
+              }),
+            );
+      },
+    ),
   );
   server.registerTool(
     'session_close',
@@ -565,23 +700,35 @@ export async function createAgentMcpServerForRequest(
         'Close a session and release its ABAP connection and conversation.',
       inputSchema: { session: z.string() },
     },
-    async ({ session }) => {
-      let s: LongSession | undefined;
-      try {
-        s = await resolveSession(userId, session);
-      } catch (err) {
-        if (err instanceof SessionLimitError)
-          return textResult('SESSION_LIMIT', true);
-        throw err;
-      }
-      if (!s) return textResult('SESSION_NOT_FOUND', true);
-      try {
-        await longSessions().close(userId, session, 'explicit');
-      } catch (err) {
-        log.warn('session close cleanup failed', { error: String(err) });
-      }
-      return textResult(JSON.stringify({ closed: true }));
-    },
+    measuredAgentCallback(
+      req,
+      userId,
+      'session_close',
+      async ({
+        session,
+      }: {
+        session: string;
+      }): Promise<{
+        isError?: boolean | undefined;
+        content: { type: 'text'; text: string }[];
+      }> => {
+        let s: LongSession | undefined;
+        try {
+          s = await resolveSession(userId, session);
+        } catch (err) {
+          if (err instanceof SessionLimitError)
+            return textResult('SESSION_LIMIT', true);
+          throw err;
+        }
+        if (!s) return textResult('SESSION_NOT_FOUND', true);
+        try {
+          await longSessions().close(userId, session, 'explicit');
+        } catch (err) {
+          log.warn('session close cleanup failed', { error: String(err) });
+        }
+        return textResult(JSON.stringify({ closed: true }));
+      },
+    ),
   );
 
   // --- execute_step -------------------------------------------------------

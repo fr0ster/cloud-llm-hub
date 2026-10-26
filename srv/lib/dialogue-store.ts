@@ -21,6 +21,8 @@ import {
   type RagCtors,
 } from './rag-provider-factory';
 import { type SessionConfig, sessionConfig } from './session-config';
+import { storageSnapshots } from './usage/storage-snapshot';
+import { type DialogueBytes, storageEnabled } from './usage/storage-values';
 
 type Plan = Exclude<DialogueState['plan'], string | undefined>;
 type PlanStep = Plan['steps'][number];
@@ -33,6 +35,7 @@ export type HubDialogueState = DialogueState & {
 
 export const DIALOGUE_BYTE_LIMIT = 2 * 1024 * 1024;
 export interface DialogueStoreBackend {
+  storageBytes?(userId: string, sessionId: string): DialogueBytes | undefined;
   load(
     userId: string,
     sessionId: string,
@@ -210,16 +213,42 @@ export function dialogueId(userId: string, sessionId: string): string {
     .update(JSON.stringify([userId, sessionId]))
     .digest('hex')}`;
 }
+function dialogueBytes(
+  record: HubDialogueState,
+  envelope: boolean = false,
+): DialogueBytes {
+  const { outbox, ...state } = record;
+  const { ackMode, ...body } = state;
+  return {
+    stateBytes: Buffer.byteLength(
+      JSON.stringify(envelope ? { state: body, ackMode } : state),
+      'utf8',
+    ),
+    outboxBytes: Buffer.byteLength(JSON.stringify(outbox ?? []), 'utf8'),
+  };
+}
+function invalidateDialogueBytes(id: string): void {
+  if (storageEnabled()) storageSnapshots().invalidateDialogue?.(id);
+}
 export class MemoryDialogueStore implements DialogueStoreBackend {
+  private removeRecord(id: string): void {
+    if (this.records.delete(id)) invalidateDialogueBytes(id);
+  }
+  storageBytes(userId: string, sessionId: string): DialogueBytes | undefined {
+    const entry = this.records.get(dialogueId(userId, sessionId));
+    if (!entry || Date.now() - entry.savedAt > this.ttlMs)
+      return { stateBytes: 0, outboxBytes: 0 };
+    return entry.bytes;
+  }
   hasDialogueState(userId: string, sessionId: string): boolean {
     const key = dialogueId(userId, sessionId);
     const r = this.records.get(key);
-    if (r && Date.now() - r.savedAt > this.ttlMs) this.records.delete(key);
+    if (r && Date.now() - r.savedAt > this.ttlMs) this.removeRecord(key);
     return this.records.has(key);
   }
   private readonly records = new Map<
     string,
-    { record: HubDialogueState; savedAt: number }
+    { record: HubDialogueState; savedAt: number; bytes?: DialogueBytes }
   >();
   constructor(
     private readonly maxSessions: number = sessionConfig().maxSessions,
@@ -230,7 +259,7 @@ export class MemoryDialogueStore implements DialogueStoreBackend {
   }
   async sweepExpired(now: number): Promise<void> {
     for (const [key, value] of this.records)
-      if (now - value.savedAt > this.ttlMs) this.records.delete(key);
+      if (now - value.savedAt > this.ttlMs) this.removeRecord(key);
   }
   async load(
     userId: string,
@@ -239,7 +268,7 @@ export class MemoryDialogueStore implements DialogueStoreBackend {
     const key = dialogueId(userId, sessionId);
     const r = this.records.get(key);
     if (r && Date.now() - r.savedAt > this.ttlMs) {
-      this.records.delete(key);
+      this.removeRecord(key);
       return undefined;
     }
     return r && stored(r.record);
@@ -252,17 +281,27 @@ export class MemoryDialogueStore implements DialogueStoreBackend {
     const copy = encode(record, cds.log('dialogue-store'));
     if (!copy) return;
     for (const [key, value] of this.records)
-      if (Date.now() - value.savedAt > this.ttlMs) this.records.delete(key);
+      if (Date.now() - value.savedAt > this.ttlMs) this.removeRecord(key);
     const key = dialogueId(userId, sessionId);
-    this.records.delete(key);
-    this.records.set(key, { record: copy, savedAt: Date.now() });
+    this.removeRecord(key);
+    const entry: {
+      record: HubDialogueState;
+      savedAt: number;
+      bytes?: DialogueBytes;
+    } = { record: copy, savedAt: Date.now() };
+    this.records.set(key, entry);
+    if (storageEnabled()) {
+      const bytes = dialogueBytes(copy);
+      entry.bytes = bytes;
+      storageSnapshots().update?.({ userId, sessionId }, { ...bytes });
+    }
     while (this.records.size > this.maxSessions) {
       const oldest = this.records.keys().next();
-      if (!oldest.done) this.records.delete(oldest.value);
+      if (!oldest.done) this.removeRecord(oldest.value);
     }
   }
   async delete(userId: string, sessionId: string): Promise<void> {
-    this.records.delete(dialogueId(userId, sessionId));
+    this.removeRecord(dialogueId(userId, sessionId));
   }
 }
 type Opened = {
@@ -271,6 +310,14 @@ type Opened = {
     Required<Pick<IRagBackendWriter, 'upsertPrecomputedRaw'>>;
 };
 export class ProviderDialogueStore implements DialogueStoreBackend {
+  private byteCounters?: Map<string, DialogueBytes>;
+  storageBytes(userId: string, sessionId: string): DialogueBytes | undefined {
+    const id = dialogueId(userId, sessionId);
+    const savedAt = this.index.get(id);
+    if (savedAt !== undefined && Date.now() - savedAt > this.ttlMs)
+      return { stateBytes: 0, outboxBytes: 0 };
+    return this.byteCounters?.get(id);
+  }
   async sweepExpired(now: number): Promise<void> {
     const { scanner, writer } = await this.store();
     let cursor: string | undefined;
@@ -295,6 +342,7 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
           stored(JSON.parse(row.text));
         } catch {
           this.index.delete(row.id);
+          this.byteCounters?.delete(row.id);
           this.log.warn('Skipped a malformed dialogue state', { id: row.id });
           continue;
         }
@@ -302,6 +350,8 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
           const result = await writer.deleteByIdRaw(row.id);
           if (!result.ok) throw result.error;
           this.index.delete(row.id);
+          this.byteCounters?.delete(row.id);
+          invalidateDialogueBytes(row.id);
         }
       }
       if (page.value.cursor !== undefined && page.value.cursor === cursor)
@@ -312,7 +362,11 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
   private readonly index = new Map<string, number>();
   hasDialogueState(userId: string, sessionId: string): boolean {
     for (const [key, savedAt] of this.index)
-      if (Date.now() - savedAt > this.ttlMs) this.index.delete(key);
+      if (Date.now() - savedAt > this.ttlMs) {
+        this.index.delete(key);
+        this.byteCounters?.delete(key);
+        invalidateDialogueBytes(key);
+      }
     return this.index.has(dialogueId(userId, sessionId));
   }
   private opening?: Promise<Opened>;
@@ -373,6 +427,12 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
     if (!r.ok) throw r.error;
     this.hasDialogueState(userId, sessionId);
     this.index.set(dialogueId(userId, sessionId), savedAt);
+    if (storageEnabled()) {
+      this.byteCounters ??= new Map<string, DialogueBytes>();
+      const bytes = dialogueBytes(copy, true);
+      this.byteCounters.set(dialogueId(userId, sessionId), bytes);
+      storageSnapshots().update?.({ userId, sessionId }, { ...bytes });
+    }
   }
   async load(
     userId: string,
@@ -399,6 +459,7 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
         ) {
           this.log.warn('Skipped a malformed dialogue state', { id: row.id });
           this.index.delete(row.id);
+          this.byteCounters?.delete(row.id);
           return undefined;
         }
         if (Date.now() - row.metadata.savedAt > this.ttlMs) {
@@ -410,9 +471,14 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
             throw new Error('Dialogue state exceeds 2 MB');
           const record = stored(JSON.parse(row.text));
           this.index.set(row.id, row.metadata.savedAt);
+          if (storageEnabled()) {
+            this.byteCounters ??= new Map<string, DialogueBytes>();
+            this.byteCounters.set(row.id, dialogueBytes(record, true));
+          }
           return record;
         } catch {
           this.index.delete(row.id);
+          this.byteCounters?.delete(row.id);
           this.log.warn('Skipped a malformed dialogue state', { id: row.id });
         }
       }
@@ -424,9 +490,11 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
   }
   async delete(userId: string, sessionId: string): Promise<void> {
     this.index.delete(dialogueId(userId, sessionId));
+    this.byteCounters?.delete(dialogueId(userId, sessionId));
     const { writer } = await this.store();
     const r = await writer.deleteByIdRaw(dialogueId(userId, sessionId));
     if (!r.ok) throw r.error;
+    invalidateDialogueBytes(dialogueId(userId, sessionId));
   }
 }
 const neverEmbedded = async (): Promise<never> => {

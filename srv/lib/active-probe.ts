@@ -18,6 +18,10 @@ import {
   userDependentAuthenticationTypes,
 } from './destination-authentication';
 import { classifyProbe, type ProbeStatus } from './probe-classifier';
+import {
+  processConnectionClosed,
+  processConnectionOpened,
+} from './usage/process-resources';
 
 /** A 400-class error the CAP handler maps to an HTTP 400. */
 export class ActiveProbeBadRequest extends Error {
@@ -115,9 +119,14 @@ export async function runActiveDestinationProbe(
   let httpCode: number;
   let rawMessage: string;
   try {
+    processConnectionOpened(conn);
     ({ httpCode, rawMessage } = await conn.probe(PROBE_PATH));
   } finally {
-    await conn.closeSession?.();
+    try {
+      await conn.closeSession?.();
+    } finally {
+      processConnectionClosed(conn);
+    }
   }
   const latencyMs = now() - t0;
 

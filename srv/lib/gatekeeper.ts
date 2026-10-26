@@ -1,3 +1,11 @@
+import type { SessionCloseReason } from './usage/hub-records';
+import { usageRuntime } from './usage/runtime';
+import {
+  sessionClosed,
+  sessionOpened,
+  sessionReleased,
+} from './usage/session-records';
+import { withinUsageShutdownBudget } from './usage/shutdown';
 /**
  * The gatekeeper as the service sees it: one door and one retention per process,
  * built from the configuration and the real stores.
@@ -23,6 +31,26 @@ import type { DoorRefusalReason } from './throttle-surfacing';
 
 let retention: SessionRetention | undefined;
 
+export function processAdmissionCounts(): {
+  activeSessions: number;
+  admissionQueueLength: number;
+  runningTasks: number;
+} {
+  const sessions = longSessionsIfReady();
+  return {
+    activeSessions:
+      (sessions?.size() ?? 0) +
+      (retention?.countExcept(
+        (userId: string, sessionId: string): boolean =>
+          sessions?.containsIdentity(userId, sessionId) ?? false,
+      ) ?? 0),
+    admissionQueueLength: door?.snapshot().queued ?? 0,
+    runningTasks: usageRuntime()?.enabled('process')
+      ? (retention?.countLeases('pipeline') ?? 0)
+      : 0,
+  };
+}
+
 /** An open long session, not closing. */
 function isOpenLongSession(userId: string, sessionId: string): boolean {
   return longSessionsIfReady()?.has(userId, sessionId) ?? false;
@@ -32,6 +60,45 @@ export function theRetention(): SessionRetention {
   if (!retention) {
     retention = new SessionRetention(
       {
+        onSessionRetained: (userId: string, sessionId: string): void => {
+          if (
+            (usageRuntime()?.enabled('session') ||
+              usageRuntime()?.enabled('storage')) &&
+            !isOpenLongSession(userId, sessionId)
+          )
+            sessionOpened({ userId, sessionId });
+        },
+        afterAsyncRemoval: (): void => {
+          if (
+            usageRuntime()?.enabled('session') ||
+            usageRuntime()?.enabled('storage')
+          )
+            theDoor()?.poke();
+        },
+        beforeSessionReleased: (
+          userId: string,
+          sessionId: string,
+          reason: SessionCloseReason,
+        ): Promise<void> | undefined => {
+          if (
+            (usageRuntime()?.enabled('session') ||
+              usageRuntime()?.enabled('storage')) &&
+            !isOpenLongSession(userId, sessionId)
+          )
+            return sessionClosed({ userId, sessionId }, reason);
+        },
+        onSessionReleased: (
+          userId: string,
+          sessionId: string,
+          reason: SessionCloseReason,
+        ): void => {
+          if (
+            usageRuntime()?.enabled('session') ||
+            usageRuntime()?.enabled('storage')
+          )
+            sessionReleased({ userId, sessionId }, reason);
+        },
+
         // An open long session holds state by definition, even before its
         // first turn: without this, its first request (presented, since the
         // key was kept) would find it "gone" and be refused.
@@ -81,7 +148,7 @@ export function theDoor(): Door | undefined {
 
 /** A running pipeline's hold on its session, door or no door. */
 export interface PipelineSession {
-  /** Aborted by shutdown, and by nothing else. `undefined` with no door. */
+  /** Aborted by shutdown, and by nothing else. */
   readonly signal: AbortSignal | undefined;
   /** Run the pipeline so that its calls register against this session. */
   run<T>(fn: () => T): T;
@@ -89,6 +156,35 @@ export interface PipelineSession {
   drain(): Promise<void>;
   /** Last in teardown. Idempotent. */
   release(): void;
+}
+
+let activePipelines: Set<Promise<void>> | undefined;
+function trackPipeline(pipeline: PipelineSession): PipelineSession {
+  const runtime = usageRuntime();
+  if (!runtime || (!runtime.enabled('session') && !runtime.enabled('storage')))
+    return pipeline;
+  let settle: () => void = (): void => {};
+  const done = new Promise<void>(
+    (resolve: (value: void | PromiseLike<void>) => void): void => {
+      settle = resolve;
+    },
+  );
+  activePipelines ??= new Set<Promise<void>>();
+  const pipelines = activePipelines;
+  pipelines.add(done);
+  return {
+    signal: pipeline.signal,
+    run: pipeline.run,
+    drain: pipeline.drain,
+    release(): void {
+      try {
+        pipeline.release();
+      } finally {
+        pipelines.delete(done);
+        settle();
+      }
+    },
+  };
 }
 
 export type PipelineAdmission =
@@ -109,18 +205,20 @@ export async function admitPipeline(
   signal?: AbortSignal,
   opts: { presented?: boolean } = {},
 ): Promise<PipelineAdmission> {
+  if (usageRuntime() && backgroundShutdown.signal.aborted)
+    return { closed: true };
   const d = theDoor();
   if (d) {
     const r = await d.admit(userId, sessionId, signal, opts);
     if ('refused' in r || 'closed' in r) return r;
     const a = r.admitted;
     return {
-      admitted: {
+      admitted: trackPipeline({
         signal: a.signal,
-        run: (fn) => runWithAdmission(a, fn),
+        run: <T>(fn: () => T) => runWithAdmission(a, fn),
         drain: () => a.drain(),
         release: () => a.release(),
-      },
+      }),
     };
   }
   // With no door there is no retention cap, so a refusal here means one thing:
@@ -131,16 +229,16 @@ export async function admitPipeline(
   const register = createCallRegister();
   let released = false;
   return {
-    admitted: {
-      signal: undefined,
-      run: (fn) => runWithAdmission(register, fn),
+    admitted: trackPipeline({
+      signal: usageRuntime() ? backgroundShutdown.signal : undefined,
+      run: <T>(fn: () => T) => runWithAdmission(register, fn),
       drain: () => register.drain(),
       release: () => {
         if (released) return;
         released = true;
         lease.release();
       },
-    },
+    }),
   };
 }
 
@@ -159,9 +257,9 @@ export async function admitBackground(
   const register = createCallRegister();
   let released = false;
   return {
-    admitted: {
+    admitted: trackPipeline({
       signal: backgroundShutdown.signal,
-      run: (fn) => runWithAdmission(register, fn),
+      run: <T>(fn: () => T) => runWithAdmission(register, fn),
       drain: () => register.drain(),
       release: () => {
         if (!released) {
@@ -169,7 +267,7 @@ export async function admitBackground(
           lease.release();
         }
       },
-    },
+    }),
   };
 }
 
@@ -250,12 +348,15 @@ export function forgetEmptySessions(): number {
 /**
  * End every admitted session and every waiter. The only thing that does.
  *
- * Best-effort by necessity: it aborts and returns without waiting for the
- * register, because the process is exiting.
+ * Abort first; recording alone needs a bounded wait for full pipeline teardown.
  */
-export function shutdownGatekeeper(): void {
+export function shutdownGatekeeper(): Promise<void> | void {
   backgroundShutdown.abort(new Error('shutdown'));
   theDoor()?.abortAll(new Error('shutdown'));
+  if (usageRuntime())
+    return withinUsageShutdownBudget(
+      Promise.all([...(activePipelines ?? [])]).then((): void => {}),
+    ).then((): void => {});
 }
 
 /** Test seam. */
@@ -263,6 +364,7 @@ export function resetGatekeeperForTest(): void {
   door?.abortAll(new Error('test reset'));
   backgroundShutdown.abort();
   backgroundShutdown = new AbortController();
+  activePipelines?.clear();
   door = undefined;
   retention = undefined;
 }

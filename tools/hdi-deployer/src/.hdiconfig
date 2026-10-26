@@ -1,0 +1,10 @@
+{
+  "file_suffixes": {
+    "hdbtable": {
+      "plugin_name": "com.sap.hana.di.table"
+    },
+    "hdbindex": {
+      "plugin_name": "com.sap.hana.di.index"
+    }
+  }
+}

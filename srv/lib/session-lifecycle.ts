@@ -29,7 +29,11 @@ import {
   hasSessionHistory,
   SESSION_MAX_MESSAGES,
 } from '../session-store';
-import { closeDialogue, touchDialogue } from './dialogue-sessions';
+import {
+  closeDialogue,
+  lookupDialogue,
+  touchDialogue,
+} from './dialogue-sessions';
 import { deleteDialogueState, sweepDialogueStates } from './dialogue-store';
 import { deleteSession, maySweepSession } from './gatekeeper';
 import { guardedTask } from './guarded-task';
@@ -44,6 +48,12 @@ import { getRunRecordStore, sweepRunRecords } from './run-record-store';
 import { dropSessionConnection } from './session-connection';
 import { type StoredTurn, turnOwner } from './session-history-rag';
 import type { SessionRecord, SessionRecordStore } from './session-record-store';
+import { usageRuntime } from './usage/runtime';
+import {
+  sessionClosed,
+  sessionDialogueCounts,
+  sessionOpened,
+} from './usage/session-records';
 
 const log = () => cds.log('long-session');
 
@@ -78,7 +88,9 @@ function recordOf(s: LongSession): SessionRecord {
     createdAt: s.createdAt,
     lastActivity: s.lastActivity,
     ttlMs: longSessions().ttlMs,
-    ...(s.destination !== undefined ? { destination: s.destination } : {}),
+    ...(s.destination !== undefined
+      ? { destination: s.destination }
+      : undefined),
   };
 }
 
@@ -115,12 +127,51 @@ export function lifecycleHooks(store?: SessionRecordStore): LongSessionHooks {
   closed.clear();
   reviving.clear();
   return {
-    async onClose(s, reason) {
+    onOpen(s: LongSession): void {
+      if (
+        !usageRuntime()?.enabled('session') &&
+        !usageRuntime()?.enabled('storage')
+      )
+        return;
+      sessionOpened(
+        { userId: s.userId, sessionId: s.key, destination: s.destination },
+        s.revived ? 'revive' : 'open',
+        s.createdAt,
+      );
+    },
+    async onClose(
+      s: LongSession,
+      reason: import('./long-session').CloseReason,
+    ) {
+      let handle: Awaited<ReturnType<typeof lookupDialogue>>;
+      if (usageRuntime()?.enabled('session')) {
+        try {
+          handle = await lookupDialogue(s.userId, s.key);
+        } catch {
+          log().warn('Dialogue usage counters unavailable');
+        }
+      }
       try {
         await closeDialogue(s.userId, s.key, reason, false);
       } catch {
         log().warn('Dialogue shutdown failed');
       }
+      if (handle) {
+        const state = handle.state();
+        sessionDialogueCounts(
+          { userId: s.userId, sessionId: s.key },
+          state.settledSeq,
+          state.total,
+        );
+      }
+      if (
+        usageRuntime()?.enabled('session') ||
+        usageRuntime()?.enabled('storage')
+      )
+        await sessionClosed(
+          { userId: s.userId, sessionId: s.key, destination: s.destination },
+          reason,
+        );
       await dropSessionConnection(s);
       if (reason === 'shutdown') return;
       closed.set(slot(s.userId, s.key), s.lastActivity + longSessions().ttlMs);
@@ -210,13 +261,40 @@ function isClosed(userId: string, key: string): boolean {
  * that expired while the hub was down. The key is tombstoned first, so a
  * revival reading the record meanwhile writes nothing back. Logged, not thrown.
  */
-export async function discardSession(
-  userId: string,
-  key: string,
-): Promise<void> {
+let discarding: Map<string, Promise<void>> | undefined;
+
+export function discardSession(userId: string, key: string): Promise<void> {
+  if (
+    !usageRuntime()?.enabled('session') &&
+    !usageRuntime()?.enabled('storage')
+  )
+    return discardSessionRun(userId, key);
+  const sessionKey = slot(userId, key);
+  discarding ??= new Map<string, Promise<void>>();
+  const operations = discarding;
+  const existing = operations.get(sessionKey);
+  if (existing) return existing;
+  const operation = discardSessionRun(userId, key).finally((): void => {
+    if (operations.get(sessionKey) === operation) operations.delete(sessionKey);
+  });
+  operations.set(sessionKey, operation);
+  return operation;
+}
+
+async function discardSessionRun(userId: string, key: string): Promise<void> {
   closed.set(slot(userId, key), Date.now() + longSessions().ttlMs);
   try {
     const record = await records?.get(userId, key);
+    if (
+      record &&
+      record.closedAt === undefined &&
+      (usageRuntime()?.enabled('session') || usageRuntime()?.enabled('storage'))
+    )
+      await sessionClosed(
+        { userId, sessionId: key, destination: record.destination },
+        'expired-offline',
+        false,
+      );
     if (record) await markClosed(record);
     await cleanupSession(userId, key);
     await records?.delete(userId, key);

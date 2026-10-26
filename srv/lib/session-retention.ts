@@ -1,3 +1,5 @@
+import type { SessionCloseReason } from './usage/hub-records';
+
 /**
  * Retention: how many sessions may hold state, and the rules for letting one go.
  *
@@ -6,6 +8,18 @@
  */
 
 export interface RetentionStores {
+  afterAsyncRemoval?(): void;
+  onSessionRetained?(userId: string, sessionId: string): void;
+  beforeSessionReleased?(
+    userId: string,
+    sessionId: string,
+    reason: SessionCloseReason,
+  ): Promise<void> | void;
+  onSessionReleased?(
+    userId: string,
+    sessionId: string,
+    reason: SessionCloseReason,
+  ): void;
   /** Whether anything is still held for this session. */
   hasState(userId: string, sessionId: string): boolean;
   /**
@@ -63,6 +77,8 @@ interface Entry {
   userId: string;
   sessionId: string;
   lastUsed: number;
+  reason?: SessionCloseReason;
+  finishing?: boolean;
   /**
    * Whether any lease on it was taken for a session the caller presented. A
    * client that keeps no cookie is minted a session per request, none of which
@@ -98,6 +114,20 @@ function pendingClose(): NonNullable<Entry['closing']> {
 }
 
 export class SessionRetention {
+  countLeases(kind: LeaseKind): number {
+    let count = 0;
+    for (const entry of this.entries.values())
+      for (const lease of entry.leases) if (lease.kind === kind) count++;
+    return count;
+  }
+
+  countExcept(exclude: (userId: string, sessionId: string) => boolean): number {
+    let count = 0;
+    for (const entry of this.entries.values()) {
+      if (!exclude(entry.userId, entry.sessionId)) count++;
+    }
+    return count;
+  }
   private readonly entries = new Map<string, Entry>();
   private evictions = 0;
   private cleanupFailures = 0;
@@ -152,7 +182,9 @@ export class SessionRetention {
         presented: false,
         leases: new Set(),
       };
+      if (this.stores.onSessionRetained) e.reason = 'explicit';
       this.entries.set(key, e);
+      this.stores.onSessionRetained?.(userId, sessionId);
     }
     e.lastUsed = this.now();
     if (opts.presented) e.presented = true;
@@ -200,7 +232,11 @@ export class SessionRetention {
     return this.startClose(e);
   }
 
-  private startClose(e: Entry): Promise<void> {
+  private startClose(
+    e: Entry,
+    reason: SessionCloseReason = 'explicit',
+  ): Promise<void> {
+    if (this.stores.onSessionReleased) e.reason = reason;
     e.closing = pendingClose();
     const settled = e.closing.settled;
     for (const l of e.leases) (l as Lease & { cancel(): void }).cancel();
@@ -263,7 +299,7 @@ export class SessionRetention {
         !e.closing &&
         !this.stores.hasState(e.userId, e.sessionId)
       ) {
-        this.startClose(e).catch(() => {});
+        this.startClose(e, 'ttl').catch(() => {});
         n++;
       }
     }
@@ -307,7 +343,7 @@ export class SessionRetention {
     this.evictions++;
     // A failure is reported through reportDeleteError and must not fail the
     // lease or become unhandled.
-    this.startClose(e).catch(() => {});
+    this.startClose(e, 'evicted').catch(() => {});
   }
 
   private settle(e: Entry, lease: Lease): void {
@@ -319,24 +355,77 @@ export class SessionRetention {
       return;
     }
     if (!this.stores.hasState(e.userId, e.sessionId)) {
-      this.startClose(e).catch(() => {});
+      this.startClose(e, 'ttl').catch(() => {});
+    }
+  }
+
+  /** The sole removal path; even a failed cleanup releases the entry once. */
+  private remove(userId: string, sessionId: string, e?: Entry): void {
+    const key = keyOf(userId, sessionId);
+    if (e && this.entries.get(key) !== e) return;
+    try {
+      if (e)
+        this.stores.onSessionReleased?.(
+          userId,
+          sessionId,
+          e.reason ?? 'explicit',
+        );
+    } finally {
+      try {
+        this.stores.deleteAll(userId, sessionId);
+      } finally {
+        if (e) this.entries.delete(key);
+      }
+    }
+  }
+
+  private completeClose(e: Entry): void {
+    try {
+      this.remove(e.userId, e.sessionId, e);
+      e.closing?.resolve();
+    } catch (error) {
+      this.cleanupFailures++;
+      this.stores.reportDeleteError?.(e.userId, e.sessionId, error);
+      e.closing?.reject(error);
     }
   }
 
   private finishClose(e: Entry): void {
-    const current = e.closing;
-    try {
-      this.stores.deleteAll(e.userId, e.sessionId);
-    } catch (error) {
-      // Reported and counted; the session is closed all the same — nothing is
-      // kept or retried (issue #234).
-      this.cleanupFailures++;
-      this.stores.reportDeleteError?.(e.userId, e.sessionId, error);
+    if (!this.stores.beforeSessionReleased && !this.stores.onSessionReleased) {
+      const current = e.closing;
+      try {
+        this.stores.deleteAll(e.userId, e.sessionId);
+      } catch (error) {
+        this.cleanupFailures++;
+        this.stores.reportDeleteError?.(e.userId, e.sessionId, error);
+        this.entries.delete(keyOf(e.userId, e.sessionId));
+        current?.reject(error);
+        return;
+      }
       this.entries.delete(keyOf(e.userId, e.sessionId));
-      current?.reject(error);
+      current?.resolve();
       return;
     }
-    this.entries.delete(keyOf(e.userId, e.sessionId));
-    current?.resolve();
+    if (e.finishing) return;
+    e.finishing = true;
+    // Eviction is synchronous, including when a meter is already in flight.
+    const preparation =
+      e.reason === 'evicted'
+        ? undefined
+        : this.stores.beforeSessionReleased?.(
+            e.userId,
+            e.sessionId,
+            e.reason ?? 'explicit',
+          );
+    if (preparation) {
+      const finishAsync = (): void => {
+        try {
+          this.completeClose(e);
+        } finally {
+          this.stores.afterAsyncRemoval?.();
+        }
+      };
+      void preparation.then(finishAsync, finishAsync);
+    } else this.completeClose(e);
   }
 }

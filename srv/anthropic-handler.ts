@@ -1,6 +1,11 @@
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
+import {
+  measureRequest,
+  requestMeasurement,
+} from './lib/usage/request-records';
+import { usageRuntime } from './lib/usage/runtime';
 /**
  * Anthropic Messages API handler for SmartAgent.
  *
@@ -77,7 +82,42 @@ const adapter = new AnthropicApiAdapter();
  * Accepts Anthropic Messages API request, delegates to SmartAgent.process() or
  * SmartAgent.streamProcess() depending on `stream` flag.
  */
-export async function handleAnthropicMessages(
+export function handleAnthropicMessages(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const runtime = usageRuntime();
+  if (!runtime || (!runtime.enabled('request') && !runtime.enabled('session')))
+    return handleAnthropicMessagesMeasured(req, res);
+  return handleAnthropicMessagesWithUsage(req, res);
+}
+
+async function handleAnthropicMessagesWithUsage(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const body: { stream?: boolean } | undefined = req.body;
+  const measurement = measureRequest(
+    req,
+    res,
+    {
+      userId: cds.context?.user?.id ?? 'anonymous',
+      sessionId: sessionIdOf(req) ?? '',
+    },
+    'anthropic',
+    body?.stream === true,
+  );
+  try {
+    await handleAnthropicMessagesMeasured(req, res);
+  } catch (error) {
+    measurement?.end('error');
+    throw error;
+  } finally {
+    measurement?.finish();
+  }
+}
+
+async function handleAnthropicMessagesMeasured(
   req: Request,
   res: Response,
 ): Promise<void> {
@@ -115,6 +155,8 @@ export async function handleAnthropicMessages(
   // A long session serves its requests one at a time, through the connection
   // it holds; without one the request stands alone, as it always has.
   const s = (req as LongSessionRequest).longSession;
+  const measurement = requestMeasurement(req);
+  measurement?.setStream(normalized.stream);
   const early =
     normalized.stream &&
     s &&
@@ -144,6 +186,7 @@ export async function handleAnthropicMessages(
       }
     }
   } catch (error) {
+    measurement?.end('error');
     if (!early?.opened) throw error;
     early.error({
       type: 'error',
@@ -342,7 +385,7 @@ async function serveMessages(
   // per-trace bucketing and the finalizer's `getSummary(traceId)` (Verified
   // fact 10). Merge into any `trace` the adapter already normalized from the
   // request rather than clobbering it.
-  const traceId = randomUUID();
+  const traceId = requestMeasurement(req)?.traceId ?? randomUUID();
 
   // The caller's permissions. This channel previously resolved none at all —
   // no role filtering on which tools were offered, and nothing to authorize a
@@ -364,6 +407,7 @@ async function serveMessages(
       },
     );
     if ('refused' in admission) {
+      requestMeasurement(req)?.end('limit');
       await releaseRequestConnection(requestConnection, s);
       const refusal = anthropicDoorRefusal(admission.refused);
       if (early?.opened) early.error(refusal.body);
@@ -378,6 +422,7 @@ async function serveMessages(
       return;
     }
     pipeline = admission.admitted;
+    requestMeasurement(req)?.admitted();
   } catch (error) {
     await releaseRequestConnection(requestConnection, s);
     if (early?.opened && !callerLeft.signal.aborted) throw error;
@@ -389,6 +434,14 @@ async function serveMessages(
       ? dialogueChat(req, userId, s, destination, res)
       : handle.agent;
 
+  const usage = usageRuntime()
+    ?.forSession({
+      sessionId: sessionId ?? traceId,
+      userId,
+      destination: destination,
+    })
+    .with({ requestId: traceId, traceId });
+  requestMeasurement(req)?.bind(usage);
   const agentOpts = {
     stream,
     ...options,
@@ -400,6 +453,7 @@ async function serveMessages(
       exposition: callerExposition,
     },
     trace: { ...options?.trace, traceId },
+    ...(usage ? { usage } : {}),
   };
 
   // Bind the per-request SAP connection for the whole agent run so MCP tool
@@ -449,6 +503,7 @@ async function serveMessages(
       sessionId,
       log,
       res.headersSent,
+      agentOpts.usage,
     );
     if (retrieval.refusal) {
       if (early?.opened) {
@@ -515,6 +570,9 @@ async function serveMessages(
       // `message_stop`, held back once a chunk has failed so that a notice can
       // still go before it: Anthropic clients, the Claude CLI among them, stop
       // reading at `message_stop`, and a notice after it reaches nobody.
+      const measurement = requestMeasurement(req);
+      let deliveredContent = false;
+      let explicitMessages = false;
       let heldStop = undefined as { event?: string; data: string } | undefined;
       try {
         // `AnthropicApiAdapter.transformStream` turns an error chunk
@@ -531,7 +589,17 @@ async function serveMessages(
           const observed = (async function* () {
             for await (const chunk of source) {
               if (!chunk.ok && streamError === undefined) {
+                requestMeasurement(req)?.end('error');
                 streamError = chunk.error;
+              }
+              if (measurement && chunk.ok) {
+                if (!deliveredContent && /\S/.test(chunk.value.content ?? ''))
+                  deliveredContent = true;
+                if ('clhMessageEnd' in chunk.value) {
+                  explicitMessages = true;
+                  if (!out.detached)
+                    requestMeasurement(req)?.messageDelivered(1);
+                }
               }
               if (chunk.ok && chunk.value.status) {
                 out.write(`: status ${JSON.stringify(chunk.value.status)}\n\n`);
@@ -591,6 +659,7 @@ async function serveMessages(
           }
         }
       } catch (err) {
+        requestMeasurement(req)?.end('error');
         if (isOutageError(err))
           closeDestination(destination, describeCause(err));
         const message = err instanceof Error ? err.message : String(err);
@@ -611,6 +680,8 @@ async function serveMessages(
       }
 
       // The held `message_stop` closes the message after any notice above.
+      if (measurement && !explicitMessages && deliveredContent && !out.detached)
+        requestMeasurement(req)?.messageDelivered();
       if (heldStop) {
         out.write(`event: ${heldStop.event}\ndata: ${heldStop.data}\n\n`);
       }
@@ -623,6 +694,12 @@ async function serveMessages(
     const result = await runAgent(() => chatAgent.process(messages, agentOpts));
 
     if (result.ok) {
+      if (
+        requestMeasurement(req) &&
+        /\S/.test(result.value.content) &&
+        !out.detached
+      )
+        requestMeasurement(req)?.deliverOnResponseEnd();
       out.json(200, adapter.formatResult(result.value, context));
     } else {
       if (isOutageError(result.error)) {

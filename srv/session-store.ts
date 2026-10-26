@@ -16,6 +16,7 @@ import { guardedTask } from './lib/guarded-task';
 import { getRunRecordStore } from './lib/run-record-store';
 import { sessionConfig } from './lib/session-config';
 import { turnOwner } from './lib/session-history-rag';
+import { storageAggregates } from './lib/usage/storage-aggregates';
 
 /** Max messages kept in server session (before SmartAgent's own summarization) */
 export const SESSION_MAX_MESSAGES = 20;
@@ -48,8 +49,7 @@ function sessionStoreKey(sessionId: string, userId: string): string {
 /** Periodic cleanup of expired sessions. `.unref()` so the timer doesn't keep the
  *  Node process (or Jest workers) alive after everything else exits. The TTL
  *  is the session's one TTL (`LLM_AGENT_SESSION_TTL_MS`), read at each pass. */
-setInterval(() => {
-  const now = Date.now();
+export function sweepSessionHistory(now: number = Date.now()): void {
   const ttlMs = sessionConfig().ttlMs;
   for (const [id, entry] of sessionStore) {
     if (now - entry.lastAccess > ttlMs) {
@@ -60,7 +60,8 @@ setInterval(() => {
       deleteRunRecord(userId, sessionId);
     }
   }
-}, SESSION_CLEANUP_INTERVAL_MS).unref();
+}
+setInterval(() => sweepSessionHistory(), SESSION_CLEANUP_INTERVAL_MS).unref();
 
 /** Get session history for a specific user. Returns empty array if none. */
 export function getSessionHistory(
@@ -73,6 +74,40 @@ export function getSessionHistory(
     return entry.messages;
   }
   return [];
+}
+
+/** Persisted recall bytes; the recent-message window is excluded. */
+export async function sessionHistoryBytes(
+  userId: string,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<number | undefined> {
+  if (!isProvidersReady()) return undefined;
+  const history = getSharedHistoryRag();
+  if (!history) return 0;
+  const owner = turnOwner(userId, sessionId);
+  const backend = history.storageBackend;
+  if (
+    backend !== 'pg-vector' &&
+    backend !== 'hana-vector' &&
+    backend !== 'in-memory'
+  )
+    return undefined;
+  if (backend === 'pg-vector' || backend === 'hana-vector') {
+    try {
+      const aggregate = await storageAggregates()?.measure(
+        backend,
+        ['h_history'],
+        signal,
+        { owner, userId, sessionId },
+      );
+      if (aggregate?.textBytes !== undefined) return aggregate.textBytes;
+    } catch {
+      // HANA uses the same exact text counter fallback as collections.
+    }
+    if (backend === 'pg-vector') return undefined;
+  }
+  return history.storageBytes(owner);
 }
 
 /** Append messages to session history for a specific user, trimming to max size */

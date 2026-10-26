@@ -1,3 +1,12 @@
+import {
+  beginUsageShutdown,
+  closeUsageSessions,
+} from './lib/usage/session-records';
+import {
+  completeUsageShutdown,
+  USAGE_SHUTDOWN_TIMEOUT_MS,
+} from './lib/usage/shutdown';
+import { createUsageRouter } from './usage-handler';
 /**
  * Custom server.ts for CAP bootstrap.
  * This file is automatically loaded by CAP and registers streaming endpoints.
@@ -66,7 +75,7 @@ import {
   mcpDestinationRefusal,
 } from './lib/mcp-destination-guard';
 import { needsSapConnection } from './lib/mcp-request';
-import { startProviders } from './lib/providers';
+import { type Providers, startProviders } from './lib/providers';
 import { requireMcpRole } from './lib/require-mcp-role';
 import { initializeRunRecordStore } from './lib/run-record-store';
 import { sessionConfig } from './lib/session-config';
@@ -86,6 +95,17 @@ import {
 } from './lib/session-middleware';
 import { createSessionRecordStore } from './lib/session-record-store';
 import { openAiSessionRefusal } from './lib/throttle-surfacing';
+import { readUsageConfig } from './lib/usage/config';
+import { startProcessMeter, stopProcessMeter } from './lib/usage/process-meter';
+import {
+  initUsage,
+  type UsageRuntime,
+  usageRuntime,
+} from './lib/usage/runtime';
+import {
+  startStorageMeter,
+  stopStorageMeter,
+} from './lib/usage/storage-scheduler';
 import { createMCPServerForRequest } from './mcp-manager';
 import {
   handleChatCompletions,
@@ -727,6 +747,13 @@ cds.on('bootstrap', (app: Application) => {
 
   // Reuse CAP auth + role check for /v1 routes (same auth-error JSON handler
   // as /mcp so OpenAI/Anthropic clients get 401 JSON instead of 500 HTML).
+  app.use(
+    '/v1/usage',
+    context,
+    wrappedAuth,
+    createUsageRouter(),
+    authJsonErrorHandler,
+  );
   app.use('/v1', context, wrappedAuth, requireMcpRole, authJsonErrorHandler);
 
   // Every /v1 request runs under a session this service issued: a long
@@ -912,7 +939,29 @@ cds.on('served', () => {
   // its settings), never an outage: the process exits non-zero so the platform
   // reports it instead of a healthy instance answering 503 forever. An agent
   // warm-up failure can be an outage (AI Core, a destination) and is retried.
-  startProviders(getAgentConfig())
+  Promise.resolve()
+    .then(
+      (): Promise<UsageRuntime | undefined> =>
+        initUsage(
+          readUsageConfig(process.env, getAgentConfig().rag.backends.session),
+          { rag: getAgentConfig().rag },
+        ),
+    )
+    .then((runtime: UsageRuntime | undefined): Promise<Providers> => {
+      if (runtime?.enabled('process'))
+        startProcessMeter(
+          runtime,
+          readUsageConfig(process.env, getAgentConfig().rag.backends.session)
+            .processIntervalMs,
+        );
+      if (runtime?.enabled('storage'))
+        startStorageMeter(
+          runtime,
+          readUsageConfig(process.env, getAgentConfig().rag.backends.session)
+            .storageIntervalMs,
+        );
+      return startProviders(getAgentConfig());
+    })
     .then((p) => {
       initProviders(p);
       registerRagRoutes(ragRouter, getCollectionRegistry());
@@ -950,7 +999,25 @@ cds.on('served', () => {
 // ABAP sessions end, their state and records stay for revival. A close waits
 // for the session's running request, which the gatekeeper's abort ends.
 cds.on('shutdown', async () => {
+  if (!usageRuntime()) {
+    const closing = longSessionsIfReady()?.closeAll('shutdown');
+    shutdownGatekeeper();
+    await closing;
+    return;
+  }
+  const usageDeadline = Date.now() + USAGE_SHUTDOWN_TIMEOUT_MS;
+  beginUsageShutdown();
   const closing = longSessionsIfReady()?.closeAll('shutdown');
-  shutdownGatekeeper();
-  await closing;
+  const pipelines = shutdownGatekeeper();
+  await completeUsageShutdown(
+    usageDeadline,
+    Promise.all([closing, pipelines]).then((): void => {}),
+    closeUsageSessions,
+    async (remainingMs: number): Promise<void> => {
+      const runtime = usageRuntime();
+      if (runtime) stopStorageMeter(runtime);
+      if (runtime) stopProcessMeter(runtime);
+      await runtime?.close(remainingMs);
+    },
+  );
 });

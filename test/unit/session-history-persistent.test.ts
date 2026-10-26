@@ -44,10 +44,13 @@ import {
   WRITTEN_BY,
 } from '../../srv/lib/collection-persistence';
 import {
+  renderTurn,
   SessionHistoryRag,
   turnOwner,
 } from '../../srv/lib/session-history-rag';
+import { historyAggregateQuery } from '../../srv/lib/usage/storage-aggregates';
 import { CollectionRegistry } from '../../srv/rag-collections';
+import { appendToSession, sweepSessionHistory } from '../../srv/session-store';
 import { type PgliteHandle, startPglite } from './helpers/pglite';
 
 jest.setTimeout(120_000);
@@ -806,4 +809,64 @@ describe('restore and the catalog sweep leave the history record alone', () => {
     ).toBe(true);
     expect(await historyRows()).toHaveLength(1);
   });
+});
+
+test('persisted history bytes survive window expiry and revival, and shrink with cap and owner deletion', async (): Promise<void> => {
+  const first = history((): string => ALICE, { cap: 15 });
+  const second = history((): string => BOB);
+  const text = renderTurn('\u00e9\u{1f600}', 'answer');
+  const bytes = Buffer.byteLength(text, 'utf8');
+  for (let index = 0; index < 16; index++) {
+    expect(
+      await first.recordTurn({
+        owner: ALICE,
+        id: `alice-${index}`,
+        userText: '\u00e9\u{1f600}',
+        assistantText: 'answer',
+      }),
+    ).toBe(true);
+    expect(
+      await second.recordTurn({
+        owner: BOB,
+        id: `bob-${index}`,
+        userText: '\u00e9\u{1f600}',
+        assistantText: 'answer',
+      }),
+    ).toBe(true);
+    appendToSession('s-1', 'alice@example.com', {
+      role: 'user',
+      content: '\u00e9\u{1f600}',
+    });
+  }
+  const measure = async (
+    owner: string,
+    userId: string,
+    sessionId: string,
+  ): Promise<number> => {
+    const query = historyAggregateQuery(
+      'pg-vector',
+      { owner, userId, sessionId },
+      pgl.schema,
+    );
+    return Number(
+      (await real.query(query.sql, query.params)).rows[0].textBytes,
+    );
+  };
+  expect(await measure(ALICE, 'alice@example.com', 's-1')).toBe(bytes * 15);
+  expect(await measure(BOB, 'bob@example.com', 's-2')).toBe(bytes * 16);
+  sweepSessionHistory(Date.now() + 365 * 86400000);
+  expect(await measure(ALICE, 'alice@example.com', 's-1')).toBe(bytes * 15);
+  const revived = history((): string => ALICE, { cap: 12 });
+  expect(await revived.listTurns(ALICE)).toHaveLength(15);
+  expect(await measure(ALICE, 'alice@example.com', 's-1')).toBe(bytes * 15);
+  await revived.recordTurn({
+    owner: ALICE,
+    id: 'last',
+    userText: '\u00e9\u{1f600}',
+    assistantText: 'answer',
+  });
+  expect(await measure(ALICE, 'alice@example.com', 's-1')).toBe(bytes * 12);
+  expect(await revived.forgetOwner(ALICE)).toBe(true);
+  expect(await measure(ALICE, 'alice@example.com', 's-1')).toBe(0);
+  expect(await measure(BOB, 'bob@example.com', 's-2')).toBe(bytes * 16);
 });

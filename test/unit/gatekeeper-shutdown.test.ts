@@ -38,6 +38,7 @@ describe('shutdown', () => {
     gatekeeper.shutdownGatekeeper();
     expect(first.admitted.signal?.aborted).toBe(true);
     await expect(waiting).rejects.toThrow('shutdown');
+    first.admitted.release();
   });
 
   it('is a no-op with no door', () => {
@@ -46,9 +47,7 @@ describe('shutdown', () => {
 
   it('is hooked to CAP shutdown', () => {
     const src = readFileSync(join(__dirname, '../../srv/server.ts'), 'utf8');
-    expect(src).toMatch(
-      /cds\.on\(\s*'shutdown'[\s\S]{0,120}shutdownGatekeeper\(\)/,
-    );
+    expect(src).toMatch(/cds\.on\(\s*'shutdown'[\s\S]*?shutdownGatekeeper\(\)/);
   });
 });
 
