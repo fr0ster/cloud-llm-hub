@@ -162,6 +162,7 @@ The design's goal "context size per LLM request" needs the request shape in ever
   - the request ends in `srv/openai-handler.ts`, `srv/anthropic-handler.ts` and `srv/agent-mcp.ts`.
 - Create: `srv/lib/usage/hub-records.ts`, with typed builders `sessionRecord(...)`, `requestRecord(...)`, `retrievalRecord(...)` and their `x.hub.*` value shapes, using only numbers, labels and flags.
 - **`x.hub.retrieval`:** emitted by `srv/lib/collection-retrieval.ts` on the request recorder for every retrieval, with the spec's fields; test: two collections, three chunks injected → one record with `collections: 2`, `chunks: 3`, `chars` equal to the injected text length, `injected: true`; no relevant chunk → `injected: false`, `chunks: 0`.
+  The runtime's measure filter (`srv/lib/usage/runtime.ts`, Task 1) maps `x.hub.retrieval` to the `request` measure; test: `LLM_AGENT_USAGE_MEASURE=request` keeps it, `llm` alone drops it.
 - **`x.hub.session` and `x.hub.request` fields:** exactly the spec's tables, including:
   - `responseEndAt` versus `operationEndAt` (work after a disconnect);
   - `protocol: 'mcp-agent'` with the tool name;
