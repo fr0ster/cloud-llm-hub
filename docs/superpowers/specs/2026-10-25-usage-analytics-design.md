@@ -105,6 +105,7 @@ How storage is measured:
 **`x.hub.retrieval`**, one per collection-retrieval injection (`srv/lib/collection-retrieval.ts`), in the request's context:
 - `collections`: collections searched; `chunks`: chunks injected; `chars`: characters of the injected context; `injected`: whether anything was added.
 - With `llm.call`'s `userChars` it shows how much of a request's user content is retrieved context.
+- It belongs to the `request` measure of `LLM_AGENT_USAGE_MEASURE`.
 
 **`x.hub.process`**, every `LLM_AGENT_USAGE_PROCESS_INTERVAL_MS`:
 - RSS, heap used and external memory;
