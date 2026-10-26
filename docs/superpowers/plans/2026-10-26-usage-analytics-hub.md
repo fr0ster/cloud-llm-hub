@@ -4,17 +4,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Record the hub's real per-session resource use, and export it for analysis.
+**Goal:** Store the hub's real per-session resource use for later analysis. How records are read is out of scope.
 - **Library records:** the llm-agent records for LLM, embedding, MCP and task usage, with the hub's context attached.
 - **Hub records:** session, request, storage and process records.
-- **Export:** for `MCP_Admin`.
+- **Status:** for `MCP_Admin`.
 
 **Architecture.**
 - **Runtime.** One process-wide usage runtime (`srv/lib/usage/runtime.ts`) owns the recorder, the sink choice and the fallback, retention, the status and the shutdown.
 - **Recorders.** A session-bound recorder lives on each dialogue and long session; request recorders are narrowed from it per request. They reach llm-agent through call options and `DialogueSessionOptions.usage`.
 - **Construction-bound recorders.** Hub-built providers get the runtime recorder.
 - **Hub measurements.** `x.hub.*` records, emitted by their lifecycle owners.
-- **Admin routes.** Export and status are registered before the `/v1` tool-role middleware.
+- **Admin route.** Status is registered before the `/v1` tool-role middleware.
 
 **Tech Stack:** TypeScript (CAP / Express), Jest (`--maxWorkers=1`), Biome, the llm-agent usage packages (`llm-usage`, and the `llm-usage-pg`, `llm-usage-hana` and `llm-usage-sqlite` sinks), 1.0.x, `@mcp-abap-adt/llm-agent(-libs)` 30.11.0.
 
@@ -33,7 +33,7 @@
 1. **Recording on and context.** With recording on, a dialogue task started by one request keeps its `sessionId` after that request has ended. Owned by Task 2.
 2. **Concurrent sessions.** Two concurrent sessions never swap context, because shared providers get context only through call options. Owned by Task 2.
 3. **Session close order.** The final storage snapshot is taken before cleanup deletes the state. Owned by Tasks 3 and 4.
-4. **Export.** Export includes overlapping `x.usage.lost` records outside the window and despite a `kinds` filter. Owned by Task 6.
+4. **Status authorization.** Only `MCP_Admin` can read runtime health, independently of tool roles and session resolution. Owned by Task 6.
 5. **Fallback.** A missing HANA table does not lose memory-held records, and the switch-over copies them. Owned by Task 1.
 
 ---
@@ -50,7 +50,7 @@ The hub's status must report unconfirmed records. The published recorder's `stat
 
 The design's goal "context size per LLM request" needs the request shape in every `llm.call`.
 
-- **Change:** llm-agent plan `docs/superpowers/plans/2026-10-26-usage-request-shape.md` (spec revision 5): the core helper `requestShape`, wired into every provider, and the CSV columns.
+- **Change:** llm-agent plan `docs/superpowers/plans/2026-10-26-usage-request-shape.md` (spec revision 5): the core helper `requestShape`, wired into every provider.
 - **Release:** version PR → tags → the user publishes. Hub Task 2 depends on it; Task 1 does not.
 - **Hub:** bump `@mcp-abap-adt/llm-agent`, `llm-usage` and the provider packages to the released versions at the start of Task 2.
 
@@ -70,7 +70,6 @@ The design's goal "context size per LLM request" needs the request shape in ever
   - `recorder: IUsageRecorder`, the process-wide recorder;
   - `forSession(s: { sessionId; userId; destination? }): IUsageRecorder`, which does the `userId` hashing;
   - `status(): UsageStatus`;
-  - `reader(): IUsageReader`;
   - `close(timeoutMs): Promise<…>`.
 - **Sink choice:** follows `LLM_AGENT_SESSION_STORE`: `hana-vector` → hana, `pg-vector` → pg, `sqlite` or `none` → sqlite at `LLM_AGENT_USAGE_SQLITE_PATH`. `LLM_AGENT_USAGE_SINKS` overrides it.
 - **SQLite capability failure:** log it, report it in status, fall back to `memory`.
@@ -84,11 +83,11 @@ The design's goal "context size per LLM request" needs the request shape in ever
   - Writes that arrive during the copy are queued behind the mutex, then go to whichever sink is active, so no record is stranded. A failed copy keeps the records, and the copy is retried at the next check.
 - **Composition:**
   - with several sinks configured, writes go through `combineSinks`;
-  - reads and export use the reader of the first configured sink that has one (`hana`, `pg` or `sqlite`; else `memory`; JSONL is write-only for export purposes);
-  - status names the reading sink.
+  - migration reads buffered records through `MigratableBuffer`;
+  - status lists the configured sinks and fallback state.
 - **Retention:** daily, and at startup, on every configured sink that has `deleteOlderThan` (the database sinks). Memory is bounded by its limit, and JSONL by rotation.
 - **Startup order:** `server.ts` awaits `initUsage(...)` before `startProviders(...)` (l.915), so construction-bound provider recorders never capture `undefined`.
-- **Status:** `stats()` from the recorder, including `unconfirmed` (Task 0), plus the fallback state, the reading sink and the SQLite file size.
+- **Status:** `stats()` from the recorder, including `unconfirmed` (Task 0), plus the fallback state, the configured sinks and the SQLite file size.
 - **Shutdown:** wired into the existing graceful-shutdown path. Session close records first (Task 3), then `close`.
 
 - [ ] **Step 1: Failing tests:**
@@ -98,11 +97,11 @@ The design's goal "context size per LLM request" needs the request shape in ever
   - SQLite missing → memory fallback in status;
   - HANA missing: fallback, overflow reported as lost, switch-over copies and empties memory, a failed copy is retried;
   - retention runs on the database sinks only;
-  - two sinks: writes reach both, and reads come from the first one with a reader;
+  - two sinks: writes reach both, and status lists the configured sinks;
   - status counters, including unconfirmed;
   - `initUsage` runs before `startProviders`;
   - the switch-over with concurrent writes: no record is lost or duplicated;
-  - an intermediate batch fails during the copy: export still returns every record from the buffer, and a later check completes the switch;
+  - an intermediate batch fails during the copy: reads still return every record from the buffer, and a later check completes the switch;
   - `userId` hashing is stable and on by default;
   - `LLM_AGENT_USAGE_MEASURE` without a kind suppresses its records and its timer;
   - off → `initUsage` returns `undefined`.
@@ -223,41 +222,35 @@ The design's goal "context size per LLM request" needs the request shape in ever
   - the timer is cleared on close.
 - [ ] **Steps 2–5:** fail → implement → pass → commit `feat(usage): process records`.
 
-### Task 6: Export and status routes
+### Task 6: Status route
 
 **Files:**
-- Create: `srv/usage-handler.ts`, with `GET /v1/usage/records` and `GET /v1/usage/status` as in the spec.
-- Modify: `srv/server.ts`. Register them with `requireAdminRole` before the `/v1` `requireMcpRole` (l.730) and before session resolution.
+- Create: `srv/usage-handler.ts`, with `GET /v1/usage/status` as in the spec.
+- Modify: `srv/server.ts`. Register the admin-only `/v1/usage` router with `requireAdminRole` before the `/v1` `requireMcpRole` (l.730) and before session resolution.
 - **Behaviour:**
-  - streams `runtime.reader().read(query)`. Loss evidence comes from the reader's selection rule.
-  - **JSONL** uses `exportRecords`.
-  - **CSV** uses a hub exporter (`srv/lib/usage/csv.ts`):
-    - the common columns;
-    - one column per known `x.hub.*` value: session, request, retrieval, storage, storage.user and process, from the typed builders of Task 3, with the Task 4 and 5 shapes;
-    - the library kinds' fields, including the `llm.call` request shape (`inputMessages`, `inputChars`, the per-role message counts and chars, `toolDefs`, `toolDefsChars`) and the `component` context label;
-    - a `loss_evidence` column.
-    - Unknown extension values go to a trailing `extra_json` column.
+  - status reports runtime health: sink, fallback, delivery counters, last error code and SQLite file size;
   - recording off gives 404 with a clear message;
+  - other methods on `/status` give 405 with `Allow: GET`;
+  - other paths, including `/records`, give 404;
   - logs carry no content.
 - Test: `test/unit/usage-handler.test.ts`.
 
 - [ ] **Step 1: Failing tests:**
-  - an admin-only user gets records and status, and no tool access elsewhere;
+  - an admin-only user gets status, and no tool access elsewhere;
   - Reader or Developer without Admin → 403;
-  - Admin plus Developer → both;
+  - Admin plus Developer → status and tools;
   - stale session headers do not matter;
-  - the window, `kinds` and `sessionId` filters;
-  - the CSV has real columns for session, request, storage and process values, not JSON;
-  - a late loss record across the window boundary and `''` losses are included;
+  - runtime health fields are returned;
+  - unsupported methods → 405; other paths → 404;
   - recording off → 404.
-- [ ] **Steps 2–5:** fail → implement → pass → commit `feat(usage): admin export and status`.
+- [ ] **Steps 2–5:** fail → implement → pass → commit `feat(usage): admin status`.
 
 ### Task 7: HANA DDL, documentation, benchmark
 
 **Files:**
 - **HANA DDL:** the existing script deploys HDI artifacts (`.hdiconfig` + `.hdbtable`), not plain SQL. Add `USAGE_RECORDS.hdbtable` and its indexes as `.hdbindex` artifacts to the files the script deploys. Register the index plugin in `.hdiconfig`. The artifact content follows the table and indexes of `llm-usage-hana` DDL (the `ddl/usage.sql` of the llm-agent package `llm-usage-hana`). A test asserts that the artifacts match the package DDL: the same columns, primary key and indexes. Keep `--dry-run` working and test it the way the existing test does. Task 8 deploys it for real.
 - **Docs:**
-  - `docs/llm-agent/CONFIG_USAGE.md`: a "Usage analytics" section with the settings table, the sink choice, the SQLite loss caveat, export and status;
+  - `docs/llm-agent/CONFIG_USAGE.md`: a "Usage analytics" section with the settings table, the sink choice, the SQLite loss caveat and status;
   - `docs/architecture/ARCHITECTURE.md`: a short paragraph;
   - `CHANGELOG.md`.
 - **Benchmark:** create `test/bench/usage-overhead.ts`, with an npm script `bench:usage` added in this task. It runs the fake-pipeline dialogue scenario with recording on and off and prints latency and heap. It is not part of `npm test`.
@@ -273,7 +266,7 @@ No code. After release and deploy, with the user's go-ahead:
 - turn recording on with `cf set-env` (deploy-like, so it needs the user's "так") or the `.mtaext`;
 - apply the HANA DDL;
 - run one session per typical scenario: question, read task, multi-step task;
-- export as CSV;
+- verify the stored records with a direct query against the usage table from the app's container (HANA is reachable only from Cloud Foundry);
 - check the totals against AI Core and logs where they are visible.
 
 Record the run in `docs/superpowers/verification/`, without engagement details.

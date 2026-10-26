@@ -20,7 +20,7 @@ The contract, transports and sinks live in llm-agent: `docs/superpowers/specs/20
   - LLM, embedding and SAP tool calls, and tasks (through llm-agent's instrumentation, plus the hub-owned providers below);
   - the hub's own measurements.
 - **Context size per LLM request.** How much context each LLM request sends, for the planner, the executor and every helper LLM: messages and characters per role, tool definitions, and tokens where the provider reports them, measured on what the request actually sent. This comes from the request shape of `llm.call` (llm-agent spec, revision 5), with the role labels below, plus `x.hub.retrieval` for the retrieved context the hub injects.
-- **Export.** Records, including the evidence of losses, can be exported for analysis.
+- **Storage for later analysis.** Records, including the evidence of losses, are stored for later analysis; how they are read (for example by Grafana from the database) is out of scope.
 - **Configuration.** The sinks, the measurements, the intervals and the retention are configurable.
 
 ## Non-goals
@@ -160,22 +160,18 @@ It carries no session id. Attribution to sessions is a later analysis step, usin
 
 The transport is always `direct`. *(My call: one `srv` instance today, so there is no remote collector to feed. `http` and `signals` exist in llm-agent for consumers that need them.)*
 
-## Export and status
+## Status
 
-Both routes are guarded only by `MCP_Admin`. They are registered before, and independently of, the `/v1` tool-role check (`requireMcpRole`) and session resolution, so an admin with no tool role can use them, and stale session headers do not matter.
-
-**`GET /v1/usage/records?from=&to=&kinds=&sessionId=&format=jsonl|csv`**
-- Streams the records whose `at` is in the window and that match the filters. `x.hub.*` values are flattened into CSV columns.
-- **Loss evidence, always included.** It also includes every `x.usage.lost` record whose `affectedFrom`/`affectedTo` range overlaps the window, whatever the `kinds` filter and wherever its own `at` lies. That covers records with session `''` and, with a `sessionId` filter, also that session's loss records.
-- **Marking.** In CSV these rows are marked `loss_evidence=true`.
-- **Logging.** The route logs no contents.
+The status route is guarded only by `MCP_Admin`. It is registered before, and independently of, the `/v1` tool-role check (`requireMcpRole`) and session resolution, so an admin with no tool role can use it, and stale session headers do not matter.
 
 **`GET /v1/usage/status`** reports:
-- on/off and the sink;
+- on/off and the configured sinks;
 - the fallback state;
 - buffered, delivered, unconfirmed and lost counts;
 - the last error code;
 - the SQLite file size.
+
+`x.usage.lost` records are stored.
 
 ## Roles
 
@@ -183,7 +179,7 @@ The user decided to replace `MCP_Full` with `MCP_Admin` and to remove `MCP_Analy
 
 - **The roles after the change.**
   - **Tool roles:** `MCP_Reader` and `MCP_Developer`, unchanged.
-  - **`MCP_Admin`:** grants administrative endpoints only: usage export and status now, later the global planner-skill administration.
+  - **`MCP_Admin`:** grants administrative endpoints only: usage status now, later the global planner-skill administration.
 - **Not composite.** The user decided: no composite roles, give each role that is needed. The `MCP_Admin` template references only `$XSAPPNAME.MCP_Admin`. Someone who administers and works with SAP tools gets `MCP Admin Access` plus the tool role they need.
 - **Separate authorization.**
   - Tool authorization (`MCP_ROLES` in `srv/server.ts`, `resolveExposition` in `srv/lib/exposition.ts`) contains only `MCP_Reader` and `MCP_Developer`; `MCP_Admin` grants no exposition at all.
@@ -195,12 +191,12 @@ The user decided to replace `MCP_Full` with `MCP_Admin` and to remove `MCP_Analy
   - People with `MCP Analyst Access` get `MCP Reader Access`. The POC test user already has Reader.
   - In `mta.yaml`, the analyst consumer's `grant-as-authority-to-apps` moves to the Reader scope. The consumer instance keeps its name, so technical bindings keep working. *(My call.)*
 - **Tests.**
-  - An admin-only user can call export and status, and gets no tools.
-  - Reader or Developer without Admin are refused export.
+  - An admin-only user can call status, and gets no tools.
+  - Reader or Developer without Admin are refused status.
   - Admin plus Developer gets both.
   - Stale session headers do not affect the admin routes.
   - The exposition and role tests are updated, including `test/integration/role-exposition.test.ts`.
-- **Separate PR.** This is a security change, reviewed as such, before the export endpoint ships.
+- **Separate PR.** This is a security change, reviewed as such, before the status endpoint ships.
 
 ## Validation
 
@@ -219,12 +215,8 @@ The user decided to replace `MCP_Full` with `MCP_Admin` and to remove `MCP_Analy
   - No content is loaded.
 - **Content.** Distinctive strings in the prompts, tool arguments, results and documents never appear in any record.
 - **Overhead.** A small benchmark harness, built as part of this work, runs the fake-pipeline dialogue scenario with recording on and off. Latency and memory stay within noise, and recording off is identical to today.
-- **Export.**
-  - Window, kind and session filters work, with the CSV columns.
-  - Loss evidence is included across a window boundary (late loss) and for `''` losses.
-  - Requests without `MCP_Admin` are refused.
 - **Fallbacks and retention.**
   - The HANA-table-missing fallback and switch-over.
   - Fallback overflow before switch-over: the overflowing batches are reported in `x.usage.lost` with the right sessions and ranges; nothing in memory is lost silently, and a failed copy is retried.
   - The SQLite capability fallback, and retention.
-- **Live on the POC.** One session per typical scenario (question, read task, multi-step task). Export it, and check the totals against AI Core and logs where they are visible.
+- **Live on the POC.** One session per typical scenario (question, read task, multi-step task). Verify the stored records with a direct query against the usage table from the app's container (HANA is reachable only from Cloud Foundry), and check the totals against AI Core and logs where they are visible.

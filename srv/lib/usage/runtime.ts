@@ -53,7 +53,6 @@ const BACKEND_TIMEOUT_MS = 10000;
 export interface UsageStatus {
   enabled: true;
   sinks: SinkName[];
-  readingSink: SinkName;
   fallback: string[];
   buffered: number;
   delivered: number;
@@ -70,7 +69,6 @@ export interface UsageRuntime {
     destination?: string;
   }): IUsageRecorder;
   status(): UsageStatus;
-  reader(): IUsageReader;
   enabled(kind: Measure): boolean;
   /** Future storage/process meters register only when their measure is enabled. */
   schedule(kind: Measure, tick: () => void, intervalMs: number): void;
@@ -92,11 +90,6 @@ export async function initUsage(
   const cancel = deps.clearInterval ?? clearInterval;
   const log = deps.log ?? console;
   const sinks: Sink[] = [];
-  const readers: {
-    name: SinkName;
-    sink: IUsageReader;
-    buffer?: MigratableBuffer;
-  }[] = [];
   const fallback: string[] = [];
   let lastErrorCode: string | undefined;
   let closed = false;
@@ -175,7 +168,6 @@ export async function initUsage(
   try {
     for (const name of cfg.sinks) {
       let sink: Sink;
-      let readingName = name;
       try {
         const factory = factories[name];
         if (!factory) throw new Error('Missing usage sink factory');
@@ -188,7 +180,6 @@ export async function initUsage(
         )
           throw error;
         sink = memorySink({ limit: cfg.memoryLimit });
-        readingName = 'memory';
         fallback.push('sqlite-unavailable');
         warn('SQLITE_UNAVAILABLE');
       }
@@ -260,12 +251,9 @@ export async function initUsage(
               }
             })();
           }, 300000);
-          // Own target resources even while writes/readers use the buffer.
+          // Own target resources even while writes use the buffer.
         }
       }
-      if (buffer) readers.push({ name: 'hana', sink: buffer, buffer });
-      else if (name !== 'jsonl' && readable(sink))
-        readers.push({ name: readingName, sink });
       if (['hana', 'pg', 'sqlite'].includes(name) && sink.deleteOlderThan) {
         if (!buffer) void retention(sink);
         schedule(() => {
@@ -273,14 +261,6 @@ export async function initUsage(
         }, 86400000);
       }
     }
-    // JSONL is write-only for hub exports; retain a bounded readable mirror.
-    if (!readers.length) {
-      const memory = memorySink({ limit: cfg.memoryLimit });
-      sinks.push(memory);
-      readers.push({ name: 'memory', sink: memory });
-    }
-    const selected = readers.find((r) => r.name !== 'memory') ?? readers[0];
-    const read = selected?.sink ?? memorySink({ limit: cfg.memoryLimit });
     const control = (deps.recorderFactory ?? createUsageRecorder)({
       transport: directTransport(combineSinks(...sinks)),
       now,
@@ -320,7 +300,6 @@ export async function initUsage(
       schedule(kind, tick, intervalMs) {
         if (cfg.measure.includes(kind) && !closed) schedule(tick, intervalMs);
       },
-      reader: () => read,
       onClose(stop: () => void): void {
         if (closed) stop();
         else closeHooks.add(stop);
@@ -339,10 +318,6 @@ export async function initUsage(
         return {
           enabled: true,
           sinks: cfg.sinks,
-          readingSink:
-            selected?.buffer && !selected.buffer.migrated
-              ? 'memory'
-              : (selected?.name ?? 'memory'),
           fallback: [...fallback],
           ...stats,
           unconfirmed: stats.unconfirmed ?? 0,

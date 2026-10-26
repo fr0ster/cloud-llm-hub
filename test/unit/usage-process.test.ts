@@ -1,3 +1,5 @@
+import { memorySink } from '@mcp-abap-adt/llm-usage';
+
 jest.mock('../../srv/connections/destinationResolver', () => ({
   resolveDestinationSapConfig: async (destinationName: string) => ({
     destinationName,
@@ -84,13 +86,16 @@ function hooks() {
   };
   return { deps, histogram, counters };
 }
+let recordingSink = memorySink({ limit: 100 });
 async function runtime(measure: string = 'process', enabled: string = 'on') {
+  recordingSink = memorySink({ limit: 100 });
   return initUsage(
     readUsageConfig({
       LLM_AGENT_USAGE: enabled,
       LLM_AGENT_USAGE_SINKS: 'memory',
       LLM_AGENT_USAGE_MEASURE: measure,
     }),
+    { factories: { memory: () => recordingSink } },
   );
 }
 async function records(reader: {
@@ -115,7 +120,7 @@ test('numeric shape, CPU deltas from start and between ticks, p99 milliseconds a
   startProcessMeter(r, 30000, deps);
   await jest.advanceTimersByTimeAsync(30000);
   await jest.advanceTimersByTimeAsync(30000);
-  const rows = await records(r.reader());
+  const rows = await records(recordingSink);
   expect(rows).toHaveLength(2);
   if (!('values' in rows[0]) || !('values' in rows[1]))
     throw new Error('Expected extension records');
@@ -227,7 +232,7 @@ test('pending dialogue opening never silences subsequent process intervals', asy
   try {
     startProcessMeter(r, 30000, deps);
     await jest.advanceTimersByTimeAsync(90000);
-    expect(await records(r.reader())).toHaveLength(3);
+    expect(await records(recordingSink)).toHaveLength(3);
   } finally {
     fail(new Error('test cleanup'));
     await opening;

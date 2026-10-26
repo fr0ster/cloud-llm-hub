@@ -58,11 +58,26 @@ function harness(extra: UsageDeps = {}) {
   };
   return { deps, ticks };
 }
-function bufferFor(runtime: UsageRuntime): MigratableBuffer {
-  const reader = runtime.reader();
-  if (!(reader instanceof MigratableBuffer))
-    throw new Error('Expected migration buffer');
-  return reader;
+const mockBuffers: MigratableBuffer[] = [];
+jest.mock('../../srv/lib/usage/migratable-buffer', () => {
+  const actual = jest.requireActual<
+    typeof import('../../srv/lib/usage/migratable-buffer')
+  >('../../srv/lib/usage/migratable-buffer');
+  return {
+    MigratableBuffer: class extends actual.MigratableBuffer {
+      constructor(
+        ...args: ConstructorParameters<typeof actual.MigratableBuffer>
+      ) {
+        super(...args);
+        mockBuffers.push(this);
+      }
+    },
+  };
+});
+function bufferFor(): MigratableBuffer {
+  const buffer = mockBuffers.at(-1);
+  if (!buffer) throw new Error('Expected migration buffer');
+  return buffer;
 }
 const settle = async () => {
   for (let i = 0; i < 30; i++) await Promise.resolve();
@@ -98,7 +113,6 @@ describe('usage runtime', () => {
     });
     const r = await start(cfg('sqlite'), deps);
     expect(r.status()).toMatchObject({
-      readingSink: 'memory',
       fallback: ['sqlite-unavailable'],
       lastErrorCode: 'SQLITE_UNAVAILABLE',
     });
@@ -129,7 +143,6 @@ describe('usage runtime', () => {
     const { deps, ticks } = harness({ factories: { hana: () => sink } });
     const r = await start(cfg('hana'), deps);
     expect(r.status()).toMatchObject({
-      readingSink: 'memory',
       fallback: ['hana-unavailable'],
       lastErrorCode: 'HANA_UNAVAILABLE',
     });
@@ -137,15 +150,15 @@ describe('usage runtime', () => {
     expect(deps.log?.warn).toHaveBeenCalledWith(
       'Usage runtime: HANA_UNAVAILABLE',
     );
-    await bufferFor(r).write([record('a')]);
-    expect((await collect(r.reader())).map((r) => r.id)).toEqual(['a']);
+    await bufferFor().write([record('a')]);
+    expect((await collect(bufferFor())).map((r) => r.id)).toEqual(['a']);
     expect(await collect(target)).toEqual([]);
     unavailable = false;
     ticks.find((t) => t.ms === 300000)?.fn();
     await settle();
     expect((await collect(target)).map((r) => r.id)).toEqual(['a']);
-    expect(bufferFor(r).size).toBe(0);
-    expect(r.status()).toMatchObject({ readingSink: 'hana', fallback: [] });
+    expect(bufferFor().size).toBe(0);
+    expect(r.status()).toMatchObject({ fallback: [] });
   });
   it('retains only database sinks at startup and daily', async () => {
     const pg = Object.assign(memorySink({ limit: 20 }), {
@@ -217,9 +230,8 @@ describe('usage runtime', () => {
       const r = await starting;
       expect(r.status()).toMatchObject({
         fallback: ['hana-unavailable'],
-        readingSink: 'memory',
       });
-      const buffer = bufferFor(r);
+      const buffer = bufferFor();
       await buffer.write([record('buffered')]);
       const retry = ticks.find((t) => t.ms === 300000)?.fn;
       retry?.();
@@ -230,7 +242,7 @@ describe('usage runtime', () => {
       await settle();
       retry?.();
       await settle();
-      expect(r.status()).toMatchObject({ fallback: [], readingSink: 'hana' });
+      expect(r.status()).toMatchObject({ fallback: [] });
       expect((await collect(target)).map((row) => row.id)).toEqual([
         'buffered',
       ]);
@@ -238,7 +250,7 @@ describe('usage runtime', () => {
       jest.useRealTimers();
     }
   });
-  it('writes both sinks and reads the first database reader', async () => {
+  it('writes both configured sinks', async () => {
     const memory = memorySink({ limit: 20 });
     const pg = memorySink({ limit: 20 });
     const { deps } = harness({
@@ -249,9 +261,9 @@ describe('usage runtime', () => {
     await r.close(1000);
     expect((await collect(memory)).map((r) => r.id)).toEqual(['a']);
     expect((await collect(pg)).map((r) => r.id)).toEqual(['a']);
-    expect(r.reader()).toBe(pg);
+    expect(r.status().sinks).toEqual(['memory', 'pg']);
   });
-  it('skips JSONL reader and preserves configured database order', async () => {
+  it('reports configured sinks in order after JSONL', async () => {
     const jsonl = memorySink({ limit: 20 });
     const pg = memorySink({ limit: 20 });
     const sqlite = memorySink({ limit: 20 });
@@ -262,18 +274,38 @@ describe('usage runtime', () => {
       cfg('jsonl,pg,sqlite', { LLM_AGENT_USAGE_JSONL_PATH: 'unused' }),
       deps,
     );
-    expect(r.reader()).toBe(pg);
+    expect(r.status().sinks).toEqual(['jsonl', 'pg', 'sqlite']);
+  });
+  it('reports JSONL-only status without a reading sink or memory mirror', async () => {
+    const write = jest.fn<Promise<void>, [records: readonly UsageRecord[]]>(
+      async (_records: readonly UsageRecord[]): Promise<void> => {},
+    );
+    const r = await start(
+      cfg('jsonl', { LLM_AGENT_USAGE_JSONL_PATH: 'unused' }),
+      harness({ factories: { jsonl: () => ({ write }) } }).deps,
+    );
+    r.recorder.record(record('jsonl-only'));
+    await r.close(1000);
+    expect(write).toHaveBeenCalled();
+    expect(r.status()).toMatchObject({
+      enabled: true,
+      sinks: ['jsonl'],
+      fallback: [],
+      delivered: 1,
+    });
+    expect(r.status()).not.toHaveProperty('readingSink');
   });
   it('hashes user ids stably by default and supports plain', async () => {
     for (const mode of ['hash', 'plain']) {
+      const sink = memorySink({ limit: 20 });
       const r = await start(
         cfg('memory', { LLM_AGENT_USAGE_USER_ID: mode }),
-        harness().deps,
+        harness({ factories: { memory: () => sink } }).deps,
       );
       for (const id of ['a', 'b'])
         r.forSession({ sessionId: id, userId: 'user' }).record(record(id));
       await r.close(1000);
-      const rows = await collect(r.reader());
+      const rows = await collect(sink);
       expect(rows[0].context.userId).toBe(rows[1].context.userId);
       if (mode === 'hash')
         expect(rows[0].context.userId).toMatch(/^[a-f0-9]{64}$/);
@@ -281,7 +313,8 @@ describe('usage runtime', () => {
     }
   });
   it('suppresses disabled records and measurement timers', async () => {
-    const { deps, ticks } = harness();
+    const sink = memorySink({ limit: 20 });
+    const { deps, ticks } = harness({ factories: { memory: () => sink } });
     const r = await start(
       cfg('memory', { LLM_AGENT_USAGE_MEASURE: 'request' }),
       deps,
@@ -290,7 +323,7 @@ describe('usage runtime', () => {
     r.schedule('process', jest.fn<void, []>(), 30000);
     r.schedule('storage', jest.fn<void, []>(), 600000);
     await r.close(1000);
-    expect(await collect(r.reader())).toEqual([]);
+    expect(await collect(sink)).toEqual([]);
     expect(ticks).toEqual([]);
     expect(r.enabled('process')).toBe(false);
   });
@@ -333,9 +366,9 @@ describe('usage runtime', () => {
     };
     const { deps, ticks } = harness({ factories: { hana: () => sink } });
     const r = await start(cfg('hana'), deps);
-    const buffer = bufferFor(r);
+    const buffer = bufferFor();
     await buffer.write([record('a')]);
-    expect(r.status().readingSink).toBe('memory');
+    expect(r.status().fallback).toEqual(['hana-table-missing']);
     missing = false;
     failing = true;
     ticks.find((t) => t.ms === 300000)?.fn();
@@ -346,8 +379,8 @@ describe('usage runtime', () => {
     ticks.find((t) => t.ms === 300000)?.fn();
     await settle();
     expect(buffer.size).toBe(0);
-    expect(await collect(r.reader())).toHaveLength(1);
-    expect(r.status()).toMatchObject({ readingSink: 'hana', fallback: [] });
+    expect(await collect(target)).toHaveLength(1);
+    expect(r.status()).toMatchObject({ fallback: [] });
   });
   it('initializes usage before providers inside the existing failure chain', () => {
     const source = readFileSync('srv/server.ts', 'utf8');
@@ -382,7 +415,7 @@ describe('migration safety', () => {
     expect(result.lost).toBeGreaterThan(0);
     expect((await collect(buffer)).map((r) => r.id)).toEqual(['held']);
   });
-  it('exports library loss evidence after buffer overflow and recovery', async () => {
+  it('stores library loss evidence after buffer overflow and recovery', async () => {
     let now = 0;
     const buffer = new MigratableBuffer(1);
     await buffer.write([record('held')]);
@@ -429,7 +462,7 @@ describe('migration safety', () => {
     expect(buffer.size).toBe(0);
     expect((await collect(buffer)).map((r) => r.id).sort()).toEqual(['a', 'b']);
   });
-  it('intermediate failed batch preserves complete export until a successful retry', async () => {
+  it('intermediate failed batch preserves all buffered records until a successful retry', async () => {
     const buffer = new MigratableBuffer(10);
     const target = memorySink({ limit: 10 });
     await buffer.write(['a', 'b', 'c'].map(record));
@@ -453,8 +486,10 @@ describe('migration safety', () => {
 test.each(['request', 'llm'])(
   'retrieval belongs to the request measure (%s)',
   async (measure: string) => {
+    const sink = memorySink({ limit: 20 });
     const runtime = await initUsage(
       cfg('memory', { LLM_AGENT_USAGE_MEASURE: measure }),
+      { factories: { memory: () => sink } },
     );
     if (!runtime) throw new Error('Expected usage runtime');
     runtime.recorder.record({
@@ -464,7 +499,7 @@ test.each(['request', 'llm'])(
       values: { collections: 2, chunks: 3, chars: 10, injected: true },
     });
     await runtime.close(1000);
-    const records = await collect(runtime.reader());
+    const records = await collect(sink);
     expect(
       records.filter((r: UsageRecord) => r.kind === 'x.hub.retrieval'),
     ).toHaveLength(measure === 'request' ? 1 : 0);

@@ -1,6 +1,7 @@
 import type { Dirent } from 'node:fs';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { memorySink } from '@mcp-abap-adt/llm-usage';
 import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 import express from 'express';
 import ts from 'typescript';
@@ -145,13 +146,16 @@ beforeEach((): void => {
 afterEach((): void => {
   setLongSessionsForTest(undefined);
 });
+let recordingSink = memorySink({ limit: 100 });
 async function start(mode = 'on', measure = 'process') {
+  recordingSink = memorySink({ limit: 100 });
   return initUsage(
     readUsageConfig({
       LLM_AGENT_USAGE: mode,
       LLM_AGENT_USAGE_SINKS: 'memory',
       LLM_AGENT_USAGE_MEASURE: measure,
     }),
+    { factories: { memory: () => recordingSink } },
   );
 }
 
@@ -836,9 +840,10 @@ test.each(['request', 'background'])(
       await entered.promise;
       await jest.advanceTimersByTimeAsync(90000);
       let ticks = 0;
-      for await (const row of runtime
-        .reader()
-        .read({ from: 0, to: Number.MAX_SAFE_INTEGER })) {
+      for await (const row of recordingSink.read({
+        from: 0,
+        to: Number.MAX_SAFE_INTEGER,
+      })) {
         if (row.kind !== 'x.hub.process' || !('values' in row)) continue;
         expect(row.values.openSapConnections).toBe(1);
         ticks++;

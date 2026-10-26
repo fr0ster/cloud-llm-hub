@@ -7,7 +7,7 @@ import type {
   Message,
   UsageRecord,
 } from '@mcp-abap-adt/llm-agent';
-import { createUsageRecorder } from '@mcp-abap-adt/llm-usage';
+import { createUsageRecorder, memorySink } from '@mcp-abap-adt/llm-usage';
 import {
   OrchestrationClient,
   OrchestrationEmbeddingClient,
@@ -87,6 +87,7 @@ test.each([true, false])(
   'plain OpenAI/Anthropic requests and agent MCP execute_step propagate session context (usage: %s)',
   async (enabled: boolean) => {
     harness.reset();
+    const recordingSink = memorySink({ limit: 100 });
     const runtime = enabled
       ? await initUsage(
           readUsageConfig({
@@ -94,6 +95,7 @@ test.each([true, false])(
             LLM_AGENT_USAGE_SINKS: 'memory',
             LLM_AGENT_USAGE_USER_ID: 'plain',
           }),
+          { factories: { memory: () => recordingSink } },
         )
       : undefined;
     setUsageRuntimeForTest(runtime);
@@ -169,9 +171,10 @@ test.each([true, false])(
       if (runtime) {
         await runtime.close(1000);
         const records: UsageRecord[] = [];
-        for await (const row of runtime
-          .reader()
-          .read({ from: 0, to: Number.MAX_SAFE_INTEGER }))
+        for await (const row of recordingSink.read({
+          from: 0,
+          to: Number.MAX_SAFE_INTEGER,
+        }))
           if (row.kind === 'tool.call') records.push(row);
         expect(records).toHaveLength(3);
         expect(records.map((r) => r.context.sessionId)).toEqual([
@@ -451,6 +454,7 @@ test.each([true, false])(
 test.each(['construction', 'override', 'off'])(
   'constructed providers record physical transport calls exactly once (%s)',
   async (mode) => {
+    const recordingSink = memorySink({ limit: 1000 });
     let control: ReturnType<typeof createUsageRecorder> | undefined;
     const runtime =
       mode === 'off'
@@ -462,6 +466,7 @@ test.each(['construction', 'override', 'off'])(
               LLM_AGENT_USAGE_USER_ID: 'plain',
             }),
             {
+              factories: { memory: () => recordingSink },
               recorderFactory: (options) => {
                 control = createUsageRecorder(options);
                 return control;
@@ -584,9 +589,10 @@ test.each(['construction', 'override', 'off'])(
       if (!runtime) return;
       await control?.flush(1000);
       records.length = 0;
-      for await (const record of runtime
-        .reader()
-        .read({ from: 0, to: Number.MAX_SAFE_INTEGER }))
+      for await (const record of recordingSink.read({
+        from: 0,
+        to: Number.MAX_SAFE_INTEGER,
+      }))
         records.push(record);
     };
     let expected = 0;

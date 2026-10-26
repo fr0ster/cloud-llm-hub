@@ -14,15 +14,6 @@ export interface ProcessCounters {
   // One pipeline waiting for admission at the door.
   admissionQueueLength: number;
 }
-export interface ProcessValues extends ProcessCounters {
-  rssBytes: number;
-  heapUsedBytes: number;
-  externalBytes: number;
-  cpuUserMs: number;
-  cpuSystemMs: number;
-  eventLoopDelayP99Ms: number;
-  intervalMs: number;
-}
 export interface DelayHistogram {
   enable(): boolean;
   disable(): boolean;
@@ -82,7 +73,7 @@ export function startProcessMeter(
       const cpu = deps.cpuUsage();
       const at = deps.now();
       const memory = deps.memoryUsage();
-      const values: ProcessValues = {
+      const values = {
         rssBytes: memory.rss,
         heapUsedBytes: memory.heapUsed,
         externalBytes: memory.external,
@@ -98,7 +89,7 @@ export function startProcessMeter(
         context: {},
         kind: 'x.hub.process',
         outcome: 'ok',
-        values: { ...values },
+        values,
       });
     } finally {
       if (!stopped) histogram.reset();
