@@ -171,6 +171,10 @@ The status route is guarded only by `MCP_Admin`. It is registered before, and in
 - the last error code;
 - the SQLite file size.
 
+`GET /v1/usage/sqlite` uses the same admin authorization and downloads a consistent SQLite database copy. This backend-specific option exists because Cloud Foundry instance disks are ephemeral: a restart can lose the database. Usage records are otherwise only stored; there is no general REST export. Recording off, a non-SQLite sink, or SQLite falling back to memory returns 404; unsupported methods return 405.
+
+Each CF instance has its own database. Download one file per instance, targeting each with `X-CF-APP-INSTANCE: <app-guid>:<index>` on the application route. Downloads use `application/vnd.sqlite3`, an attachment filename `usage-<instance>-<yyyyMMddTHHmmssZ>.sqlite`, and `Cache-Control: no-store`. The stream is cancelled on disconnect and logs contain only size and duration.
+
 `x.usage.lost` records are stored.
 
 ## Roles
@@ -179,7 +183,7 @@ The user decided to replace `MCP_Full` with `MCP_Admin` and to remove `MCP_Analy
 
 - **The roles after the change.**
   - **Tool roles:** `MCP_Reader` and `MCP_Developer`, unchanged.
-  - **`MCP_Admin`:** grants administrative endpoints only: usage status now, later the global planner-skill administration.
+  - **`MCP_Admin`:** grants administrative endpoints only: usage status and SQLite download now, later the global planner-skill administration.
 - **Not composite.** The user decided: no composite roles, give each role that is needed. The `MCP_Admin` template references only `$XSAPPNAME.MCP_Admin`. Someone who administers and works with SAP tools gets `MCP Admin Access` plus the tool role they need.
 - **Separate authorization.**
   - Tool authorization (`MCP_ROLES` in `srv/server.ts`, `resolveExposition` in `srv/lib/exposition.ts`) contains only `MCP_Reader` and `MCP_Developer`; `MCP_Admin` grants no exposition at all.

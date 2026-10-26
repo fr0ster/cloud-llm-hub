@@ -16,6 +16,7 @@ import {
 } from '@mcp-abap-adt/llm-usage';
 import { createHanaUsageSink } from '@mcp-abap-adt/llm-usage-hana';
 import { createPgUsageSink } from '@mcp-abap-adt/llm-usage-pg';
+import type { SqliteUsageSink } from '@mcp-abap-adt/llm-usage-sqlite';
 import type { RagConfig } from '../../agent-config';
 import { hanaConnection, pgConnection } from '../rag-provider-factory';
 import {
@@ -62,6 +63,7 @@ export interface UsageStatus {
   sqliteFileSize?: number;
 }
 export interface UsageRuntime {
+  sqliteSnapshot?(): Promise<ReadableStream<Uint8Array>>;
   recorder: IUsageRecorder;
   forSession(s: {
     sessionId: string;
@@ -90,6 +92,7 @@ export async function initUsage(
   const cancel = deps.clearInterval ?? clearInterval;
   const log = deps.log ?? console;
   const sinks: Sink[] = [];
+  let sqliteSink: SqliteUsageSink | undefined;
   const fallback: string[] = [];
   let lastErrorCode: string | undefined;
   let closed = false;
@@ -142,7 +145,8 @@ export async function initUsage(
         const { createSqliteUsageSink } = await import(
           '@mcp-abap-adt/llm-usage-sqlite'
         );
-        return createSqliteUsageSink({ path: cfg.sqlitePath });
+        sqliteSink = createSqliteUsageSink({ path: cfg.sqlitePath });
+        return sqliteSink;
       };
     } else if (name === 'jsonl') {
       if (!cfg.jsonlPath)
@@ -284,7 +288,11 @@ export async function initUsage(
       },
     });
     const recorder = wrap(control);
+    const activeSqlite = sqliteSink;
     const runtime: UsageRuntime = {
+      ...(activeSqlite
+        ? { sqliteSnapshot: () => activeSqlite.snapshot() }
+        : {}),
       recorder,
       forSession(s) {
         return recorder.with({

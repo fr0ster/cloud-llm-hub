@@ -263,3 +263,16 @@ Before using HANA, deploy the usage table and indexes into the shared HDI contai
 Retention runs at startup and daily on configured database sinks that support deletion. Memory is bounded by its record limit; JSONL is bounded by rotation.
 
 `GET /v1/usage/status` requires `MCP_Admin`, independently of tool roles and session resolution. It reports configured sinks, fallback state, buffered/delivered/unconfirmed/lost counts, the last error code and SQLite file size. Recording off returns 404.
+
+An administrator with `MCP_Admin` can open `https://<approuter-host>/v1/usage/sqlite` in a browser after signing in to download a consistent SQLite copy. The existing authenticated `/v1/*` approuter route forwards the download. This option exists only for SQLite because the instance disk is ephemeral; there is no general REST export. Recording off, no active SQLite sink, or memory fallback returns 404.
+
+Each CF instance has its own file. Download from each instance before restarting, using the backend application route and `X-CF-APP-INSTANCE` with its app GUID (from `cf app <app-name> --guid`) and instance index:
+
+```sh
+curl --fail --show-error \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-CF-APP-INSTANCE: $APP_GUID:0" \
+  -OJ "https://<backend-app-host>/v1/usage/sqlite"
+```
+
+Use a token carrying `MCP_Admin`; repeat for each index. Browser downloads through the approuter select an instance through normal routing; use the targeted backend request above to retrieve every instance. Files are named `usage-<instance>-<UTC yyyyMMddTHHmmssZ>.sqlite` and can be opened locally with SQLite tools.

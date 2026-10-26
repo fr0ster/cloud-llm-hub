@@ -22,7 +22,7 @@
     "@mcp-abap-adt/llm-usage": "^1.2.0",
     "@mcp-abap-adt/llm-usage-hana": "^1.0.0",
     "@mcp-abap-adt/llm-usage-pg": "^1.0.0",
-    "@mcp-abap-adt/llm-usage-sqlite": "^1.0.0",
+    "@mcp-abap-adt/llm-usage-sqlite": "^1.1.0",
     "@mcp-abap-adt/logger": "^0.4.1",
     "@mcp-abap-adt/ollama-embedder": "^30.10.0",
     "@mcp-abap-adt/openai-embedder": "^30.10.0",

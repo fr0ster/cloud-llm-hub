@@ -224,13 +224,15 @@ The design's goal "context size per LLM request" needs the request shape in ever
 
 ### Task 6: Status route
 
+Also implement admin-only `GET /v1/usage/sqlite`: consistent SQLite snapshot download, attachment and no-store headers, backpressure, cancellation on disconnect, sanitized errors, and metadata-only logging. Return 404 when recording is off or SQLite is not active (including memory fallback), and 405 for other methods. Test exact bytes, authorization, headers, failures before/after headers, cancellation and bounded listeners. Keep a typed SQLite sink reference in the runtime; expose its optional `sqliteSnapshot` only when active. Verify the existing authenticated approuter `/v1/*` route covers browser downloads.
+
 **Files:**
-- Create: `srv/usage-handler.ts`, with `GET /v1/usage/status` as in the spec.
+- Create: `srv/usage-handler.ts`, with `GET /v1/usage/status` and `GET /v1/usage/sqlite` as in the spec.
 - Modify: `srv/server.ts`. Register the admin-only `/v1/usage` router with `requireAdminRole` before the `/v1` `requireMcpRole` (l.730) and before session resolution.
 - **Behaviour:**
   - status reports runtime health: sink, fallback, delivery counters, last error code and SQLite file size;
   - recording off gives 404 with a clear message;
-  - other methods on `/status` give 405 with `Allow: GET`;
+  - other methods on `/status` and `/sqlite` give 405 with `Allow: GET`;
   - other paths, including `/records`, give 404;
   - logs carry no content.
 - Test: `test/unit/usage-handler.test.ts`.
@@ -267,6 +269,7 @@ No code. After release and deploy, with the user's go-ahead:
 - apply the HANA DDL;
 - run one session per typical scenario: question, read task, multi-step task;
 - verify the stored records with a direct query against the usage table from the app's container (HANA is reachable only from Cloud Foundry);
+- if verifying a SQLite case, download from each instance with `X-CF-APP-INSTANCE: <app-guid>:<index>`, open each snapshot locally, and verify its stored records;
 - check the totals against AI Core and logs where they are visible.
 
 Record the run in `docs/superpowers/verification/`, without engagement details.

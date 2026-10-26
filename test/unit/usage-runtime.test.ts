@@ -1,4 +1,10 @@
 import { readFileSync } from 'node:fs';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { pathToFileURL } from 'node:url';
+import { constants, Script } from 'node:vm';
 import type {
   IUsageControl,
   IUsageRecorder,
@@ -9,6 +15,10 @@ import {
   directTransport,
   memorySink,
 } from '@mcp-abap-adt/llm-usage';
+import type {
+  SqliteUsageSink,
+  SqliteUsageSinkOptions,
+} from '@mcp-abap-adt/llm-usage-sqlite';
 import { readUsageConfig } from '../../srv/lib/usage/config';
 import { MigratableBuffer } from '../../srv/lib/usage/migratable-buffer';
 import {
@@ -16,6 +26,17 @@ import {
   type UsageDeps,
   type UsageRuntime,
 } from '../../srv/lib/usage/runtime';
+
+// Native import keeps the real ESM worker package outside Jest's CommonJS loader.
+let mockSqliteModule:
+  | typeof import('@mcp-abap-adt/llm-usage-sqlite')
+  | undefined;
+jest.mock('@mcp-abap-adt/llm-usage-sqlite', () => ({
+  createSqliteUsageSink(options: SqliteUsageSinkOptions): SqliteUsageSink {
+    if (!mockSqliteModule) throw new Error('Real SQLite module not loaded');
+    return mockSqliteModule.createSqliteUsageSink(options);
+  },
+}));
 
 const q = { from: 0, to: Number.MAX_SAFE_INTEGER };
 const record = (id: string): UsageRecord => ({
@@ -112,6 +133,7 @@ describe('usage runtime', () => {
       },
     });
     const r = await start(cfg('sqlite'), deps);
+    expect(r.sqliteSnapshot).toBeUndefined();
     expect(r.status()).toMatchObject({
       fallback: ['sqlite-unavailable'],
       lastErrorCode: 'SQLITE_UNAVAILABLE',
@@ -505,3 +527,52 @@ test.each(['request', 'llm'])(
     ).toHaveLength(measure === 'request' ? 1 : 0);
   },
 );
+
+it('real SQLite runtime snapshots open locally and contain written records', async (): Promise<void> => {
+  const moduleUrl = pathToFileURL(
+    require.resolve('@mcp-abap-adt/llm-usage-sqlite'),
+  ).href;
+  const loading: Promise<typeof import('@mcp-abap-adt/llm-usage-sqlite')> =
+    new Script(`import(${JSON.stringify(moduleUrl)})`, {
+      importModuleDynamically: constants.USE_MAIN_CONTEXT_DEFAULT_LOADER,
+    }).runInThisContext();
+  mockSqliteModule = await loading;
+  const directory = await mkdtemp(join(tmpdir(), 'hub-usage-snapshot-'));
+  let active: UsageRuntime | undefined;
+  try {
+    active = await initUsage(
+      cfg('sqlite', {
+        LLM_AGENT_USAGE_SQLITE_PATH: join(directory, 'source.sqlite'),
+      }),
+    );
+    if (!active?.sqliteSnapshot)
+      throw new Error('Expected SQLite snapshot capability');
+    active.recorder.record(record('snapshot-record'));
+    // The recorder drains asynchronously; snapshot operations serialize with sink writes.
+    for (
+      let attempt = 0;
+      active.status().delivered < 1 && attempt < 100;
+      attempt++
+    ) {
+      await new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, 10);
+      });
+    }
+    expect(active.status().delivered).toBe(1);
+    const stream = await active.sqliteSnapshot();
+    const bytes = await new Response(stream).arrayBuffer();
+    const downloaded = join(directory, 'download.sqlite');
+    await writeFile(downloaded, new Uint8Array(bytes));
+    const database = new DatabaseSync(downloaded);
+    try {
+      expect(database.prepare('SELECT id FROM USAGE_RECORDS').all()).toEqual([
+        { id: 'snapshot-record' },
+      ]);
+    } finally {
+      database.close();
+    }
+  } finally {
+    await active?.close(1000);
+    await rm(directory, { recursive: true, force: true });
+  }
+});

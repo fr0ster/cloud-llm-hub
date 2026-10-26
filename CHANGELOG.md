@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+- Add admin-only SQLite usage database downloads at `GET /v1/usage/sqlite` to preserve per-instance analytics from ephemeral Cloud Foundry disks. Stream consistent snapshots with backpressure and disconnect cleanup; document browser and instance-targeted downloads.
+
 ### Added
 
 - HANA usage HDI table and indexes with package DDL drift checks, usage analytics configuration documentation, and an opt-in `bench:usage` dialogue overhead benchmark.
