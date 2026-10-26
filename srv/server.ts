@@ -6,6 +6,7 @@ import {
   USAGE_SHUTDOWN_TIMEOUT_MS,
   withinUsageShutdownBudget,
 } from './lib/usage/shutdown';
+import { createUsageRouter } from './usage-handler';
 /**
  * Custom server.ts for CAP bootstrap.
  * This file is automatically loaded by CAP and registers streaming endpoints.
@@ -746,6 +747,13 @@ cds.on('bootstrap', (app: Application) => {
 
   // Reuse CAP auth + role check for /v1 routes (same auth-error JSON handler
   // as /mcp so OpenAI/Anthropic clients get 401 JSON instead of 500 HTML).
+  app.use(
+    '/v1/usage',
+    context,
+    wrappedAuth,
+    createUsageRouter(),
+    authJsonErrorHandler,
+  );
   app.use('/v1', context, wrappedAuth, requireMcpRole, authJsonErrorHandler);
 
   // Every /v1 request runs under a session this service issued: a long
