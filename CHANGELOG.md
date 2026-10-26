@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Added
 
+- HANA usage HDI table and indexes with package DDL drift checks, usage analytics configuration documentation, and an opt-in `bench:usage` dialogue overhead benchmark.
+
 - Usage recording runtime with configurable sinks, retention and memory fallback (off by default), session and request context propagation, helper role labels, hub-owned provider recording, session lifecycle and request records, and retrieval injection sizes. Session closes take a storage snapshot before cleanup; synchronous eviction uses the cached snapshot. Periodic storage records report write-time state, outbox and collection byte counters, with explicit unknown flags for unavailable measures. History means persisted recall payloads, excluding the recent-message memory window; PostgreSQL history uses a bounded session metadata aggregate; HANA uses exact UTF-8 counters rebuilt during normal revival/cap reads because NCLOB character length is not a byte count. In-process recall uses write counters; unsupported backends retain explicit Unknown flags. Periodic process records report memory bytes, CPU deltas in milliseconds, event-loop delay p99 in milliseconds, and registry resource counts. Admin-only usage status reports sink health and delivery counters.
 - `MCP_Admin` and MCP Admin Access for administrative endpoints only, with no tool access.
 

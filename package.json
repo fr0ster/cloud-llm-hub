@@ -76,6 +76,7 @@
     "dev:local": "node tools/dev-local.js",
     "test": "node test/test-cap-from-yaml.js --config test/integration.yaml",
     "test:unit": "jest",
+    "bench:usage": "tsx --expose-gc test/bench/usage-overhead.ts",
     "test:unit:watch": "jest --watch",
     "test:unit:coverage": "jest --coverage",
     "test:integration": "jest --testMatch='**/test/integration/**/*.test.ts'",

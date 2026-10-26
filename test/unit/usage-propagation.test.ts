@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createServer } from 'node:http';
 import {
-  beginLlmRequest,
   type CallOptions,
   type ILlm,
   type IMcpClient,
@@ -48,6 +47,7 @@ import {
   type UsageRuntime,
 } from '../../srv/lib/usage/runtime';
 import { handleChatCompletions } from '../../srv/openai-handler';
+import { fakePipelineLlm } from './helpers/usage-pipeline';
 
 const mockAuthenticatedUser = new AsyncLocalStorage<string>();
 const mockWorkers = new Map<string, ISubAgent>();
@@ -195,9 +195,13 @@ function fakeLlm(
   answer: (messages: Message[], options?: CallOptions) => LlmResponse,
   beforeChat?: (options?: CallOptions) => Promise<void>,
 ): ILlm {
-  return {
-    model: 'fake',
-    async chat(messages, tools, options) {
+  return fakePipelineLlm(
+    answer,
+    async (
+      messages: Message[],
+      tools: Parameters<ILlm['chat']>[1],
+      options?: CallOptions,
+    ) => {
       if (beforeChat) await beforeChat(options);
       options?.usage?.record({
         kind: 'x.hub.request.physical',
@@ -206,33 +210,8 @@ function fakeLlm(
         values: { index: physical.length },
       });
       physical.push({ options, shape: requestShape(messages, tools) });
-      const call = beginLlmRequest(options, startOperation(options), {
-        ...requestShape(messages, tools),
-        provider: 'fake',
-        model: 'fake',
-        stream: false,
-        granularity: 'request',
-        retriesVisible: true,
-      });
-      try {
-        return { ok: true, value: answer(messages, options) };
-      } finally {
-        call.end({ outcome: 'ok' });
-      }
     },
-    async *streamChat(messages, tools, options) {
-      const result = await this.chat(messages, tools, options);
-      if (result.ok)
-        yield {
-          ok: true,
-          value: {
-            content: result.value.content,
-            finishReason: result.value.finishReason,
-            toolCalls: result.value.toolCalls,
-          },
-        };
-    },
-  };
+  );
 }
 async function sdkResponse(
   count = 1,

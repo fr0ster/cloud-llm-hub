@@ -30,6 +30,8 @@
 
 Cloud LLM Hub is an **enterprise MCP orchestrator and LLM-agent platform** built on SAP CAP. It connects AI assistants (Cline, Claude Desktop, n8n) and autonomous LLM agents with SAP ABAP systems, managing transport, authentication, destination resolution, and agent orchestration. It has two main runtime paths:
 
+Usage analytics uses one process-wide runtime to propagate session and request recorders into providers and dialogue tasks, and to record session, request, storage and process measurements. Recording is off by default; configured sinks store content-free statistics with hashed user IDs. The runtime owns retention, bounded fallback buffers, delivery health and shutdown. `MCP_Admin` can inspect health through `GET /v1/usage/status`. HANA tables and indexes are deployed by `tools/deploy-hdi-tables.sh`. See [Usage analytics configuration](../llm-agent/CONFIG_USAGE.md#usage-analytics).
+
 ```mermaid
 graph LR
     subgraph Clients
