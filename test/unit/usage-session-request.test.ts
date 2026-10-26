@@ -81,6 +81,7 @@ import { executeStep } from '../../srv/agent-mcp';
 import { handleAnthropicMessages } from '../../srv/anthropic-handler';
 import { userCollectionId } from '../../srv/collection-ids';
 import { collectionRetrieval } from '../../srv/lib/collection-retrieval';
+import { getDialogueStoreBackend } from '../../srv/lib/dialogue-store';
 import { type AdmitResult, Door } from '../../srv/lib/door';
 import {
   admitPipeline,
@@ -129,9 +130,16 @@ import {
   sessionReleased,
   usageSessionBookkeepingForTest,
 } from '../../srv/lib/usage/session-records';
+import { measureSession } from '../../srv/lib/usage/storage-meter';
+import {
+  StorageMeter,
+  startStorageMeter,
+  stopStorageMeter,
+} from '../../srv/lib/usage/storage-scheduler';
 import {
   type StorageSnapshot,
   setStorageSnapshots,
+  storageSnapshots,
   type UsageSession,
 } from '../../srv/lib/usage/storage-snapshot';
 import { handleChatCompletions } from '../../srv/openai-handler';
@@ -267,6 +275,7 @@ beforeEach(async () => {
   );
   if (!enabled) throw new Error('Runtime disabled');
   runtime = enabled;
+  startStorageMeter(runtime, 600000);
   records = new Map();
   const store: SessionRecordStore = {
     async put(record: SessionRecord) {
@@ -293,6 +302,7 @@ beforeEach(async () => {
   setLongSessionsForTest(registry);
 });
 afterEach(async () => {
+  stopStorageMeter(runtime);
   await runtime.close(1000);
   setUsageRuntimeForTest(undefined);
   resetUsageSessionsForTest();
@@ -572,7 +582,7 @@ test('disconnect ends the response before continuing work, with exactly one reco
   );
 });
 
-test('history expiry retains collections without closing the session (Task 4 storage integration deferred)', async () => {
+test('memory history expiry retains collections without claiming persisted history bytes', async () => {
   const { retention, state } = plainRetention();
   const first = lease(retention, 'plain');
   state.add('plain');
@@ -582,14 +592,20 @@ test('history expiry retains collections without closing the session (Task 4 sto
     content: 'HISTORY_SENTINEL',
   });
   expect(hasSessionHistory('plain', 'alice')).toBe(true);
+  expect(await measureSession('plain', 'alice')).toMatchObject({
+    historyBytes: 0,
+  });
   sweepSessionHistory(Date.now() + 365 * 86400000);
   retention.forgetEmpty();
   expect(hasSessionHistory('plain', 'alice')).toBe(false);
+  expect(await measureSession('plain', 'alice')).toMatchObject({
+    historyBytes: 0,
+  });
   expect(retention.isKnown('alice', 'plain')).toBe(true);
   expect(await sessions('close')).toHaveLength(0);
 });
 
-test('RAG-only sessions open and use cached close snapshots on eviction (Task 4 storage scheduling deferred)', async () => {
+test('RAG-only sessions open, receive real storage measurements and use cached snapshots on eviction', async () => {
   process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = '1';
   process.env.LLM_GATEKEEPER_MAX_RETAINED_SESSIONS = '1';
   clearGatekeeperConfig();
@@ -608,22 +624,17 @@ test('RAG-only sessions open and use cached close snapshots on eviction (Task 4 
   expect(await sessions('open')).toMatchObject([
     { context: { sessionId: 'plain' } },
   ]);
-  const measure = jest.fn<Promise<StorageSnapshot | undefined>, [UsageSession]>(
-    async (s: UsageSession) => {
-      expect(s.sessionId).toBe('plain');
-      expect(theRetention().isKnown('alice', 'plain')).toBe(true);
-      return { storageSnapshotAt: 456, sessionCollectionDocuments: 0 };
-    },
-  );
-  setStorageSnapshots({
-    measure,
-    cached: () => ({ storageSnapshotAt: 456, sessionCollectionDocuments: 0 }),
-  });
+  const meter = storageSnapshots();
+  if (!(meter instanceof StorageMeter)) throw new Error('Expected real meter');
+  await meter.tick(runtime);
+  const cached = meter.cached(session);
+  expect(cached).toMatchObject({ sessionCollectionDocuments: 0 });
+  const measure = jest.spyOn(meter, 'measure');
 
   const admitted = lease(theRetention(), 'replacement');
   expect((await sessions('close'))[0]).toMatchObject({
     context: { sessionId: 'plain' },
-    values: { reason: 'evicted', storageSnapshotAt: 456 },
+    values: { reason: 'evicted', storageSnapshotAt: cached?.storageSnapshotAt },
   });
   expect(measure).not.toHaveBeenCalled();
   admitted.release();
@@ -888,7 +899,9 @@ test('storage-only measurement still receives close snapshots without session or
   admitted.release();
   await theRetention().close('alice', 'plain');
   expect(measure).toHaveBeenCalledTimes(1);
-  expect(await rows()).toHaveLength(0);
+  expect(await rows('x.hub.session')).toHaveLength(0);
+  expect(await rows('x.hub.request')).toHaveLength(0);
+  expect(await rows('x.hub.storage')).toMatchObject([{ values: snapshot }]);
 });
 
 test('real response overload callbacks and later wrappers survive recording', async () => {
@@ -1580,4 +1593,37 @@ test('usage-off pipelines without a door preserve undefined shutdown signals', a
   expect(shutdownGatekeeper()).toBeUndefined();
   expect(result.admitted.signal).toBeUndefined();
   result.admitted.release();
+});
+
+test('long-session final real storage snapshot precedes dialogue and history deletion', async () => {
+  const opened = await openSession('alice', 'DEST');
+  if ('refused' in opened) throw new Error('Open refused');
+  const saved = {
+    conversation: [],
+    tasks: [],
+    pending: [],
+    savedAt: Date.now(),
+  };
+  await getDialogueStoreBackend().save('alice', opened.key, saved);
+  appendToSession(opened.key, 'alice', {
+    role: 'user',
+    content: 'final-history',
+  });
+  await registry.close('alice', opened.key, 'explicit');
+  expect(await rows('x.hub.storage')).toMatchObject([
+    {
+      values: {
+        stateBytes: Buffer.byteLength(JSON.stringify(saved), 'utf8'),
+        historyBytes: 0,
+      },
+    },
+  ]);
+  const stored = (await rows('x.hub.storage'))[0];
+  if (stored?.kind !== 'x.hub.storage')
+    throw new Error('Expected storage record');
+  expect(stored.values.historyBytes).toBe(0);
+  expect(
+    await getDialogueStoreBackend().load('alice', opened.key),
+  ).toBeUndefined();
+  expect(hasSessionHistory(opened.key, 'alice')).toBe(false);
 });

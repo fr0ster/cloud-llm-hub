@@ -351,7 +351,15 @@ describe('usage runtime', () => {
   });
   it('initializes usage before providers inside the existing failure chain', () => {
     const source = readFileSync('srv/server.ts', 'utf8');
-    expect(source).toMatch(/initUsage\([\s\S]*?\.then\(\(\) => startProviders/);
+    expect(source).toMatch(
+      /initUsage\([\s\S]*?\.then\(\(runtime: UsageRuntime \| undefined\) => \{[\s\S]*?startStorageMeter\([\s\S]*?return startProviders/,
+    );
+    expect(source.indexOf('await closeUsageSessions(')).toBeLessThan(
+      source.indexOf('if (runtime) stopStorageMeter(runtime)'),
+    );
+    expect(
+      source.indexOf('if (runtime) stopStorageMeter(runtime)'),
+    ).toBeLessThan(source.indexOf('await usageRuntime()?.close'));
     expect(source.indexOf('await closing;')).toBeLessThan(
       source.indexOf('await usageRuntime()?.close'),
     );

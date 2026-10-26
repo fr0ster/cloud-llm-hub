@@ -1346,6 +1346,8 @@ export function getSharedHistoryRag(): SessionHistoryRag | undefined {
     sharedHistoryRag = new SessionHistoryRag(
       stores.create('session', 'history'),
       currentTurnOwner,
+      undefined,
+      { storageBackend: kind },
     );
     return sharedHistoryRag;
   }
@@ -1364,7 +1366,7 @@ export function getSharedHistoryRag(): SessionHistoryRag | undefined {
     ),
     currentTurnOwner,
     undefined,
-    { log: { warn: (m, d) => log.warn(m, d) } },
+    { storageBackend: kind, log },
   );
   return sharedHistoryRag;
 }

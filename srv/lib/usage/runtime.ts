@@ -24,7 +24,12 @@ import {
   type SinkName,
   type UsageConfig,
 } from './config';
+import { setUsageRuntimeForTest, usageRuntime } from './runtime-state';
+
+export { setUsageRuntimeForTest, usageRuntime } from './runtime-state';
+
 import { MigratableBuffer } from './migratable-buffer';
+import { configureStorageAggregates } from './storage-aggregates';
 
 type Sink = IUsageSink &
   Partial<IUsageReader> & {
@@ -70,11 +75,6 @@ export interface UsageRuntime {
   /** Future storage/process meters register only when their measure is enabled. */
   schedule(kind: Measure, tick: () => void, intervalMs: number): void;
   close(timeoutMs: number): ReturnType<IUsageControl['close']>;
-}
-let current: UsageRuntime | undefined;
-export const usageRuntime = (): UsageRuntime | undefined => current;
-export function setUsageRuntimeForTest(r: UsageRuntime | undefined): void {
-  current = r;
 }
 const readable = (s: Sink): s is Sink & IUsageReader =>
   typeof s.read === 'function';
@@ -348,11 +348,12 @@ export async function initUsage(
         closed = true;
         for (const timer of timers) cancel(timer);
         const result = await control.close(timeoutMs);
-        if (current === runtime) current = undefined;
+        if (usageRuntime() === runtime) setUsageRuntimeForTest(undefined);
         return result;
       },
     };
-    current = runtime;
+    setUsageRuntimeForTest(runtime);
+    if (runtime.enabled('storage')) configureStorageAggregates(deps.rag);
     return runtime;
   } catch (error) {
     for (const timer of timers) cancel(timer);

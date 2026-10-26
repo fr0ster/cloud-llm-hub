@@ -34,6 +34,7 @@ import {
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 import type { CollectionMeta, RagDocument } from '../rag-collections';
+import { storageEnabled } from './usage/storage-values';
 
 /** Marks every catalog record this hub writes; restore opens only those. */
 export const WRITTEN_BY = 'cloud-llm-hub';
@@ -427,6 +428,7 @@ export function documentPayload(
 
 /** The part of a registry entry the document mutations below touch. */
 export interface PersistentEntry {
+  usageTextBytes?: number;
   meta: CollectionMeta;
   documents: Map<string, RagDocument>;
   rag: IRagEditor;
@@ -504,6 +506,10 @@ export async function addPersistentDocument(
     metadata: ownMetadata(doc.metadata),
     createdAt,
   };
+  if (storageEnabled() && entry.usageTextBytes !== undefined)
+    entry.usageTextBytes +=
+      Buffer.byteLength(persisted.text, 'utf8') -
+      Buffer.byteLength(entry.documents.get(doc.id)?.text ?? '', 'utf8');
   entry.documents.set(doc.id, persisted);
   entry.meta.documentCount = entry.documents.size;
   return persisted;
@@ -529,6 +535,10 @@ export async function updatePersistentDocument(
     namespace,
   );
   await backendWrite('update document', () => entry.rag.upsert(text, p));
+  if (storageEnabled() && entry.usageTextBytes !== undefined)
+    entry.usageTextBytes +=
+      Buffer.byteLength(text, 'utf8') -
+      Buffer.byteLength(existing.text, 'utf8');
   existing.text = text;
   existing.metadata = ownMetadata(metadata);
   return existing;
@@ -544,6 +554,11 @@ export async function deletePersistentDocument(
   await backendWrite('delete document', () =>
     entry.rag.deleteById(`doc:${entry.meta.id}:${docId}`),
   );
+  if (storageEnabled() && entry.usageTextBytes !== undefined)
+    entry.usageTextBytes -= Buffer.byteLength(
+      entry.documents.get(docId)?.text ?? '',
+      'utf8',
+    );
   entry.documents.delete(docId);
   entry.meta.documentCount = entry.documents.size;
   return true;

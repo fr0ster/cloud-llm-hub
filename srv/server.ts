@@ -95,7 +95,15 @@ import {
 import { createSessionRecordStore } from './lib/session-record-store';
 import { openAiSessionRefusal } from './lib/throttle-surfacing';
 import { readUsageConfig } from './lib/usage/config';
-import { initUsage, usageRuntime } from './lib/usage/runtime';
+import {
+  initUsage,
+  type UsageRuntime,
+  usageRuntime,
+} from './lib/usage/runtime';
+import {
+  startStorageMeter,
+  stopStorageMeter,
+} from './lib/usage/storage-scheduler';
 import { createMCPServerForRequest } from './mcp-manager';
 import {
   handleChatCompletions,
@@ -929,7 +937,15 @@ cds.on('served', () => {
         { rag: getAgentConfig().rag },
       ),
     )
-    .then(() => startProviders(getAgentConfig()))
+    .then((runtime: UsageRuntime | undefined) => {
+      if (runtime?.enabled('storage'))
+        startStorageMeter(
+          runtime,
+          readUsageConfig(process.env, getAgentConfig().rag.backends.session)
+            .storageIntervalMs,
+        );
+      return startProviders(getAgentConfig());
+    })
     .then((p) => {
       initProviders(p);
       registerRagRoutes(ragRouter, getCollectionRegistry());
@@ -987,5 +1003,7 @@ cds.on('shutdown', async () => {
     await pipelines;
   }
   await closeUsageSessions(Math.max(0, usageDeadline - Date.now()));
+  const runtime = usageRuntime();
+  if (runtime) stopStorageMeter(runtime);
   await usageRuntime()?.close(USAGE_SHUTDOWN_TIMEOUT_MS);
 });

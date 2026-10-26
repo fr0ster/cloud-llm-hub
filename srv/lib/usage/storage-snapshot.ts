@@ -1,4 +1,3 @@
-/** Task 4 supplies fresh measurements and keeps the latest snapshot per session. */
 export interface UsageSession {
   userId: string;
   sessionId: string;
@@ -8,7 +7,26 @@ export interface StorageSnapshot {
   storageSnapshotAt: number;
   [measure: string]: number | boolean;
 }
+export function unknownStorageSnapshot(): StorageSnapshot {
+  return {
+    storageSnapshotAt: Date.now(),
+    stateBytesUnknown: true,
+    outboxBytesUnknown: true,
+    historyBytesUnknown: true,
+    sessionCollectionDocumentsUnknown: true,
+    sessionCollectionTextBytesUnknown: true,
+    sessionCollectionVectorBytesUnknown: true,
+  };
+}
 export interface StorageSnapshots {
+  trackUser?(userId: string, eligible: boolean): void;
+  invalidateDialogue?(id: string): void;
+  update?(
+    session: UsageSession,
+    values: Record<string, number | boolean>,
+  ): void;
+  retain?(session: UsageSession): void;
+  release?(session: UsageSession): void;
   measure(session: UsageSession): Promise<StorageSnapshot | undefined>;
   cached(session: UsageSession): StorageSnapshot | undefined;
 }

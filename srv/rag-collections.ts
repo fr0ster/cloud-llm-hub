@@ -54,6 +54,12 @@ import {
   updatePersistentDocument,
 } from './lib/collection-persistence';
 import { sessionConfig } from './lib/session-config';
+import { storageSnapshots } from './lib/usage/storage-snapshot';
+import {
+  collectionUnknown,
+  type StorageValues,
+  storageEnabled,
+} from './lib/usage/storage-values';
 
 /** One session of one user, as a key (a tuple: no separator to collide on). */
 function sessionKey(userId: string, sessionId: string): string {
@@ -183,6 +189,7 @@ export interface RagDocument {
 }
 
 interface StoredCollection {
+  usageTextBytes?: number;
   meta: CollectionMeta;
   /** The store name its backend was created with; see RagBackendFactory. */
   store: string;
@@ -516,6 +523,86 @@ const builtInBackends: Record<string, RagBackend> = {
 };
 
 export class CollectionRegistry {
+  private refreshStorageCache(meta: CollectionMeta): void {
+    if (!storageEnabled() || !meta.owner) return;
+    if (meta.scope === 'user') {
+      storageSnapshots().trackUser?.(
+        meta.owner,
+        [...this.collections.values()].some(
+          (stored: { meta: CollectionMeta }): boolean =>
+            stored.meta.scope === 'user' && stored.meta.owner === meta.owner,
+        ),
+      );
+      return;
+    }
+    if (!meta.sessionId) return;
+    storageSnapshots().update?.(
+      { userId: meta.owner, sessionId: meta.sessionId },
+      this.storageMeasures(meta.owner, meta.sessionId),
+    );
+  }
+
+  storageTargets(
+    userId: string,
+    sessionId?: string,
+  ): { backend: string; store: string }[] {
+    const targets: { backend: string; store: string }[] = [];
+    for (const stored of this.collections.values()) {
+      const meta = stored.meta;
+      if (
+        meta.preset ||
+        meta.owner !== userId ||
+        meta.scope !== (sessionId === undefined ? 'user' : 'session') ||
+        (sessionId !== undefined && meta.sessionId !== sessionId)
+      )
+        continue;
+      if (!stored.persistent || meta.status) return [];
+      targets.push({
+        backend: meta.backend ?? this.defaultBackend,
+        store: stored.store,
+      });
+    }
+    return targets;
+  }
+
+  /** Reads only metadata and write-time counters; never invokes a content API. */
+  storageMeasures(userId: string, sessionId?: string): StorageValues {
+    const prefix =
+      sessionId === undefined ? 'userCollection' : 'sessionCollection';
+    if (this.persistence && this.restoreState !== 'ready')
+      return collectionUnknown(prefix);
+    let documents = 0;
+    let textBytes = 0;
+    let textKnown = true;
+    let vectorsKnown = true;
+    const vectorBytes = 0;
+    for (const stored of this.collections.values()) {
+      const meta = stored.meta;
+      if (
+        meta.preset ||
+        meta.owner !== userId ||
+        meta.scope !== (sessionId === undefined ? 'user' : 'session') ||
+        (sessionId !== undefined && meta.sessionId !== sessionId)
+      )
+        continue;
+      if (meta.status) return collectionUnknown(prefix);
+      documents += stored.documents.size;
+      if (stored.usageTextBytes === undefined) textKnown = false;
+      else textBytes += stored.usageTextBytes;
+      // IRag does not expose physical vector count or dimension. In-memory has no vectors.
+      if (meta.backend !== 'in-memory') vectorsKnown = false;
+    }
+    return {
+      [`${prefix}Documents`]: documents,
+      ...(textKnown
+        ? { [`${prefix}TextBytes`]: textBytes }
+        : { [`${prefix}TextBytesUnknown`]: true }),
+      ...(vectorsKnown
+        ? { [`${prefix}VectorBytes`]: vectorBytes }
+        : { [`${prefix}VectorBytesUnknown`]: true }),
+    };
+  }
+
   private collections = new Map<string, StoredCollection>();
   private backends = new Map<string, RagBackend>(
     Object.entries(builtInBackends),
@@ -699,8 +786,15 @@ export class CollectionRegistry {
         documents,
         rag: new RecencyBoostedRag(c.rag ?? unavailableRag(c.error ?? '')),
       };
+      if (storageEnabled())
+        stored.usageTextBytes = c.documents.reduce(
+          (total: number, doc: RagDocument): number =>
+            total + Buffer.byteLength(doc.text, 'utf8'),
+          0,
+        );
       stored.meta.sourceCount = countSources(stored);
       this.collections.set(meta.id, stored);
+      if (storageEnabled()) this.refreshStorageCache(meta);
       this.putEnabled(meta.owner ?? '', meta.id, c.enabled);
       if (c.status) {
         degraded++;
@@ -1017,6 +1111,11 @@ export class CollectionRegistry {
       documents: new Map(),
       rag: this.createRagStore(full.backend, store),
     });
+    if (storageEnabled()) {
+      const stored = this.collections.get(meta.id);
+      if (stored) stored.usageTextBytes = 0;
+      this.refreshStorageCache(full);
+    }
     this.log.info('Collection created', { id: meta.id, scope: meta.scope });
     return full;
   }
@@ -1044,6 +1143,11 @@ export class CollectionRegistry {
       documents: new Map(),
       rag: new RecencyBoostedRag(handles.rag),
     });
+    if (storageEnabled()) {
+      const stored = this.collections.get(meta.id);
+      if (stored) stored.usageTextBytes = 0;
+      this.refreshStorageCache(meta);
+    }
     this.log.info('Collection created', { id: meta.id, scope: meta.scope });
     return meta;
   }
@@ -1115,7 +1219,9 @@ export class CollectionRegistry {
 
   /** Drop a collection from memory: its entry and every user's enabled flag. */
   private forget(id: string): void {
+    const meta = storageEnabled() ? this.collections.get(id)?.meta : undefined;
     this.collections.delete(id);
+    if (meta) this.refreshStorageCache(meta);
     for (const m of this.enabledByUser.values()) m.delete(id);
   }
 
@@ -1531,7 +1637,13 @@ export class CollectionRegistry {
     if (!stored) throw new Error(`Collection "${collectionId}" not found`);
     this.refuseDegraded(stored, 'add document', 'write');
     // Backend first, memory only on success; see addPersistentDocument.
-    if (stored.persistent) return addPersistentDocument(stored, doc, namespace);
+    if (stored.persistent) {
+      if (!storageEnabled())
+        return addPersistentDocument(stored, doc, namespace);
+      const persisted = await addPersistentDocument(stored, doc, namespace);
+      this.refreshStorageCache(stored.meta);
+      return persisted;
+    }
 
     // Upsert into RAG store. IRagEditor.upsert returns Result<T, RagError>;
     // a backend rejection comes back as { ok: false }, NOT a thrown error.
@@ -1563,8 +1675,14 @@ export class CollectionRegistry {
         ? doc.metadata
         : { ...(doc.metadata ?? {}), unindexed: true },
     };
+    if (storageEnabled() && stored.usageTextBytes !== undefined) {
+      stored.usageTextBytes +=
+        Buffer.byteLength(persisted.text, 'utf8') -
+        Buffer.byteLength(stored.documents.get(doc.id)?.text ?? '', 'utf8');
+    }
     stored.documents.set(doc.id, persisted);
     stored.meta.documentCount = stored.documents.size;
+    if (storageEnabled()) this.refreshStorageCache(stored.meta);
 
     if (!result.ok) {
       // Throw so addDocumentsBulk's tryWithRetry can retry transient failures.
@@ -1660,10 +1778,26 @@ export class CollectionRegistry {
     this.refuseDegraded(stored, 'update document', 'write');
     const existing = stored.documents.get(docId);
     if (!existing) return null;
-    if (stored.persistent)
-      return updatePersistentDocument(stored, existing, update, namespace);
+    if (stored.persistent) {
+      if (!storageEnabled())
+        return updatePersistentDocument(stored, existing, update, namespace);
+      const updated = await updatePersistentDocument(
+        stored,
+        existing,
+        update,
+        namespace,
+      );
+      this.refreshStorageCache(stored.meta);
+      return updated;
+    }
 
-    if (update.text) existing.text = update.text;
+    if (update.text) {
+      if (storageEnabled() && stored.usageTextBytes !== undefined)
+        stored.usageTextBytes +=
+          Buffer.byteLength(update.text, 'utf8') -
+          Buffer.byteLength(existing.text, 'utf8');
+      existing.text = update.text;
+    }
     if (update.metadata)
       existing.metadata = { ...existing.metadata, ...update.metadata };
 
@@ -1674,6 +1808,7 @@ export class CollectionRegistry {
       ...existing.metadata,
     });
 
+    if (storageEnabled()) this.refreshStorageCache(stored.meta);
     return existing;
   }
 
@@ -1682,7 +1817,17 @@ export class CollectionRegistry {
     const stored = this.collections.get(collectionId);
     if (!stored) return false;
     this.refuseDegraded(stored, 'delete document', 'write');
-    if (stored.persistent) return deletePersistentDocument(stored, docId);
+    if (stored.persistent) {
+      if (!storageEnabled()) return deletePersistentDocument(stored, docId);
+      const deleted = await deletePersistentDocument(stored, docId);
+      this.refreshStorageCache(stored.meta);
+      return deleted;
+    }
+    if (storageEnabled() && stored.usageTextBytes !== undefined)
+      stored.usageTextBytes -= Buffer.byteLength(
+        stored.documents.get(docId)?.text ?? '',
+        'utf8',
+      );
     const deleted = stored.documents.delete(docId);
     if (deleted) {
       stored.meta.documentCount = stored.documents.size;
@@ -1698,6 +1843,7 @@ export class CollectionRegistry {
         });
       }
     }
+    if (storageEnabled()) this.refreshStorageCache(stored.meta);
     return deleted;
   }
 

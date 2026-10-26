@@ -31,6 +31,8 @@ import {
   type RagScanFilter,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
+import { storageSnapshots } from './usage/storage-snapshot';
+import { storageEnabled } from './usage/storage-values';
 
 /** How much of the answer is kept. Tool output can run to tens of thousands of
  *  characters; the object names and the outcome are at the front. */
@@ -76,6 +78,7 @@ export function parseTurnOwner(
 }
 
 export interface SessionHistoryOptions {
+  storageBackend?: string;
   /** Where best-effort failures of the persistent path are reported. */
   log?: { warn(message: string, data?: unknown): void };
   /** The clock behind a turn's `createdAt`; tests inject. */
@@ -147,6 +150,60 @@ export function parseTurn(
  * optimisation.
  */
 export class SessionHistoryRag implements IRag {
+  private byteCounters?: Map<string, Map<string, number>>;
+  // Cleared sessions can remain live, but released session identities must not
+  // accumulate for the lifetime of the shared history store.
+  private clearedOwners?: Set<string>;
+
+  private publishBytes(owner: string): void {
+    if (!storageEnabled()) return;
+    const key = parseTurnOwner(owner);
+    const historyBytes = this.storageBytes(owner);
+    if (key && historyBytes !== undefined)
+      storageSnapshots().update?.(key, { historyBytes });
+  }
+
+  private clearCounters(owner: string): void {
+    if (!storageEnabled()) return;
+    this.byteCounters?.delete(owner);
+    this.clearedOwners ??= new Set<string>();
+    this.clearedOwners.delete(owner);
+    this.clearedOwners.add(owner);
+    while (this.clearedOwners.size > 256) {
+      const oldest = this.clearedOwners.values().next();
+      if (!oldest.done) this.clearedOwners.delete(oldest.value);
+    }
+    this.publishBytes(owner);
+  }
+
+  get storageBackend(): string | undefined {
+    return this.options.storageBackend;
+  }
+
+  storageBytes(owner: string): number | undefined {
+    const turns = this.byteCounters?.get(owner);
+    if (!turns)
+      return this.clearedOwners?.has(owner) || !isRagScanner(this.inner)
+        ? 0
+        : undefined;
+    let bytes = 0;
+    for (const value of turns.values()) bytes += value;
+    return bytes;
+  }
+
+  private countTurn(owner: string, id: string, text: string): void {
+    if (!storageEnabled()) return;
+    this.byteCounters ??= new Map<string, Map<string, number>>();
+    let turns = this.byteCounters.get(owner);
+    if (!turns) {
+      turns = new Map<string, number>();
+      this.byteCounters.set(owner, turns);
+    }
+    turns.set(id, Buffer.byteLength(text, 'utf8'));
+    this.clearedOwners?.delete(owner);
+    this.publishBytes(owner);
+  }
+
   private readonly pending = new Map<string, Set<Promise<boolean>>>();
 
   /**
@@ -183,7 +240,11 @@ export class SessionHistoryRag implements IRag {
     if (!writer) return;
     for (const id of ids) {
       try {
-        await writer.deleteByIdRaw(id);
+        const result = await writer.deleteByIdRaw(id);
+        if (result.ok && storageEnabled())
+          for (const [owner, turns] of this.byteCounters ?? []) {
+            if (turns.delete(id)) this.publishBytes(owner);
+          }
       } catch {
         // Best-effort: a turn that refuses to go is not worth an error on a
         // request that has already answered.
@@ -203,20 +264,35 @@ export class SessionHistoryRag implements IRag {
       try {
         const r = await this.inner.deleteWhere(key);
         if (!r.ok) {
+          this.discardCounters(owner);
           this.warn('Session history forget failed', r.error);
           return false;
         }
       } catch (err) {
+        this.discardCounters(owner);
         this.warn('Session history forget failed', err);
         return false;
       }
+      this.clearCounters(owner);
       return true;
     }
     const ids = this.ids.get(owner);
-    if (!ids?.length) return true;
+    if (!ids?.length) {
+      this.clearCounters(owner);
+      return true;
+    }
     this.ids.delete(owner);
     await this.drop(ids);
+    this.clearCounters(owner);
     return true;
+  }
+
+  private discardCounters(owner: string): void {
+    if (!storageEnabled()) return;
+    this.byteCounters?.delete(owner);
+    this.clearedOwners?.delete(owner);
+    const key = parseTurnOwner(owner);
+    if (key) storageSnapshots().update?.(key, { historyBytesUnknown: true });
   }
 
   /**
@@ -230,6 +306,7 @@ export class SessionHistoryRag implements IRag {
     const key = parseTurnOwner(owner);
     if (!key || !isRagScanner(this.inner)) return [];
     const turns: StoredTurn[] = [];
+    const measured = storageEnabled() ? new Map<string, number>() : undefined;
     let cursor: string | undefined;
     do {
       const page = await this.inner.scan(
@@ -238,6 +315,7 @@ export class SessionHistoryRag implements IRag {
       if (!page.ok) throw page.error;
       for (const r of page.value.records) {
         if (r.metadata.owner !== owner) continue;
+        measured?.set(r.id, Buffer.byteLength(r.text, 'utf8'));
         const text = parseTurn(r.text);
         if (!text) continue;
         turns.push({
@@ -253,6 +331,12 @@ export class SessionHistoryRag implements IRag {
         throw new Error('Session history scan did not advance');
       cursor = page.value.cursor;
     } while (cursor !== undefined);
+    if (measured) {
+      this.byteCounters ??= new Map<string, Map<string, number>>();
+      this.byteCounters.set(owner, measured);
+      this.clearedOwners?.delete(owner);
+      this.publishBytes(owner);
+    }
     // Oldest first; ISO timestamps sort as strings, the id breaks a tie.
     return turns.sort((a, b) =>
       a.createdAt === b.createdAt
@@ -371,6 +455,17 @@ export class SessionHistoryRag implements IRag {
           : { owner: input.owner },
       );
       if (!res.ok) return false;
+      if (
+        storageEnabled() &&
+        (!scanner ||
+          this.byteCounters?.has(input.owner) ||
+          this.clearedOwners?.has(input.owner))
+      )
+        this.countTurn(
+          input.owner,
+          id,
+          renderTurn(input.userText, input.assistantText),
+        );
       if (key && scanner) {
         await this.capFromStore(scanner, input.owner, key, id);
         return true;
@@ -406,6 +501,7 @@ export class SessionHistoryRag implements IRag {
     if (!cached.includes(justWritten)) cached.push(justWritten);
     this.ids.set(owner, cached);
     const turns: { id: string; createdAt: string }[] = [];
+    const measured = storageEnabled() ? new Map<string, number>() : undefined;
     try {
       let cursor: string | undefined;
       do {
@@ -416,7 +512,9 @@ export class SessionHistoryRag implements IRag {
           this.warn('Session history cap: scan failed', page.error);
           return;
         }
-        for (const r of page.value.records)
+        for (const r of page.value.records) {
+          if (r.metadata.owner === owner)
+            measured?.set(r.id, Buffer.byteLength(r.text, 'utf8'));
           turns.push({
             id: r.id,
             createdAt:
@@ -424,6 +522,7 @@ export class SessionHistoryRag implements IRag {
                 ? r.metadata.createdAt
                 : '',
           });
+        }
         if (page.value.cursor !== undefined && page.value.cursor === cursor) {
           this.warn('Session history cap: scan did not advance', cursor);
           return;
@@ -433,6 +532,12 @@ export class SessionHistoryRag implements IRag {
     } catch (err) {
       this.warn('Session history cap: scan failed', err);
       return;
+    }
+    if (measured) {
+      this.byteCounters ??= new Map<string, Map<string, number>>();
+      this.byteCounters.set(owner, measured);
+      this.clearedOwners?.delete(owner);
+      this.publishBytes(owner);
     }
     // Oldest first; ISO timestamps sort as strings, the id breaks a tie.
     turns.sort((a, b) =>
@@ -454,6 +559,10 @@ export class SessionHistoryRag implements IRag {
     for (const t of overflow) {
       try {
         const r = await writer?.deleteByIdRaw(t.id);
+        if (r?.ok && storageEnabled()) {
+          this.byteCounters?.get(owner)?.delete(t.id);
+          this.publishBytes(owner);
+        }
         if (r && !r.ok)
           this.warn('Session history cap: delete failed', r.error);
       } catch (err) {

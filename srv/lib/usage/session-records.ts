@@ -10,6 +10,7 @@ import {
   type StorageSnapshot,
   storageSnapshots,
   type UsageSession,
+  unknownStorageSnapshot,
 } from './storage-snapshot';
 
 interface LiveSession {
@@ -79,6 +80,7 @@ export function sessionOpened(
     live.has(key(session))
   )
     return;
+  if (runtime.enabled('storage')) storageSnapshots().retain?.(session);
   tombstones.delete(key(session));
   const usage = runtime.forSession(session);
   live.set(key(session), {
@@ -102,6 +104,15 @@ function emitClose(
   snapshot?: StorageSnapshot,
   endKnown: boolean = true,
 ): void {
+  if (!snapshot && usageRuntime()?.enabled('storage'))
+    snapshot = unknownStorageSnapshot();
+  if (snapshot && usageRuntime()?.enabled('storage'))
+    s.usage.record({
+      context: {},
+      kind: 'x.hub.storage',
+      outcome: 'ok',
+      values: { ...snapshot },
+    });
   sessionRecord(
     s.usage,
     {
@@ -121,6 +132,7 @@ function emitClose(
   );
 }
 function cachedSnapshot(session: UsageSession): StorageSnapshot | undefined {
+  if (!usageRuntime()?.enabled('storage')) return undefined;
   try {
     return storageSnapshots().cached(session);
   } catch {
@@ -140,6 +152,7 @@ export function sessionReleased(
   if (pending.get(sessionKey) === s) pending.delete(sessionKey);
   rememberClosed(sessionKey);
   emitClose(s, reason, cachedSnapshot(session));
+  storageSnapshots().release?.(s.session);
 }
 /** Wait for delivery boundaries before the final snapshot; deduplicate each generation. */
 export function sessionClosed(
@@ -180,7 +193,8 @@ export function sessionClosed(
     if (live.get(sessionKey) === s) live.delete(sessionKey);
     let snapshot: StorageSnapshot | undefined;
     try {
-      snapshot = await storageSnapshots().measure(session);
+      if (runtime.enabled('storage'))
+        snapshot = await storageSnapshots().measure(s.session);
     } catch {
       snapshot = cachedSnapshot(session);
     }
@@ -189,6 +203,7 @@ export function sessionClosed(
     if (!live.has(sessionKey) && pending.get(sessionKey) === s)
       rememberClosed(sessionKey);
     emitClose(s, reason, snapshot, endKnown);
+    storageSnapshots().release?.(s.session);
   })().finally(() => {
     if (pending.get(sessionKey) === s) pending.delete(sessionKey);
     closingTasks.delete(closing);
@@ -244,6 +259,7 @@ export async function closeUsageSessions(timeoutMs?: number): Promise<void> {
       if (pending.get(key(s.session)) === s) pending.delete(key(s.session));
       rememberClosed(key(s.session));
       emitClose(s, 'shutdown', cachedSnapshot(s.session));
+      storageSnapshots().release?.(s.session);
     }
   }
 }
