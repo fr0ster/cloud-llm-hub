@@ -46,6 +46,14 @@ The hub's status must report unconfirmed records. The published recorder's `stat
 - **Test:** an ambiguous send increments it; a later successful resend decrements it.
 - **Release:** a changeset (minor for `llm-usage`, minor for `llm-agent`), then the version PR → tags → the user publishes. The hub's Task 1 depends on this release.
 
+### Task 0b: request shape of `llm.call` (llm-agent, minor)
+
+The design's goal "context size per LLM request" needs the request shape in every `llm.call`.
+
+- **Change:** llm-agent plan `docs/superpowers/plans/2026-10-26-usage-request-shape.md` (spec revision 5): the core helper `requestShape`, wired into every provider, and the CSV columns.
+- **Release:** version PR → tags → the user publishes. Hub Task 2 depends on it; Task 1 does not.
+- **Hub:** bump `@mcp-abap-adt/llm-agent`, `llm-usage` and the provider packages to the released versions at the start of Task 2.
+
 ### Task 1: Dependencies, usage runtime, sinks and fallback
 
 **Files:**
@@ -107,7 +115,7 @@ The hub's status must report unconfirmed records. The published recorder's `stat
   - `srv/lib/dialogue-sessions.ts`: the session-bound recorder created at open and revive, passed as `DialogueSessionOptions.usage`;
   - `srv/lib/dialogue-chat.ts`: the request recorder `.with({ requestId, traceId })` in `session.send` options;
   - `srv/openai-handler.ts`, `srv/anthropic-handler.ts`, `srv/agent-mcp.ts`: the request recorder in the call options they build;
-  - `srv/lib/collection-retrieval.ts`, `srv/lib/llm-only-guard.ts` (classifier) and `srv/lib/step-reviewer.ts` (`evaluateGated`, `reviewStep`): pass `usage` with their role;
+  - `srv/lib/collection-retrieval.ts`, `srv/lib/llm-only-guard.ts` (classifier) and `srv/lib/step-reviewer.ts` (`evaluateGated`, `reviewStep`): pass `usage` narrowed with the spec's `role` and `component` labels;
   - the query embedder in `srv/agent-manager.ts`.
 - Modify: the hub-built providers:
   - `srv/lib/llm-factory.ts` (`makeHubLlm`): pass `usage: runtime.recorder` as the construction-bound recorder;
@@ -125,7 +133,8 @@ The hub's status must report unconfirmed records. The published recorder's `stat
   - the task finishes after the request ended, and keeps its `sessionId`;
   - two concurrent sessions do not swap context;
   - a plain session request and an agent MCP `execute_step` carry their session;
-  - the step reviewer, guard classifier, retrieval embedding and query embedder record with their roles;
+  - the step reviewer, guard classifier, retrieval embedding and query embedder record with their `role` and `component`;
+  - planner, executor and helper `llm.call` records carry the request shape (`inputMessages`, the per-role message counts and chars, `toolDefs`, `toolDefsChars`) of the messages the fake LLM received;
   - `SapAiCoreEmbedder` records ok, error and abort;
   - with usage off: no recorder is passed anywhere, and results are unchanged;
   - **real-pipeline scenario**, the design's completeness check: the real hub pipeline with fake LLM and MCP transports.
@@ -151,7 +160,9 @@ The hub's status must report unconfirmed records. The published recorder's `stat
     - History expiry in `srv/session-store.ts` only shrinks storage. It is not a close.
   - Collection sweeps only affect storage measures, not the session lifecycle.
   - the request ends in `srv/openai-handler.ts`, `srv/anthropic-handler.ts` and `srv/agent-mcp.ts`.
-- Create: `srv/lib/usage/hub-records.ts`, with typed builders `sessionRecord(...)`, `requestRecord(...)` and their `x.hub.*` value shapes, using only numbers, labels and flags.
+- Create: `srv/lib/usage/hub-records.ts`, with typed builders `sessionRecord(...)`, `requestRecord(...)`, `retrievalRecord(...)` and their `x.hub.*` value shapes, using only numbers, labels and flags.
+- **`x.hub.retrieval`:** emitted by `srv/lib/collection-retrieval.ts` on the request recorder for every retrieval, with the spec's fields; test: two collections, three chunks injected → one record with `collections: 2`, `chunks: 3`, `chars` equal to the joined chunks with separators and without the marker, `injected: true`; no relevant chunk → `injected: false`, `chunks: 0`.
+  The runtime's measure filter (`srv/lib/usage/runtime.ts`, Task 1) maps `x.hub.retrieval` to the `request` measure; test: `LLM_AGENT_USAGE_MEASURE=request` keeps it, `llm` alone drops it.
 - **`x.hub.session` and `x.hub.request` fields:** exactly the spec's tables, including:
   - `responseEndAt` versus `operationEndAt` (work after a disconnect);
   - `protocol: 'mcp-agent'` with the tool name;
@@ -222,8 +233,8 @@ The hub's status must report unconfirmed records. The published recorder's `stat
   - **JSONL** uses `exportRecords`.
   - **CSV** uses a hub exporter (`srv/lib/usage/csv.ts`):
     - the common columns;
-    - one column per known `x.hub.*` value: session, request, storage, storage.user and process, from the typed builders of Task 3, with the Task 4 and 5 shapes;
-    - the library kinds' fields;
+    - one column per known `x.hub.*` value: session, request, retrieval, storage, storage.user and process, from the typed builders of Task 3, with the Task 4 and 5 shapes;
+    - the library kinds' fields, including the `llm.call` request shape (`inputMessages`, `inputChars`, the per-role message counts and chars, `toolDefs`, `toolDefsChars`) and the `component` context label;
     - a `loss_evidence` column.
     - Unknown extension values go to a trailing `extra_json` column.
   - recording off gives 404 with a clear message;

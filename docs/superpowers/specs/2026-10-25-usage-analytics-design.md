@@ -2,7 +2,7 @@
 
 <!-- docs-check:proposed-env: this design proposes LLM_AGENT_USAGE_* settings, which do not exist yet -->
 
-Date: 2026-10-25. Status: draft for review (revision 2, after review). Supersedes the token-only usage ledger draft of 2026-10-22, which was never merged.
+Date: 2026-10-25. Status: approved (revision 3: context size per LLM request). Supersedes the token-only usage ledger draft of 2026-10-22, which was never merged.
 
 ## Intent
 
@@ -19,6 +19,7 @@ The contract, transports and sinks live in llm-agent: `docs/superpowers/specs/20
 - **Per-session coverage.** Every resource the hub spends is recorded per session, with user, turn, task, role and destination where known:
   - LLM, embedding and SAP tool calls, and tasks (through llm-agent's instrumentation, plus the hub-owned providers below);
   - the hub's own measurements.
+- **Context size per LLM request.** How much context each LLM request sends, for the planner, the executor and every helper LLM: messages and characters per role, tool definitions, and tokens where the provider reports them, measured on what the request actually sent. This comes from the request shape of `llm.call` (llm-agent spec, revision 5), with the role labels below, plus `x.hub.retrieval` for the retrieved context the hub injects.
 - **Export.** Records, including the evidence of losses, can be exported for analysis.
 - **Configuration.** The sinks, the measurements, the intervals and the retention are configurable.
 
@@ -39,10 +40,11 @@ The contract, transports and sinks live in llm-agent: `docs/superpowers/specs/20
   - `granularity: 'sdk-call'` and `retriesVisible: false` where the SAP SDK retries internally and cannot be told not to.
   - This covers `SapAiCoreEmbedder` (`srv/lib/providers.ts`) and any LLM or embedder the hub constructs outside llm-agent's provider packages. A test lists the hub's provider constructions and fails when one does not report.
 - **Hub-owned LLM calls.** Calls the hub makes itself pass the recorder in their call options, so they are attributed like library calls:
-  - the step reviewer (`evaluateGated`);
-  - collection retrieval embeddings;
-  - the LLM-only guard's classifier;
-  - the query embedder.
+  - the step reviewer (`evaluateGated`, `reviewStep`): `role: 'reviewer'`, `component: 'step-reviewer'`;
+  - collection retrieval embeddings: `role: 'embedding'`, `component: 'collection-retrieval'`;
+  - the LLM-only guard's classifier: `role: 'classifier'`, `component: 'llm-only-guard'`;
+  - the query embedder: `role: 'embedding'`, `component: 'query-embedder'`.
+  - `role` uses llm-agent's `LlmComponent` names; `component` is a hub context label that tells helpers apart. Every hub-owned LLM call sets both, so context size can be grouped by role and by helper.
 
 ## Context propagation
 
@@ -99,6 +101,11 @@ How storage is measured:
 - **Never content.** Content and vectors are never loaded to measure them.
 - **Unknown values.** A measure the backend cannot provide is omitted, and the record carries `<measure>Unknown: true` (for example `historyBytesUnknown: true`). This fits the contract's value types (number, string, boolean) and keeps partial snapshots unambiguous.
 - **When.** At session close, and every `LLM_AGENT_USAGE_STORAGE_INTERVAL_MS` for live sessions and users.
+
+**`x.hub.retrieval`**, one per collection-retrieval injection (`srv/lib/collection-retrieval.ts`), in the request's context:
+- `collections`: collections searched; `chunks`: chunks injected; `chars`: the length of the injected context, the chunks joined with their separators, without the marker line; `injected`: whether anything was added.
+- **It accounts the retrieval event, not each call.** It says how much retrieved context entered the request's conversation. Which later LLM calls carried it is not recorded: some strip it (the LLM-only guard uses `userTextOf`). Each `llm.call`'s own `userChars` shows what that call actually sent.
+- It belongs to the `request` measure of `LLM_AGENT_USAGE_MEASURE`.
 
 **`x.hub.process`**, every `LLM_AGENT_USAGE_PROCESS_INTERVAL_MS`:
 - RSS, heap used and external memory;
@@ -204,6 +211,7 @@ The user decided to replace `MCP_Full` with `MCP_Admin` and to remove `MCP_Analy
   - a plain session evicted, and a session expired offline;
   - an agent MCP `execute_step`;
   - expected: every LLM, embedding and tool request appears once with the right session, user, role and task; one `x.hub.request` per request; `x.hub.session` open and close in each case.
+- **Context size.** Planner, executor and every hub-owned helper `llm.call` carry the request shape and their `role` (and `component` for helpers); a retrieval injection yields `x.hub.retrieval` with the injected size.
 - **Hub-owned providers.** `SapAiCoreEmbedder` and the step reviewer, the guard classifier and the retrieval embeddings produce records.
 - **Storage.**
   - Measures do not overlap: the outbox is not counted twice.
