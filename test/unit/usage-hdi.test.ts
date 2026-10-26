@@ -33,34 +33,41 @@ function index(sql: string) {
   return {
     name: match[1],
     table: match[2],
-    columns: match[3].split(',').map((column: string) => column.trim()),
+    columns: match[3].split(',').map((column: string): string => column.trim()),
   };
 }
 
-test('usage HDI columns, nullability, primary key and every index match package DDL', () => {
+test('usage HDI columns, nullability, primary key and every index match package DDL', (): void => {
   const statements = read(
     join(root, 'node_modules/@mcp-abap-adt/llm-usage-hana/ddl/usage.sql'),
   )
     .split(';')
-    .map((sql: string) => sql.trim())
-    .filter((sql: string) => sql.length > 0);
+    .map((sql: string): string => sql.trim())
+    .filter((sql: string): boolean => sql.length > 0);
   expect(table(read(join(artifacts, 'USAGE_RECORDS.hdbtable')))).toEqual(
     table(statements[0]),
   );
   const indexes = readdirSync(artifacts)
-    .filter((name: string) => name.endsWith('.hdbindex'))
+    .filter((name: string): boolean => name.endsWith('.hdbindex'))
     .sort();
   const expected = statements
     .slice(1)
-    .map((sql: string) => index(sql))
-    .sort((a: ReturnType<typeof index>, b: ReturnType<typeof index>) =>
+    .map((sql: string): { name: string; table: string; columns: string[] } =>
+      index(sql),
+    )
+    .sort((a: ReturnType<typeof index>, b: ReturnType<typeof index>): number =>
       a.name.localeCompare(b.name),
     );
   expect(indexes).toEqual(
-    expected.map((entry: ReturnType<typeof index>) => `${entry.name}.hdbindex`),
+    expected.map(
+      (entry: ReturnType<typeof index>): string => `${entry.name}.hdbindex`,
+    ),
   );
   expect(
-    indexes.map((name: string) => index(read(join(artifacts, name)))),
+    indexes.map(
+      (name: string): { name: string; table: string; columns: string[] } =>
+        index(read(join(artifacts, name))),
+    ),
   ).toEqual(expected);
   const config = read(join(artifacts, '.hdiconfig'));
   expect(JSON.parse(config)).toEqual({
@@ -73,7 +80,7 @@ test('usage HDI columns, nullability, primary key and every index match package 
 
 test.each(['hdi-llm', 'test-usage-hdi'])(
   'HDI dry-run includes vector and usage artifacts for %s without deployment',
-  (service: string) => {
+  (service: string): void => {
     const output = execFileSync(
       'bash',
       ['tools/deploy-hdi-tables.sh', '--dry-run', service],

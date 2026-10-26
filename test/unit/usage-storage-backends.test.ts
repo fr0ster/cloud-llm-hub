@@ -1,5 +1,13 @@
-jest.mock('@sap/hana-client', () => ({
-  createConnection: () => ({
+jest.mock('@sap/hana-client', (): object => ({
+  createConnection: (): {
+    connect: (
+      _options: object,
+      callback: (error: Error | null) => void,
+    ) => void;
+    exec: () => void;
+    abort: () => void;
+    disconnect: (callback: (error: Error | null) => void) => void;
+  } => ({
     connect: (
       _options: object,
       callback: (error: Error | null) => void,
@@ -15,9 +23,16 @@ jest.mock('@sap/hana-client', () => ({
 const mockHanaAbort = jest.fn<void, []>();
 const mockHanaDisconnect = jest.fn<void, []>();
 
-jest.mock('@sap/cds', () => ({
+jest.mock('@sap/cds', (): object => ({
   __esModule: true,
-  default: { log: () => ({ info() {}, warn() {}, error() {}, debug() {} }) },
+  default: {
+    log: (): { info(): void; warn(): void; error(): void; debug(): void } => ({
+      info(): void {},
+      warn(): void {},
+      error(): void {},
+      debug(): void {},
+    }),
+  },
 }));
 
 import type { HanaVectorRagConfig } from '@mcp-abap-adt/hana-vector-rag';
@@ -37,6 +52,7 @@ import {
 import { readUsageConfig } from '../../srv/lib/usage/config';
 import { initUsage, type UsageRuntime } from '../../srv/lib/usage/runtime';
 import {
+  type AggregateQuery,
   COLLECTION_BATCH_LIMIT,
   collectionAggregateQuery,
   createCollectionAggregateReader,
@@ -55,13 +71,13 @@ const rag: RagConfig = {
   },
 };
 let runtime: UsageRuntime | undefined;
-afterEach(async () => {
+afterEach(async (): Promise<void> => {
   await runtime?.close(1000);
 });
 
 test.each<SessionStoreKind>(['none', 'sqlite'])(
   '%s dialogue backend exposes exact counters without loading content',
-  async (backend: SessionStoreKind) => {
+  async (backend: SessionStoreKind): Promise<void> => {
     runtime = await initUsage(
       readUsageConfig({
         LLM_AGENT_USAGE: 'on',
@@ -101,7 +117,7 @@ test.each<SessionStoreKind>(['none', 'sqlite'])(
   },
 );
 
-test('PostgreSQL aggregates run on PGlite, isolate collections, and count actual vector dimensions and UTF-8 bytes', async () => {
+test('PostgreSQL aggregates run on PGlite, isolate collections, and count actual vector dimensions and UTF-8 bytes', async (): Promise<void> => {
   const pgl = await startPglite({ dimension: 8 });
   const client = await createPgClient({
     connectionString: pgl.url,
@@ -128,7 +144,9 @@ test('PostgreSQL aggregates run on PGlite, isolate collections, and count actual
     const reader = createCollectionAggregateReader(
       { ...rag, pg: { url: pgl.url, schema: pgl.schema } },
       {
-        pg: async (_cfg: PgVectorRagConfig) =>
+        pg: async (
+          _cfg: PgVectorRagConfig,
+        ): ReturnType<typeof createPgClient> =>
           createPgClient({
             connectionString: pgl.url,
             credential: pgl.credential,
@@ -160,9 +178,9 @@ test('PostgreSQL aggregates run on PGlite, isolate collections, and count actual
   }
 });
 
-test('HANA aggregate uses a fake client, scalar results, bound collection names and closes its connection', async () => {
+test('HANA aggregate uses a fake client, scalar results, bound collection names and closes its connection', async (): Promise<void> => {
   const calls: string[] = [];
-  const close = jest.fn<Promise<void>, []>(async () => {});
+  const close = jest.fn<Promise<void>, []>(async (): Promise<void> => {});
   const reader = createCollectionAggregateReader(rag, {
     env: {
       VCAP_SERVICES: JSON.stringify({
@@ -179,12 +197,22 @@ test('HANA aggregate uses a fake client, scalar results, bound collection names 
         ],
       }),
     },
-    hana: async (_cfg: HanaVectorRagConfig) => ({
-      query: async (sql: string) => {
+    hana: async (
+      _cfg: HanaVectorRagConfig,
+    ): Promise<{
+      query: (
+        sql: string,
+      ) => Promise<{ documents: number; vectorBytes: number }[]>;
+      exec: () => Promise<{ rowCount: number }>;
+      close: jest.Mock<Promise<void>, [], void>;
+    }> => ({
+      query: async (
+        sql: string,
+      ): Promise<{ documents: number; vectorBytes: number }[]> => {
         calls.push(sql);
         return [{ documents: 2, vectorBytes: 6144 }];
       },
-      exec: async () => ({ rowCount: 0 }),
+      exec: async (): Promise<{ rowCount: number }> => ({ rowCount: 0 }),
       close,
     }),
   });
@@ -216,7 +244,7 @@ test('HANA aggregate uses a fake client, scalar results, bound collection names 
 
 test.each<'pg-vector' | 'hana-vector'>(['pg-vector', 'hana-vector'])(
   '%s aggregate IN lists enforce the batch boundary and sum multiple batches',
-  async (backend: 'pg-vector' | 'hana-vector') => {
+  async (backend: 'pg-vector' | 'hana-vector'): Promise<void> => {
     const stores = Array.from(
       { length: COLLECTION_BATCH_LIMIT },
       (_value: undefined, index: number): string => `store-${index}`,
@@ -224,8 +252,9 @@ test.each<'pg-vector' | 'hana-vector'>(['pg-vector', 'hana-vector'])(
     expect(collectionAggregateQuery(backend, stores).params).toHaveLength(
       COLLECTION_BATCH_LIMIT,
     );
-    expect(() =>
-      collectionAggregateQuery(backend, [...stores, 'extra']),
+    expect(
+      (): AggregateQuery =>
+        collectionAggregateQuery(backend, [...stores, 'extra']),
     ).toThrow('batch limit');
     const sizes: number[] = [];
     const reader = createCollectionAggregateReader(rag, {
@@ -244,13 +273,39 @@ test.each<'pg-vector' | 'hana-vector'>(['pg-vector', 'hana-vector'])(
           ],
         }),
       },
-      pg: async (_cfg: PgVectorRagConfig) => ({
+      pg: async (
+        _cfg: PgVectorRagConfig,
+      ): Promise<{
+        query: (
+          _sql: string,
+          params?: Parameters<
+            Awaited<ReturnType<typeof createPgClient>>['query']
+          >[1],
+        ) => Promise<{
+          rows: {
+            pid: number;
+            documents: number;
+            textBytes: number;
+            vectorBytes: number;
+          }[];
+          rowCount: number;
+        }>;
+        end: () => Promise<void>;
+      }> => ({
         query: async (
           _sql: string,
           params?: Parameters<
             Awaited<ReturnType<typeof createPgClient>>['query']
           >[1],
-        ) => {
+        ): Promise<{
+          rows: {
+            pid: number;
+            documents: number;
+            textBytes: number;
+            vectorBytes: number;
+          }[];
+          rowCount: number;
+        }> => {
           if (params) sizes.push(params.length);
           return {
             rows: [
@@ -266,13 +321,24 @@ test.each<'pg-vector' | 'hana-vector'>(['pg-vector', 'hana-vector'])(
         },
         end: async (): Promise<void> => {},
       }),
-      hana: async (_cfg: HanaVectorRagConfig) => ({
+      hana: async (
+        _cfg: HanaVectorRagConfig,
+      ): Promise<{
+        query: (
+          _sql: string,
+          params?: Parameters<
+            Awaited<ReturnType<typeof createPgClient>>['query']
+          >[1],
+        ) => Promise<{ documents: number; vectorBytes: number }[]>;
+        exec: () => Promise<{ rowCount: number }>;
+        close: () => Promise<void>;
+      }> => ({
         query: async (
           _sql: string,
           params?: Parameters<
             Awaited<ReturnType<typeof createPgClient>>['query']
           >[1],
-        ) => {
+        ): Promise<{ documents: number; vectorBytes: number }[]> => {
           sizes.push(params?.length ?? 0);
           return [
             {
@@ -281,7 +347,7 @@ test.each<'pg-vector' | 'hana-vector'>(['pg-vector', 'hana-vector'])(
             },
           ];
         },
-        exec: async () => ({ rowCount: 0 }),
+        exec: async (): Promise<{ rowCount: number }> => ({ rowCount: 0 }),
         close: async (): Promise<void> => {},
       }),
     });
@@ -295,11 +361,13 @@ test.each<'pg-vector' | 'hana-vector'>(['pg-vector', 'hana-vector'])(
 
 test.each<'pg-vector' | 'hana-vector'>(['pg-vector', 'hana-vector'])(
   '%s stalled query is cancelled and cleaned up within budget, followed by a successful measurement',
-  async (backend: 'pg-vector' | 'hana-vector') => {
+  async (backend: 'pg-vector' | 'hana-vector'): Promise<void> => {
     jest.useFakeTimers();
     let stalled = true;
     const sqls: string[] = [];
-    const close = jest.fn<Promise<void>, []>(() => new Promise<void>(() => {}));
+    const close = jest.fn<Promise<void>, []>(
+      (): Promise<void> => new Promise<void>((): void => {}),
+    );
     const reader = createCollectionAggregateReader(rag, {
       env: {
         VCAP_SERVICES: JSON.stringify({
@@ -316,11 +384,34 @@ test.each<'pg-vector' | 'hana-vector'>(['pg-vector', 'hana-vector'])(
           ],
         }),
       },
-      pg: async (_cfg: PgVectorRagConfig) => ({
-        query: async (sql: string) => {
+      pg: async (
+        _cfg: PgVectorRagConfig,
+      ): Promise<{
+        query: (sql: string) => Promise<{
+          rows: {
+            pid: number;
+            documents: number;
+            textBytes: number;
+            vectorBytes: number;
+          }[];
+          rowCount: number;
+        }>;
+        end: jest.Mock<Promise<void>, [], void>;
+      }> => ({
+        query: async (
+          sql: string,
+        ): Promise<{
+          rows: {
+            pid: number;
+            documents: number;
+            textBytes: number;
+            vectorBytes: number;
+          }[];
+          rowCount: number;
+        }> => {
           sqls.push(sql);
           if (stalled && sql.startsWith('SELECT COUNT'))
-            return new Promise<never>(() => {});
+            return new Promise<never>((): void => {});
           return {
             rows: [{ pid: 123, documents: 1, textBytes: 2, vectorBytes: 4 }],
             rowCount: 1,
@@ -328,13 +419,23 @@ test.each<'pg-vector' | 'hana-vector'>(['pg-vector', 'hana-vector'])(
         },
         end: close,
       }),
-      hana: async (_cfg: HanaVectorRagConfig) => ({
-        query: async (sql: string) => {
+      hana: async (
+        _cfg: HanaVectorRagConfig,
+      ): Promise<{
+        query: (
+          sql: string,
+        ) => Promise<{ documents: number; vectorBytes: number }[]>;
+        exec: () => Promise<{ rowCount: number }>;
+        close: jest.Mock<Promise<void>, [], void>;
+      }> => ({
+        query: async (
+          sql: string,
+        ): Promise<{ documents: number; vectorBytes: number }[]> => {
           sqls.push(sql);
-          if (stalled) return new Promise<never>(() => {});
+          if (stalled) return new Promise<never>((): void => {});
           return [{ documents: 1, vectorBytes: 4 }];
         },
-        exec: async () => ({ rowCount: 0 }),
+        exec: async (): Promise<{ rowCount: number }> => ({ rowCount: 0 }),
         close,
       }),
     });
@@ -361,7 +462,7 @@ test.each<'pg-vector' | 'hana-vector'>(['pg-vector', 'hana-vector'])(
   },
 );
 
-test('native HANA cancellation aborts the running statement before disconnect on shutdown', async () => {
+test('native HANA cancellation aborts the running statement before disconnect on shutdown', async (): Promise<void> => {
   mockHanaAbort.mockClear();
   mockHanaDisconnect.mockClear();
   const controller = new AbortController();
@@ -395,7 +496,7 @@ test('native HANA cancellation aborts the running statement before disconnect on
   );
 });
 
-test('history aggregate isolates persisted sessions beyond the recent window and follows deletion', async () => {
+test('history aggregate isolates persisted sessions beyond the recent window and follows deletion', async (): Promise<void> => {
   const pgl = await startPglite({ dimension: 8 });
   const client = await createPgClient({
     connectionString: pgl.url,

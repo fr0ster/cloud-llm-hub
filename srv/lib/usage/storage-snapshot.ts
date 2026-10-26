@@ -31,10 +31,10 @@ export interface StorageSnapshots {
   cached(session: UsageSession): StorageSnapshot | undefined;
 }
 const empty: StorageSnapshots = {
-  async measure() {
+  async measure(): Promise<undefined> {
     return undefined;
   },
-  cached() {
+  cached(): undefined {
     return undefined;
   },
 };

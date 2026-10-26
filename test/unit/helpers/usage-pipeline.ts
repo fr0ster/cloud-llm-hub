@@ -1,3 +1,4 @@
+import type { LlmFinishReason, LlmToolCall } from '@mcp-abap-adt/llm-agent';
 import {
   beginLlmRequest,
   type CallOptions,
@@ -23,7 +24,7 @@ export function fakePipelineLlm(
       messages: Message[],
       tools: Parameters<ILlm['chat']>[1],
       options?: CallOptions,
-    ) {
+    ): Promise<{ ok: true; value: LlmResponse }> {
       if (beforeChat) await beforeChat(messages, tools, options);
       const call = beginLlmRequest(options, startOperation(options), {
         ...requestShape(messages, tools),
@@ -43,7 +44,18 @@ export function fakePipelineLlm(
       messages: Message[],
       tools: Parameters<ILlm['chat']>[1],
       options?: CallOptions,
-    ) {
+    ): AsyncGenerator<
+      {
+        ok: true;
+        value: {
+          content: string;
+          finishReason: LlmFinishReason;
+          toolCalls: LlmToolCall[] | undefined;
+        };
+      },
+      void,
+      void
+    > {
       const result = await this.chat(messages, tools, options);
       if (result.ok)
         yield {

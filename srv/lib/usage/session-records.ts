@@ -51,13 +51,13 @@ export function usageSessionBookkeepingForTest() {
 }
 export function holdSessionDelivery(session: UsageSession): () => void {
   const s = live.get(key(session));
-  if (!s) return () => {};
-  let settle: () => void = () => {};
-  const done = new Promise<void>((resolve: () => void) => {
+  if (!s) return (): void => {};
+  let settle: () => void = (): void => {};
+  const done = new Promise<void>((resolve: () => void): void => {
     settle = resolve;
   });
   s.deliveries.add(done);
-  return () => {
+  return (): void => {
     s.deliveries.delete(done);
     settle();
   };
@@ -187,7 +187,7 @@ export function sessionClosed(
         }
       : undefined);
   if (!s) return Promise.resolve();
-  const closing = (async () => {
+  const closing = (async (): Promise<void> => {
     await Promise.all([...s.deliveries]);
     if (s.closed) return;
     if (live.get(sessionKey) === s) live.delete(sessionKey);
@@ -196,7 +196,7 @@ export function sessionClosed(
       if (runtime.enabled('storage'))
         snapshot = await storageSnapshots().measure(s.session);
     } catch {
-      snapshot = cachedSnapshot(session);
+      snapshot = unknownStorageSnapshot();
     }
     if (s.closed) return;
     s.closed = true;
@@ -204,7 +204,7 @@ export function sessionClosed(
       rememberClosed(sessionKey);
     emitClose(s, reason, snapshot, endKnown);
     storageSnapshots().release?.(s.session);
-  })().finally(() => {
+  })().finally((): void => {
     if (pending.get(sessionKey) === s) pending.delete(sessionKey);
     closingTasks.delete(closing);
     closingSessions.delete(s);
@@ -246,10 +246,10 @@ export async function closeUsageSessions(timeoutMs?: number): Promise<void> {
   if (!live.size && !closingTasks.size) return;
   const closing = Promise.all([
     ...closingTasks,
-    ...[...live.values()].map((s: LiveSession) =>
-      sessionClosed(s.session, 'shutdown'),
+    ...[...live.values()].map(
+      (s: LiveSession): Promise<void> => sessionClosed(s.session, 'shutdown'),
     ),
-  ]).then(() => {});
+  ]).then((): void => {});
   if (timeoutMs === undefined) await closing;
   else if (!(await withinUsageShutdownBudget(closing, timeoutMs))) {
     for (const s of new Set([...live.values(), ...closingSessions])) {

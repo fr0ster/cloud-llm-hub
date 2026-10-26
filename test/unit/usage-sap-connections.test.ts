@@ -1,6 +1,8 @@
 import type { Dirent } from 'node:fs';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import type { IUsageSink } from '@mcp-abap-adt/llm-agent';
+import type { IUsageReader } from '@mcp-abap-adt/llm-usage';
 import { memorySink } from '@mcp-abap-adt/llm-usage';
 import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 import express from 'express';
@@ -75,14 +77,14 @@ function makeConnection() {
     },
   };
 }
-jest.mock('../../srv/env-setup', () => ({}));
-jest.mock('@sap-cloud-sdk/http-client', () => ({
+jest.mock('../../srv/env-setup', (): object => ({}));
+jest.mock('@sap-cloud-sdk/http-client', (): object => ({
   executeHttpRequest: jest.fn(),
 }));
-jest.mock('@sap/cds', () => ({
+jest.mock('@sap/cds', (): object => ({
   __esModule: true,
   default: {
-    log: () => ({
+    log: (): { info(): void; warn(): void; error(): void; debug(): void } => ({
       info(): void {},
       warn(): void {},
       error(): void {},
@@ -96,29 +98,46 @@ jest.mock('@sap/cds', () => ({
     },
   },
 }));
-jest.mock('../../srv/connections/destinationResolver', () => ({
-  resolveDestinationSapConfig: async (destinationName: string) => ({
+jest.mock('../../srv/connections/destinationResolver', (): object => ({
+  resolveDestinationSapConfig: async (
+    destinationName: string,
+  ): Promise<{
+    destinationName: string;
+    authenticationType: string;
+    sapConfig: { url: string; authType: string };
+  }> => ({
     destinationName,
     authenticationType: 'NoAuthentication',
     sapConfig: { url: 'http://sap', authType: 'basic' },
   }),
 }));
-jest.mock('../../srv/lib/system-identity-cache', () => ({
+jest.mock('../../srv/lib/system-identity-cache', (): object => ({
   cachedSystemIdentity: (): null => null,
   bindSystemIdentity: (): void => {},
   warmSystemIdentity: async (): Promise<void> => duringWarmup(),
 }));
-jest.mock('../../srv/connections/connectionFactory', () => ({
+jest.mock('../../srv/connections/connectionFactory', (): object => ({
   ...jest.requireActual<
     typeof import('../../srv/connections/connectionFactory')
   >('../../srv/connections/connectionFactory'),
-  createConnection: () => {
+  createConnection: (): {
+    connect: jest.Mock<Promise<void>, [], void>;
+    disconnect: jest.Mock<Promise<void>, [], void>;
+    close: jest.Mock<Promise<void>, [], void>;
+    closeSession: jest.Mock<Promise<void>, [], void>;
+    probe: (_path: string) => Promise<{ httpCode: number; rawMessage: string }>;
+    reset: () => void;
+    getBaseUrl: () => Promise<string>;
+    getSessionId: () => string;
+    setSessionType: () => void;
+    makeAdtRequest: () => Promise<never>;
+  } => {
     const connection = makeConnection();
     connections.push(connection);
     return connection;
   },
 }));
-jest.mock('@mcp-abap-adt/lib/embeddable', () => ({
+jest.mock('@mcp-abap-adt/lib/embeddable', (): object => ({
   EmbeddableMcpServer: class {
     constructor(options: ServerOptions) {
       optionsSeen.push(options);
@@ -155,7 +174,7 @@ async function start(mode = 'on', measure = 'process') {
       LLM_AGENT_USAGE_SINKS: 'memory',
       LLM_AGENT_USAGE_MEASURE: measure,
     }),
-    { factories: { memory: () => recordingSink } },
+    { factories: { memory: (): IUsageSink & IUsageReader => recordingSink } },
   );
 }
 
@@ -386,7 +405,24 @@ test.each(['healthy', 'error', 'abort'])(
   async (outcome: string): Promise<void> => {
     const runtime = await start();
     const factory = new SessionConnectionFactory('reader', 'key', {
-      builder: async () => ({
+      builder: async (): Promise<{
+        connection: {
+          connect: jest.Mock<Promise<void>, [], void>;
+          disconnect: jest.Mock<Promise<void>, [], void>;
+          close: jest.Mock<Promise<void>, [], void>;
+          closeSession: jest.Mock<Promise<void>, [], void>;
+          probe: (
+            _path: string,
+          ) => Promise<{ httpCode: number; rawMessage: string }>;
+          reset: () => void;
+          getBaseUrl: () => Promise<string>;
+          getSessionId: () => string;
+          setSessionType: () => void;
+          makeAdtRequest: () => Promise<never>;
+        };
+        dumpScope: undefined;
+        system: Record<string, never>;
+      }> => ({
         connection: makeConnection(),
         dumpScope: undefined,
         system: {},
@@ -431,7 +467,24 @@ test.each([false, true])(
     });
     let built = 0;
     const factory = new SessionConnectionFactory('reader', 'key', {
-      builder: async () => ({
+      builder: async (): Promise<{
+        connection: {
+          connect: jest.Mock<Promise<void>, [], void>;
+          disconnect: jest.Mock<Promise<void>, [], void>;
+          close: jest.Mock<Promise<void>, [], void>;
+          closeSession: jest.Mock<Promise<void>, [], void>;
+          probe: (
+            _path: string,
+          ) => Promise<{ httpCode: number; rawMessage: string }>;
+          reset: () => void;
+          getBaseUrl: () => Promise<string>;
+          getSessionId: () => string;
+          setSessionType: () => void;
+          makeAdtRequest: () => Promise<never>;
+        };
+        dumpScope: undefined;
+        system: Record<string, never>;
+      }> => ({
         connection: built++ === 0 ? first : remaining,
         dumpScope: undefined,
         system: {},
@@ -526,7 +579,24 @@ test.each(['off', 'disabled'])(
       mode === 'disabled' ? 'llm' : 'process',
     );
     const factory = new SessionConnectionFactory('reader', 'off', {
-      builder: async () => ({
+      builder: async (): Promise<{
+        connection: {
+          connect: jest.Mock<Promise<void>, [], void>;
+          disconnect: jest.Mock<Promise<void>, [], void>;
+          close: jest.Mock<Promise<void>, [], void>;
+          closeSession: jest.Mock<Promise<void>, [], void>;
+          probe: (
+            _path: string,
+          ) => Promise<{ httpCode: number; rawMessage: string }>;
+          reset: () => void;
+          getBaseUrl: () => Promise<string>;
+          getSessionId: () => string;
+          setSessionType: () => void;
+          makeAdtRequest: () => Promise<never>;
+        };
+        dumpScope: undefined;
+        system: Record<string, never>;
+      }> => ({
         connection: makeConnection(),
         dumpScope: undefined,
         system: {},

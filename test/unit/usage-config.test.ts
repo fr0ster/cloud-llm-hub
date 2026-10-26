@@ -1,7 +1,11 @@
-﻿import { MEASURES, readUsageConfig } from '../../srv/lib/usage/config';
+import {
+  MEASURES,
+  readUsageConfig,
+  type UsageConfig,
+} from '../../srv/lib/usage/config';
 
-describe('usage configuration', () => {
-  it('defaults and off', () => {
+describe('usage configuration', (): void => {
+  it('defaults and off', (): void => {
     expect(readUsageConfig({})).toEqual({
       enabled: false,
       sinks: ['sqlite'],
@@ -18,17 +22,19 @@ describe('usage configuration', () => {
   });
   it.each(['0', '-1', '1e3', ' 5', '1.5', '9007199254740992'])(
     'rejects strict numeric value %s',
-    (value) => {
-      expect(() =>
-        readUsageConfig({ LLM_AGENT_USAGE_MEMORY_LIMIT: value }),
+    (value: string): void => {
+      expect(
+        (): UsageConfig =>
+          readUsageConfig({ LLM_AGENT_USAGE_MEMORY_LIMIT: value }),
       ).toThrow('LLM_AGENT_USAGE_MEMORY_LIMIT');
     },
   );
   it.each(['USAGE', 'USAGE_SINKS', 'USAGE_MEASURE', 'USAGE_USER_ID'])(
     'rejects invalid %s',
-    (suffix) => {
-      expect(() =>
-        readUsageConfig({ [`LLM_AGENT_${suffix}`]: 'invalid' }),
+    (suffix: string): void => {
+      expect(
+        (): UsageConfig =>
+          readUsageConfig({ [`LLM_AGENT_${suffix}`]: 'invalid' }),
       ).toThrow();
     },
   );
@@ -37,12 +43,12 @@ describe('usage configuration', () => {
     ['pg-vector', 'pg'],
     ['sqlite', 'sqlite'],
     ['none', 'sqlite'],
-  ])('follows %s', (store, sink) => {
+  ])('follows %s', (store: string, sink: string): void => {
     expect(readUsageConfig({ LLM_AGENT_SESSION_STORE: store }).sinks).toEqual([
       sink,
     ]);
   });
-  it('override and inherited session backend', () => {
+  it('override and inherited session backend', (): void => {
     expect(readUsageConfig({}, 'hana-vector').sinks).toEqual(['hana']);
     expect(
       readUsageConfig({
@@ -50,11 +56,12 @@ describe('usage configuration', () => {
         LLM_AGENT_USAGE_SINKS: 'memory,pg',
       }).sinks,
     ).toEqual(['memory', 'pg']);
-    expect(() =>
-      readUsageConfig({
-        LLM_AGENT_USAGE: 'on',
-        LLM_AGENT_USAGE_SINKS: 'jsonl',
-      }),
+    expect(
+      (): UsageConfig =>
+        readUsageConfig({
+          LLM_AGENT_USAGE: 'on',
+          LLM_AGENT_USAGE_SINKS: 'jsonl',
+        }),
     ).toThrow('JSONL_PATH');
   });
 });

@@ -1,5 +1,7 @@
+import type { ConnectionOptions } from 'node:tls';
 import { createHanaClient } from '@mcp-abap-adt/hana-vector-rag';
 import { createPgClient } from '@mcp-abap-adt/pg-vector-rag';
+import type { Connection } from '@sap/hana-client';
 import { z } from 'zod';
 import type { RagConfig } from '../../agent-config';
 import {
@@ -116,7 +118,7 @@ export function createCollectionAggregateReader(
         if (!close || closed) return;
         closed = true;
         if (controller.signal.aborted) cancel?.();
-        void close().catch(() => {});
+        void close().catch((): void => {});
       };
       controller.signal.addEventListener('abort', cleanup, { once: true });
       const work = async (): Promise<CollectionAggregate> => {
@@ -138,33 +140,40 @@ export function createCollectionAggregateReader(
                 ((
                   cfg: Parameters<typeof createHanaClient>[0],
                 ): ReturnType<typeof createHanaClient> =>
-                  createHanaClient(cfg, async () => {
-                    const hana = await import('@sap/hana-client');
-                    return {
-                      createConnection: (): ReturnType<
-                        typeof hana.createConnection
-                      > => {
-                        const connection = hana.createConnection();
-                        close = (): Promise<void> =>
-                          new Promise<void>(
-                            (
-                              resolve: () => void,
-                              reject: (reason: Error) => void,
-                            ) => {
-                              connection.disconnect((error: Error): void =>
-                                error ? reject(error) : resolve(),
-                              );
-                            },
-                          );
-                        cancel = (): void => connection.abort(() => {});
-                        if (controller.signal.aborted) {
-                          cleanup();
-                          throw new Error('Measurement aborted');
-                        }
-                        return connection;
-                      },
-                    };
-                  }))
+                  createHanaClient(
+                    cfg,
+                    async (): Promise<{
+                      createConnection: () => ReturnType<
+                        (options?: ConnectionOptions) => Connection
+                      >;
+                    }> => {
+                      const hana = await import('@sap/hana-client');
+                      return {
+                        createConnection: (): ReturnType<
+                          typeof hana.createConnection
+                        > => {
+                          const connection = hana.createConnection();
+                          close = (): Promise<void> =>
+                            new Promise<void>(
+                              (
+                                resolve: () => void,
+                                reject: (reason: Error) => void,
+                              ): void => {
+                                connection.disconnect((error: Error): void =>
+                                  error ? reject(error) : resolve(),
+                                );
+                              },
+                            );
+                          cancel = (): void => connection.abort((): void => {});
+                          if (controller.signal.aborted) {
+                            cleanup();
+                            throw new Error('Measurement aborted');
+                          }
+                          return connection;
+                        },
+                      };
+                    },
+                  ))
               )({
                 ...hanaConnection(rag, clients.env),
                 collectionName: 'hub-usage-storage',
@@ -199,7 +208,7 @@ export function createCollectionAggregateReader(
               const end = (): void => {
                 if (ended) return;
                 ended = true;
-                void control.end().catch(() => {});
+                void control.end().catch((): void => {});
               };
               const cleanupTimer = setTimeout(end, 1000);
               cleanupTimer.unref();
@@ -209,7 +218,7 @@ export function createCollectionAggregateReader(
                 clearTimeout(cleanupTimer);
                 end();
               }
-            })().catch(() => {});
+            })().catch((): void => {});
           };
         }
         const total: CollectionAggregate = {
@@ -248,7 +257,7 @@ export function createCollectionAggregateReader(
             (
               _resolve: (value: never) => void,
               reject: (reason: Error) => void,
-            ) => {
+            ): void => {
               rejectAbort = (): void =>
                 reject(new Error('Measurement aborted'));
               controller.signal.addEventListener('abort', rejectAbort, {

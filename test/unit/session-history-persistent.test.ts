@@ -811,9 +811,9 @@ describe('restore and the catalog sweep leave the history record alone', () => {
   });
 });
 
-test('persisted history bytes survive window expiry and revival, and shrink with cap and owner deletion', async () => {
-  const first = history(() => ALICE, { cap: 15 });
-  const second = history(() => BOB);
+test('persisted history bytes survive window expiry and revival, and shrink with cap and owner deletion', async (): Promise<void> => {
+  const first = history((): string => ALICE, { cap: 15 });
+  const second = history((): string => BOB);
   const text = renderTurn('\u00e9\u{1f600}', 'answer');
   const bytes = Buffer.byteLength(text, 'utf8');
   for (let index = 0; index < 16; index++) {
@@ -856,7 +856,7 @@ test('persisted history bytes survive window expiry and revival, and shrink with
   expect(await measure(BOB, 'bob@example.com', 's-2')).toBe(bytes * 16);
   sweepSessionHistory(Date.now() + 365 * 86400000);
   expect(await measure(ALICE, 'alice@example.com', 's-1')).toBe(bytes * 15);
-  const revived = history(() => ALICE, { cap: 12 });
+  const revived = history((): string => ALICE, { cap: 12 });
   expect(await revived.listTurns(ALICE)).toHaveLength(15);
   expect(await measure(ALICE, 'alice@example.com', 's-1')).toBe(bytes * 15);
   await revived.recordTurn({

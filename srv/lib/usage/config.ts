@@ -30,7 +30,7 @@ function isChoice<T extends readonly string[]>(
   raw: string,
   allowed: T,
 ): raw is T[number] {
-  return allowed.some((value) => value === raw);
+  return allowed.some((value: string): boolean => value === raw);
 }
 export function isMeasure(raw: string): raw is Measure {
   return isChoice(raw, MEASURES);
@@ -60,7 +60,7 @@ export function readUsageConfig(
     (store === 'hana-vector' ? 'hana' : store === 'pg-vector' ? 'pg' : 'sqlite')
   )
     .split(',')
-    .map((s) =>
+    .map((s: string): 'sqlite' | 'hana' | 'pg' | 'jsonl' | 'memory' =>
       choice(
         s.trim(),
         ['hana', 'pg', 'sqlite', 'jsonl', 'memory'] as const,
@@ -73,7 +73,20 @@ export function readUsageConfig(
       ? [...MEASURES]
       : rawMeasure
           .split(',')
-          .map((s) => choice(s.trim(), MEASURES, 'LLM_AGENT_USAGE_MEASURE'));
+          .map(
+            (
+              s: string,
+            ):
+              | 'tool'
+              | 'task'
+              | 'embedding'
+              | 'request'
+              | 'llm'
+              | 'session'
+              | 'storage'
+              | 'process' =>
+              choice(s.trim(), MEASURES, 'LLM_AGENT_USAGE_MEASURE'),
+          );
   const num = (name: string, fallback: number): number =>
     readPositiveIntFrom(env, name) ?? fallback;
   const jsonlPath = env.LLM_AGENT_USAGE_JSONL_PATH?.trim() || undefined;

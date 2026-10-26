@@ -192,7 +192,10 @@ export function executeStep(
       destination: input.destination,
     },
     'execute_step',
-    () => executeStepMeasured(req, caller, input, signal),
+    (): Promise<{
+      isError?: boolean | undefined;
+      content: { type: 'text'; text: string }[];
+    }> => executeStepMeasured(req, caller, input, signal),
     signal,
   );
 }
@@ -208,12 +211,20 @@ function measuredAgentCallback<
   const runtime = usageRuntime();
   if (!runtime || (!runtime.enabled('request') && !runtime.enabled('session')))
     return run;
-  return (args: T) =>
+  return (
+    args: T,
+  ): Promise<{
+    isError?: boolean | undefined;
+    content: { type: 'text'; text: string }[];
+  }> =>
     measureAgentTool(
       req,
       { userId, sessionId: args.session ?? '', destination: args.destination },
       tool,
-      () => run(args),
+      (): Promise<{
+        isError?: boolean | undefined;
+        content: { type: 'text'; text: string }[];
+      }> => run(args),
     );
 }
 
@@ -233,7 +244,7 @@ async function measureAgentTool(
     tool,
   );
   if (!measurement) return run();
-  const disconnected = () => measurement.responseEnded('disconnected');
+  const disconnected = (): void => measurement.responseEnded('disconnected');
   if (signal?.aborted) disconnected();
   signal?.addEventListener('abort', disconnected, { once: true });
   try {
@@ -649,7 +660,14 @@ export async function createAgentMcpServerForRequest(
       req,
       userId,
       'session_open',
-      async ({ destination }: { destination?: string }) => {
+      async ({
+        destination,
+      }: {
+        destination?: string;
+      }): Promise<{
+        isError?: boolean | undefined;
+        content: { type: 'text'; text: string }[];
+      }> => {
         const headerDestination = req.headers['x-sap-destination'];
         const target =
           destination?.trim() ||
@@ -686,7 +704,14 @@ export async function createAgentMcpServerForRequest(
       req,
       userId,
       'session_close',
-      async ({ session }: { session: string }) => {
+      async ({
+        session,
+      }: {
+        session: string;
+      }): Promise<{
+        isError?: boolean | undefined;
+        content: { type: 'text'; text: string }[];
+      }> => {
         let s: LongSession | undefined;
         try {
           s = await resolveSession(userId, session);

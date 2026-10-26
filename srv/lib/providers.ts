@@ -3,8 +3,10 @@
  * Components receive what is built here; none of them read configuration.
  */
 import {
+  type CallOptions,
   CircuitBreaker,
   CircuitBreakerEmbedder,
+  type IEmbedResult,
   type IQueryEmbedder,
   type IRagProvider,
   type IRetrievalEmbedder,
@@ -151,7 +153,10 @@ export function agentQueryEmbedder(
 ): IQueryEmbedder {
   const query = symmetricEmbedder(wrapEmbedder(e.embedder));
   return {
-    embedQuery(text, options) {
+    embedQuery(
+      text: string,
+      options: CallOptions | undefined,
+    ): Promise<IEmbedResult> {
       return query.embedQuery(text, {
         ...options,
         ...(options?.usage

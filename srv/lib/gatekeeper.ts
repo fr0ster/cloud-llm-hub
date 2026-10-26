@@ -60,43 +60,45 @@ export function theRetention(): SessionRetention {
   if (!retention) {
     retention = new SessionRetention(
       {
-        ...(usageRuntime()?.enabled('session') ||
-        usageRuntime()?.enabled('storage')
-          ? {
-              onSessionRetained: (userId: string, sessionId: string) => {
-                if (
-                  (usageRuntime()?.enabled('session') ||
-                    usageRuntime()?.enabled('storage')) &&
-                  !isOpenLongSession(userId, sessionId)
-                )
-                  sessionOpened({ userId, sessionId });
-              },
-              afterAsyncRemoval: () => theDoor()?.poke(),
-              beforeSessionReleased: (
-                userId: string,
-                sessionId: string,
-                reason: SessionCloseReason,
-              ) => {
-                if (
-                  (usageRuntime()?.enabled('session') ||
-                    usageRuntime()?.enabled('storage')) &&
-                  !isOpenLongSession(userId, sessionId)
-                )
-                  return sessionClosed({ userId, sessionId }, reason);
-              },
-              onSessionReleased: (
-                userId: string,
-                sessionId: string,
-                reason: SessionCloseReason,
-              ) => {
-                if (
-                  usageRuntime()?.enabled('session') ||
-                  usageRuntime()?.enabled('storage')
-                )
-                  sessionReleased({ userId, sessionId }, reason);
-              },
-            }
-          : undefined),
+        onSessionRetained: (userId: string, sessionId: string): void => {
+          if (
+            (usageRuntime()?.enabled('session') ||
+              usageRuntime()?.enabled('storage')) &&
+            !isOpenLongSession(userId, sessionId)
+          )
+            sessionOpened({ userId, sessionId });
+        },
+        afterAsyncRemoval: (): void => {
+          if (
+            usageRuntime()?.enabled('session') ||
+            usageRuntime()?.enabled('storage')
+          )
+            theDoor()?.poke();
+        },
+        beforeSessionReleased: (
+          userId: string,
+          sessionId: string,
+          reason: SessionCloseReason,
+        ): Promise<void> | undefined => {
+          if (
+            (usageRuntime()?.enabled('session') ||
+              usageRuntime()?.enabled('storage')) &&
+            !isOpenLongSession(userId, sessionId)
+          )
+            return sessionClosed({ userId, sessionId }, reason);
+        },
+        onSessionReleased: (
+          userId: string,
+          sessionId: string,
+          reason: SessionCloseReason,
+        ): void => {
+          if (
+            usageRuntime()?.enabled('session') ||
+            usageRuntime()?.enabled('storage')
+          )
+            sessionReleased({ userId, sessionId }, reason);
+        },
+
         // An open long session holds state by definition, even before its
         // first turn: without this, its first request (presented, since the
         // key was kept) would find it "gone" and be refused.
@@ -161,9 +163,9 @@ function trackPipeline(pipeline: PipelineSession): PipelineSession {
   const runtime = usageRuntime();
   if (!runtime || (!runtime.enabled('session') && !runtime.enabled('storage')))
     return pipeline;
-  let settle: () => void = () => {};
+  let settle: () => void = (): void => {};
   const done = new Promise<void>(
-    (resolve: (value: void | PromiseLike<void>) => void) => {
+    (resolve: (value: void | PromiseLike<void>) => void): void => {
       settle = resolve;
     },
   );
@@ -174,7 +176,7 @@ function trackPipeline(pipeline: PipelineSession): PipelineSession {
     signal: pipeline.signal,
     run: pipeline.run,
     drain: pipeline.drain,
-    release() {
+    release(): void {
       try {
         pipeline.release();
       } finally {
@@ -353,8 +355,8 @@ export function shutdownGatekeeper(): Promise<void> | void {
   theDoor()?.abortAll(new Error('shutdown'));
   if (usageRuntime())
     return withinUsageShutdownBudget(
-      Promise.all([...(activePipelines ?? [])]).then(() => {}),
-    ).then(() => {});
+      Promise.all([...(activePipelines ?? [])]).then((): void => {}),
+    ).then((): void => {});
 }
 
 /** Test seam. */

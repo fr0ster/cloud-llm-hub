@@ -1,5 +1,19 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { createServer } from 'node:http';
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from 'node:http';
+import type {
+  IEmbedResult,
+  IQueryEmbedder,
+  IThrottleStrategy,
+  IUsageControl,
+  IUsageRecorder,
+  TaskRecord,
+  UsageContext,
+} from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
   type ILlm,
@@ -24,11 +38,34 @@ import {
 import cds from '@sap/cds';
 import { OrchestrationEmbeddingClient } from '@sap-ai-sdk/orchestration';
 import express from 'express';
+import type { Door } from 'srv/lib/door';
+import type {
+  SessionConnectionFactory,
+  SessionConnectionPool,
+} from 'srv/lib/session-connection-pool';
+import type {
+  Lease,
+  LeaseKind,
+  LeaseRefusal,
+  SessionRetention,
+} from 'srv/lib/session-retention';
+import type {
+  AgentConfig,
+  DestinationConfig,
+  LlmProvider,
+  RagConfig,
+  RagType,
+  SmartAgentMode,
+} from '../../srv/agent-config';
 import { executeStep } from '../../srv/agent-mcp';
 import { handleAnthropicMessages } from '../../srv/anthropic-handler';
 import { collectionRetrieval } from '../../srv/lib/collection-retrieval';
 import { dialogueChat } from '../../srv/lib/dialogue-chat';
-import { closeDialogue, dialogueFor } from '../../srv/lib/dialogue-sessions';
+import {
+  closeDialogue,
+  type DialogueHandle,
+  dialogueFor,
+} from '../../srv/lib/dialogue-sessions';
 import { guardLlmOnlyAgent } from '../../srv/lib/llm-only-guard';
 import {
   type LongSession,
@@ -56,33 +93,90 @@ let mockStepAgent:
   | undefined;
 let mockPlanner: Awaited<ReturnType<SmartAgentBuilder['build']>>['agent'];
 const mockQuery = jest.fn(
-  async (embedding: { toVector(): Promise<number[]> }) => {
+  async (embedding: {
+    toVector(): Promise<number[]>;
+  }): Promise<{ ok: boolean; value: { text: string; score: number }[] }> => {
     await embedding.toVector();
     return { ok: true, value: [{ text: 'DOCUMENT_SENTINEL', score: 1 }] };
   },
 );
 let mockEmbedder: ReturnType<typeof agentQueryEmbedder> | undefined;
-jest.mock('../../srv/lib/logging-config', () => ({ applyLoggingConfig() {} }));
-jest.mock('@sap/cds', () => ({
+jest.mock('../../srv/lib/logging-config', (): object => ({
+  applyLoggingConfig(): void {},
+}));
+jest.mock('@sap/cds', (): object => ({
   __esModule: true,
   default: {
-    log: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
+    log: (): { info(): void; warn(): void; error(): void; debug(): void } => ({
+      info(): void {},
+      warn(): void {},
+      error(): void {},
+      debug(): void {},
+    }),
     context: {
       get user() {
         return {
           id: mockAuthenticatedUser.getStore() ?? 'alice',
-          is: () => true,
+          is: (): boolean => true,
           roles: ['MCP_Developer'],
         };
       },
     },
   },
 }));
-jest.mock('../../srv/agent-config', () => ({
+jest.mock('../../srv/agent-config', (): object => ({
   ...jest.requireActual<typeof import('../../srv/agent-config')>(
     '../../srv/agent-config',
   ),
-  getAgentConfig: () => ({
+  getAgentConfig: (): {
+    agent: {
+      chatCoordinator: string;
+      mode: SmartAgentMode;
+      dialogue: {
+        executors: number;
+        executorPool: number;
+        maxTasks: number;
+        maxCorrections: number;
+        followMaxMs: number;
+      };
+      planBudget?: {
+        maxSteps?: number;
+        maxRevisions?: number;
+        maxDurationMs?: number;
+      };
+      maxIterations: number;
+      toolResultMaxChars?: number;
+      maxToolCalls?: number;
+      ragType: RagType;
+      historyRecencyWindow?: number;
+      ragQueryK: number;
+      toolGate?: 'classifier' | 'off';
+      toolGateTimeoutMs?: number;
+      skillRagK: number;
+      sapRelevanceScore?: number;
+      allowLlmOnlyFallback: boolean;
+    };
+    llm: {
+      contextCapture?: 'off' | 'stats';
+      provider: LlmProvider;
+      model: string;
+      classifierModel: string;
+      plannerModel?: string;
+      temperature: number;
+      maxTokens: number;
+      apiKey?: string;
+      baseUrl?: string;
+      resourceGroup?: string;
+      whenThrottled: IThrottleStrategy;
+    };
+    mcp: {
+      destination: string;
+      endpoint?: string;
+      systemDestinations: Record<string, string>;
+    };
+    rag: RagConfig;
+    destinations: DestinationConfig;
+  } => ({
     ...jest
       .requireActual<typeof import('../../srv/agent-config')>(
         '../../srv/agent-config',
@@ -98,52 +192,78 @@ jest.mock('../../srv/agent-config', () => ({
     },
   }),
 }));
-jest.mock('../../srv/lib/request-connection', () =>
+jest.mock('../../srv/lib/request-connection', (): object =>
   jest
     .requireActual<typeof import('./helpers/channel-harness')>(
       './helpers/channel-harness',
     )
     .requestConnectionMock(),
 );
-jest.mock('../../srv/lib/request-system-context', () =>
+jest.mock('../../srv/lib/request-system-context', (): object =>
   jest
     .requireActual<typeof import('./helpers/channel-harness')>(
       './helpers/channel-harness',
     )
     .requestSystemMock(),
 );
-jest.mock('../../srv/lib/ai-core-models', () => ({
-  getAvailableModels: async () => [],
+jest.mock('../../srv/lib/ai-core-models', (): object => ({
+  getAvailableModels: async (): Promise<never[]> => [],
 }));
-jest.mock('../../srv/env-setup', () => ({}));
-jest.mock('../../srv/agent-manager', () => ({
+jest.mock('../../srv/env-setup', (): object => ({}));
+jest.mock('../../srv/agent-manager', (): object => ({
   ...jest
     .requireActual<typeof import('./helpers/channel-harness')>(
       './helpers/channel-harness',
     )
     .agentManagerMock(),
-  getSmartAgent: async () => ({
+  getSmartAgent: async (): Promise<{
+    agent:
+      | Awaited<ReturnType<SmartAgentBuilder['build']>>['agent']
+      | { deps: { ragStores: Record<string, never> } };
+    workers: Map<string, ISubAgent>;
+    recMcp: { getToolRecords: () => never[]; dropRequest(): void };
+    criticLlm: Record<string, never>;
+  }> => ({
     agent: mockStepAgent ?? { deps: { ragStores: {} } },
     workers: mockWorkers,
-    recMcp: { getToolRecords: () => [], dropRequest() {} },
+    recMcp: { getToolRecords: (): never[] => [], dropRequest(): void {} },
     criticLlm: {},
   }),
-  buildPlannerAgent: async () => mockPlanner,
-  releasePlannerAgent() {},
-  setSessionDestination() {},
-  runWithRequestConnection: <T>(_connection: object, fn: () => T) => fn(),
-  getQueryEmbedder: () => mockEmbedder,
-  getCollectionRegistry: () => ({
+  buildPlannerAgent: async (): Promise<
+    Awaited<ReturnType<SmartAgentBuilder['build']>>['agent']
+  > => mockPlanner,
+  releasePlannerAgent(): void {},
+  setSessionDestination(): void {},
+  runWithRequestConnection: <T>(_connection: object, fn: () => T): T => fn(),
+  getQueryEmbedder: (): IQueryEmbedder | undefined => mockEmbedder,
+  getCollectionRegistry: (): {
+    ready: Promise<void>;
+    degradedOf: () => Promise<undefined>;
+    getRagStores: () => Promise<Record<string, never>>;
+    getRagStore: () => Promise<{
+      query: jest.Mock<
+        Promise<{ ok: boolean; value: { text: string; score: number }[] }>,
+        [embedding: { toVector(): Promise<number[]> }],
+        void
+      >;
+    }>;
+  } => ({
     ready: Promise.resolve(),
-    degradedOf: async () => undefined,
-    getRagStores: async () => ({}),
-    getRagStore: async () => ({ query: mockQuery }),
+    degradedOf: async (): Promise<undefined> => undefined,
+    getRagStores: async (): Promise<Record<string, never>> => ({}),
+    getRagStore: async (): Promise<{
+      query: jest.Mock<
+        Promise<{ ok: boolean; value: { text: string; score: number }[] }>,
+        [embedding: { toVector(): Promise<number[]> }],
+        void
+      >;
+    }> => ({ query: mockQuery }),
   }),
 }));
-jest.mock('../../srv/collection-ids', () => ({
-  resolveRouteId: async () => 'selected',
+jest.mock('../../srv/collection-ids', (): object => ({
+  resolveRouteId: async (): Promise<string> => 'selected',
 }));
-jest.mock('../../srv/lib/session-connection-pool', () => ({
+jest.mock('../../srv/lib/session-connection-pool', (): object => ({
   SessionConnectionFactory: class {
     exposition = [];
     environment() {
@@ -154,29 +274,47 @@ jest.mock('../../srv/lib/session-connection-pool', () => ({
   },
   SessionConnectionPool: class {
     async acquire() {
-      return { connection: {}, system: {}, release: async () => {} };
+      return {
+        connection: {},
+        system: {},
+        release: async (): Promise<void> => {},
+      };
     }
     async closeAll() {}
   },
 }));
-jest.mock('../../srv/lib/gatekeeper', () => ({
+jest.mock('../../srv/lib/gatekeeper', (): object => ({
   ...jest.requireActual<typeof import('../../srv/lib/gatekeeper')>(
     '../../srv/lib/gatekeeper',
   ),
-  admitPipeline: async () => ({
+  admitPipeline: async (): Promise<{
+    admitted: {
+      signal: AbortSignal;
+      run: <T>(fn: () => T) => T;
+      drain: () => Promise<void>;
+      release(): void;
+    };
+  }> => ({
     admitted: {
       signal: new AbortController().signal,
-      run: <T>(fn: () => T) => fn(),
-      drain: async () => {},
-      release() {},
+      run: <T>(fn: () => T): T => fn(),
+      drain: async (): Promise<void> => {},
+      release(): void {},
     },
   }),
-  admitBackground: async () => ({
+  admitBackground: async (): Promise<{
+    admitted: {
+      signal: AbortSignal;
+      run: <T>(fn: () => T) => T;
+      drain: () => Promise<void>;
+      release(): void;
+    };
+  }> => ({
     admitted: {
       signal: new AbortController().signal,
-      run: <T>(fn: () => T) => fn(),
-      drain: async () => {},
-      release() {},
+      run: <T>(fn: () => T): T => fn(),
+      drain: async (): Promise<void> => {},
+      release(): void {},
     },
   }),
 }));
@@ -201,7 +339,7 @@ function fakeLlm(
       messages: Message[],
       tools: Parameters<ILlm['chat']>[1],
       options?: CallOptions,
-    ) => {
+    ): Promise<void> => {
       if (beforeChat) await beforeChat(options);
       options?.usage?.record({
         kind: 'x.hub.request.physical',
@@ -228,7 +366,10 @@ async function sdkResponse(
         final_result: {
           data: Array.from(
             { length: count },
-            (_: undefined, index: number) => ({
+            (
+              _: undefined,
+              index: number,
+            ): { embedding: number[]; index: number; object: string } => ({
               embedding: count === 1 ? [1, 2] : [indexes[index], 2],
               index: indexes[index],
               object: 'embedding',
@@ -258,27 +399,30 @@ async function rows() {
 async function until(predicate: () => boolean) {
   for (let i = 0; i < 200; i++) {
     if (predicate()) return;
-    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    await new Promise<void>(
+      (resolve: (value: void | PromiseLike<void>) => void): NodeJS.Timeout =>
+        setTimeout(resolve, 5),
+    );
   }
   throw new Error('Pipeline did not settle');
 }
-beforeAll(async () => {
+beforeAll(async (): Promise<void> => {
   const enabled = await initUsage(
     readUsageConfig({
       LLM_AGENT_USAGE: 'on',
       LLM_AGENT_USAGE_SINKS: 'memory',
       LLM_AGENT_USAGE_USER_ID: 'plain',
     }),
-    { recorderFactory: () => recorder },
+    { recorderFactory: (): IUsageRecorder & IUsageControl => recorder },
   );
   if (!enabled) throw new Error('Expected usage runtime');
   runtime = enabled;
 });
-beforeEach(() => {
+beforeEach((): void => {
   setUsageRuntimeForTest(runtime);
   physical.length = 0;
 });
-afterEach(async () => {
+afterEach(async (): Promise<void> => {
   for (const user of ['alice', 'bob'])
     await closeDialogue(
       user,
@@ -288,18 +432,27 @@ afterEach(async () => {
   setUsageRuntimeForTest(undefined);
   jest.restoreAllMocks();
 });
-afterAll(async () => {
+afterAll(async (): Promise<void> => {
   await runtime.close(1000);
 });
 
-test('real hub dialogue pipeline retains background context, two successive requests, two tasks and checker, concurrent sessions, and excludes content', async () => {
+test('real hub dialogue pipeline retains background context, two successive requests, two tasks and checker, concurrent sessions, and excludes content', async (): Promise<void> => {
   let release!: () => void;
-  const waiting = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const waiting = new Promise<void>(
+    (resolve: (value: void | PromiseLike<void>) => void): void => {
+      release = resolve;
+    },
+  );
   const toolCalls: CallOptions[] = [];
   const mcp: IMcpClient = {
-    async listTools() {
+    async listTools(): Promise<{
+      ok: true;
+      value: {
+        name: string;
+        description: string;
+        inputSchema: { type: string; properties: Record<string, never> };
+      }[];
+    }> {
       return {
         ok: true,
         value: [
@@ -311,7 +464,14 @@ test('real hub dialogue pipeline retains background context, two successive requ
         ],
       };
     },
-    async callTool(name, _args: object, options) {
+    async callTool(
+      name: string,
+      _args: object,
+      options: CallOptions | undefined,
+    ): Promise<{
+      ok: true;
+      value: { content: { type: string; text: string }[] };
+    }> {
       await waiting;
       options?.usage?.record({
         kind: 'x.hub.request.physical-tool',
@@ -337,20 +497,21 @@ test('real hub dialogue pipeline retains background context, two successive requ
       };
     },
   };
-  const executorLlm = fakeLlm((messages) =>
-    messages.some((m) => m.role === 'tool')
-      ? plainAnswer()
-      : {
-          content: '',
-          finishReason: 'tool_calls',
-          toolCalls: [
-            {
-              id: 'read-call',
-              name: 'read',
-              arguments: { key: 'TOOL_ARGUMENT_SENTINEL' },
-            },
-          ],
-        },
+  const executorLlm = fakeLlm(
+    (messages: Message[]): LlmResponse =>
+      messages.some((m: Message): boolean => m.role === 'tool')
+        ? plainAnswer()
+        : {
+            content: '',
+            finishReason: 'tool_calls',
+            toolCalls: [
+              {
+                id: 'read-call',
+                name: 'read',
+                arguments: { key: 'TOOL_ARGUMENT_SENTINEL' },
+              },
+            ],
+          },
   );
   const worker = await new SmartAgentBuilder({
     skipModelValidation: true,
@@ -366,33 +527,57 @@ test('real hub dialogue pipeline retains background context, two successive requ
   mockWorkers.set('executor', new SmartAgentSubAgent('executor', worker.agent));
   mockWorkers.set('checker', new SmartAgentSubAgent('checker', worker.agent));
   let delegates = 0;
-  const plannerLlm = fakeLlm((messages, options) => {
-    const last = messages.at(-1);
-    if (
-      last?.role === 'tool' ||
-      last?.content?.includes('[task events]') ||
-      delegates >= 4
-    )
-      return plainAnswer();
-    const count = options?.trace?.traceId === 'request-1' ? 2 : 1;
-    return {
-      content: '',
-      finishReason: 'tool_calls',
-      toolCalls: Array.from({ length: count }, () => {
-        delegates++;
-        return {
-          id: `delegate-${delegates}`,
-          name: 'delegate_task',
-          arguments: {
-            worker:
-              options?.trace?.traceId === 'request-2' ? 'checker' : 'executor',
-            goal: 'PROMPT_SENTINEL',
-            history: 'all',
+  const plannerLlm = fakeLlm(
+    (
+      messages: Message[],
+      options: CallOptions | undefined,
+    ):
+      | LlmResponse
+      | {
+          content: string;
+          finishReason: 'tool_calls';
+          toolCalls: {
+            id: string;
+            name: string;
+            arguments: { worker: string; goal: string; history: string };
+          }[];
+        } => {
+      const last = messages.at(-1);
+      if (
+        last?.role === 'tool' ||
+        last?.content?.includes('[task events]') ||
+        delegates >= 4
+      )
+        return plainAnswer();
+      const count = options?.trace?.traceId === 'request-1' ? 2 : 1;
+      return {
+        content: '',
+        finishReason: 'tool_calls',
+        toolCalls: Array.from(
+          { length: count },
+          (): {
+            id: string;
+            name: string;
+            arguments: { worker: string; goal: string; history: string };
+          } => {
+            delegates++;
+            return {
+              id: `delegate-${delegates}`,
+              name: 'delegate_task',
+              arguments: {
+                worker:
+                  options?.trace?.traceId === 'request-2'
+                    ? 'checker'
+                    : 'executor',
+                goal: 'PROMPT_SENTINEL',
+                history: 'all',
+              },
+            };
           },
-        };
-      }),
-    };
-  });
+        ),
+      };
+    },
+  );
   const builtPlanner = await new SmartAgentBuilder({
     skipModelValidation: true,
     agent: { classificationEnabled: false, ragTranslateEnabled: false },
@@ -415,7 +600,10 @@ test('real hub dialogue pipeline retains background context, two successive requ
   const queryEmbedder = agentQueryEmbedder(embedding, 'collection-retrieval');
   let embeddingCalls = 0;
   mockEmbedder = {
-    embedQuery(text, options) {
+    embedQuery(
+      text: string,
+      options: CallOptions | undefined,
+    ): Promise<IEmbedResult> {
       options?.usage?.record({
         kind: 'x.hub.request.physical-embedding',
         context: {},
@@ -426,46 +614,57 @@ test('real hub dialogue pipeline retains background context, two successive requ
     },
   };
   const app = express();
-  app.post('/dialogue/:user/:id', async (req, res) => {
-    const userId = req.params.user;
-    const id = req.params.id;
-    const handle = userId === 'alice' ? alice : bob;
-    const usage = handle.usage?.with({ requestId: id, traceId: id });
-    const retrieval = collectionRetrieval({ deps: { ragStores: {} } });
-    const retrieved = await retrieval.retrieve(
-      { headers: { 'x-rag-collections': 'selected' }, body: {} },
-      [{ role: 'user', content: 'PROMPT_SENTINEL' }],
-      userId,
-      userId === 'alice' ? 'usage-session' : 'bob-session',
-      cds.log('usage-test'),
-      false,
-      usage,
-    );
-    if (!retrieved.messages) throw new Error('Unexpected retrieval refusal');
-    const session: LongSession = {
-      userId,
-      key: userId === 'alice' ? 'usage-session' : 'bob-session',
-      createdAt: Date.now(),
-      lastActivity: Date.now(),
-      revived: false,
-      destination: 'TEST',
-    };
-    const result = await dialogueChat(
-      req,
-      userId,
-      session,
-      'TEST',
-      res,
-    ).process(retrieved.messages, { trace: { traceId: id } });
-    if (id === 'request-2') res.destroy();
-    else res.json(result);
-  });
+  app.post(
+    '/dialogue/:user/:id',
+    async (
+      req: express.Request<{ user: string; id: string }>,
+      res: express.Response,
+    ): Promise<void> => {
+      const userId = req.params.user;
+      const id = req.params.id;
+      const handle = userId === 'alice' ? alice : bob;
+      const usage = handle.usage?.with({ requestId: id, traceId: id });
+      const retrieval = collectionRetrieval({ deps: { ragStores: {} } });
+      const retrieved = await retrieval.retrieve(
+        { headers: { 'x-rag-collections': 'selected' }, body: {} },
+        [{ role: 'user', content: 'PROMPT_SENTINEL' }],
+        userId,
+        userId === 'alice' ? 'usage-session' : 'bob-session',
+        cds.log('usage-test'),
+        false,
+        usage,
+      );
+      if (!retrieved.messages) throw new Error('Unexpected retrieval refusal');
+      const session: LongSession = {
+        userId,
+        key: userId === 'alice' ? 'usage-session' : 'bob-session',
+        createdAt: Date.now(),
+        lastActivity: Date.now(),
+        revived: false,
+        destination: 'TEST',
+      };
+      const result = await dialogueChat(
+        req,
+        userId,
+        session,
+        'TEST',
+        res,
+      ).process(retrieved.messages, { trace: { traceId: id } });
+      if (id === 'request-2') res.destroy();
+      else res.json(result);
+    },
+  );
   const server = createServer(app);
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>(
+    (
+      resolve: (value: void | PromiseLike<void>) => void,
+    ): Server<typeof IncomingMessage, typeof ServerResponse> =>
+      server.listen(0, '127.0.0.1', resolve),
+  );
   const address = server.address();
   if (!address || typeof address === 'string')
     throw new Error('Expected local server address');
-  const start = async (userId: string, id: string) => {
+  const start = async (userId: string, id: string): Promise<void> => {
     const request = fetch(
       `http://127.0.0.1:${address.port}/dialogue/${userId}/${id}`,
       { method: 'POST' },
@@ -482,20 +681,29 @@ test('real hub dialogue pipeline retains background context, two successive requ
     await Promise.all([start('alice', 'request-2'), start('bob', 'request-b')]);
   } finally {
     server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await new Promise<void>(
+      (
+        resolve: (value: void | PromiseLike<void>) => void,
+      ): Server<typeof IncomingMessage, typeof ServerResponse> =>
+        server.close((): void => resolve()),
+    );
   }
   // All requests ended while physical tool calls are still blocked.
   expect(toolCalls).toHaveLength(0);
   release();
   await until(
-    () =>
+    (): boolean =>
       alice.session.snapshot().tasks.length === 3 &&
-      alice.session.snapshot().tasks.every((t) => t.state === 'done') &&
-      bob.session.snapshot().tasks.every((t) => t.state === 'done'),
+      alice.session
+        .snapshot()
+        .tasks.every((t: TaskRecord): boolean => t.state === 'done') &&
+      bob.session
+        .snapshot()
+        .tasks.every((t: TaskRecord): boolean => t.state === 'done'),
   );
   const records = await rows();
   const embeddings = records.filter(
-    (r) =>
+    (r: UsageRecord): boolean =>
       r.kind === 'embedding.call' &&
       ['usage-session', 'bob-session'].includes(r.context.sessionId ?? ''),
   );
@@ -503,7 +711,7 @@ test('real hub dialogue pipeline retains background context, two successive requ
   expect(embeddings).toHaveLength(3);
   for (const [index, row] of embeddings.entries()) {
     const probe = records.find(
-      (r) =>
+      (r: UsageRecord): boolean =>
         r.kind === 'x.hub.request.physical-embedding' &&
         r.values.index === index,
     );
@@ -516,18 +724,23 @@ test('real hub dialogue pipeline retains background context, two successive requ
         row.context.userId === 'alice' ? 'usage-session' : 'bob-session',
     });
   }
-  const tasks = records.filter((r) => r.kind === 'task');
+  const tasks = records.filter((r: UsageRecord): boolean => r.kind === 'task');
   expect(tasks).toHaveLength(4);
   expect(toolCalls).toHaveLength(4);
   expect(
-    records.filter((r) => r.kind === 'tool.call' && !r.embedded),
+    records.filter(
+      (r: UsageRecord): boolean => r.kind === 'tool.call' && !r.embedded,
+    ),
   ).toHaveLength(4);
-  const calls = records.filter((r) => r.kind === 'llm.call');
+  const calls = records.filter(
+    (r: UsageRecord): boolean => r.kind === 'llm.call',
+  );
   expect(calls).toHaveLength(physical.length);
   for (const [index, call] of calls.entries()) {
     expect(call).toMatchObject(physical[index].shape);
     const probe = records.find(
-      (r) => r.kind === 'x.hub.request.physical' && r.values.index === index,
+      (r: UsageRecord): boolean =>
+        r.kind === 'x.hub.request.physical' && r.values.index === index,
     );
     expect(probe).toBeDefined();
     expect(call.context).toEqual(probe?.context);
@@ -553,17 +766,21 @@ test('real hub dialogue pipeline retains background context, two successive requ
     if (row.kind === 'task') expect(row.context.role).toBe(row.worker);
   }
   const physicalTools = records.filter(
-    (r) => r.kind === 'tool.call' && !r.embedded,
+    (r: UsageRecord): boolean => r.kind === 'tool.call' && !r.embedded,
   );
   expect(
-    physicalTools.filter((r) => r.context.userId === 'alice'),
+    physicalTools.filter(
+      (r: UsageRecord): boolean => r.context.userId === 'alice',
+    ),
   ).toHaveLength(3);
-  expect(physicalTools.filter((r) => r.context.userId === 'bob')).toHaveLength(
-    1,
-  );
+  expect(
+    physicalTools.filter(
+      (r: UsageRecord): boolean => r.context.userId === 'bob',
+    ),
+  ).toHaveLength(1);
   for (const [index, row] of physicalTools.entries()) {
     const probe = records.find(
-      (r) =>
+      (r: UsageRecord): boolean =>
         r.kind === 'x.hub.request.physical-tool' && r.values.index === index,
     );
     expect(probe).toBeDefined();
@@ -576,7 +793,7 @@ test('real hub dialogue pipeline retains background context, two successive requ
     if (row.context.taskId)
       expect(
         tasks.some(
-          (task) =>
+          (task: UsageRecord): boolean =>
             task.context.taskId === row.context.taskId &&
             task.context.userId === row.context.userId,
         ),
@@ -585,7 +802,7 @@ test('real hub dialogue pipeline retains background context, two successive requ
   }
   expect(
     tasks.some(
-      (r) =>
+      (r: UsageRecord): boolean =>
         r.kind === 'task' &&
         r.worker === 'checker' &&
         r.context.userId === 'alice',
@@ -596,11 +813,11 @@ test('real hub dialogue pipeline retains background context, two successive requ
   );
 });
 
-test('step reviewer and guard pass helper labels and preserve request shape', async () => {
+test('step reviewer and guard pass helper labels and preserve request shape', async (): Promise<void> => {
   const usage = runtime
     .forSession({ sessionId: 'helpers', userId: 'alice', destination: 'TEST' })
     .with({ requestId: 'helpers-request' });
-  const llm = fakeLlm(() => ({
+  const llm = fakeLlm((): { content: string; finishReason: 'stop' } => ({
     content: '{"possiblyFake":false,"confidence":"high","reasons":"ok"}',
     finishReason: 'stop',
   }));
@@ -612,7 +829,7 @@ test('step reviewer and guard pass helper labels and preserve request shape', as
     .withMainLlm(llm)
     .build();
   const guarded = guardLlmOnlyAgent(agent.agent, {
-    decide: fakeLlm(() => ({
+    decide: fakeLlm((): { content: string; finishReason: 'stop' } => ({
       content: '{"action":true}',
       finishReason: 'stop',
     })),
@@ -622,9 +839,15 @@ test('step reviewer and guard pass helper labels and preserve request shape', as
     usage,
   });
   const calls = (await rows()).filter(
-    (r) => r.kind === 'llm.call' && r.context.sessionId === 'helpers',
+    (r: UsageRecord): boolean =>
+      r.kind === 'llm.call' && r.context.sessionId === 'helpers',
   );
-  expect(calls.map((r) => [r.context.role, r.context.component])).toEqual([
+  expect(
+    calls.map((r: UsageRecord): (string | undefined)[] => [
+      r.context.role,
+      r.context.component,
+    ]),
+  ).toEqual([
     ['reviewer', 'step-reviewer'],
     ['classifier', 'llm-only-guard'],
   ]);
@@ -633,7 +856,7 @@ test('step reviewer and guard pass helper labels and preserve request shape', as
   expect(JSON.stringify(calls)).not.toMatch(/PROMPT_SENTINEL|RESULT_SENTINEL/);
 });
 
-test('SAP embedder records sdk calls once for success, error, abort and batch; call recorder wins over construction recorder', async () => {
+test('SAP embedder records sdk calls once for success, error, abort and batch; call recorder wins over construction recorder', async (): Promise<void> => {
   const embed = jest.spyOn(OrchestrationEmbeddingClient.prototype, 'embed');
   const clientResponse = await sdkResponse();
   embed.mockResolvedValue(clientResponse);
@@ -667,16 +890,14 @@ test('SAP embedder records sdk calls once for success, error, abort and batch; c
       usageOp: operation,
     });
     const calls = (await rows()).filter(
-      (r) => r.kind === 'embedding.call' && r.context.sessionId === 'sap',
+      (r: UsageRecord): boolean =>
+        r.kind === 'embedding.call' && r.context.sessionId === 'sap',
     );
     expect(calls[1]).toMatchObject({ errorCode: 'ERR_SDK' });
     expect(embed.mock.calls[2][1]?.signal).toBe(ctrl.signal);
-    expect(calls.map((r) => r.outcome)).toEqual([
-      'ok',
-      'error',
-      'aborted',
-      'ok',
-    ]);
+    expect(
+      calls.map((r: UsageRecord): 'error' | 'ok' | 'aborted' => r.outcome),
+    ).toEqual(['ok', 'error', 'aborted', 'ok']);
     for (const [index, row] of calls.entries())
       expect(row).toMatchObject({
         granularity: 'sdk-call',
@@ -698,9 +919,9 @@ test('SAP embedder records sdk calls once for success, error, abort and batch; c
   }
 });
 
-test('usage off passes no recorder to helper LLMs and leaves answers unchanged', async () => {
+test('usage off passes no recorder to helper LLMs and leaves answers unchanged', async (): Promise<void> => {
   setUsageRuntimeForTest(undefined);
-  const llm = fakeLlm(() => ({
+  const llm = fakeLlm((): { content: string; finishReason: 'stop' } => ({
     content: '{"possiblyFake":false,"confidence":"high","reasons":"ok"}',
     finishReason: 'stop',
   }));
@@ -714,7 +935,7 @@ test('usage off passes no recorder to helper LLMs and leaves answers unchanged',
     .withMainLlm(llm)
     .build();
   await guardLlmOnlyAgent(agent.agent, {
-    decide: fakeLlm(() => ({
+    decide: fakeLlm((): { content: string; finishReason: 'stop' } => ({
       content: '{"action":true}',
       finishReason: 'stop',
     })),
@@ -724,7 +945,7 @@ test('usage off passes no recorder to helper LLMs and leaves answers unchanged',
   for (const call of physical) expect(call.options?.usage).toBeUndefined();
 });
 
-test('query embedding labels concurrent calls without binding mutable provider context', async () => {
+test('query embedding labels concurrent calls without binding mutable provider context', async (): Promise<void> => {
   const embed = jest
     .spyOn(OrchestrationEmbeddingClient.prototype, 'embed')
     .mockResolvedValue(await sdkResponse());
@@ -735,28 +956,38 @@ test('query embedding labels concurrent calls without binding mutable provider c
   if (!embedding) throw new Error('Expected embedding');
   const query = agentQueryEmbedder(embedding);
   await Promise.all(
-    ['query-a', 'query-b'].map((sessionId) =>
-      query.embedQuery('DOCUMENT_SENTINEL', {
-        usage: runtime.forSession({ sessionId, userId: sessionId }),
-      }),
+    ['query-a', 'query-b'].map(
+      (sessionId: string): Promise<IEmbedResult> =>
+        query.embedQuery('DOCUMENT_SENTINEL', {
+          usage: runtime.forSession({ sessionId, userId: sessionId }),
+        }),
     ),
   );
   const calls = (await rows()).filter(
-    (r) =>
+    (r: UsageRecord): boolean | undefined =>
       r.kind === 'embedding.call' && r.context.sessionId?.startsWith('query-'),
   );
   expect(calls).toHaveLength(embed.mock.calls.length);
-  expect(calls.map((r) => r.context)).toEqual(
-    ['query-a', 'query-b'].map((id) => ({
-      sessionId: id,
-      userId: id,
-      role: 'embedding',
-      component: 'query-embedder',
-    })),
+  expect(calls.map((r: UsageRecord): UsageContext => r.context)).toEqual(
+    ['query-a', 'query-b'].map(
+      (
+        id: string,
+      ): {
+        sessionId: string;
+        userId: string;
+        role: string;
+        component: string;
+      } => ({
+        sessionId: id,
+        userId: id,
+        role: 'embedding',
+        component: 'query-embedder',
+      }),
+    ),
   );
 });
 
-test('revived dialogues bind a new session recorder and usage off passes none to the real pipeline', async () => {
+test('revived dialogues bind a new session recorder and usage off passes none to the real pipeline', async (): Promise<void> => {
   mockPlanner = (
     await new SmartAgentBuilder({
       skipModelValidation: true,
@@ -784,7 +1015,7 @@ test('revived dialogues bind a new session recorder and usage off passes none to
   expect((await rows()).length).toBe(before);
 });
 
-test('SAP batch reconstructs indexed vectors and rejects missing, duplicate and invalid indexes with error records', async () => {
+test('SAP batch reconstructs indexed vectors and rejects missing, duplicate and invalid indexes with error records', async (): Promise<void> => {
   const embed = jest.spyOn(OrchestrationEmbeddingClient.prototype, 'embed');
   const sap = new SapAiCoreEmbedder({
     model: 'text-embedding-3-small',
@@ -800,16 +1031,12 @@ test('SAP batch reconstructs indexed vectors and rejects missing, duplicate and 
     await expect(sap.embedBatch(['first', 'second'])).rejects.toThrow();
   }
   const records = (await rows()).filter(
-    (r) => r.kind === 'embedding.call' && r.context.sessionId === 'sap-indexes',
+    (r: UsageRecord): boolean =>
+      r.kind === 'embedding.call' && r.context.sessionId === 'sap-indexes',
   );
-  expect(records.map((r) => r.outcome)).toEqual([
-    'ok',
-    'error',
-    'error',
-    'error',
-    'error',
-    'error',
-  ]);
+  expect(
+    records.map((r: UsageRecord): 'error' | 'ok' | 'aborted' => r.outcome),
+  ).toEqual(['ok', 'error', 'error', 'error', 'error', 'error']);
   expect(records).toHaveLength(embed.mock.calls.length);
 });
 
@@ -820,7 +1047,9 @@ test.each([
   ['anthropic', true],
 ])(
   'real dialogue %s (stream=%s) correlates request, retrieval, embedding and LLM records',
-  async (protocol: string | boolean, stream: string | boolean) => {
+  async (protocol: string | boolean, stream:
+    | string
+    | boolean): Promise<void> => {
     const before = (await rows()).length;
     const built = await new SmartAgentBuilder({
       skipModelValidation: true,
@@ -829,7 +1058,7 @@ test.each([
       .withMainLlm(fakeLlm(plainAnswer))
       .build();
     mockPlanner = guardLlmOnlyAgent(built.agent, {
-      decide: fakeLlm(() => ({
+      decide: fakeLlm((): { content: string; finishReason: 'stop' } => ({
         content: '{"action":false}',
         finishReason: 'stop',
       })),
@@ -858,9 +1087,11 @@ test.each([
     app.use(express.json());
     app.use(
       sessionMiddleware({
-        userIdOf: () => 'alice',
-        resolveSession: async (user: string, key: string) =>
-          registry.get(user, key),
+        userIdOf: (): string => 'alice',
+        resolveSession: async (
+          user: string,
+          key: string,
+        ): Promise<LongSession | undefined> => registry.get(user, key),
       }),
     );
     app.post(
@@ -869,7 +1100,9 @@ test.each([
     );
     const server = createServer(app);
     await new Promise<void>(
-      (resolve: (value: void | PromiseLike<void>) => void) =>
+      (
+        resolve: (value: void | PromiseLike<void>) => void,
+      ): Server<typeof IncomingMessage, typeof ServerResponse> =>
         server.listen(0, '127.0.0.1', resolve),
     );
     const address = server.address();
@@ -902,7 +1135,7 @@ test.each([
       const records = (await rows())
         .slice(before)
         .filter(
-          (r: UsageRecord) =>
+          (r: UsageRecord): boolean =>
             r.context.sessionId === session.key &&
             [
               'llm.call',
@@ -914,22 +1147,24 @@ test.each([
       expect(embed).toHaveBeenCalledTimes(2);
       expect(records).toHaveLength(10);
       const requestIds = new Set(
-        records.map((r: UsageRecord) => r.context.requestId),
+        records.map(
+          (r: UsageRecord): string | undefined => r.context.requestId,
+        ),
       );
       expect(requestIds.size).toBe(2);
       for (const requestId of requestIds) {
         expect(requestId).toEqual(expect.any(String));
         const request = records.filter(
-          (r: UsageRecord) => r.context.requestId === requestId,
+          (r: UsageRecord): boolean => r.context.requestId === requestId,
         );
         expect(request).toHaveLength(5);
         expect(
           request
             .filter(
-              (r: UsageRecord) =>
+              (r: UsageRecord): boolean =>
                 r.kind === 'llm.call' || r.kind === 'embedding.call',
             )
-            .map((r: UsageRecord) => r.context.component)
+            .map((r: UsageRecord): string | undefined => r.context.component)
             .sort(),
         ).toEqual(['collection-retrieval', 'llm-only-guard', undefined].sort());
         for (const record of request)
@@ -943,8 +1178,10 @@ test.each([
     } finally {
       server.closeAllConnections();
       await new Promise<void>(
-        (resolve: (value: void | PromiseLike<void>) => void) =>
-          server.close(() => resolve()),
+        (
+          resolve: (value: void | PromiseLike<void>) => void,
+        ): Server<typeof IncomingMessage, typeof ServerResponse> =>
+          server.close((): void => resolve()),
       );
       await closeDialogue('alice', session.key, 'explicit');
       setLongSessionsForTest(undefined);
@@ -952,15 +1189,15 @@ test.each([
   },
 );
 
-test('concurrent long-session OpenAI requests isolate all foreground and background usage', async () => {
+test('concurrent long-session OpenAI requests isolate all foreground and background usage', async (): Promise<void> => {
   let release!: () => void;
-  const backgroundGate = new Promise<void>((resolve: () => void) => {
+  const backgroundGate = new Promise<void>((resolve: () => void): void => {
     release = resolve;
   });
   // Autonomous task-event turns are separate from either HTTP request. Keep
   // their transport calls outside the request attribution observation window.
   let releaseFollowup!: () => void;
-  const followupGate = new Promise<void>((resolve: () => void) => {
+  const followupGate = new Promise<void>((resolve: () => void): void => {
     releaseFollowup = resolve;
   });
   const beforeChat = async (options?: CallOptions): Promise<void> => {
@@ -968,7 +1205,14 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
   };
   const toolRequests: CallOptions[] = [];
   const mcp: IMcpClient = {
-    async listTools() {
+    async listTools(): Promise<{
+      ok: true;
+      value: {
+        name: string;
+        description: string;
+        inputSchema: { type: string; properties: Record<string, never> };
+      }[];
+    }> {
       return {
         ok: true,
         value: [
@@ -980,7 +1224,14 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
         ],
       };
     },
-    async callTool(name: string, _args: object, options?: CallOptions) {
+    async callTool(
+      name: string,
+      _args: object,
+      options?: CallOptions,
+    ): Promise<{
+      ok: true;
+      value: { content: { type: string; text: string }[] };
+    }> {
       if (options) toolRequests.push(options);
       await backgroundGate;
       options?.usage?.record({
@@ -1009,14 +1260,15 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
     },
   })
     .withMainLlm(
-      fakeLlm((messages: Message[]) =>
-        messages.some((message: Message) => message.role === 'tool')
-          ? plainAnswer()
-          : {
-              content: '',
-              finishReason: 'tool_calls',
-              toolCalls: [{ id: 'read-call', name: 'read', arguments: {} }],
-            },
+      fakeLlm(
+        (messages: Message[]): LlmResponse =>
+          messages.some((message: Message): boolean => message.role === 'tool')
+            ? plainAnswer()
+            : {
+                content: '',
+                finishReason: 'tool_calls',
+                toolCalls: [{ id: 'read-call', name: 'read', arguments: {} }],
+              },
       ),
     )
     .withMcpClients([mcp])
@@ -1027,7 +1279,7 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
     agent: { classificationEnabled: false, ragTranslateEnabled: false },
   })
     .withMainLlm(
-      fakeLlm((messages: Message[]) => {
+      fakeLlm((messages: Message[]): LlmResponse => {
         const last = messages.at(-1);
         return last?.role === 'tool' || last?.content?.includes('[task events]')
           ? plainAnswer()
@@ -1053,12 +1305,18 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
     .build();
   const requestIds = new Map<string, string>();
   mockPlanner = guardLlmOnlyAgent(planner.agent, {
-    decide: fakeLlm((_messages: Message[], options?: CallOptions) => {
-      const user = mockAuthenticatedUser.getStore();
-      const requestId = options?.trace?.traceId;
-      if (user && requestId) requestIds.set(user, requestId);
-      return { content: '{"action":false}', finishReason: 'stop' };
-    }, beforeChat),
+    decide: fakeLlm(
+      (
+        _messages: Message[],
+        options?: CallOptions,
+      ): { content: string; finishReason: 'stop' } => {
+        const user = mockAuthenticatedUser.getStore();
+        const requestId = options?.trace?.traceId;
+        if (user && requestId) requestIds.set(user, requestId);
+        return { content: '{"action":false}', finishReason: 'stop' };
+      },
+      beforeChat,
+    ),
     why: 'waiting',
   });
   jest
@@ -1071,7 +1329,7 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
   if (!embedding) throw new Error('Expected embedding');
   const query = agentQueryEmbedder(embedding, 'collection-retrieval');
   let releaseRetrieval!: () => void;
-  const retrievalGate = new Promise<void>((resolve: () => void) => {
+  const retrievalGate = new Promise<void>((resolve: () => void): void => {
     releaseRetrieval = resolve;
   });
   let retrievalsStarted = 0;
@@ -1079,7 +1337,7 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
     async embedQuery(
       text: string,
       options?: Parameters<typeof query.embedQuery>[1],
-    ) {
+    ): Promise<IEmbedResult> {
       retrievalsStarted++;
       if (retrievalsStarted === 2) releaseRetrieval();
       await retrievalGate;
@@ -1117,21 +1375,26 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
       req: express.Request,
       _res: express.Response,
       next: express.NextFunction,
-    ) => {
+    ): void => {
       mockAuthenticatedUser.run(req.header('x-test-user') ?? 'anonymous', next);
     },
   );
   app.use(
     sessionMiddleware({
-      userIdOf: () => mockAuthenticatedUser.getStore() ?? 'anonymous',
-      resolveSession: async (user: string, key: string) =>
-        registry.get(user, key),
+      userIdOf: (): string => mockAuthenticatedUser.getStore() ?? 'anonymous',
+      resolveSession: async (
+        user: string,
+        key: string,
+      ): Promise<LongSession | undefined> => registry.get(user, key),
     }),
   );
   app.post('/chat/completions', handleChatCompletions);
   const server = createServer(app);
-  await new Promise<void>((resolve: () => void) =>
-    server.listen(0, '127.0.0.1', resolve),
+  await new Promise<void>(
+    (
+      resolve: () => void,
+    ): Server<typeof IncomingMessage, typeof ServerResponse> =>
+      server.listen(0, '127.0.0.1', resolve),
   );
   const address = server.address();
   if (!address || typeof address === 'string')
@@ -1139,7 +1402,7 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
   const before = (await rows()).length;
   try {
     await Promise.all(
-      cases.map(async (entry: (typeof cases)[number]) => {
+      cases.map(async (entry: (typeof cases)[number]): Promise<void> => {
         const response = await fetch(
           `http://127.0.0.1:${address.port}/chat/completions`,
           {
@@ -1163,25 +1426,29 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
       }),
     );
     expect(retrievalsStarted).toBe(2);
-    await until(() => toolRequests.length === 2);
+    await until((): boolean => toolRequests.length === 2);
     const blocked = (await rows()).slice(before);
     expect(
       blocked.filter(
-        (row: UsageRecord) => row.kind === 'task' || row.kind === 'tool.call',
+        (row: UsageRecord): boolean =>
+          row.kind === 'task' || row.kind === 'tool.call',
       ),
     ).toHaveLength(0);
     release();
     const handles = await Promise.all(
-      cases.map((entry: (typeof cases)[number]) =>
-        dialogueFor(entry.userId, entry.sessionId, 'TEST'),
+      cases.map(
+        (entry: (typeof cases)[number]): Promise<DialogueHandle> =>
+          dialogueFor(entry.userId, entry.sessionId, 'TEST'),
       ),
     );
-    await until(() =>
-      handles.every((handle: (typeof handles)[number]) => {
+    await until((): boolean =>
+      handles.every((handle: (typeof handles)[number]): boolean => {
         const tasks = handle.session.snapshot().tasks;
         return (
           tasks.length === 1 &&
-          tasks.every((task: (typeof tasks)[number]) => task.state === 'done')
+          tasks.every(
+            (task: (typeof tasks)[number]): boolean => task.state === 'done',
+          )
         );
       }),
     );
@@ -1194,38 +1461,39 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
       // Select by each identity independently so a swapped or partly mixed label
       // cannot disappear from the assertions through a session-only filter.
       const own = records.filter(
-        (row: UsageRecord) =>
+        (row: UsageRecord): boolean =>
           row.context.sessionId === entry.sessionId ||
           row.context.userId === entry.userId ||
           row.context.requestId === requestId,
       );
       expect(
         own.some(
-          (row: UsageRecord) =>
+          (row: UsageRecord): boolean =>
             row.kind === 'embedding.call' &&
             row.context.component === 'collection-retrieval',
         ),
       ).toBe(true);
       expect(
         own.some(
-          (row: UsageRecord) =>
+          (row: UsageRecord): boolean =>
             row.kind === 'llm.call' && row.context.role === 'classifier',
         ),
       ).toBe(true);
       expect(
         own.some(
-          (row: UsageRecord) =>
+          (row: UsageRecord): boolean =>
             row.kind === 'llm.call' &&
             row.context.role === 'tool-loop' &&
             !row.context.taskId,
         ),
       ).toBe(true);
       expect(
-        own.filter((row: UsageRecord) => row.kind === 'task'),
+        own.filter((row: UsageRecord): boolean => row.kind === 'task'),
       ).toHaveLength(1);
       expect(
         own.filter(
-          (row: UsageRecord) => row.kind === 'tool.call' && !row.embedded,
+          (row: UsageRecord): boolean =>
+            row.kind === 'tool.call' && !row.embedded,
         ),
       ).toHaveLength(1);
       for (const row of own) {
@@ -1235,7 +1503,7 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
           requestId,
         });
         for (const other of cases.filter(
-          (candidate: (typeof cases)[number]) => candidate !== entry,
+          (candidate: (typeof cases)[number]): boolean => candidate !== entry,
         )) {
           expect(row.context.sessionId).not.toBe(other.sessionId);
           expect(row.context.userId).not.toBe(other.userId);
@@ -1246,7 +1514,7 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
     for (const row of records) {
       expect(
         cases.some(
-          (entry: (typeof cases)[number]) =>
+          (entry: (typeof cases)[number]): boolean =>
             row.context.sessionId === entry.sessionId,
         ),
       ).toBe(true);
@@ -1256,8 +1524,11 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
     releaseFollowup();
     releaseRetrieval();
     server.closeAllConnections();
-    await new Promise<void>((resolve: () => void) =>
-      server.close(() => resolve()),
+    await new Promise<void>(
+      (
+        resolve: () => void,
+      ): Server<typeof IncomingMessage, typeof ServerResponse> =>
+        server.close((): void => resolve()),
     );
     for (const entry of cases)
       await closeDialogue(entry.userId, entry.sessionId, 'explicit');
@@ -1265,10 +1536,17 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
   }
 });
 
-test('real MCP agent tool loop correlates request, LLM and dispatched MCP records', async () => {
+test('real MCP agent tool loop correlates request, LLM and dispatched MCP records', async (): Promise<void> => {
   const before = (await rows()).length;
   const mcp: IMcpClient = {
-    async listTools() {
+    async listTools(): Promise<{
+      ok: true;
+      value: {
+        name: string;
+        description: string;
+        inputSchema: { type: string; properties: Record<string, never> };
+      }[];
+    }> {
       return {
         ok: true,
         value: [
@@ -1280,7 +1558,14 @@ test('real MCP agent tool loop correlates request, LLM and dispatched MCP record
         ],
       };
     },
-    async callTool(name: string, _args: object, options?: CallOptions) {
+    async callTool(
+      name: string,
+      _args: object,
+      options?: CallOptions,
+    ): Promise<{
+      ok: true;
+      value: { content: { type: string; text: string }[] };
+    }> {
       options?.usage?.record({
         kind: 'tool.call',
         context: {},
@@ -1303,14 +1588,15 @@ test('real MCP agent tool loop correlates request, LLM and dispatched MCP record
     agent: { classificationEnabled: false, ragTranslateEnabled: false },
   })
     .withMainLlm(
-      fakeLlm((messages: Message[]) =>
-        messages.some((message: Message) => message.role === 'tool')
-          ? plainAnswer()
-          : {
-              content: '',
-              finishReason: 'tool_calls',
-              toolCalls: [{ id: 'read-call', name: 'read', arguments: {} }],
-            },
+      fakeLlm(
+        (messages: Message[]): LlmResponse =>
+          messages.some((message: Message): boolean => message.role === 'tool')
+            ? plainAnswer()
+            : {
+                content: '',
+                finishReason: 'tool_calls',
+                toolCalls: [{ id: 'read-call', name: 'read', arguments: {} }],
+              },
       ),
     )
     .withMcpClients([mcp])
@@ -1328,18 +1614,24 @@ test('real MCP agent tool loop correlates request, LLM and dispatched MCP record
   setLongSessionsForTest(registry);
   const app = express();
   app.use(express.json());
-  app.post('/', async (req: express.Request, res: express.Response) => {
-    res.json(
-      await executeStep(
-        req,
-        { userId: 'alice', exposition: undefined },
-        { task: 'run', session: session.key },
-      ),
-    );
-  });
+  app.post(
+    '/',
+    async (req: express.Request, res: express.Response): Promise<void> => {
+      res.json(
+        await executeStep(
+          req,
+          { userId: 'alice', exposition: undefined },
+          { task: 'run', session: session.key },
+        ),
+      );
+    },
+  );
   const server = createServer(app);
-  await new Promise<void>((resolve: () => void) =>
-    server.listen(0, '127.0.0.1', resolve),
+  await new Promise<void>(
+    (
+      resolve: () => void,
+    ): Server<typeof IncomingMessage, typeof ServerResponse> =>
+      server.listen(0, '127.0.0.1', resolve),
   );
   const address = server.address();
   if (!address || typeof address === 'string')
@@ -1353,14 +1645,25 @@ test('real MCP agent tool loop correlates request, LLM and dispatched MCP record
     expect(await response.text()).toContain('RESULT_SENTINEL');
     const records = (await rows())
       .slice(before)
-      .filter((record: UsageRecord) =>
+      .filter((record: UsageRecord): boolean =>
         ['x.hub.request', 'llm.call', 'tool.call'].includes(record.kind),
       );
-    expect(records.map((record: UsageRecord) => record.kind)).toEqual(
+    expect(
+      records.map(
+        (
+          record: UsageRecord,
+        ):
+          | 'task'
+          | 'llm.call'
+          | 'embedding.call'
+          | 'tool.call'
+          | `x.${string}` => record.kind,
+      ),
+    ).toEqual(
       expect.arrayContaining(['x.hub.request', 'llm.call', 'tool.call']),
     );
     const request = records.find(
-      (record: UsageRecord) => record.kind === 'x.hub.request',
+      (record: UsageRecord): boolean => record.kind === 'x.hub.request',
     );
     expect(request?.context.requestId).toEqual(expect.any(String));
     for (const record of records)
@@ -1372,8 +1675,11 @@ test('real MCP agent tool loop correlates request, LLM and dispatched MCP record
   } finally {
     mockStepAgent = undefined;
     server.closeAllConnections();
-    await new Promise<void>((resolve: () => void) =>
-      server.close(() => resolve()),
+    await new Promise<void>(
+      (
+        resolve: () => void,
+      ): Server<typeof IncomingMessage, typeof ServerResponse> =>
+        server.close((): void => resolve()),
     );
     await registry.closeAll('explicit');
     setLongSessionsForTest(undefined);

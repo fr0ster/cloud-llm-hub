@@ -1,11 +1,20 @@
-jest.mock('../../srv/agent-manager', () => ({
-  getCollectionRegistry: () => collections,
-  isProvidersReady: () => providersReady,
-  getSharedHistoryRag: () => historyRag,
+import type { IUsageControl, IUsageRecorder } from '@mcp-abap-adt/llm-agent';
+
+jest.mock('../../srv/agent-manager', (): object => ({
+  getCollectionRegistry: (): CollectionRegistry => collections,
+  isProvidersReady: (): boolean => providersReady,
+  getSharedHistoryRag: (): SessionHistoryRag | undefined => historyRag,
 }));
-jest.mock('@sap/cds', () => ({
+jest.mock('@sap/cds', (): object => ({
   __esModule: true,
-  default: { log: () => ({ warn() {}, info() {}, error() {}, debug() {} }) },
+  default: {
+    log: (): { warn(): void; info(): void; error(): void; debug(): void } => ({
+      warn(): void {},
+      info(): void {},
+      error(): void {},
+      debug(): void {},
+    }),
+  },
 }));
 
 import {
@@ -104,13 +113,13 @@ async function start(measure: string = 'all'): Promise<UsageRuntime> {
       LLM_AGENT_USAGE_STORAGE_INTERVAL_MS: '1234',
     }),
     {
-      recorderFactory: () => control,
+      recorderFactory: (): IUsageRecorder & IUsageControl => control,
       setInterval: (
         tick: () => void,
         ms: number,
       ): ReturnType<typeof setInterval> => {
         ticks.push({ tick, ms });
-        const timer = setInterval(() => {}, ms);
+        const timer = setInterval((): void => {}, ms);
         clearInterval(timer);
         return timer;
       },
@@ -141,7 +150,7 @@ async function collection(
   });
   return id;
 }
-beforeEach(async () => {
+beforeEach(async (): Promise<void> => {
   providersReady = false;
   historyRag = undefined;
   ticks.length = 0;
@@ -155,7 +164,7 @@ beforeEach(async () => {
   resetUsageSessionsForTest();
   sessionOpened(session);
 });
-afterEach(async () => {
+afterEach(async (): Promise<void> => {
   jest.restoreAllMocks();
   clearSession(session.sessionId, session.userId);
   stopStorageMeter(runtime);
@@ -165,7 +174,7 @@ afterEach(async () => {
   setStorageSnapshots();
 });
 
-test('session measures use non-overlapping state, outbox, history and collection counters', async () => {
+test('session measures use non-overlapping state, outbox, history and collection counters', async (): Promise<void> => {
   const saved = state();
   await getDialogueStoreBackend().save('alice', session.sessionId, saved);
   const message: Message = {
@@ -189,7 +198,7 @@ test('session measures use non-overlapping state, outbox, history and collection
   expect(bytes(rest)).toBeLessThan(bytes(saved));
 });
 
-test('no content-loading API is called and serialized records contain no content', async () => {
+test('no content-loading API is called and serialized records contain no content', async (): Promise<void> => {
   await getDialogueStoreBackend().save('alice', session.sessionId, state());
   await collection();
   const load = jest
@@ -220,7 +229,7 @@ test('no content-loading API is called and serialized records contain no content
     expect(encoded).not.toContain(sentinel);
 });
 
-test('user collections are isolated from session collections and other users', async () => {
+test('user collections are isolated from session collections and other users', async (): Promise<void> => {
   await collection('user');
   await collection('session');
   await collection('user', 'bob');
@@ -231,7 +240,7 @@ test('user collections are isolated from session collections and other users', a
   });
 });
 
-test('collection overwrite, update and deletion maintain byte counters', async () => {
+test('collection overwrite, update and deletion maintain byte counters', async (): Promise<void> => {
   const id = await collection();
   await collections.addDocument(id, {
     id: 'one',
@@ -253,7 +262,7 @@ test('collection overwrite, update and deletion maintain byte counters', async (
   });
 });
 
-test('unavailable counters omit their value and set the corresponding Unknown flag', async () => {
+test('unavailable counters omit their value and set the corresponding Unknown flag', async (): Promise<void> => {
   jest
     .spyOn(getDialogueStoreBackend(), 'storageBytes')
     .mockReturnValue(undefined);
@@ -266,8 +275,8 @@ test('unavailable counters omit their value and set the corresponding Unknown fl
   expect(snapshot).not.toHaveProperty('outboxBytes');
 });
 
-test('unavailable collection registry produces unknown measures', async () => {
-  jest.spyOn(collections, 'storageMeasures').mockImplementation(() => {
+test('unavailable collection registry produces unknown measures', async (): Promise<void> => {
+  jest.spyOn(collections, 'storageMeasures').mockImplementation((): never => {
     throw new Error('Unavailable');
   });
   expect(await measureUser('alice')).toEqual({
@@ -277,7 +286,7 @@ test('unavailable collection registry produces unknown measures', async () => {
   });
 });
 
-test('memory history amendments and expiry do not claim persisted history bytes', async () => {
+test('memory history amendments and expiry do not claim persisted history bytes', async (): Promise<void> => {
   const message: Message = { role: 'user', content: 'before' };
   appendToSession(session.sessionId, 'alice', message);
   amendSessionMessage(session.sessionId, 'alice', message, '\u{1f600}');
@@ -290,7 +299,7 @@ test('memory history amendments and expiry do not claim persisted history bytes'
   });
 });
 
-test('writes refresh the synchronous eviction cache; close drops it', async () => {
+test('writes refresh the synchronous eviction cache; close drops it', async (): Promise<void> => {
   appendToSession(session.sessionId, 'alice', {
     role: 'user',
     content: 'cached',
@@ -305,7 +314,7 @@ test('writes refresh the synchronous eviction cache; close drops it', async () =
   expect(await records('x.hub.storage')).toHaveLength(1);
 });
 
-test('eviction before the first measurement emits Unknown storage for a history-only session', async () => {
+test('eviction before the first measurement emits Unknown storage for a history-only session', async (): Promise<void> => {
   const measure = jest.spyOn(measurements, 'measureSession');
   appendToSession(session.sessionId, session.userId, {
     role: 'user',
@@ -331,10 +340,10 @@ test('eviction before the first measurement emits Unknown storage for a history-
   expect(storageSnapshots().cached(session)).toBeUndefined();
 });
 
-test('close without a measurement or cached snapshot emits Unknown storage', async () => {
+test('close without a measurement or cached snapshot emits Unknown storage', async (): Promise<void> => {
   setStorageSnapshots({
-    measure: async () => undefined,
-    cached: () => undefined,
+    measure: async (): Promise<undefined> => undefined,
+    cached: (): undefined => undefined,
   });
   await sessionClosed(session, 'explicit');
   expect(await records('x.hub.storage')).toMatchObject([
@@ -342,12 +351,13 @@ test('close without a measurement or cached snapshot emits Unknown storage', asy
   ]);
 });
 
-test('a stalled query releases the deadline lock for another measurement and discards late results', async () => {
+test('a stalled query releases the deadline lock for another measurement and discards late results', async (): Promise<void> => {
   const meter = new StorageMeter(20);
   meter.retain(session);
-  let finish: (value: Record<string, number | boolean>) => void = () => {};
+  let finish: (value: Record<string, number | boolean>) => void =
+    (): void => {};
   const gate = new Promise<Record<string, number | boolean>>(
-    (resolve: (value: Record<string, number | boolean>) => void) => {
+    (resolve: (value: Record<string, number | boolean>) => void): void => {
       finish = resolve;
     },
   );
@@ -358,20 +368,14 @@ test('a stalled query releases the deadline lock for another measurement and dis
   const first = meter.measure(session);
   // Allow the pending measurement to advance.
   for (let i = 0; i < 10; i++) await Promise.resolve();
-  await meter.measure(session);
-  await meter.measure({ userId: 'bob', sessionId: 'other' });
-  await meter.tick(runtime);
+  const second = meter.measure(session);
+  const other = meter.measure({ userId: 'bob', sessionId: 'other' });
+  await Promise.all([first, second, other]);
   expect(measure).toHaveBeenCalledTimes(1);
-  // A referenced timer lets the unref'ed production deadline fire in isolation.
-  await new Promise<void>((resolve: () => void) => {
-    setTimeout(resolve, 30);
-  });
-  expect(await first).toMatchObject({
-    stateBytesUnknown: true,
-    historyBytesUnknown: true,
-  });
+  expect(await first).toMatchObject({ historyBytesUnknown: true });
+  expect(await second).toMatchObject({ historyBytesUnknown: true });
+  expect(await other).toMatchObject({ historyBytesUnknown: true });
   await meter.measure(session);
-  expect(measure).toHaveBeenCalledTimes(2);
   expect(meter.cached(session)).toMatchObject({ historyBytes: 7 });
   finish({ historyBytes: 123 });
   for (let i = 0; i < 10; i++) await Promise.resolve();
@@ -380,7 +384,7 @@ test('a stalled query releases the deadline lock for another measurement and dis
   expect(meter.cached(session)).toBeUndefined();
 });
 
-test('periodic ticks emit one session record per live session and one user record per user', async () => {
+test('periodic ticks emit one session record per live session and one user record per user', async (): Promise<void> => {
   const meter = storageSnapshots();
   if (!(meter instanceof StorageMeter)) throw new Error('Expected meter');
   await collection('user');
@@ -392,15 +396,17 @@ test('periodic ticks emit one session record per live session and one user recor
   expect(users[0]?.context.sessionId).toBeUndefined();
   expect(users[0]?.context.userId).not.toBe('alice');
   expect(
-    ticks.filter((item: { tick: () => void; ms: number }) => item.ms === 1234),
+    ticks.filter(
+      (item: { tick: () => void; ms: number }): boolean => item.ms === 1234,
+    ),
   ).toHaveLength(1);
 });
 
 test.each(['explicit', 'ttl'])(
   'plain %s close measures the real history before cleanup',
-  async (reason: string) => {
+  async (reason: string): Promise<void> => {
     const retention = new SessionRetention({
-      hasState: () => reason === 'explicit',
+      hasState: (): boolean => reason === 'explicit',
       deleteAll: (userId: string, sessionId: string): void =>
         clearSession(sessionId, userId),
       onSessionRetained: (userId: string, sessionId: string): void =>
@@ -437,7 +443,7 @@ test.each(['explicit', 'ttl'])(
 
 test.each(['off', 'session'])(
   'usage %s maintains no byte counters or storage timer',
-  async (mode: string) => {
+  async (mode: string): Promise<void> => {
     stopStorageMeter(runtime);
     await runtime.close(1000);
     ticks.length = 0;
@@ -459,15 +465,20 @@ test.each(['off', 'session'])(
     const track = jest.fn<void, [string, boolean]>();
     const update = jest.fn();
     setStorageSnapshots({
-      measure: async () => undefined,
-      cached: () => undefined,
+      measure: async (): Promise<undefined> => undefined,
+      cached: (): undefined => undefined,
       trackUser: track,
       update,
     });
     const owner = turnOwner(session.userId, session.sessionId);
-    const rag = new SessionHistoryRag(new InMemoryRag(), () => owner, 1, {
-      storageBackend: 'hana-vector',
-    });
+    const rag = new SessionHistoryRag(
+      new InMemoryRag(),
+      (): string => owner,
+      1,
+      {
+        storageBackend: 'hana-vector',
+      },
+    );
     for (let index = 0; index < 2; index++)
       await rag.recordTurn({
         owner,
@@ -484,13 +495,13 @@ test.each(['off', 'session'])(
     expect(update).not.toHaveBeenCalled();
     expect(
       ticks.filter(
-        (item: { tick: () => void; ms: number }) => item.ms === 1234,
+        (item: { tick: () => void; ms: number }): boolean => item.ms === 1234,
       ),
     ).toHaveLength(0);
   },
 );
 
-test('a closing generation cannot delete a replacement session cache', async () => {
+test('a closing generation cannot delete a replacement session cache', async (): Promise<void> => {
   const meter = new StorageMeter();
   const replacement = { ...session };
   meter.retain(session);
@@ -502,7 +513,7 @@ test('a closing generation cannot delete a replacement session cache', async () 
   expect(meter.cached(replacement)).toBeUndefined();
 });
 
-test('a cached measure becoming unavailable omits its previous numeric value', () => {
+test('a cached measure becoming unavailable omits its previous numeric value', (): void => {
   const meter = new StorageMeter();
   meter.retain(session);
   meter.update(session, { sessionCollectionTextBytes: 12 });
@@ -523,7 +534,7 @@ test('a cached measure becoming unavailable omits its previous numeric value', (
   meter.stop();
 });
 
-test('RAG writes refresh eviction cache without waiting for a periodic tick', async () => {
+test('RAG writes refresh eviction cache without waiting for a periodic tick', async (): Promise<void> => {
   const id = await collection();
   expect(storageSnapshots().cached(session)).toMatchObject({
     sessionCollectionDocuments: 1,
@@ -535,7 +546,7 @@ test('RAG writes refresh eviction cache without waiting for a periodic tick', as
   });
 });
 
-test('server shutdown stops the meter and drops every retained snapshot', async () => {
+test('server shutdown stops the meter and drops every retained snapshot', async (): Promise<void> => {
   const meter = storageSnapshots();
   if (!(meter instanceof StorageMeter)) throw new Error('Expected meter');
   appendToSession(session.sessionId, 'alice', {
@@ -550,12 +561,13 @@ test('server shutdown stops the meter and drops every retained snapshot', async 
   expect(await meter.measure(session)).toBeUndefined();
 });
 
-test('a slow snapshot cannot replace newer write-time cache counters', async () => {
+test('a slow snapshot cannot replace newer write-time cache counters', async (): Promise<void> => {
   const meter = new StorageMeter();
   meter.retain(session);
-  let finish: (value: Record<string, number | boolean>) => void = () => {};
+  let finish: (value: Record<string, number | boolean>) => void =
+    (): void => {};
   const gate = new Promise<Record<string, number | boolean>>(
-    (resolve: (value: Record<string, number | boolean>) => void) => {
+    (resolve: (value: Record<string, number | boolean>) => void): void => {
       finish = resolve;
     },
   );
@@ -567,12 +579,13 @@ test('a slow snapshot cannot replace newer write-time cache counters', async () 
   expect(meter.cached(session)).toMatchObject({ historyBytes: 22 });
 });
 
-test('two overlapping periodic ticks perform only one measurement', async () => {
+test('two overlapping periodic ticks perform only one measurement', async (): Promise<void> => {
   const meter = new StorageMeter();
   meter.retain(session);
-  let finish: (value: Record<string, number | boolean>) => void = () => {};
+  let finish: (value: Record<string, number | boolean>) => void =
+    (): void => {};
   const gate = new Promise<Record<string, number | boolean>>(
-    (resolve: (value: Record<string, number | boolean>) => void) => {
+    (resolve: (value: Record<string, number | boolean>) => void): void => {
       finish = resolve;
     },
   );
@@ -586,7 +599,7 @@ test('two overlapping periodic ticks perform only one measurement', async () => 
   await first;
 });
 
-test('runtime initialization leaves storage scheduling to the server lifecycle', async () => {
+test('runtime initialization leaves storage scheduling to the server lifecycle', async (): Promise<void> => {
   stopStorageMeter(runtime);
   await runtime.close(1000);
   ticks.length = 0;
@@ -595,7 +608,7 @@ test('runtime initialization leaves storage scheduling to the server lifecycle',
       LLM_AGENT_USAGE: 'on',
       LLM_AGENT_USAGE_SINKS: 'memory',
     }),
-    { recorderFactory: () => control },
+    { recorderFactory: (): IUsageRecorder & IUsageControl => control },
   );
   if (!initialized) throw new Error('Expected runtime');
   runtime = initialized;
@@ -607,19 +620,22 @@ test('runtime initialization leaves storage scheduling to the server lifecycle',
   expect(schedule).toHaveBeenCalledWith('storage', expect.any(Function), 1234);
 });
 
-test('a timed-out session measurement does not begin user queries after shutdown', async () => {
+test('a timed-out session measurement does not begin user queries after shutdown', async (): Promise<void> => {
   const meter = new StorageMeter(5);
   meter.retain(session);
-  let finish: (value: Record<string, number | boolean>) => void = () => {};
+  let finish: (value: Record<string, number | boolean>) => void =
+    (): void => {};
   const gate = new Promise<Record<string, number | boolean>>(
-    (resolve: (value: Record<string, number | boolean>) => void) => {
+    (resolve: (value: Record<string, number | boolean>) => void): void => {
       finish = resolve;
     },
   );
   jest.spyOn(measurements, 'measureSession').mockReturnValue(gate);
   const user = jest.spyOn(measurements, 'measureUser');
   const pending = meter.measure(session);
-  await new Promise<void>((resolve: () => void) => setTimeout(resolve, 15));
+  await new Promise<void>(
+    (resolve: () => void): NodeJS.Timeout => setTimeout(resolve, 15),
+  );
   await pending;
   meter.stop();
   finish({ historyBytes: 1 });
@@ -630,7 +646,7 @@ test('a timed-out session measurement does not begin user queries after shutdown
 
 test.each(['expiry', 'clear'])(
   'memory history %s followed directly by synchronous eviction preserves Unknown persisted bytes',
-  async (action: string) => {
+  async (action: string): Promise<void> => {
     await collection();
     appendToSession(session.sessionId, session.userId, {
       role: 'user',
@@ -648,7 +664,7 @@ test.each(['expiry', 'clear'])(
 
 test.each(['expiry', 'delete'])(
   'dialogue %s followed directly by synchronous eviction records zero bytes',
-  async (action: string) => {
+  async (action: string): Promise<void> => {
     await collection();
     const store = getDialogueStoreBackend();
     await store.save(session.userId, session.sessionId, state());
@@ -664,7 +680,7 @@ test.each(['expiry', 'delete'])(
 
 test.each(['before', 'after'])(
   'user collection storage is reported with zero retained sessions (last session closes %s collection creation)',
-  async (timing: string) => {
+  async (timing: string): Promise<void> => {
     if (timing === 'before') sessionReleased(session, 'evicted');
     const id = await collection('user');
     if (timing === 'after') sessionReleased(session, 'evicted');
@@ -680,7 +696,7 @@ test.each(['before', 'after'])(
   },
 );
 
-test('rotating ticks fairly measure later sessions and users when work exceeds one tick budget', async () => {
+test('rotating ticks fairly measure later sessions and users when work exceeds one tick budget', async (): Promise<void> => {
   jest.useFakeTimers();
   const meter = new StorageMeter(10);
   meter.retain(session);
@@ -693,8 +709,10 @@ test('rotating ticks fairly measure later sessions and users when work exceeds o
       async (id: string): Promise<Record<string, number | boolean>> => {
         measured.push(id);
         return new Promise<Record<string, number | boolean>>(
-          (resolve: (value: Record<string, number | boolean>) => void) =>
-            setTimeout(() => resolve({ historyBytes: 1 }), 30),
+          (
+            resolve: (value: Record<string, number | boolean>) => void,
+          ): NodeJS.Timeout =>
+            setTimeout((): void => resolve({ historyBytes: 1 }), 30),
         );
       },
     );
@@ -704,8 +722,10 @@ test('rotating ticks fairly measure later sessions and users when work exceeds o
       async (id: string): Promise<Record<string, number | boolean>> => {
         measured.push(id);
         return new Promise<Record<string, number | boolean>>(
-          (resolve: (value: Record<string, number | boolean>) => void) =>
-            setTimeout(() => resolve({ userCollectionDocuments: 1 }), 30),
+          (
+            resolve: (value: Record<string, number | boolean>) => void,
+          ): NodeJS.Timeout =>
+            setTimeout((): void => resolve({ userCollectionDocuments: 1 }), 30),
         );
       },
     );
@@ -723,7 +743,7 @@ test('rotating ticks fairly measure later sessions and users when work exceeds o
   }
 });
 
-test('eligible user tracking is capped with oldest dropped and disabled with usage off', async () => {
+test('eligible user tracking is capped with oldest dropped and disabled with usage off', async (): Promise<void> => {
   const meter = new StorageMeter();
   const user = jest.spyOn(measurements, 'measureUser').mockResolvedValue({});
   for (let i = 0; i < 1001; i++) meter.trackUser(`owner-${i}`, true);
@@ -741,11 +761,11 @@ test('eligible user tracking is capped with oldest dropped and disabled with usa
   disabled.stop();
 });
 
-test('persisted recall beyond ten turns stays Unknown through window expiry and revival without content reads', async () => {
+test('persisted recall beyond ten turns stays Unknown through window expiry and revival without content reads', async (): Promise<void> => {
   const backend = new InMemoryRag();
   const owner = turnOwner(session.userId, session.sessionId);
   providersReady = true;
-  historyRag = new SessionHistoryRag(backend, () => owner, 12);
+  historyRag = new SessionHistoryRag(backend, (): string => owner, 12);
   for (let turn = 0; turn < 15; turn++) {
     expect(
       await historyRag.recordTurn({
@@ -778,7 +798,7 @@ test('persisted recall beyond ten turns stays Unknown through window expiry and 
   expect(storageSnapshots().cached(session)).toMatchObject({
     historyBytesUnknown: true,
   });
-  historyRag = new SessionHistoryRag(backend, () => owner, 12);
+  historyRag = new SessionHistoryRag(backend, (): string => owner, 12);
   const turns = await historyRag.listTurns(owner);
   expect(turns).toHaveLength(12);
   for (const turn of turns)
@@ -806,7 +826,7 @@ test('persisted recall beyond ten turns stays Unknown through window expiry and 
   await assertUnknown();
 });
 
-test('a configured provider with no recall store reports zero persisted history', async () => {
+test('a configured provider with no recall store reports zero persisted history', async (): Promise<void> => {
   providersReady = true;
   appendToSession(session.sessionId, session.userId, {
     role: 'user',
@@ -819,11 +839,11 @@ test('a configured provider with no recall store reports zero persisted history'
 
 test.each(['in-memory', 'hana-vector'])(
   '%s recall counters count stored text through cap, expiry, revival and deletion',
-  async (storageBackend: string) => {
+  async (storageBackend: string): Promise<void> => {
     const backend = new InMemoryRag();
     const owner = turnOwner(session.userId, session.sessionId);
     providersReady = true;
-    historyRag = new SessionHistoryRag(backend, () => owner, 12, {
+    historyRag = new SessionHistoryRag(backend, (): string => owner, 12, {
       storageBackend,
     });
     const textBytes = Buffer.byteLength(
@@ -847,7 +867,7 @@ test.each(['in-memory', 'hana-vector'])(
     expect(
       await measureSession(session.sessionId, session.userId),
     ).toMatchObject({ historyBytes: textBytes * 12 });
-    historyRag = new SessionHistoryRag(backend, () => owner, 12, {
+    historyRag = new SessionHistoryRag(backend, (): string => owner, 12, {
       storageBackend,
     });
     await historyRag.listTurns(owner);
@@ -865,7 +885,7 @@ test.each(['in-memory', 'hana-vector'])(
 
 test.each([true, false])(
   'closing many distinct history owners releases counter storage (filtered deletion: %s)',
-  async (filtered: boolean) => {
+  async (filtered: boolean): Promise<void> => {
     const backend = new InMemoryRag();
     const inner: IRag = filtered
       ? backend
@@ -875,7 +895,7 @@ test.each([true, false])(
           healthCheck: backend.healthCheck.bind(backend),
           writer: backend.writer.bind(backend),
         };
-    const rag = new SessionHistoryRag(inner, () => undefined, 12, {
+    const rag = new SessionHistoryRag(inner, (): undefined => undefined, 12, {
       storageBackend: 'hana-vector',
     });
     for (let index = 0; index < 600; index++) {
@@ -897,11 +917,11 @@ test.each([true, false])(
   },
 );
 
-test('eviction immediately after a persisted-history write includes the new history bytes', async () => {
+test('eviction immediately after a persisted-history write includes the new history bytes', async (): Promise<void> => {
   const backend = new InMemoryRag();
   const owner = turnOwner(session.userId, session.sessionId);
   providersReady = true;
-  historyRag = new SessionHistoryRag(backend, () => owner, 12, {
+  historyRag = new SessionHistoryRag(backend, (): string => owner, 12, {
     storageBackend: 'hana-vector',
   });
   expect(historyRag.storageBytes(owner)).toBeUndefined();
@@ -937,9 +957,9 @@ test('eviction immediately after a persisted-history write includes the new hist
 
 test.each(['result', 'throw'])(
   'repeated failed history cleanup releases owner counters without a zero marker (%s)',
-  async (failure: string) => {
+  async (failure: string): Promise<void> => {
     const backend = new InMemoryRag();
-    const rag = new SessionHistoryRag(backend, () => undefined, 12, {
+    const rag = new SessionHistoryRag(backend, (): undefined => undefined, 12, {
       storageBackend: 'hana-vector',
     });
     const deletion = jest.spyOn(backend, 'deleteWhere');
@@ -981,3 +1001,60 @@ test.each(['result', 'throw'])(
     expect(rag['clearedOwners']?.has(owner)).toBe(false);
   },
 );
+
+test('parallel async closes wait for a periodic snapshot and each take a fresh measurement', async (): Promise<void> => {
+  const meter = storageSnapshots();
+  if (!(meter instanceof StorageMeter)) throw new Error('Expected meter');
+  const other = { userId: 'bob', sessionId: 'other-close' };
+  sessionOpened(other);
+  let finish: (value: Record<string, number | boolean>) => void =
+    (): void => {};
+  const blocked = new Promise<Record<string, number | boolean>>(
+    (resolve: (value: Record<string, number | boolean>) => void): void => {
+      finish = resolve;
+    },
+  );
+  const measure = jest
+    .spyOn(measurements, 'measureSession')
+    .mockReturnValueOnce(blocked)
+    .mockResolvedValue({ historyBytes: 77 });
+  const periodic = meter.tick(runtime);
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  const closes = Promise.all([
+    sessionClosed(session, 'explicit'),
+    sessionClosed(other, 'ttl'),
+  ]);
+  finish({ historyBytes: 11 });
+  await Promise.all([periodic, closes]);
+  expect(
+    measure.mock.calls.filter(
+      (args: Parameters<typeof measurements.measureSession>): boolean =>
+        args[0] === session.sessionId,
+    ),
+  ).toHaveLength(2);
+  expect(
+    measure.mock.calls.filter(
+      (args: Parameters<typeof measurements.measureSession>): boolean =>
+        args[0] === other.sessionId,
+    ),
+  ).toHaveLength(2);
+  const closed = (await records('x.hub.session')).filter(
+    (row: UsageRecord): boolean =>
+      row.kind === 'x.hub.session' && row.values.event === 'close',
+  );
+  expect(closed).toHaveLength(2);
+  for (const row of closed)
+    expect(row).toMatchObject({ values: { historyBytes: 77 } });
+});
+
+test('failed async measurements report Unknown instead of reusing cached values before the deadline', async (): Promise<void> => {
+  const meter = new StorageMeter();
+  meter.retain(session);
+  meter.update(session, { historyBytes: 99 });
+  jest
+    .spyOn(measurements, 'measureSession')
+    .mockRejectedValue(new Error('Unavailable'));
+  const measured = await meter.measure(session);
+  expect(measured).toMatchObject({ historyBytesUnknown: true });
+  expect(measured).not.toHaveProperty('historyBytes');
+});

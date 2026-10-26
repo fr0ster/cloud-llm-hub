@@ -76,7 +76,7 @@ export function measureRequest(
     initialBytes = ownedSocket.bytesWritten;
   };
   if (!socket) res?.once('socket', assigned);
-  const responseEnded = () => {
+  const responseEnded = (): void => {
     if (responseEndAt !== undefined) return;
     responseEndAt = Date.now();
 
@@ -95,7 +95,7 @@ export function measureRequest(
   res?.once('close', responseEnded);
   const measurement: RequestMeasurement = {
     traceId,
-    bind(recorder: IUsageRecorder | undefined, identity?: UsageSession) {
+    bind(recorder: IUsageRecorder | undefined, identity?: UsageSession): void {
       if (recorder) usage = recorder;
       if (identity) {
         session = identity;
@@ -105,51 +105,53 @@ export function measureRequest(
             .with({ requestId, traceId: requestId });
       }
     },
-    setStream(value: boolean) {
+    setStream(value: boolean): void {
       stream = value;
     },
-    admitted() {
+    admitted(): void {
       if (admitted) return;
       admitted = true;
       releaseDelivery = holdSessionDelivery(session);
       admittedAt = Date.now();
       sessionRequestAdmitted(session, protocol);
     },
-    turnEnded() {
+    turnEnded(): void {
       turnEndAt = Date.now();
     },
-    expectMessages(count: number) {
+    expectMessages(count: number): void {
       expectedMessages = count;
     },
-    deliverOnResponseEnd(count: number | undefined = expectedMessages ?? 1) {
+    deliverOnResponseEnd(
+      count: number | undefined = expectedMessages ?? 1,
+    ): void {
       if (responseEndAt !== undefined && (!res || res.writableFinished)) {
         measurement.messageDelivered(count);
       } else pendingMessages += count;
     },
-    messageDelivered(count: number | undefined = 1) {
+    messageDelivered(count: number | undefined = 1): void {
       for (let i = 0; i < count; i++) {
         messagesDelivered++;
         sessionMessageDelivered(session);
       }
     },
-    end(reason: EndReason) {
+    end(reason: EndReason): void {
       if (endReason !== 'disconnected') endReason = reason;
     },
-    responseEnded(reason: EndReason) {
+    responseEnded(reason: EndReason): void {
       responseEndAt ??= Date.now();
       endReason = reason;
     },
-    outputBytes(bytes: number) {
+    outputBytes(bytes: number): void {
       bytesWritten += bytes;
     },
-    finish() {
+    finish(): void {
       if (finished) return;
       finished = true;
       const operationEndAt = Date.now();
       if (!responseEndAt && (!res || res.writableFinished)) responseEnded();
       if (res && res.statusCode >= 400 && endReason === 'done')
         endReason = 'error';
-      const emit = () => {
+      const emit = (): void => {
         requestRecord(usage, {
           protocol,
           ...(tool ? { tool } : {}),

@@ -21,7 +21,16 @@ function runtime(): UsageRuntime {
   return {
     recorder: noopRecorder,
     forSession: (): typeof noopRecorder => noopRecorder,
-    status: () => ({
+    status: (): {
+      enabled: true;
+      sinks: 'memory'[];
+      fallback: never[];
+      buffered: number;
+      delivered: number;
+      unconfirmed: number;
+      lost: Record<string, never>;
+      lastErrorCode: string;
+    } => ({
       enabled: true,
       sinks: ['memory'],
       fallback: [],
@@ -34,7 +43,11 @@ function runtime(): UsageRuntime {
     enabled: (): boolean => true,
     schedule: (): void => {},
     onClose: (): void => {},
-    close: async () => ({ delivered: 0, lost: 0, unconfirmed: 0 }),
+    close: async (): Promise<{
+      delivered: number;
+      lost: number;
+      unconfirmed: number;
+    }> => ({ delivered: 0, lost: 0, unconfirmed: 0 }),
   };
 }
 let server: Server;

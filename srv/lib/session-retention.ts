@@ -418,7 +418,7 @@ export class SessionRetention {
             e.reason ?? 'explicit',
           );
     if (preparation) {
-      const finishAsync = () => {
+      const finishAsync = (): void => {
         try {
           this.completeClose(e);
         } finally {

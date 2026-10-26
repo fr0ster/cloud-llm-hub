@@ -97,11 +97,11 @@ export async function initUsage(
   let lastErrorCode: string | undefined;
   let closed = false;
   const closeHooks = new Set<() => void>();
-  const warn = (code: string) => {
+  const warn = (code: string): void => {
     lastErrorCode = code;
     log.warn(`Usage runtime: ${code}`);
   };
-  const schedule = (tick: () => void, ms: number) => {
+  const schedule = (tick: () => void, ms: number): void => {
     const timer = every(tick, ms);
     timer.unref?.();
     timers.push(timer);
@@ -114,8 +114,11 @@ export async function initUsage(
       if (!deps.rag)
         throw new Error('Usage hana sink requires HANA backend configuration');
       const options = hanaConnection(deps.rag, deps.env);
-      factories.hana = () =>
-        createHanaUsageSink({ ...options, autoCreateSchema: false });
+      factories.hana = (): IUsageSink &
+        IUsageReader & {
+          deleteOlderThan(ms: number): Promise<number>;
+          close(): Promise<void>;
+        } => createHanaUsageSink({ ...options, autoCreateSchema: false });
     } else if (name === 'pg') {
       if (!deps.rag?.pg?.url)
         throw new Error(
@@ -133,9 +136,13 @@ export async function initUsage(
         // rolls back whole and would never make progress on a large backlog.
         connectionTimeoutMillis: BACKEND_TIMEOUT_MS,
       };
-      factories.pg = () => createPgUsageSink(pgOptions);
+      factories.pg = (): IUsageSink &
+        IUsageReader & {
+          deleteOlderThan(ms: number): Promise<number>;
+          close(): Promise<void>;
+        } => createPgUsageSink(pgOptions);
     } else if (name === 'sqlite') {
-      factories.sqlite = async () => {
+      factories.sqlite = async (): Promise<SqliteUsageSink> => {
         // Load lazily: an unavailable node:sqlite must not prevent hub startup.
         try {
           await import('node:sqlite');
@@ -152,14 +159,20 @@ export async function initUsage(
       if (!cfg.jsonlPath)
         throw new Error('LLM_AGENT_USAGE_JSONL_PATH is required for jsonl');
       const jsonlPath = cfg.jsonlPath;
-      factories.jsonl = () =>
+      factories.jsonl = (): IUsageSink &
+        IUsageReader & {
+          close(): Promise<void>;
+          stats(): { skippedLines: number };
+        } =>
         jsonlFileSink({
           path: jsonlPath,
           rotateBytes: cfg.jsonlRotateBytes,
         });
-    } else factories.memory = () => memorySink({ limit: cfg.memoryLimit });
+    } else
+      factories.memory = (): IUsageSink & IUsageReader =>
+        memorySink({ limit: cfg.memoryLimit });
   }
-  const retention = async (sink: Sink) => {
+  const retention = async (sink: Sink): Promise<void> => {
     try {
       const result = await sink.deleteOlderThan?.(
         now() - cfg.retentionDays * 86400000,
@@ -193,15 +206,17 @@ export async function initUsage(
         // A deadline cannot cancel a backend request. Reuse any outstanding
         // request so retries never open overlapping probes after a timeout.
         let probing: Promise<void> | undefined;
-        const probe = async () => {
+        const probe = async (): Promise<void> => {
           if (!probing) {
-            probing = Promise.resolve().then(() => sink.write([]));
+            probing = Promise.resolve().then(
+              (): Promise<void> => sink.write([]),
+            );
             const active = probing;
             void active.then(
-              () => {
+              (): void => {
                 if (probing === active) probing = undefined;
               },
-              () => {
+              (): void => {
                 if (probing === active) probing = undefined;
               },
             );
@@ -210,12 +225,17 @@ export async function initUsage(
           try {
             await Promise.race([
               probing,
-              new Promise<never>((_, reject) => {
-                timer = setTimeout(
-                  () => reject(new Error('HANA probe timed out')),
-                  deps.probeTimeoutMs ?? BACKEND_TIMEOUT_MS,
-                );
-              }),
+              new Promise<never>(
+                (
+                  _: (value: PromiseLike<never>) => void,
+                  reject: (error: Error) => void,
+                ): void => {
+                  timer = setTimeout(
+                    (): void => reject(new Error('HANA probe timed out')),
+                    deps.probeTimeoutMs ?? BACKEND_TIMEOUT_MS,
+                  );
+                },
+              ),
             ]);
           } finally {
             clearTimeout(timer);
@@ -238,10 +258,10 @@ export async function initUsage(
           fallback.push(reason);
           warn(tableMissing ? 'HANA_TABLE_MISSING' : 'HANA_UNAVAILABLE');
           let checking = false;
-          schedule(() => {
+          schedule((): void => {
             if (checking || closed || pending.migrated) return;
             checking = true;
-            void (async () => {
+            void (async (): Promise<void> => {
               try {
                 await probe();
                 if (closed) return;
@@ -260,7 +280,7 @@ export async function initUsage(
       }
       if (['hana', 'pg', 'sqlite'].includes(name) && sink.deleteOlderThan) {
         if (!buffer) void retention(sink);
-        schedule(() => {
+        schedule((): void => {
           if (!buffer || buffer.migrated) void retention(sink);
         }, 86400000);
       }
@@ -270,7 +290,7 @@ export async function initUsage(
       now,
     });
     const wrap = (recorder: IUsageRecorder): IUsageRecorder => ({
-      record(input: Parameters<IUsageRecorder['record']>[0]) {
+      record(input: Parameters<IUsageRecorder['record']>[0]): void {
         const kind =
           input.kind === 'x.hub.retrieval'
             ? 'request'
@@ -283,7 +303,7 @@ export async function initUsage(
         )
           recorder.record(input);
       },
-      with(context: UsageContext) {
+      with(context: UsageContext): IUsageRecorder {
         return wrap(recorder.with(context));
       },
     });
@@ -291,10 +311,18 @@ export async function initUsage(
     const activeSqlite = sqliteSink;
     const runtime: UsageRuntime = {
       ...(activeSqlite
-        ? { sqliteSnapshot: () => activeSqlite.snapshot() }
+        ? {
+            sqliteSnapshot: (): Promise<
+              ReadableStream<Uint8Array<ArrayBufferLike>>
+            > => activeSqlite.snapshot(),
+          }
         : {}),
       recorder,
-      forSession(s) {
+      forSession(s: {
+        sessionId: string;
+        userId: string;
+        destination?: string;
+      }): IUsageRecorder {
         return recorder.with({
           sessionId: s.sessionId,
           userId:
@@ -304,15 +332,47 @@ export async function initUsage(
           ...(s.destination ? { destination: s.destination } : {}),
         });
       },
-      enabled: (kind) => cfg.measure.includes(kind),
-      schedule(kind, tick, intervalMs) {
+      enabled: (
+        kind:
+          | 'tool'
+          | 'task'
+          | 'embedding'
+          | 'request'
+          | 'llm'
+          | 'session'
+          | 'storage'
+          | 'process',
+      ): boolean => cfg.measure.includes(kind),
+      schedule(
+        kind:
+          | 'tool'
+          | 'task'
+          | 'embedding'
+          | 'request'
+          | 'llm'
+          | 'session'
+          | 'storage'
+          | 'process',
+        tick: () => void,
+        intervalMs: number,
+      ): void {
         if (cfg.measure.includes(kind) && !closed) schedule(tick, intervalMs);
       },
       onClose(stop: () => void): void {
         if (closed) stop();
         else closeHooks.add(stop);
       },
-      status() {
+      status(): {
+        unconfirmed: number;
+        lastErrorCode: string | undefined;
+        sqliteFileSize: number | undefined;
+        buffered: number;
+        delivered: number;
+        lost: Record<string, number>;
+        enabled: true;
+        sinks: SinkName[];
+        fallback: string[];
+      } {
         let sqliteFileSize: number | undefined;
         if (
           cfg.sinks.includes('sqlite') &&
@@ -333,7 +393,9 @@ export async function initUsage(
           sqliteFileSize,
         };
       },
-      async close(timeoutMs) {
+      async close(
+        timeoutMs: number,
+      ): Promise<{ delivered: number; lost: number; unconfirmed: number }> {
         closed = true;
         for (const timer of timers) cancel(timer);
         for (const stop of closeHooks) stop();
@@ -348,7 +410,9 @@ export async function initUsage(
     return runtime;
   } catch (error) {
     for (const timer of timers) cancel(timer);
-    await Promise.allSettled(sinks.map((s) => s.close?.()));
+    await Promise.allSettled(
+      sinks.map((s: Sink): Promise<void> | undefined => s.close?.()),
+    );
     throw error;
   }
 }

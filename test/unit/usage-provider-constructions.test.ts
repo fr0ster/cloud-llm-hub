@@ -1,13 +1,26 @@
-import { readdirSync, readFileSync } from 'node:fs';
-import { createServer } from 'node:http';
+import { type Dirent, readdirSync, readFileSync } from 'node:fs';
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from 'node:http';
 import { join, relative } from 'node:path';
 import type {
   CallOptions,
+  IUsageControl,
   IUsageRecorder,
+  IUsageSink,
   Message,
   UsageRecord,
 } from '@mcp-abap-adt/llm-agent';
+import type {
+  IUsageReader,
+  UsageRecorderOptions,
+} from '@mcp-abap-adt/llm-usage';
 import { createUsageRecorder, memorySink } from '@mcp-abap-adt/llm-usage';
+import type { OllamaEmbedder, OllamaRag } from '@mcp-abap-adt/ollama-embedder';
+import type { OpenAiEmbedder } from '@mcp-abap-adt/openai-embedder';
 import {
   OrchestrationClient,
   OrchestrationEmbeddingClient,
@@ -28,19 +41,28 @@ import {
 import {
   agentQueryEmbedder,
   buildEmbedding,
+  type Embedding,
   prefetchEmbedder,
 } from '../../srv/lib/providers';
+import type { SapAiCoreEmbedder } from '../../srv/lib/sap-ai-core-embedder';
 import { lifecycleHooks } from '../../srv/lib/session-lifecycle';
 import { readUsageConfig } from '../../srv/lib/usage/config';
 import { initUsage, setUsageRuntimeForTest } from '../../srv/lib/usage/runtime';
 import { handleChatCompletions } from '../../srv/openai-handler';
 import { harness } from './helpers/channel-harness';
 
-jest.mock('../../srv/lib/logging-config', () => ({ applyLoggingConfig() {} }));
-jest.mock('@sap/cds', () => ({
+jest.mock('../../srv/lib/logging-config', (): object => ({
+  applyLoggingConfig(): void {},
+}));
+jest.mock('@sap/cds', (): object => ({
   __esModule: true,
   default: {
-    log: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
+    log: (): { info(): void; warn(): void; error(): void; debug(): void } => ({
+      info(): void {},
+      warn(): void {},
+      error(): void {},
+      debug(): void {},
+    }),
     get context() {
       return {
         user: jest.requireActual<typeof import('./helpers/channel-harness')>(
@@ -50,42 +72,42 @@ jest.mock('@sap/cds', () => ({
     },
   },
 }));
-jest.mock('../../srv/agent-manager', () =>
+jest.mock('../../srv/agent-manager', (): object =>
   jest
     .requireActual<typeof import('./helpers/channel-harness')>(
       './helpers/channel-harness',
     )
     .agentManagerMock(),
 );
-jest.mock('../../srv/agent-config', () =>
+jest.mock('../../srv/agent-config', (): object =>
   jest
     .requireActual<typeof import('./helpers/channel-harness')>(
       './helpers/channel-harness',
     )
     .agentConfigMock(),
 );
-jest.mock('../../srv/lib/request-connection', () =>
+jest.mock('../../srv/lib/request-connection', (): object =>
   jest
     .requireActual<typeof import('./helpers/channel-harness')>(
       './helpers/channel-harness',
     )
     .requestConnectionMock(),
 );
-jest.mock('../../srv/lib/request-system-context', () =>
+jest.mock('../../srv/lib/request-system-context', (): object =>
   jest
     .requireActual<typeof import('./helpers/channel-harness')>(
       './helpers/channel-harness',
     )
     .requestSystemMock(),
 );
-jest.mock('../../srv/lib/ai-core-models', () => ({
-  getAvailableModels: async () => [],
+jest.mock('../../srv/lib/ai-core-models', (): object => ({
+  getAvailableModels: async (): Promise<never[]> => [],
 }));
-jest.mock('../../srv/env-setup', () => ({}));
+jest.mock('../../srv/env-setup', (): object => ({}));
 
 test.each([true, false])(
   'plain OpenAI/Anthropic requests and agent MCP execute_step propagate session context (usage: %s)',
-  async (enabled: boolean) => {
+  async (enabled: boolean): Promise<void> => {
     harness.reset();
     const recordingSink = memorySink({ limit: 100 });
     const runtime = enabled
@@ -95,7 +117,11 @@ test.each([true, false])(
             LLM_AGENT_USAGE_SINKS: 'memory',
             LLM_AGENT_USAGE_USER_ID: 'plain',
           }),
-          { factories: { memory: () => recordingSink } },
+          {
+            factories: {
+              memory: (): IUsageSink & IUsageReader => recordingSink,
+            },
+          },
         )
       : undefined;
     setUsageRuntimeForTest(runtime);
@@ -110,7 +136,13 @@ test.each([true, false])(
     });
     if ('refused' in session) throw new Error('Session refused');
     const observed: CallOptions[] = [];
-    harness.process = async (_messages: Message[], options: CallOptions) => {
+    harness.process = async (
+      _messages: Message[],
+      options: CallOptions,
+    ): Promise<{
+      ok: true;
+      value: { content: string; stopReason: string };
+    }> => {
       observed.push(options);
       options.usage?.record({
         kind: 'tool.call',
@@ -128,18 +160,24 @@ test.each([true, false])(
     app.use(express.json());
     app.post('/openai', handleChatCompletions);
     app.post('/anthropic', handleAnthropicMessages);
-    app.post('/mcp', async (req, res) => {
-      res.json(
-        await executeStep(
-          req,
-          { userId: 'alice', exposition: undefined },
-          { session: session.key, task: 'PROMPT_SENTINEL' },
-        ),
-      );
-    });
+    app.post(
+      '/mcp',
+      async (req: express.Request, res: express.Response): Promise<void> => {
+        res.json(
+          await executeStep(
+            req,
+            { userId: 'alice', exposition: undefined },
+            { session: session.key, task: 'PROMPT_SENTINEL' },
+          ),
+        );
+      },
+    );
     const server = createServer(app);
-    await new Promise<void>((resolve) =>
-      server.listen(0, '127.0.0.1', resolve),
+    await new Promise<void>(
+      (
+        resolve: (value: void | PromiseLike<void>) => void,
+      ): Server<typeof IncomingMessage, typeof ServerResponse> =>
+        server.listen(0, '127.0.0.1', resolve),
     );
     const address = server.address();
     if (!address || typeof address === 'string')
@@ -177,11 +215,11 @@ test.each([true, false])(
         }))
           if (row.kind === 'tool.call') records.push(row);
         expect(records).toHaveLength(3);
-        expect(records.map((r) => r.context.sessionId)).toEqual([
-          's-usage',
-          's-usage',
-          'ls-usage',
-        ]);
+        expect(
+          records.map(
+            (r: UsageRecord): string | undefined => r.context.sessionId,
+          ),
+        ).toEqual(['s-usage', 's-usage', 'ls-usage']);
         for (const record of records)
           expect(record.context).toMatchObject({
             userId: 'alice',
@@ -193,7 +231,12 @@ test.each([true, false])(
       }
     } finally {
       server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>(
+        (
+          resolve: (value: void | PromiseLike<void>) => void,
+        ): Server<typeof IncomingMessage, typeof ServerResponse> =>
+          server.close((): void => resolve()),
+      );
       setLongSessionsForTest(undefined);
       setUsageRuntimeForTest(undefined);
       await runtime?.close(1000);
@@ -202,7 +245,7 @@ test.each([true, false])(
 );
 
 const mockConstructions: Array<{ name: string; usage?: IUsageRecorder }> = [];
-jest.mock('@mcp-abap-adt/openai-llm', () => {
+jest.mock('@mcp-abap-adt/openai-llm', (): object => {
   const actual = jest.requireActual<typeof import('@mcp-abap-adt/openai-llm')>(
     '@mcp-abap-adt/openai-llm',
   );
@@ -218,7 +261,7 @@ jest.mock('@mcp-abap-adt/openai-llm', () => {
     },
   };
 });
-jest.mock('@mcp-abap-adt/anthropic-llm', () => {
+jest.mock('@mcp-abap-adt/anthropic-llm', (): object => {
   const actual = jest.requireActual<
     typeof import('@mcp-abap-adt/anthropic-llm')
   >('@mcp-abap-adt/anthropic-llm');
@@ -237,7 +280,7 @@ jest.mock('@mcp-abap-adt/anthropic-llm', () => {
     },
   };
 });
-jest.mock('@mcp-abap-adt/deepseek-llm', () => {
+jest.mock('@mcp-abap-adt/deepseek-llm', (): object => {
   const actual = jest.requireActual<
     typeof import('@mcp-abap-adt/deepseek-llm')
   >('@mcp-abap-adt/deepseek-llm');
@@ -256,7 +299,7 @@ jest.mock('@mcp-abap-adt/deepseek-llm', () => {
     },
   };
 });
-jest.mock('@mcp-abap-adt/sap-aicore-llm', () => {
+jest.mock('@mcp-abap-adt/sap-aicore-llm', (): object => {
   const actual = jest.requireActual<
     typeof import('@mcp-abap-adt/sap-aicore-llm')
   >('@mcp-abap-adt/sap-aicore-llm');
@@ -275,7 +318,7 @@ jest.mock('@mcp-abap-adt/sap-aicore-llm', () => {
     },
   };
 });
-jest.mock('@mcp-abap-adt/openai-embedder', () => {
+jest.mock('@mcp-abap-adt/openai-embedder', (): object => {
   const actual = jest.requireActual<
     typeof import('@mcp-abap-adt/openai-embedder')
   >('@mcp-abap-adt/openai-embedder');
@@ -291,7 +334,7 @@ jest.mock('@mcp-abap-adt/openai-embedder', () => {
     },
   };
 });
-jest.mock('@mcp-abap-adt/ollama-embedder', () => {
+jest.mock('@mcp-abap-adt/ollama-embedder', (): object => {
   const actual = jest.requireActual<
     typeof import('@mcp-abap-adt/ollama-embedder')
   >('@mcp-abap-adt/ollama-embedder');
@@ -307,7 +350,7 @@ jest.mock('@mcp-abap-adt/ollama-embedder', () => {
     },
   };
 });
-jest.mock('../../srv/lib/sap-ai-core-embedder', () => {
+jest.mock('../../srv/lib/sap-ai-core-embedder', (): object => {
   const actual = jest.requireActual<
     typeof import('../../srv/lib/sap-ai-core-embedder')
   >('../../srv/lib/sap-ai-core-embedder');
@@ -328,18 +371,19 @@ jest.mock('../../srv/lib/sap-ai-core-embedder', () => {
 });
 
 function files(directory: string): string[] {
-  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) =>
-    entry.isDirectory()
-      ? files(join(directory, entry.name))
-      : entry.name.endsWith('.ts')
-        ? [join(directory, entry.name)]
-        : [],
+  return readdirSync(directory, { withFileTypes: true }).flatMap(
+    (entry: Dirent<string>): string[] =>
+      entry.isDirectory()
+        ? files(join(directory, entry.name))
+        : entry.name.endsWith('.ts')
+          ? [join(directory, entry.name)]
+          : [],
   );
 }
 
 test.each([true, false])(
   'every concrete LLM/embedder construction receives the runtime recorder only when enabled (%s)',
-  async (enabled: boolean) => {
+  async (enabled: boolean): Promise<void> => {
     const runtime = enabled
       ? await initUsage(
           readUsageConfig({
@@ -388,7 +432,11 @@ test.each([true, false])(
         'SapAiCoreEmbedder',
         'SapCoreAIProvider',
       ];
-      expect(mockConstructions.map((c) => c.name).sort()).toEqual(expected);
+      expect(
+        mockConstructions
+          .map((c: { name: string; usage?: IUsageRecorder }): string => c.name)
+          .sort(),
+      ).toEqual(expected);
       for (const construction of mockConstructions)
         expect(construction.usage).toBe(runtime?.recorder);
 
@@ -453,7 +501,7 @@ test.each([true, false])(
 
 test.each(['construction', 'override', 'off'])(
   'constructed providers record physical transport calls exactly once (%s)',
-  async (mode) => {
+  async (mode: string): Promise<void> => {
     const recordingSink = memorySink({ limit: 1000 });
     let control: ReturnType<typeof createUsageRecorder> | undefined;
     const runtime =
@@ -466,8 +514,12 @@ test.each(['construction', 'override', 'off'])(
               LLM_AGENT_USAGE_USER_ID: 'plain',
             }),
             {
-              factories: { memory: () => recordingSink },
-              recorderFactory: (options) => {
+              factories: {
+                memory: (): IUsageSink & IUsageReader => recordingSink,
+              },
+              recorderFactory: (
+                options: UsageRecorderOptions,
+              ): IUsageRecorder & IUsageControl => {
                 control = createUsageRecorder(options);
                 return control;
               },
@@ -482,13 +534,18 @@ test.each(['construction', 'override', 'off'])(
         'serviceKeyCredential',
       )
       .mockReturnValue({
-        credential: { kind: 'bearer', token: async () => 'test' },
+        credential: {
+          kind: 'bearer',
+          token: async (): Promise<string> => 'test',
+        },
         apiBaseUrl: 'https://sap.example',
       });
     resetLlmCredentials();
     const originalAdapter = axios.defaults.adapter;
     const axiosCalls: string[] = [];
-    const adapter: AxiosAdapter = async (config) => {
+    const adapter: AxiosAdapter = async (
+      config: import('axios').InternalAxiosRequestConfig,
+    ): Promise<import('axios').AxiosResponse<object>> => {
       axiosCalls.push(config.url ?? '');
       const data =
         config.url === '/messages'
@@ -524,14 +581,16 @@ test.each(['construction', 'override', 'off'])(
     axios.defaults.adapter = adapter;
     const transport = jest
       .spyOn(globalThis, 'fetch')
-      .mockImplementation(async (input: string | URL | Request) => {
-        const url = input.toString();
-        if (url.includes('/api/'))
-          return Response.json({ embedding: [1, 2], embeddings: [[1, 2]] });
-        if (url.includes('embeddings'))
-          return Response.json({ data: [{ index: 0, embedding: [1, 2] }] });
-        throw new Error(`Unexpected embedding transport URL: ${url}`);
-      });
+      .mockImplementation(
+        async (input: string | URL | Request): Promise<Response> => {
+          const url = input.toString();
+          if (url.includes('/api/'))
+            return Response.json({ embedding: [1, 2], embeddings: [[1, 2]] });
+          if (url.includes('embeddings'))
+            return Response.json({ data: [{ index: 0, embedding: [1, 2] }] });
+          throw new Error(`Unexpected embedding transport URL: ${url}`);
+        },
+      );
     const sdkLlm = jest
       .spyOn(OrchestrationClient.prototype, 'chatCompletion')
       .mockResolvedValue(
@@ -585,7 +644,7 @@ test.each(['construction', 'override', 'off'])(
           }
         : {};
     const records: UsageRecord[] = [];
-    const readRecords = async () => {
+    const readRecords = async (): Promise<void> => {
       if (!runtime) return;
       await control?.flush(1000);
       records.length = 0;
@@ -596,7 +655,7 @@ test.each(['construction', 'override', 'off'])(
         records.push(record);
     };
     let expected = 0;
-    const check = async () => {
+    const check = async (): Promise<void> => {
       expected++;
       expect(
         axiosCalls.length +
@@ -702,22 +761,22 @@ test.each(['construction', 'override', 'off'])(
   },
 );
 
-test('SAP-only prefetch and construction never load optional OpenAI or Ollama embedder modules', async () => {
+test('SAP-only prefetch and construction never load optional OpenAI or Ollama embedder modules', async (): Promise<void> => {
   const loaded: string[] = [];
-  jest.doMock('@mcp-abap-adt/openai-embedder', () => {
+  jest.doMock('@mcp-abap-adt/openai-embedder', (): object => {
     loaded.push('openai');
     return jest.requireActual<typeof import('@mcp-abap-adt/openai-embedder')>(
       '@mcp-abap-adt/openai-embedder',
     );
   });
-  jest.doMock('@mcp-abap-adt/ollama-embedder', () => {
+  jest.doMock('@mcp-abap-adt/ollama-embedder', (): object => {
     loaded.push('ollama');
     return jest.requireActual<typeof import('@mcp-abap-adt/ollama-embedder')>(
       '@mcp-abap-adt/ollama-embedder',
     );
   });
   try {
-    await jest.isolateModulesAsync(async () => {
+    await jest.isolateModulesAsync(async (): Promise<void> => {
       const providers = await import('../../srv/lib/providers');
       const config: EmbedderConfig = {
         kind: 'sap-ai-core',
@@ -726,10 +785,10 @@ test('SAP-only prefetch and construction never load optional OpenAI or Ollama em
       await providers.prefetchEmbedder(config);
       expect(providers.buildEmbedding(config)).not.toBeNull();
       expect(loaded).toEqual([]);
-      expect(() =>
+      expect((): Embedding | null =>
         providers.buildEmbedding({ kind: 'openai', model: 'm' }),
       ).toThrow('not prefetched');
-      expect(() =>
+      expect((): Embedding | null =>
         providers.buildEmbedding({ kind: 'ollama', model: 'm' }),
       ).toThrow('not prefetched');
       expect(loaded).toEqual([]);

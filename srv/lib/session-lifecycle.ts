@@ -127,26 +127,18 @@ export function lifecycleHooks(store?: SessionRecordStore): LongSessionHooks {
   closed.clear();
   reviving.clear();
   return {
-    ...(usageRuntime()?.enabled('session') || usageRuntime()?.enabled('storage')
-      ? {
-          onOpen(s: LongSession) {
-            if (
-              !usageRuntime()?.enabled('session') &&
-              !usageRuntime()?.enabled('storage')
-            )
-              return;
-            sessionOpened(
-              {
-                userId: s.userId,
-                sessionId: s.key,
-                destination: s.destination,
-              },
-              s.revived ? 'revive' : 'open',
-              s.createdAt,
-            );
-          },
-        }
-      : undefined),
+    onOpen(s: LongSession): void {
+      if (
+        !usageRuntime()?.enabled('session') &&
+        !usageRuntime()?.enabled('storage')
+      )
+        return;
+      sessionOpened(
+        { userId: s.userId, sessionId: s.key, destination: s.destination },
+        s.revived ? 'revive' : 'open',
+        s.createdAt,
+      );
+    },
     async onClose(
       s: LongSession,
       reason: import('./long-session').CloseReason,
@@ -282,7 +274,7 @@ export function discardSession(userId: string, key: string): Promise<void> {
   const operations = discarding;
   const existing = operations.get(sessionKey);
   if (existing) return existing;
-  const operation = discardSessionRun(userId, key).finally(() => {
+  const operation = discardSessionRun(userId, key).finally((): void => {
     if (operations.get(sessionKey) === operation) operations.delete(sessionKey);
   });
   operations.set(sessionKey, operation);

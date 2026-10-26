@@ -32,12 +32,19 @@ const answer = (): LlmResponse => ({
 
 // Real dialogue scheduler, planner tools and SmartAgent workers; only transports are fake.
 async function scenario(usage?: IUsageRecorder): Promise<void> {
-  let releaseTools: () => void = () => {};
-  const toolsReady = new Promise<void>((resolve: () => void) => {
+  let releaseTools: () => void = (): void => {};
+  const toolsReady = new Promise<void>((resolve: () => void): void => {
     releaseTools = resolve;
   });
   const mcp: IMcpClient = {
-    async listTools() {
+    async listTools(): Promise<{
+      ok: true;
+      value: {
+        name: string;
+        description: string;
+        inputSchema: { type: string; properties: Record<string, never> };
+      }[];
+    }> {
       return {
         ok: true,
         value: [
@@ -49,7 +56,14 @@ async function scenario(usage?: IUsageRecorder): Promise<void> {
         ],
       };
     },
-    async callTool(name: string, _args: object, options?: CallOptions) {
+    async callTool(
+      name: string,
+      _args: object,
+      options?: CallOptions,
+    ): Promise<{
+      ok: true;
+      value: { content: { type: string; text: string }[] };
+    }> {
       await toolsReady;
       options?.usage?.record({
         kind: 'tool.call',
@@ -77,14 +91,15 @@ async function scenario(usage?: IUsageRecorder): Promise<void> {
     },
   })
     .withMainLlm(
-      fakePipelineLlm((messages: Message[]) =>
-        messages.some((message: Message) => message.role === 'tool')
-          ? answer()
-          : {
-              content: '',
-              finishReason: 'tool_calls',
-              toolCalls: [{ id: 'read-call', name: 'read', arguments: {} }],
-            },
+      fakePipelineLlm(
+        (messages: Message[]): LlmResponse =>
+          messages.some((message: Message): boolean => message.role === 'tool')
+            ? answer()
+            : {
+                content: '',
+                finishReason: 'tool_calls',
+                toolCalls: [{ id: 'read-call', name: 'read', arguments: {} }],
+              },
       ),
     )
     .withMcpClients([mcp])
@@ -99,32 +114,54 @@ async function scenario(usage?: IUsageRecorder): Promise<void> {
     agent: { classificationEnabled: false, ragTranslateEnabled: false },
   })
     .withMainLlm(
-      fakePipelineLlm((messages: Message[], options?: CallOptions) => {
-        const last = messages.at(-1);
-        if (
-          last?.role === 'tool' ||
-          last?.content?.includes('[task events]') ||
-          delegated >= 3
-        )
-          return answer();
-        const checker = options?.trace?.traceId === 'second';
-        return {
-          content: '',
-          finishReason: 'tool_calls',
-          toolCalls: Array.from(
-            { length: checker ? 1 : 2 },
-            (_value: undefined, index: number) => ({
-              id: `delegate-${delegated++}-${index}`,
-              name: 'delegate_task',
-              arguments: {
-                worker: checker ? 'checker' : 'executor',
-                goal: 'Read and verify',
-                history: 'all',
-              },
-            }),
-          ),
-        };
-      }),
+      fakePipelineLlm(
+        (
+          messages: Message[],
+          options?: CallOptions,
+        ):
+          | LlmResponse
+          | {
+              content: string;
+              finishReason: 'tool_calls';
+              toolCalls: {
+                id: string;
+                name: string;
+                arguments: { worker: string; goal: string; history: string };
+              }[];
+            } => {
+          const last = messages.at(-1);
+          if (
+            last?.role === 'tool' ||
+            last?.content?.includes('[task events]') ||
+            delegated >= 3
+          )
+            return answer();
+          const checker = options?.trace?.traceId === 'second';
+          return {
+            content: '',
+            finishReason: 'tool_calls',
+            toolCalls: Array.from(
+              { length: checker ? 1 : 2 },
+              (
+                _value: undefined,
+                index: number,
+              ): {
+                id: string;
+                name: string;
+                arguments: { worker: string; goal: string; history: string };
+              } => ({
+                id: `delegate-${delegated++}-${index}`,
+                name: 'delegate_task',
+                arguments: {
+                  worker: checker ? 'checker' : 'executor',
+                  goal: 'Read and verify',
+                  history: 'all',
+                },
+              }),
+            ),
+          };
+        },
+      ),
     )
     .withMcpClients([new PlannerToolsClient()])
     .withMode('hard')
@@ -176,12 +213,16 @@ async function scenario(usage?: IUsageRecorder): Promise<void> {
       const tasks = session.snapshot().tasks;
       if (
         tasks.length === 3 &&
-        tasks.every((task: (typeof tasks)[number]) => task.state === 'done')
+        tasks.every(
+          (task: (typeof tasks)[number]): boolean => task.state === 'done',
+        )
       )
         break;
       if (performance.now() > deadline)
         throw new Error('Dialogue benchmark tasks did not complete');
-      await new Promise<void>((resolve: () => void) => setImmediate(resolve));
+      await new Promise<void>(
+        (resolve: () => void): NodeJS.Immediate => setImmediate(resolve),
+      );
     }
   } finally {
     releaseTools();
@@ -191,7 +232,7 @@ async function scenario(usage?: IUsageRecorder): Promise<void> {
 
 function percentile(samples: number[], fraction: number): number {
   const sorted = [...samples].sort(
-    (left: number, right: number) => left - right,
+    (left: number, right: number): number => left - right,
   );
   return sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)];
 }
@@ -251,7 +292,7 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: Error) => {
+main().catch((error: Error): void => {
   console.error(error);
   process.exitCode = 1;
 });

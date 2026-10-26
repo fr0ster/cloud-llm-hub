@@ -3,8 +3,8 @@ import {
   closeUsageSessions,
 } from './lib/usage/session-records';
 import {
+  completeUsageShutdown,
   USAGE_SHUTDOWN_TIMEOUT_MS,
-  withinUsageShutdownBudget,
 } from './lib/usage/shutdown';
 import { createUsageRouter } from './usage-handler';
 /**
@@ -75,7 +75,7 @@ import {
   mcpDestinationRefusal,
 } from './lib/mcp-destination-guard';
 import { needsSapConnection } from './lib/mcp-request';
-import { startProviders } from './lib/providers';
+import { type Providers, startProviders } from './lib/providers';
 import { requireMcpRole } from './lib/require-mcp-role';
 import { initializeRunRecordStore } from './lib/run-record-store';
 import { sessionConfig } from './lib/session-config';
@@ -940,13 +940,14 @@ cds.on('served', () => {
   // reports it instead of a healthy instance answering 503 forever. An agent
   // warm-up failure can be an outage (AI Core, a destination) and is retried.
   Promise.resolve()
-    .then(() =>
-      initUsage(
-        readUsageConfig(process.env, getAgentConfig().rag.backends.session),
-        { rag: getAgentConfig().rag },
-      ),
+    .then(
+      (): Promise<UsageRuntime | undefined> =>
+        initUsage(
+          readUsageConfig(process.env, getAgentConfig().rag.backends.session),
+          { rag: getAgentConfig().rag },
+        ),
     )
-    .then((runtime: UsageRuntime | undefined) => {
+    .then((runtime: UsageRuntime | undefined): Promise<Providers> => {
       if (runtime?.enabled('process'))
         startProcessMeter(
           runtime,
@@ -1008,18 +1009,15 @@ cds.on('shutdown', async () => {
   beginUsageShutdown();
   const closing = longSessionsIfReady()?.closeAll('shutdown');
   const pipelines = shutdownGatekeeper();
-  if (usageRuntime()) {
-    await withinUsageShutdownBudget(
-      Promise.all([closing, pipelines]).then(() => {}),
-      Math.max(0, usageDeadline - Date.now()),
-    );
-  } else {
-    await closing;
-    await pipelines;
-  }
-  await closeUsageSessions(Math.max(0, usageDeadline - Date.now()));
-  const runtime = usageRuntime();
-  if (runtime) stopStorageMeter(runtime);
-  if (runtime) stopProcessMeter(runtime);
-  await usageRuntime()?.close(USAGE_SHUTDOWN_TIMEOUT_MS);
+  await completeUsageShutdown(
+    usageDeadline,
+    Promise.all([closing, pipelines]).then((): void => {}),
+    closeUsageSessions,
+    async (remainingMs: number): Promise<void> => {
+      const runtime = usageRuntime();
+      if (runtime) stopStorageMeter(runtime);
+      if (runtime) stopProcessMeter(runtime);
+      await runtime?.close(remainingMs);
+    },
+  );
 });

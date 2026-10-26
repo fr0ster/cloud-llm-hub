@@ -1,26 +1,42 @@
-jest.mock('../../srv/lib/logging-config', () => ({ applyLoggingConfig() {} }));
-jest.mock('../../srv/env-setup', () => ({}));
-jest.mock('@sap/cds', () => ({
+import type { IUsageControl, IUsageRecorder } from '@mcp-abap-adt/llm-agent';
+import { completeUsageShutdown } from '../../srv/lib/usage/shutdown';
+
+jest.mock('../../srv/lib/logging-config', (): object => ({
+  applyLoggingConfig(): void {},
+}));
+jest.mock('../../srv/env-setup', (): object => ({}));
+jest.mock('@sap/cds', (): object => ({
   __esModule: true,
   default: {
-    log: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
+    log: (): { info(): void; warn(): void; error(): void; debug(): void } => ({
+      info(): void {},
+      warn(): void {},
+      error(): void {},
+      debug(): void {},
+    }),
     context: {
-      user: { id: 'alice', is: () => true, roles: ['MCP_Developer'] },
+      user: { id: 'alice', is: (): true => true, roles: ['MCP_Developer'] },
     },
   },
 }));
-jest.mock('../../srv/agent-manager', () =>
+jest.mock('../../srv/agent-manager', (): object =>
   jest
     .requireActual<typeof import('./helpers/channel-harness')>(
       './helpers/channel-harness',
     )
     .agentManagerMock(),
 );
-jest.mock('../../srv/agent-config', () => ({
+jest.mock('../../srv/agent-config', (): object => ({
   ...jest.requireActual<typeof import('../../srv/agent-config')>(
     '../../srv/agent-config',
   ),
-  getAgentConfig: () => ({
+  getAgentConfig: (): {
+    llm: { model: string };
+    mcp: { destination: string };
+    agent: Record<string, never>;
+    rag: RagConfig;
+    destinations: DestinationConfig;
+  } => ({
     ...jest
       .requireActual<typeof import('../../srv/agent-config')>(
         '../../srv/agent-config',
@@ -34,37 +50,49 @@ jest.mock('../../srv/agent-config', () => ({
       .getAgentConfig(),
   }),
 }));
-jest.mock('../../srv/lib/request-connection', () =>
+jest.mock('../../srv/lib/request-connection', (): object =>
   jest
     .requireActual<typeof import('./helpers/channel-harness')>(
       './helpers/channel-harness',
     )
     .requestConnectionMock(),
 );
-jest.mock('../../srv/lib/request-system-context', () =>
+jest.mock('../../srv/lib/request-system-context', (): object =>
   jest
     .requireActual<typeof import('./helpers/channel-harness')>(
       './helpers/channel-harness',
     )
     .requestSystemMock(),
 );
-jest.mock('../../srv/lib/ai-core-models', () => ({
-  getAvailableModels: async () => [],
+jest.mock('../../srv/lib/ai-core-models', (): object => ({
+  getAvailableModels: async (): Promise<never[]> => [],
 }));
-jest.mock('../../srv/connections/destinationResolver', () => ({
-  resolveDestinationSapConfig: async () => ({
+jest.mock('../../srv/connections/destinationResolver', (): object => ({
+  resolveDestinationSapConfig: async (): Promise<{
+    proxyType: string;
+    authenticationType: string;
+    sapConfig: { authType: string };
+    destinationName: string;
+  }> => ({
     proxyType: 'Internet',
     authenticationType: 'OAuth2JWTBearer',
     sapConfig: { authType: 'jwt' },
     destinationName: 'DEST',
   }),
 }));
-jest.mock('../../srv/connections/connectionFactory', () => ({
-  createConnection: () => ({ connect: async () => {} }),
+jest.mock('../../srv/connections/connectionFactory', (): object => ({
+  createConnection: (): { connect: () => Promise<void> } => ({
+    connect: async (): Promise<void> => {},
+  }),
 }));
 
 import { readFileSync } from 'node:fs';
-import { createServer } from 'node:http';
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from 'node:http';
 import { connect } from 'node:net';
 import type { UsageRecord } from '@mcp-abap-adt/llm-agent';
 import {
@@ -76,6 +104,12 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import cds from '@sap/cds';
 import express, { type Request, type Response } from 'express';
+import type {
+  AgentConfig,
+  DestinationConfig,
+  LlmProvider,
+  RagConfig,
+} from '../../srv/agent-config';
 import { getCollectionRegistry } from '../../srv/agent-manager';
 import { executeStep } from '../../srv/agent-mcp';
 import { handleAnthropicMessages } from '../../srv/anthropic-handler';
@@ -126,8 +160,10 @@ import {
   resetUsageSessionsForTest,
   SESSION_TOMBSTONE_LIMIT,
   sessionClosed,
+  sessionMessageDelivered,
   sessionOpened,
   sessionReleased,
+  sessionRequestAdmitted,
   usageSessionBookkeepingForTest,
 } from '../../srv/lib/usage/session-records';
 import { measureSession } from '../../srv/lib/usage/storage-meter';
@@ -174,7 +210,8 @@ async function rows(kind?: string) {
 }
 async function sessions(event: string) {
   return (await rows('x.hub.session')).filter(
-    (r: UsageRecord) => r.kind === 'x.hub.session' && r.values.event === event,
+    (r: UsageRecord): boolean =>
+      r.kind === 'x.hub.session' && r.values.event === event,
   );
 }
 function lease(retention: SessionRetention, name: string): Lease {
@@ -186,20 +223,21 @@ function plainRetention(cap: number = 1) {
   const state = new Set<string>();
   const retention = new SessionRetention(
     {
-      hasState: (_userId: string, sessionId: string) => state.has(sessionId),
-      deleteAll: (_userId: string, sessionId: string) => {
+      hasState: (_userId: string, sessionId: string): boolean =>
+        state.has(sessionId),
+      deleteAll: (_userId: string, sessionId: string): void => {
         state.delete(sessionId);
       },
-      onSessionRetained: (userId: string, sessionId: string) =>
+      onSessionRetained: (userId: string, sessionId: string): void =>
         sessionOpened({ userId, sessionId }),
       onSessionReleased: (
         userId: string,
         sessionId: string,
         reason: SessionCloseReason,
-      ) => sessionReleased({ userId, sessionId }, reason),
+      ): void => sessionReleased({ userId, sessionId }, reason),
     },
     cap,
-    () => now++,
+    (): number => now++,
   );
   return { retention, state };
 }
@@ -217,12 +255,12 @@ async function httpRun(
     (
       yes: (value: void | PromiseLike<void>) => void,
       no: (reason?: Error) => void,
-    ) => {
+    ): void => {
       resolve = yes;
       reject = no;
     },
   );
-  app.post('/', async (req: Request, res: Response) => {
+  app.post('/', async (req: Request, res: Response): Promise<void> => {
     Object.assign(req, { sessionMinted: true });
     try {
       await run(req, res);
@@ -234,7 +272,9 @@ async function httpRun(
   });
   const server = createServer(app);
   await new Promise<void>(
-    (resolveListen: (value: void | PromiseLike<void>) => void) =>
+    (
+      resolveListen: (value: void | PromiseLike<void>) => void,
+    ): Server<typeof IncomingMessage, typeof ServerResponse> =>
       server.listen(0, '127.0.0.1', resolveListen),
   );
   const address = server.address();
@@ -252,12 +292,14 @@ async function httpRun(
   } finally {
     server.closeAllConnections();
     await new Promise<void>(
-      (resolveClose: (value: void | PromiseLike<void>) => void) =>
-        server.close(() => resolveClose()),
+      (
+        resolveClose: (value: void | PromiseLike<void>) => void,
+      ): Server<typeof IncomingMessage, typeof ServerResponse> =>
+        server.close((): void => resolveClose()),
     );
   }
 }
-beforeEach(async () => {
+beforeEach(async (): Promise<void> => {
   harness.reset();
   resetGatekeeperForTest();
   resetUsageSessionsForTest();
@@ -265,43 +307,48 @@ beforeEach(async () => {
   now = Date.now();
   sink = memorySink({ limit: 10000 });
   control = createUsageRecorder({ transport: directTransport(sink) });
-  const enabled = await initUsage(
-    readUsageConfig({
-      LLM_AGENT_USAGE: 'on',
-      LLM_AGENT_USAGE_SINKS: 'memory',
-      LLM_AGENT_USAGE_USER_ID: 'plain',
-    }),
-    { recorderFactory: () => control },
-  );
-  if (!enabled) throw new Error('Runtime disabled');
-  runtime = enabled;
-  startStorageMeter(runtime, 600000);
   records = new Map();
   const store: SessionRecordStore = {
-    async put(record: SessionRecord) {
+    async put(record: SessionRecord): Promise<void> {
       records.set(record.key, record);
     },
-    async touch(record: SessionRecord) {
+    async touch(record: SessionRecord): Promise<void> {
       records.set(record.key, record);
     },
-    async get(_userId: string, key: string) {
+    async get(
+      _userId: string,
+      key: string,
+    ): Promise<SessionRecord | undefined> {
       return records.get(key);
     },
-    async delete(_userId: string, key: string) {
+    async delete(_userId: string, key: string): Promise<void> {
       records.delete(key);
     },
-    async list() {
+    async list(): Promise<SessionRecord[]> {
       return [...records.values()];
     },
   };
   registry = new LongSessionRegistry(
     { ttlMs: 60000, maxSessions: 10, maxPerUser: 10, queueLength: 2 },
     lifecycleHooks(store),
-    () => now,
+    (): number => now,
   );
   setLongSessionsForTest(registry);
+  // Bootstrap builds lifecycle and retention before served initializes usage.
+  theRetention();
+  const enabled = await initUsage(
+    readUsageConfig({
+      LLM_AGENT_USAGE: 'on',
+      LLM_AGENT_USAGE_SINKS: 'memory',
+      LLM_AGENT_USAGE_USER_ID: 'plain',
+    }),
+    { recorderFactory: (): IUsageRecorder & IUsageControl => control },
+  );
+  if (!enabled) throw new Error('Runtime disabled');
+  runtime = enabled;
+  startStorageMeter(runtime, 600000);
 });
-afterEach(async () => {
+afterEach(async (): Promise<void> => {
   stopStorageMeter(runtime);
   await runtime.close(1000);
   setUsageRuntimeForTest(undefined);
@@ -316,12 +363,27 @@ afterEach(async () => {
   jest.restoreAllMocks();
 });
 
-test('long sessions open, revive and close, with a fresh snapshot before cleanup', async () => {
+test('long sessions open, revive and close, with a fresh snapshot before cleanup', async (): Promise<void> => {
   const opened = await openSession('alice', 'DEST');
   if ('refused' in opened) throw new Error('Open refused');
+  const identity = { userId: opened.userId, sessionId: opened.key };
+  const meter = storageSnapshots();
+  if (!(meter instanceof StorageMeter))
+    throw new Error('Expected startup storage meter');
+  expect(meter.cached(identity)).toBeDefined();
+  await meter.tick(runtime);
+  expect(await rows('x.hub.storage')).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        context: expect.objectContaining({ sessionId: opened.key }),
+      }),
+    ]),
+  );
+  sessionRequestAdmitted(identity, 'openai');
+  sessionMessageDelivered(identity);
   setStorageSnapshots({
-    cached: () => undefined,
-    async measure(s: UsageSession) {
+    cached: (): undefined => undefined,
+    async measure(s: UsageSession): Promise<StorageSnapshot> {
       expect(records.has(s.sessionId)).toBe(true);
       return snapshot;
     },
@@ -340,16 +402,23 @@ test('long sessions open, revive and close, with a fresh snapshot before cleanup
   expect(await sessions('open')).toHaveLength(1);
   expect(await sessions('revive')).toHaveLength(1);
   expect(
-    (await sessions('close')).map((r: UsageRecord) =>
-      r.kind === 'x.hub.session' ? r.values : {},
+    (await sessions('close')).map(
+      (r: UsageRecord): Record<string, string | number | boolean> =>
+        r.kind === 'x.hub.session' ? r.values : {},
     ),
   ).toEqual([
-    expect.objectContaining({ reason: 'explicit', ...snapshot }),
+    expect.objectContaining({
+      reason: 'explicit',
+      turns: 1,
+      openai: 1,
+      messagesDelivered: 1,
+      ...snapshot,
+    }),
     expect.objectContaining({ reason: 'ttl', ...snapshot }),
   ]);
 });
 
-test('expired-offline has an unknown end and snapshots before deletion', async () => {
+test('expired-offline has an unknown end and snapshots before deletion', async (): Promise<void> => {
   records.set('offline', {
     userId: 'alice',
     key: 'offline',
@@ -358,8 +427,8 @@ test('expired-offline has an unknown end and snapshots before deletion', async (
     ttlMs: 60000,
   });
   setStorageSnapshots({
-    cached: () => undefined,
-    async measure(s: UsageSession) {
+    cached: (): undefined => undefined,
+    async measure(s: UsageSession): Promise<StorageSnapshot> {
       expect(records.has(s.sessionId)).toBe(true);
       return snapshot;
     },
@@ -378,7 +447,7 @@ test('expired-offline has an unknown end and snapshots before deletion', async (
 
 test.each(['evicted', 'explicit', 'settle', 'forgetEmpty'])(
   'each plain close path is once-only: %s',
-  async (path: string) => {
+  async (path: string): Promise<void> => {
     const { retention, state } = plainRetention();
     const first = lease(retention, 'plain');
     if (path !== 'settle') state.add('plain');
@@ -399,7 +468,7 @@ test.each(['evicted', 'explicit', 'settle', 'forgetEmpty'])(
       retention.forgetEmpty();
     }
     const closed = (await sessions('close')).filter(
-      (r: UsageRecord) => r.context.sessionId === 'plain',
+      (r: UsageRecord): boolean => r.context.sessionId === 'plain',
     );
     expect(closed).toHaveLength(1);
     expect(closed[0]).toMatchObject({
@@ -415,12 +484,12 @@ test.each(['evicted', 'explicit', 'settle', 'forgetEmpty'])(
   },
 );
 
-test('eviction during slow measurement uses the cached snapshot and reuses the slot synchronously', async () => {
+test('eviction during slow measurement uses the cached snapshot and reuses the slot synchronously', async (): Promise<void> => {
   const slow = deferred<void>();
   const calls: string[] = [];
   setStorageSnapshots({
-    cached: () => snapshot,
-    async measure(s: UsageSession) {
+    cached: (): StorageSnapshot => snapshot,
+    async measure(s: UsageSession): Promise<{ storageSnapshotAt: number }> {
       calls.push(id(s));
       await slow.promise;
       return { storageSnapshotAt: 999 };
@@ -449,12 +518,12 @@ test('eviction during slow measurement uses the cached snapshot and reuses the s
   third.release();
   expect(
     (await sessions('close')).filter(
-      (r: UsageRecord) => r.context.sessionId === 'plain',
+      (r: UsageRecord): boolean => r.context.sessionId === 'plain',
     ),
   ).toHaveLength(1);
 });
 
-test('shutdown closes every live long and plain session before the runtime closes', async () => {
+test('shutdown closes every live long and plain session before the runtime closes', async (): Promise<void> => {
   await openSession('alice');
   const { retention, state } = plainRetention();
   const held = lease(retention, 'plain');
@@ -462,8 +531,8 @@ test('shutdown closes every live long and plain session before the runtime close
   held.release();
   const measured: string[] = [];
   setStorageSnapshots({
-    cached: () => undefined,
-    async measure(s: UsageSession) {
+    cached: (): undefined => undefined,
+    async measure(s: UsageSession): Promise<StorageSnapshot> {
       expect(runtime.status().enabled).toBe(true);
       measured.push(s.sessionId);
       return snapshot;
@@ -475,10 +544,6 @@ test('shutdown closes every live long and plain session before the runtime close
   expect(await sessions('close')).toHaveLength(2);
   for (const record of await sessions('close'))
     expect(record).toMatchObject({ values: { reason: 'shutdown' } });
-  const source = readFileSync('srv/server.ts', 'utf8');
-  expect(source.indexOf('await closeUsageSessions(')).toBeLessThan(
-    source.indexOf('await usageRuntime()?.close(USAGE_SHUTDOWN_TIMEOUT_MS)'),
-  );
 });
 
 test.each([
@@ -488,7 +553,9 @@ test.each([
   ['anthropic', true],
 ])(
   'one %s request record (stream=%s)',
-  async (protocol: string | boolean, stream: string | boolean) => {
+  async (protocol: string | boolean, stream:
+    | string
+    | boolean): Promise<void> => {
     const handler =
       protocol === 'openai' ? handleChatCompletions : handleAnthropicMessages;
     const response = await httpRun(handler, {
@@ -518,8 +585,8 @@ test.each([
   },
 );
 
-test('agent MCP execute_step records its protocol and tool once', async () => {
-  await httpRun(async (req: Request, res: Response) => {
+test('agent MCP execute_step records its protocol and tool once', async (): Promise<void> => {
+  await httpRun(async (req: Request, res: Response): Promise<void> => {
     res.json(
       await executeStep(
         req,
@@ -546,16 +613,19 @@ test('agent MCP execute_step records its protocol and tool once', async () => {
   expect(JSON.stringify(await rows())).not.toContain('TASK_SENTINEL');
 });
 
-test('disconnect ends the response before continuing work, with exactly one record', async () => {
+test('disconnect ends the response before continuing work, with exactly one record', async (): Promise<void> => {
   const gate = deferred<void>();
   const started = deferred<void>();
   const signal = new AbortController();
-  harness.process = async () => {
+  harness.process = async (): Promise<{
+    ok: true;
+    value: { content: string };
+  }> => {
     started.resolve();
     await gate.promise;
     return { ok: true, value: { content: 'done' } };
   };
-  await httpRun(async (req: Request, res: Response) => {
+  await httpRun(async (req: Request, res: Response): Promise<void> => {
     const running = executeStep(
       req,
       { userId: 'alice', exposition: undefined },
@@ -565,7 +635,7 @@ test('disconnect ends the response before continuing work, with exactly one reco
     await started.promise;
     signal.abort();
     await new Promise<void>(
-      (resolve: (value: void | PromiseLike<void>) => void) =>
+      (resolve: (value: void | PromiseLike<void>) => void): NodeJS.Timeout =>
         setTimeout(resolve, 10),
     );
     expect(await rows('x.hub.request')).toHaveLength(0);
@@ -582,7 +652,7 @@ test('disconnect ends the response before continuing work, with exactly one reco
   );
 });
 
-test('memory history expiry retains collections without claiming persisted history bytes', async () => {
+test('memory history expiry retains collections without claiming persisted history bytes', async (): Promise<void> => {
   const { retention, state } = plainRetention();
   const first = lease(retention, 'plain');
   state.add('plain');
@@ -605,7 +675,7 @@ test('memory history expiry retains collections without claiming persisted histo
   expect(await sessions('close')).toHaveLength(0);
 });
 
-test('RAG-only sessions open, receive real storage measurements and use cached snapshots on eviction', async () => {
+test('RAG-only sessions open, receive real storage measurements and use cached snapshots on eviction', async (): Promise<void> => {
   process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = '1';
   process.env.LLM_GATEKEEPER_MAX_RETAINED_SESSIONS = '1';
   clearGatekeeperConfig();
@@ -613,7 +683,7 @@ test('RAG-only sessions open, receive real storage measurements and use cached s
   const app = express();
   registerRagRoutes(app, getCollectionRegistry());
   const response = await httpRun(
-    async (req: Request, res: Response) => {
+    async (req: Request, res: Response): Promise<void> => {
       req.url = '/rag/collections';
       app(req, res);
     },
@@ -640,13 +710,13 @@ test('RAG-only sessions open, receive real storage measurements and use cached s
   admitted.release();
 });
 
-test('usage off installs no request observers and never asks the storage seam', async () => {
+test('usage off installs no request observers and never asks the storage seam', async (): Promise<void> => {
   setUsageRuntimeForTest(undefined);
   const measure = jest.fn<Promise<StorageSnapshot | undefined>, [UsageSession]>(
-    async () => snapshot,
+    async (): Promise<StorageSnapshot> => snapshot,
   );
   const cached = jest.fn<StorageSnapshot | undefined, [UsageSession]>(
-    () => snapshot,
+    (): StorageSnapshot => snapshot,
   );
   setStorageSnapshots({ measure, cached });
   const { retention, state } = plainRetention();
@@ -674,9 +744,9 @@ test.each([
   [true, false],
 ])(
   'retrieval records two collections and injected size without content (relevant=%s, user=%s)',
-  async (relevant: boolean, hasUser: boolean) => {
+  async (relevant: boolean, hasUser: boolean): Promise<void> => {
     const collections = getCollectionRegistry();
-    const ids = ['usage-a', 'usage-b'].map((logicalId: string) =>
+    const ids = ['usage-a', 'usage-b'].map((logicalId: string): string =>
       userCollectionId(logicalId, 'alice'),
     );
     for (const [index, collectionId] of ids.entries()) {
@@ -693,7 +763,14 @@ test.each([
       jest.spyOn(store, 'query').mockResolvedValue({
         ok: true,
         value: (index === 0 ? ['DOC_ONE', 'DOC_TWO'] : ['DOC_THREE']).map(
-          (text: string) => ({
+          (
+            text: string,
+          ): {
+            id: string;
+            text: string;
+            score: number;
+            metadata: Record<string, never>;
+          } => ({
             id: text,
             text,
             score: relevant ? 1 : 0,
@@ -740,7 +817,7 @@ test.each([
   },
 );
 
-test('explicit deletion awaits a fresh snapshot before history cleanup', async () => {
+test('explicit deletion awaits a fresh snapshot before history cleanup', async (): Promise<void> => {
   const admitted = lease(theRetention(), 'plain');
   appendToSession('plain', 'alice', {
     role: 'user',
@@ -750,8 +827,10 @@ test('explicit deletion awaits a fresh snapshot before history cleanup', async (
   const slow = deferred<void>();
   const started = deferred<void>();
   setStorageSnapshots({
-    cached: () => snapshot,
-    async measure(s: UsageSession) {
+    cached: (): StorageSnapshot => snapshot,
+    async measure(
+      s: UsageSession,
+    ): Promise<{ storageSnapshotAt: number; historyBytes: number }> {
       expect(s.sessionId).toBe('plain');
       expect(hasSessionHistory('plain', 'alice')).toBe(true);
       started.resolve();
@@ -773,12 +852,12 @@ test('explicit deletion awaits a fresh snapshot before history cleanup', async (
   ]);
 });
 
-test('shutdown marks closes caused by abort and waits for snapshots already in flight', async () => {
+test('shutdown marks closes caused by abort and waits for snapshots already in flight', async (): Promise<void> => {
   sessionOpened(session);
   const slow = deferred<void>();
   setStorageSnapshots({
-    cached: () => snapshot,
-    async measure() {
+    cached: (): StorageSnapshot => snapshot,
+    async measure(): Promise<StorageSnapshot> {
       await slow.promise;
       return snapshot;
     },
@@ -786,7 +865,7 @@ test('shutdown marks closes caused by abort and waits for snapshots already in f
   beginUsageShutdown();
   const closing = sessionClosed(session, 'ttl');
   let finished = false;
-  const shutdown = closeUsageSessions().then(() => {
+  const shutdown = closeUsageSessions().then((): void => {
     finished = true;
   });
   await Promise.resolve();
@@ -799,12 +878,15 @@ test('shutdown marks closes caused by abort and waits for snapshots already in f
   ]);
 });
 
-test('OpenAI HTTP disconnect records once after its admitted work finishes', async () => {
+test('OpenAI HTTP disconnect records once after its admitted work finishes', async (): Promise<void> => {
   const gate = deferred<void>();
   const started = deferred<void>();
   const disconnected = deferred<void>();
   const done = deferred<void>();
-  harness.process = async () => {
+  harness.process = async (): Promise<{
+    ok: true;
+    value: { content: string };
+  }> => {
     started.resolve();
     await gate.promise;
     return { ok: true, value: { content: 'answer' } };
@@ -812,9 +894,9 @@ test('OpenAI HTTP disconnect records once after its admitted work finishes', asy
   const app = express();
   app.use(express.json());
   app.use(sessionMiddleware());
-  app.post('/', async (req: Request, res: Response) => {
+  app.post('/', async (req: Request, res: Response): Promise<void> => {
     Object.assign(req, { sessionMinted: true });
-    res.once('close', () => disconnected.resolve());
+    res.once('close', (): void => disconnected.resolve());
     try {
       await handleChatCompletions(req, res);
     } finally {
@@ -823,7 +905,9 @@ test('OpenAI HTTP disconnect records once after its admitted work finishes', asy
   });
   const server = createServer(app);
   await new Promise<void>(
-    (resolve: (value: void | PromiseLike<void>) => void) =>
+    (
+      resolve: (value: void | PromiseLike<void>) => void,
+    ): Server<typeof IncomingMessage, typeof ServerResponse> =>
       server.listen(0, '127.0.0.1', resolve),
   );
   const address = server.address();
@@ -841,14 +925,14 @@ test('OpenAI HTTP disconnect records once after its admitted work finishes', asy
       messages: [{ role: 'user', content: 'question' }],
     }),
     signal: controller.signal,
-  }).catch(() => undefined);
+  }).catch((): undefined => undefined);
   try {
     await started.promise;
     controller.abort();
     await disconnected.promise;
     expect(await rows('x.hub.request')).toHaveLength(0);
     await new Promise<void>(
-      (resolve: (value: void | PromiseLike<void>) => void) =>
+      (resolve: (value: void | PromiseLike<void>) => void): NodeJS.Timeout =>
         setTimeout(resolve, 10),
     );
     gate.resolve();
@@ -867,13 +951,15 @@ test('OpenAI HTTP disconnect records once after its admitted work finishes', asy
     controller.abort();
     server.closeAllConnections();
     await new Promise<void>(
-      (resolve: (value: void | PromiseLike<void>) => void) =>
-        server.close(() => resolve()),
+      (
+        resolve: (value: void | PromiseLike<void>) => void,
+      ): Server<typeof IncomingMessage, typeof ServerResponse> =>
+        server.close((): void => resolve()),
     );
   }
 });
 
-test('storage-only measurement still receives close snapshots without session or request records', async () => {
+test('storage-only measurement still receives close snapshots without session or request records', async (): Promise<void> => {
   await runtime.close(1000);
   sink = memorySink({ limit: 10000 });
   control = createUsageRecorder({ transport: directTransport(sink) });
@@ -883,14 +969,14 @@ test('storage-only measurement still receives close snapshots without session or
       LLM_AGENT_USAGE_SINKS: 'memory',
       LLM_AGENT_USAGE_MEASURE: 'storage',
     }),
-    { recorderFactory: () => control },
+    { recorderFactory: (): IUsageRecorder & IUsageControl => control },
   );
   if (!storageOnly) throw new Error('Expected runtime');
   runtime = storageOnly;
   const measure = jest.fn<Promise<StorageSnapshot | undefined>, [UsageSession]>(
-    async () => snapshot,
+    async (): Promise<StorageSnapshot> => snapshot,
   );
-  setStorageSnapshots({ measure, cached: () => undefined });
+  setStorageSnapshots({ measure, cached: (): undefined => undefined });
   const admitted = lease(theRetention(), 'plain');
   appendToSession('plain', 'alice', {
     role: 'user',
@@ -904,9 +990,9 @@ test('storage-only measurement still receives close snapshots without session or
   expect(await rows('x.hub.storage')).toMatchObject([{ values: snapshot }]);
 });
 
-test('real response overload callbacks and later wrappers survive recording', async () => {
+test('real response overload callbacks and later wrappers survive recording', async (): Promise<void> => {
   let callbacks = 0;
-  await httpRun(async (req: Request, res: Response) => {
+  await httpRun(async (req: Request, res: Response): Promise<void> => {
     const originalWrite = res.write;
     const originalEnd = res.end;
     const measurement = measureRequest(req, res, session, 'openai', false);
@@ -916,11 +1002,11 @@ test('real response overload callbacks and later wrappers survive recording', as
       (
         resolve: (value: void | PromiseLike<void>) => void,
         reject: (reason?: Error) => void,
-      ) => {
+      ): void => {
         Reflect.apply(res.write, res, [
           'a',
           undefined,
-          (error: Error | null | undefined) => {
+          (error: Error | null | undefined): void => {
             if (error) reject(error);
             else {
               callbacks++;
@@ -931,39 +1017,42 @@ test('real response overload callbacks and later wrappers survive recording', as
       },
     );
     await new Promise<void>(
-      (resolve: (value: void | PromiseLike<void>) => void) =>
-        res.end(null, () => {
+      (resolve: (value: void | PromiseLike<void>) => void): void => {
+        res.end(null, (): void => {
           callbacks++;
           resolve();
-        }),
+        });
+      },
     );
     measurement?.finish();
   });
-  await httpRun(async (req: Request, res: Response) => {
+  await httpRun(async (req: Request, res: Response): Promise<void> => {
     const measurement = measureRequest(req, res, session, 'openai', false);
     await new Promise<void>(
-      (resolve: (value: void | PromiseLike<void>) => void) =>
+      (resolve: (value: void | PromiseLike<void>) => void): void => {
         Reflect.apply(res.end, res, [
           'b',
           undefined,
-          () => {
+          (): void => {
             callbacks++;
             resolve();
           },
-        ]),
+        ]);
+      },
     );
     measurement?.finish();
   });
-  await httpRun(async (req: Request, res: Response) => {
+  await httpRun(async (req: Request, res: Response): Promise<void> => {
     const measurement = measureRequest(req, res, session, 'openai', false);
     const laterEnd = res.end.bind(res);
     res.end = laterEnd;
     await new Promise<void>(
-      (resolve: (value: void | PromiseLike<void>) => void) =>
-        res.end(() => {
+      (resolve: (value: void | PromiseLike<void>) => void): void => {
+        res.end((): void => {
           callbacks++;
           resolve();
-        }),
+        });
+      },
     );
     measurement?.finish();
     expect(res.end).toBe(laterEnd);
@@ -972,27 +1061,31 @@ test('real response overload callbacks and later wrappers survive recording', as
   expect(await rows('x.hub.request')).toHaveLength(3);
 });
 
-test('real MCP SDK transport finishes a measured response after the tool returns', async () => {
+test('real MCP SDK transport finishes a measured response after the tool returns', async (): Promise<void> => {
   await httpRun(
-    async (req: Request, res: Response) => {
+    async (req: Request, res: Response): Promise<void> => {
       const server = new McpServer({ name: 'usage-test', version: '1' });
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true,
       });
-      server.registerTool('probe', { description: 'probe' }, async () => {
-        const measurement = measureRequest(
-          req,
-          res,
-          session,
-          'mcp-agent',
-          false,
-          'probe',
-        );
-        measurement?.admitted();
-        measurement?.finish();
-        return { content: [] };
-      });
+      server.registerTool(
+        'probe',
+        { description: 'probe' },
+        async (): Promise<{ content: never[] }> => {
+          const measurement = measureRequest(
+            req,
+            res,
+            session,
+            'mcp-agent',
+            false,
+            'probe',
+          );
+          measurement?.admitted();
+          measurement?.finish();
+          return { content: [] };
+        },
+      );
       req.headers.accept = 'application/json, text/event-stream';
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
@@ -1010,10 +1103,13 @@ test('real MCP SDK transport finishes a measured response after the tool returns
   ]);
 });
 
-test('shutdown waits for blocked plain pipeline teardown before final snapshot', async () => {
+test('shutdown waits for blocked plain pipeline teardown before final snapshot', async (): Promise<void> => {
   const started = deferred<void>();
   const gate = deferred<void>();
-  harness.process = async () => {
+  harness.process = async (): Promise<{
+    ok: true;
+    value: { content: string };
+  }> => {
     started.resolve();
     await gate.promise;
     return { ok: true, value: { content: 'finished' } };
@@ -1024,7 +1120,7 @@ test('shutdown waits for blocked plain pipeline teardown before final snapshot',
   });
   await started.promise;
   let closed = false;
-  const shutdown = (async () => {
+  const shutdown = (async (): Promise<void> => {
     beginUsageShutdown();
     await shutdownGatekeeper();
     await closeUsageSessions();
@@ -1042,11 +1138,11 @@ test('shutdown waits for blocked plain pipeline teardown before final snapshot',
   ]);
 });
 
-test('completed offline close deduplicates late discards and permits legitimate revive', async () => {
+test('completed offline close deduplicates late discards and permits legitimate revive', async (): Promise<void> => {
   const measure = jest.fn<Promise<StorageSnapshot | undefined>, [UsageSession]>(
-    async () => snapshot,
+    async (): Promise<StorageSnapshot> => snapshot,
   );
-  setStorageSnapshots({ measure, cached: () => undefined });
+  setStorageSnapshots({ measure, cached: (): undefined => undefined });
   await sessionClosed(session, 'expired-offline', false);
   await sessionClosed(session, 'expired-offline', false);
   expect(measure).toHaveBeenCalledTimes(1);
@@ -1057,13 +1153,13 @@ test('completed offline close deduplicates late discards and permits legitimate 
   expect(await sessions('close')).toHaveLength(2);
 });
 
-test('pending session close waits for non-stream delivery and includes its final counter', async () => {
+test('pending session close waits for non-stream delivery and includes its final counter', async (): Promise<void> => {
   sessionOpened(session);
   const measure = jest.fn<Promise<StorageSnapshot | undefined>, [UsageSession]>(
-    async () => snapshot,
+    async (): Promise<StorageSnapshot> => snapshot,
   );
-  setStorageSnapshots({ measure, cached: () => undefined });
-  await httpRun(async (req: Request, res: Response) => {
+  setStorageSnapshots({ measure, cached: (): undefined => undefined });
+  await httpRun(async (req: Request, res: Response): Promise<void> => {
     const measurement = measureRequest(req, res, session, 'openai', false);
     measurement?.admitted();
     measurement?.deliverOnResponseEnd();
@@ -1082,10 +1178,13 @@ test('pending session close waits for non-stream delivery and includes its final
 
 test.each(['openai', 'anthropic', 'mcp'])(
   'empty %s result records zero delivered messages',
-  async (protocol: string) => {
-    harness.process = async () => ({ ok: true, value: { content: '' } });
+  async (protocol: string): Promise<void> => {
+    harness.process = async (): Promise<{
+      ok: true;
+      value: { content: string };
+    }> => ({ ok: true, value: { content: '' } });
     await httpRun(
-      async (req: Request, res: Response) => {
+      async (req: Request, res: Response): Promise<void> => {
         if (protocol === 'mcp')
           res.json(
             await executeStep(
@@ -1111,13 +1210,13 @@ test.each(['openai', 'anthropic', 'mcp'])(
   },
 );
 
-test('revive during an older close snapshot keeps the new generation independently closable', async () => {
+test('revive during an older close snapshot keeps the new generation independently closable', async (): Promise<void> => {
   const started = deferred<void>();
   const slow = deferred<void>();
   let measurements = 0;
   setStorageSnapshots({
-    cached: () => undefined,
-    async measure() {
+    cached: (): undefined => undefined,
+    async measure(): Promise<StorageSnapshot> {
       measurements++;
       if (measurements === 1) {
         started.resolve();
@@ -1137,7 +1236,7 @@ test('revive during an older close snapshot keeps the new generation independent
   expect(await sessions('close')).toHaveLength(2);
 });
 
-test('concurrent offline discards deduplicate a stale read resolving after the first snapshot', async () => {
+test('concurrent offline discards deduplicate a stale read resolving after the first snapshot', async (): Promise<void> => {
   const firstMeasured = deferred<void>();
   const finishMeasurement = deferred<void>();
   const persisted: SessionRecord = {
@@ -1150,33 +1249,36 @@ test('concurrent offline discards deduplicate a stale read resolving after the f
   records.set(persisted.key, persisted);
   let reads = 0;
   const store: SessionRecordStore = {
-    async get(_userId: string, key: string) {
+    async get(
+      _userId: string,
+      key: string,
+    ): Promise<SessionRecord | undefined> {
       const captured = records.get(key);
       reads++;
       return captured;
     },
-    async put(record: SessionRecord) {
+    async put(record: SessionRecord): Promise<void> {
       records.set(record.key, record);
     },
-    async touch(record: SessionRecord) {
+    async touch(record: SessionRecord): Promise<void> {
       records.set(record.key, record);
     },
-    async delete(_userId: string, key: string) {
+    async delete(_userId: string, key: string): Promise<void> {
       records.delete(key);
     },
-    async list() {
+    async list(): Promise<SessionRecord[]> {
       return [...records.values()];
     },
   };
   lifecycleHooks(store);
   const measure = jest.fn<Promise<StorageSnapshot | undefined>, [UsageSession]>(
-    async () => {
+    async (): Promise<StorageSnapshot> => {
       firstMeasured.resolve();
       await finishMeasurement.promise;
       return snapshot;
     },
   );
-  setStorageSnapshots({ measure, cached: () => undefined });
+  setStorageSnapshots({ measure, cached: (): undefined => undefined });
   const first = discardSession('alice', persisted.key);
   await firstMeasured.promise;
   const second = discardSession('alice', persisted.key);
@@ -1191,12 +1293,12 @@ test('concurrent offline discards deduplicate a stale read resolving after the f
 
 test.each([false, true])(
   'queued admission resumes after delayed snapshot cleanup (failure=%s)',
-  async (fails: boolean) => {
+  async (fails: boolean): Promise<void> => {
     const slow = deferred<void>();
     const started = deferred<void>();
     setStorageSnapshots({
-      cached: () => snapshot,
-      async measure() {
+      cached: (): StorageSnapshot => snapshot,
+      async measure(): Promise<StorageSnapshot> {
         started.resolve();
         await slow.promise;
         return snapshot;
@@ -1204,23 +1306,23 @@ test.each([false, true])(
     });
     const retention = new SessionRetention(
       {
-        hasState: () => false,
-        deleteAll: () => {
+        hasState: (): false => false,
+        deleteAll: (): void => {
           if (fails) throw new Error('cleanup failed');
         },
-        onSessionRetained: (userId: string, sessionId: string) =>
+        onSessionRetained: (userId: string, sessionId: string): void =>
           sessionOpened({ userId, sessionId }),
         beforeSessionReleased: (
           userId: string,
           sessionId: string,
           reason: SessionCloseReason,
-        ) => sessionClosed({ userId, sessionId }, reason),
+        ): Promise<void> => sessionClosed({ userId, sessionId }, reason),
         onSessionReleased: (
           userId: string,
           sessionId: string,
           reason: SessionCloseReason,
-        ) => sessionReleased({ userId, sessionId }, reason),
-        afterAsyncRemoval: () => door.poke(),
+        ): void => sessionReleased({ userId, sessionId }, reason),
+        afterAsyncRemoval: (): void => door.poke(),
       },
       1,
     );
@@ -1228,10 +1330,12 @@ test.each([false, true])(
     const first = await door.admit('alice', 'A');
     if (!('admitted' in first)) throw new Error('First admission refused');
     let dispatched = false;
-    const queued = door.admit('alice', 'B').then((result: AdmitResult) => {
-      dispatched = true;
-      return result;
-    });
+    const queued = door
+      .admit('alice', 'B')
+      .then((result: AdmitResult): AdmitResult => {
+        dispatched = true;
+        return result;
+      });
     first.admitted.release();
     await started.promise;
     expect(dispatched).toBe(false);
@@ -1245,13 +1349,13 @@ test.each([false, true])(
   },
 );
 
-test('synchronous release claims a generation while close waits for delivery', async () => {
+test('synchronous release claims a generation while close waits for delivery', async (): Promise<void> => {
   sessionOpened(session);
   const finishDelivery = holdSessionDelivery(session);
   const measure = jest.fn<Promise<StorageSnapshot | undefined>, [UsageSession]>(
-    async () => snapshot,
+    async (): Promise<StorageSnapshot> => snapshot,
   );
-  setStorageSnapshots({ measure, cached: () => snapshot });
+  setStorageSnapshots({ measure, cached: (): StorageSnapshot => snapshot });
   const closing = sessionClosed(session, 'explicit');
   await Promise.resolve();
   expect(measure).not.toHaveBeenCalled();
@@ -1272,8 +1376,14 @@ test.each([
   ['anthropic', true],
 ])(
   'thrown %s stream records failure (partial=%s)',
-  async (protocol: string | boolean, partial: string | boolean) => {
-    harness.stream = async function* () {
+  async (protocol: string | boolean, partial:
+    | string
+    | boolean): Promise<void> => {
+    harness.stream = async function* (): AsyncGenerator<
+      { ok: true; value: { content: string } },
+      never,
+      void
+    > {
       if (partial) yield { ok: true, value: { content: 'partial answer' } };
       throw new Error('generator failed');
     };
@@ -1298,10 +1408,10 @@ test.each([
   },
 );
 
-test('many closed generations retain only capped oldest-dropped tombstones', async () => {
+test('many closed generations retain only capped oldest-dropped tombstones', async (): Promise<void> => {
   setStorageSnapshots({
-    cached: () => snapshot,
-    async measure() {
+    cached: (): StorageSnapshot => snapshot,
+    async measure(): Promise<StorageSnapshot> {
       return snapshot;
     },
   });
@@ -1328,7 +1438,7 @@ test('many closed generations retain only capped oldest-dropped tombstones', asy
 
 test.each([false, true])(
   'unreleased pipeline shutdown is bounded (usage=%s)',
-  async (enabled: boolean) => {
+  async (enabled: boolean): Promise<void> => {
     if (!enabled) await runtime.close(1000);
     const pipeline = await admitPipeline('alice', 'unreleased');
     if (!('admitted' in pipeline)) throw new Error('Admission refused');
@@ -1360,17 +1470,17 @@ test.each([false, true])(
   8000,
 );
 
-test('pipelined HTTP responses count only their own transport bytes', async () => {
+test('pipelined HTTP responses count only their own transport bytes', async (): Promise<void> => {
   const firstBody = 'A'.repeat(4096);
   const secondBody = 'B'.repeat(29);
-  let releaseFirst: () => void = () => {};
-  const firstReady = new Promise<void>((resolve: () => void) => {
+  let releaseFirst: () => void = (): void => {};
+  const firstReady = new Promise<void>((resolve: () => void): void => {
     releaseFirst = resolve;
   });
   let handled = 0;
   const app = express();
   const server = createServer(app);
-  app.get('/', async (req: Request, res: Response) => {
+  app.get('/', async (req: Request, res: Response): Promise<void> => {
     const index = ++handled;
     const measurement = measureRequest(req, res, session, 'openai', false);
     res.sendDate = false;
@@ -1389,8 +1499,11 @@ test('pipelined HTTP responses count only their own transport bytes', async () =
     }
     measurement?.finish();
   });
-  await new Promise<void>((resolve: () => void) =>
-    server.listen(0, '127.0.0.1', resolve),
+  await new Promise<void>(
+    (
+      resolve: () => void,
+    ): Server<typeof IncomingMessage, typeof ServerResponse> =>
+      server.listen(0, '127.0.0.1', resolve),
   );
   const address = server.address();
   if (!address || typeof address === 'string')
@@ -1400,13 +1513,13 @@ test('pipelined HTTP responses count only their own transport bytes', async () =
   client.setEncoding('utf8');
   try {
     await new Promise<void>(
-      (resolve: () => void, reject: (error: Error) => void) => {
-        client.on('data', (chunk: string) => {
+      (resolve: () => void, reject: (error: Error) => void): void => {
+        client.on('data', (chunk: string): void => {
           wire += chunk;
         });
         client.on('error', reject);
         client.on('end', resolve);
-        client.on('connect', () =>
+        client.on('connect', (): boolean =>
           client.write(
             'GET / HTTP/1.1\r\nHost: localhost\r\n\r\nGET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n',
           ),
@@ -1419,37 +1532,40 @@ test('pipelined HTTP responses count only their own transport bytes', async () =
     expect(records).toHaveLength(2);
     expect(
       records
-        .map((record: UsageRecord) => {
+        .map((record: UsageRecord): string | number | boolean => {
           if (record.kind !== 'x.hub.request') throw new Error('Wrong kind');
           return record.values.bytesWritten;
         })
         .map(Number)
-        .sort((a: number, b: number) => a - b),
+        .sort((a: number, b: number): number => a - b),
     ).toEqual(
       [
         Buffer.byteLength(wire.slice(0, split)),
         Buffer.byteLength(wire.slice(split)),
-      ].sort((a: number, b: number) => a - b),
+      ].sort((a: number, b: number): number => a - b),
     );
   } finally {
     releaseFirst();
     client.destroy();
     server.closeAllConnections();
-    await new Promise<void>((resolve: () => void) =>
-      server.close(() => resolve()),
+    await new Promise<void>(
+      (
+        resolve: () => void,
+      ): Server<typeof IncomingMessage, typeof ServerResponse> =>
+        server.close((): void => resolve()),
     );
   }
 });
 
-test('shutdown finalizes both blocked closing generations before runtime shutdown', async () => {
+test('shutdown finalizes both blocked closing generations before runtime shutdown', async (): Promise<void> => {
   const firstStarted = deferred<void>();
   const secondStarted = deferred<void>();
   const finishFirst = deferred<void>();
   const finishSecond = deferred<void>();
   let calls = 0;
   setStorageSnapshots({
-    cached: () => snapshot,
-    async measure() {
+    cached: (): StorageSnapshot => snapshot,
+    async measure(): Promise<StorageSnapshot> {
       if (++calls === 1) {
         firstStarted.resolve();
         await finishFirst.promise;
@@ -1488,8 +1604,12 @@ test('shutdown finalizes both blocked closing generations before runtime shutdow
 
 test.each(['   \n\t', '   hello   '])(
   'Anthropic stream counts non-whitespace content without retaining chunks (%j)',
-  async (content: string) => {
-    harness.stream = async function* () {
+  async (content: string): Promise<void> => {
+    harness.stream = async function* (): AsyncGenerator<
+      { ok: true; value: { content: string } },
+      void,
+      void
+    > {
       yield { ok: true, value: { content: '   ' } };
       yield { ok: true, value: { content } };
     };
@@ -1505,7 +1625,7 @@ test.each(['   \n\t', '   hello   '])(
   },
 );
 
-test('overlapping offline discards share a stalled read across tombstone eviction', async () => {
+test('overlapping offline discards share a stalled read across tombstone eviction', async (): Promise<void> => {
   const read = deferred<SessionRecord | undefined>();
   const get = jest.fn(
     (_userId: string, key: string): Promise<SessionRecord | undefined> =>
@@ -1513,10 +1633,10 @@ test('overlapping offline discards share a stalled read across tombstone evictio
   );
   lifecycleHooks({
     get,
-    async put(_record: SessionRecord) {},
-    async touch(_record: SessionRecord) {},
-    async delete(_userId: string, _key: string) {},
-    async list() {
+    async put(_record: SessionRecord): Promise<void> {},
+    async touch(_record: SessionRecord): Promise<void> {},
+    async delete(_userId: string, _key: string): Promise<void> {},
+    async list(): Promise<never[]> {
       return [];
     },
   });
@@ -1539,19 +1659,19 @@ test('overlapping offline discards share a stalled read across tombstone evictio
   await Promise.all([first, second]);
   expect(
     (await sessions('close')).filter(
-      (record: UsageRecord) => record.context.sessionId === 'stalled',
+      (record: UsageRecord): boolean => record.context.sessionId === 'stalled',
     ),
   ).toHaveLength(1);
 });
 
-test('disconnect after end while output is buffered records disconnected', async () => {
+test('disconnect after end while output is buffered records disconnected', async (): Promise<void> => {
   const closed = deferred<void>();
   const app = express();
-  app.get('/', (req: Request, res: Response) => {
+  app.get('/', (req: Request, res: Response): void => {
     const measurement = measureRequest(req, res, session, 'openai', false);
     measurement?.admitted();
     measurement?.deliverOnResponseEnd();
-    res.once('close', () => closed.resolve());
+    res.once('close', (): void => closed.resolve());
     res.socket?.cork();
     res.end('x'.repeat(32 * 1024 * 1024));
     expect(res.writableEnded).toBe(true);
@@ -1562,14 +1682,17 @@ test('disconnect after end while output is buffered records disconnected', async
     res.destroy();
   });
   const server = createServer(app);
-  await new Promise<void>((resolve: () => void) =>
-    server.listen(0, '127.0.0.1', resolve),
+  await new Promise<void>(
+    (
+      resolve: () => void,
+    ): Server<typeof IncomingMessage, typeof ServerResponse> =>
+      server.listen(0, '127.0.0.1', resolve),
   );
   const address = server.address();
   if (!address || typeof address === 'string')
     throw new Error('Missing address');
   const client = connect(address.port, '127.0.0.1');
-  client.on('error', (_error: Error) => {});
+  client.on('error', (_error: Error): void => {});
   client.write('GET / HTTP/1.1\r\nHost: localhost\r\n\r\n');
   try {
     await closed.promise;
@@ -1579,13 +1702,16 @@ test('disconnect after end while output is buffered records disconnected', async
   } finally {
     client.destroy();
     server.closeAllConnections();
-    await new Promise<void>((resolve: () => void) =>
-      server.close(() => resolve()),
+    await new Promise<void>(
+      (
+        resolve: () => void,
+      ): Server<typeof IncomingMessage, typeof ServerResponse> =>
+        server.close((): void => resolve()),
     );
   }
 });
 
-test('usage-off pipelines without a door preserve undefined shutdown signals', async () => {
+test('usage-off pipelines without a door preserve undefined shutdown signals', async (): Promise<void> => {
   await runtime.close(1000);
   const result = await admitPipeline('alice', 'off-no-door');
   if (!('admitted' in result)) throw new Error('Admission refused');
@@ -1595,7 +1721,7 @@ test('usage-off pipelines without a door preserve undefined shutdown signals', a
   result.admitted.release();
 });
 
-test('long-session final real storage snapshot precedes dialogue and history deletion', async () => {
+test('long-session final real storage snapshot precedes dialogue and history deletion', async (): Promise<void> => {
   const opened = await openSession('alice', 'DEST');
   if ('refused' in opened) throw new Error('Open refused');
   const saved = {
@@ -1627,3 +1753,37 @@ test('long-session final real storage snapshot precedes dialogue and history del
   ).toBeUndefined();
   expect(hasSessionHistory(opened.key, 'alice')).toBe(false);
 });
+
+test('one shutdown deadline covers a stalled pipeline, session closes and a blocked sink', async (): Promise<void> => {
+  let unblock: () => void = (): void => {};
+  const blocked = new Promise<void>((resolve: () => void): void => {
+    unblock = resolve;
+  });
+  jest.spyOn(sink, 'write').mockImplementation(async (): Promise<void> => {
+    await blocked;
+  });
+  const pipeline = await admitPipeline('alice', 'shutdown-budget');
+  if (!('admitted' in pipeline)) throw new Error('Admission refused');
+  const started = Date.now();
+  beginUsageShutdown();
+  const deadline = started + 5000;
+  const close = jest.spyOn(runtime, 'close');
+  try {
+    await completeUsageShutdown(
+      deadline,
+      Promise.all([registry.closeAll('shutdown'), shutdownGatekeeper()]).then(
+        (): void => {},
+      ),
+      closeUsageSessions,
+      async (remainingMs: number): Promise<void> => {
+        await runtime.close(remainingMs);
+      },
+    );
+    expect(Date.now() - started).toBeLessThan(5500);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(4900);
+    expect(close).toHaveBeenCalledWith(0);
+  } finally {
+    unblock();
+    pipeline.admitted.release();
+  }
+}, 8000);

@@ -1,17 +1,33 @@
+import type { IUsageSink } from '@mcp-abap-adt/llm-agent';
+import type { IUsageReader } from '@mcp-abap-adt/llm-usage';
 import { memorySink } from '@mcp-abap-adt/llm-usage';
 
-jest.mock('../../srv/connections/destinationResolver', () => ({
-  resolveDestinationSapConfig: async (destinationName: string) => ({
+jest.mock('../../srv/connections/destinationResolver', (): object => ({
+  resolveDestinationSapConfig: async (
+    destinationName: string,
+  ): Promise<{
+    destinationName: string;
+    authenticationType: string;
+    sapConfig: { url: string; authType: string };
+  }> => ({
     destinationName,
     authenticationType: 'NoAuthentication',
     sapConfig: { url: 'http://sap.invalid', authType: 'basic' },
   }),
 }));
-jest.mock('../../srv/connections/connectionFactory', () => ({
+jest.mock('../../srv/connections/connectionFactory', (): object => ({
   ...jest.requireActual<
     typeof import('../../srv/connections/connectionFactory')
   >('../../srv/connections/connectionFactory'),
-  createConnection: () => ({
+  createConnection: (): {
+    connect(): Promise<void>;
+    disconnect(): Promise<void>;
+    close(): Promise<void>;
+    getBaseUrl(): Promise<string>;
+    getSessionId(): string;
+    setSessionType(): void;
+    makeAdtRequest: ReturnType<typeof jest.fn>;
+  } => ({
     connect: async (): Promise<void> => {},
     disconnect: async (): Promise<void> => {},
     close: async (): Promise<void> => {},
@@ -21,7 +37,7 @@ jest.mock('../../srv/connections/connectionFactory', () => ({
     makeAdtRequest: jest.fn(),
   }),
 }));
-jest.mock('../../srv/lib/system-identity-cache', () => ({
+jest.mock('../../srv/lib/system-identity-cache', (): object => ({
   bindSystemIdentity: (): void => {},
   warmSystemIdentity: async (): Promise<void> => {},
 }));
@@ -58,10 +74,10 @@ import { initUsage } from '../../srv/lib/usage/runtime';
 
 function hooks() {
   const histogram = {
-    enable: jest.fn<boolean, []>(() => true),
-    disable: jest.fn<boolean, []>(() => true),
+    enable: jest.fn<boolean, []>((): true => true),
+    disable: jest.fn<boolean, []>((): true => true),
     reset: jest.fn<void, []>(),
-    percentile: jest.fn<number, [percentile: number]>(() => 2500000),
+    percentile: jest.fn<number, [percentile: number]>((): number => 2500000),
   };
   const counters: ProcessCounters = {
     activeSessions: 3,
@@ -75,13 +91,24 @@ function hooks() {
       .mockReturnValueOnce(0)
       .mockReturnValueOnce(30000)
       .mockReturnValue(60000),
-    memoryUsage: () => ({ rss: 100, heapUsed: 50, external: 10 }),
+    memoryUsage: (): { rss: number; heapUsed: number; external: number } => ({
+      rss: 100,
+      heapUsed: 50,
+      external: 10,
+    }),
     cpuUsage: jest
       .fn<NodeJS.CpuUsage, []>()
       .mockReturnValueOnce({ user: 1000, system: 2000 })
       .mockReturnValueOnce({ user: 4000, system: 7000 })
       .mockReturnValue({ user: 6000, system: 8000 }),
-    histogram: jest.fn(() => histogram),
+    histogram: jest.fn(
+      (): {
+        enable: jest.Mock<boolean, [], void>;
+        disable: jest.Mock<boolean, [], void>;
+        reset: jest.Mock<void, [], void>;
+        percentile: jest.Mock<number, [percentile: number], void>;
+      } => histogram,
+    ),
     counters: jest.fn<ProcessCounters, []>((): ProcessCounters => counters),
   };
   return { deps, histogram, counters };
@@ -95,7 +122,7 @@ async function runtime(measure: string = 'process', enabled: string = 'on') {
       LLM_AGENT_USAGE_SINKS: 'memory',
       LLM_AGENT_USAGE_MEASURE: measure,
     }),
-    { factories: { memory: () => recordingSink } },
+    { factories: { memory: (): IUsageSink & IUsageReader => recordingSink } },
   );
 }
 async function records(reader: {
@@ -214,7 +241,7 @@ test('pending dialogue opening never silences subsequent process intervals', asy
   if (!r) throw new Error('missing runtime');
   let fail: (reason: Error) => void = (): void => {};
   const spy = jest.spyOn(agents, 'getSmartAgent').mockImplementation(
-    () =>
+    (): Promise<never> =>
       new Promise<never>(
         (
           _resolve: (value: never) => void,

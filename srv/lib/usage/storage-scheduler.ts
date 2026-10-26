@@ -23,6 +23,32 @@ const sessionKey = (session: UsageSession): string =>
 export class StorageMeter implements StorageSnapshots {
   private readonly entries = new Map<string, Entry>();
   private running = false;
+  private readonly waiters = new Set<() => void>();
+  private unlock(): void {
+    this.running = false;
+    for (const wake of this.waiters) wake();
+    this.waiters.clear();
+  }
+  private async acquire(deadline: number): Promise<boolean> {
+    while (this.running && !this.stopped) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      await new Promise<void>((resolve: () => void): void => {
+        const wake = (): void => {
+          clearTimeout(timer);
+          resolve();
+        };
+        const timer = setTimeout((): void => {
+          this.waiters.delete(wake);
+          resolve();
+        }, remaining);
+        this.waiters.add(wake);
+      });
+    }
+    if (this.stopped || Date.now() >= deadline) return false;
+    this.running = true;
+    return true;
+  }
   private readonly users = new Set<string>();
   private cursor = 0;
   private controller?: AbortController;
@@ -47,6 +73,7 @@ export class StorageMeter implements StorageSnapshots {
   stop(): void {
     this.stopped = true;
     this.controller?.abort();
+    this.unlock();
     this.entries.clear();
     this.users.clear();
   }
@@ -100,11 +127,17 @@ export class StorageMeter implements StorageSnapshots {
     budgetMs: number = this.timeoutMs,
   ): Promise<StorageSnapshot | undefined> {
     if (this.stopped || !usageRuntime()?.enabled('storage')) return undefined;
-    if (this.running) return this.fallback(session);
-    this.running = true;
     const entry = this.entries.get(sessionKey(session));
-    const runtime = usageRuntime();
     const revision = entry?.revision;
+    const deadline = Date.now() + budgetMs;
+    if (!(await this.acquire(deadline)))
+      return this.stopped ? undefined : this.fallback(session);
+    if (this.stopped || !usageRuntime()?.enabled('storage')) {
+      this.unlock();
+      return undefined;
+    }
+    budgetMs = Math.max(0, deadline - Date.now());
+    const runtime = usageRuntime();
     const controller = new AbortController();
     this.controller = controller;
     const startedAt = Date.now();
@@ -129,8 +162,8 @@ export class StorageMeter implements StorageSnapshots {
     try {
       const snapshot = await Promise.race([
         work,
-        new Promise<undefined>((resolve: (value: undefined) => void) => {
-          timer = setTimeout(() => {
+        new Promise<undefined>((resolve: (value: undefined) => void): void => {
+          timer = setTimeout((): void => {
             controller.abort();
             resolve(undefined);
           }, budgetMs);
@@ -162,12 +195,12 @@ export class StorageMeter implements StorageSnapshots {
       }
       return snapshot ?? this.fallback(session);
     } catch {
-      return this.fallback(session);
+      return unknownStorageSnapshot();
     } finally {
       if (timer) clearTimeout(timer);
       controller.abort();
       this.controller = undefined;
-      this.running = false;
+      this.unlock();
     }
   }
 
@@ -216,20 +249,25 @@ export class StorageMeter implements StorageSnapshots {
           });
         continue;
       }
-      this.running = true;
+      if (!(await this.acquire(deadline))) return;
       const controller = new AbortController();
       this.controller = controller;
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const values = await Promise.race([
           measureUser(task, controller.signal),
-          new Promise<undefined>((resolve: (value: undefined) => void) => {
-            timer = setTimeout(() => {
-              controller.abort();
-              resolve(undefined);
-            }, budget);
-            timer.unref();
-          }),
+          new Promise<undefined>(
+            (resolve: (value: undefined) => void): void => {
+              timer = setTimeout(
+                (): void => {
+                  controller.abort();
+                  resolve(undefined);
+                },
+                Math.max(0, deadline - Date.now()),
+              );
+              timer.unref();
+            },
+          ),
         ]);
         if (
           values &&
@@ -252,7 +290,7 @@ export class StorageMeter implements StorageSnapshots {
         if (timer) clearTimeout(timer);
         controller.abort();
         this.controller = undefined;
-        this.running = false;
+        this.unlock();
       }
     }
   }
@@ -281,8 +319,8 @@ export function startStorageMeter(
   setStorageSnapshots(meter);
   runtime.schedule(
     'storage',
-    () => {
-      void meter.tick(runtime).catch(() => {});
+    (): void => {
+      void meter.tick(runtime).catch((): void => {});
     },
     intervalMs,
   );

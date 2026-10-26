@@ -47,7 +47,10 @@ export class SapAiCoreEmbedder implements IEmbedder {
         provider: 'sap-ai-sdk',
         model: this.model,
         inputs: texts.length,
-        inputChars: texts.reduce((sum, text) => sum + text.length, 0),
+        inputChars: texts.reduce(
+          (sum: number, text: string): number => sum + text.length,
+          0,
+        ),
         granularity: 'sdk-call',
         retriesVisible: false,
       },
@@ -83,12 +86,14 @@ export class SapAiCoreEmbedder implements IEmbedder {
           );
         indexed.set(index, decode(embedding));
       }
-      const results = texts.map((_, index) => {
-        const result = indexed.get(index);
-        if (!result)
-          throw new Error('Missing embedding index from SAP AI Core');
-        return result;
-      });
+      const results = texts.map(
+        (_: string, index: number): { vector: number[] } => {
+          const result = indexed.get(index);
+          if (!result)
+            throw new Error('Missing embedding index from SAP AI Core');
+          return result;
+        },
+      );
       function decode(embedding: number[] | string): { vector: number[] } {
         if (typeof embedding !== 'string') return { vector: embedding };
         const buffer = Buffer.from(embedding, 'base64');

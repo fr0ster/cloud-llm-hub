@@ -27,16 +27,18 @@ export class MigratableBuffer implements IUsageSink, IUsageReader {
   }
   private serial(run: () => Promise<void>): Promise<void> {
     const next = this.tail.then(run);
-    this.tail = next.catch(() => undefined);
+    this.tail = next.catch((): undefined => undefined);
     return next;
   }
   write(batch: readonly UsageRecord[]): Promise<void> {
-    return this.serial(async () => {
+    return this.serial(async (): Promise<void> => {
       if (this.closed)
         throw new UsageDeliveryError('Usage buffer closed', false, 'CLOSED');
       if (this.target) return this.target.write(batch);
       const added = new Set(
-        batch.filter((r) => !this.records.has(r.id)).map((r) => r.id),
+        batch
+          .filter((r: UsageRecord): boolean => !this.records.has(r.id))
+          .map((r: UsageRecord): string => r.id),
       ).size;
       if (this.records.size + added > this.limit)
         throw new UsageDeliveryError(
@@ -53,13 +55,13 @@ export class MigratableBuffer implements IUsageSink, IUsageReader {
     else yield* selectUsage([...this.records.values()], query);
   }
   close(): Promise<void> {
-    return this.serial(async () => {
+    return this.serial(async (): Promise<void> => {
       this.closed = true;
       await this.resource?.close?.();
     });
   }
   migrate(target: IUsageSink & IUsageReader, batchSize = 500): Promise<void> {
-    return this.serial(async () => {
+    return this.serial(async (): Promise<void> => {
       if (this.closed || this.target) return;
       const records = [...this.records.values()];
       for (let i = 0; i < records.length; i += batchSize)
