@@ -21,6 +21,7 @@ import type { LongSession } from './long-session';
 import { NoMessageFilter, stripNoMessage } from './no-message';
 import { ragContextOf, userTextOf } from './rag-context-marker';
 import { extractText } from './session-turns';
+import { responseMeasurement } from './usage/request-records';
 
 export type DialogueStreamChunk = LlmStreamChunk & {
   clhMessageId?: string;
@@ -119,7 +120,7 @@ export function dialogueChat(
           })
         : undefined;
     },
-    async process(messages, opts) {
+    async process(messages: Message[], opts: AgentCallOptions | undefined) {
       try {
         const { handle, pending, complete } = await open();
         const message = messages.filter((m) => m.role === 'user').at(-1);
@@ -162,6 +163,7 @@ export function dialogueChat(
           await handle.outbox.upsert([reply]);
           carried.push(reply);
         }
+        responseMeasurement(response)?.expectMessages(carried.length);
         for (const message of carried) delivery.carried(message.id);
         const lastId = carried.at(-1)?.id;
         if (lastId) response.setHeader('x-clh-last-message', lastId);

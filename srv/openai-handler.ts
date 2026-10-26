@@ -1,6 +1,10 @@
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
+import {
+  measureRequest,
+  requestMeasurement,
+} from './lib/usage/request-records';
 /**
  * OpenAI-compatible HTTP handlers for SmartAgent.
  *
@@ -222,7 +226,39 @@ interface OpenAIChatRequest {
  * Accepts OpenAI-format request, delegates to SmartAgent.process() or
  * SmartAgent.streamProcess() depending on `stream` flag.
  */
-export async function handleChatCompletions(
+export function handleChatCompletions(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const runtime = usageRuntime();
+  if (!runtime || (!runtime.enabled('request') && !runtime.enabled('session')))
+    return handleChatCompletionsMeasured(req, res);
+  return handleChatCompletionsWithUsage(req, res);
+}
+
+async function handleChatCompletionsWithUsage(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const body: { stream?: boolean } | undefined = req.body;
+  const measurement = measureRequest(
+    req,
+    res,
+    { userId: getUserId(), sessionId: sessionIdOf(req) ?? '' },
+    'openai',
+    body?.stream === true,
+  );
+  try {
+    await handleChatCompletionsMeasured(req, res);
+  } catch (error) {
+    measurement?.end('error');
+    throw error;
+  } finally {
+    measurement?.finish();
+  }
+}
+
+async function handleChatCompletionsMeasured(
   req: Request,
   res: Response,
 ): Promise<void> {
@@ -286,6 +322,8 @@ export async function handleChatCompletions(
   // A long session serves its requests one at a time, through the connection
   // it holds; without one the request stands alone, as it always has.
   const s = (req as LongSessionRequest).longSession;
+  const measurement = requestMeasurement(req);
+  measurement?.setStream(body.stream === true);
   const early =
     body.stream &&
     s &&
@@ -320,6 +358,7 @@ export async function handleChatCompletions(
       }
     }
   } catch (error) {
+    measurement?.end('error');
     if (!early?.opened) throw error;
     early.error({
       error: {
@@ -351,12 +390,13 @@ async function serveChatCompletions(
     });
   }
 
-  const traceId = randomUUID();
+  const traceId = requestMeasurement(req)?.traceId ?? randomUUID();
   // A session the caller presented and we kept. A freshly minted one is not
   // explicit: a stateless API client sending its full history must never be
   // truncated to its last message.
   const explicitSessionId = honouredSessionId(req);
-  const sessionId = sessionIdOf(req) ?? randomUUID();
+  const sessionId =
+    sessionIdOf(req) ?? (requestMeasurement(req) ? traceId : randomUUID());
   const t0 = Date.now();
 
   // Two modes of history management:
@@ -716,6 +756,7 @@ async function serveChatCompletions(
       },
     );
     if ('refused' in admission) {
+      requestMeasurement(req)?.end('limit');
       await releaseRequestConnection(requestConnection, s);
       const refusal = openAiDoorRefusal(admission.refused);
       if (early?.opened) early.error(refusal.body);
@@ -732,6 +773,7 @@ async function serveChatCompletions(
       return;
     }
     pipeline = admission.admitted;
+    requestMeasurement(req)?.admitted();
   } catch (error) {
     // Left while queued. Nothing was started, so nothing is owed but the connection.
     await releaseRequestConnection(requestConnection, s);
@@ -785,6 +827,7 @@ async function serveChatCompletions(
         destination: destAfter,
       })
       .with({ requestId: traceId, traceId });
+    requestMeasurement(req)?.bind(usage);
     // The parsed body: a raw request carries it only in `body`, not `req.body`.
     const retrieval = await collections.retrieve(
       { headers: req.headers, body },
@@ -981,6 +1024,7 @@ async function serveChatCompletions(
                     for await (const chunk of stream) {
                       chunkCount++;
                       if (!chunk.ok) {
+                        requestMeasurement(req)?.end('error');
                         const err = chunk.error;
                         if (isOutageError(chunk.error)) {
                           closeDestination(
@@ -1143,6 +1187,7 @@ async function serveChatCompletions(
                       }
                     }
                   } catch (err) {
+                    requestMeasurement(req)?.end('error');
                     if (isOutageError(err)) {
                       closeDestination(destAfter, describeCause(err));
                     }
@@ -1260,6 +1305,12 @@ async function serveChatCompletions(
       }
 
       clearInterval(keepAlive);
+      if (
+        requestMeasurement(req) &&
+        /\S/.test(accumulatedContent) &&
+        !out.detached
+      )
+        requestMeasurement(req)?.messageDelivered();
       out.write('data: [DONE]\n\n');
       out.end();
       return;
@@ -1292,6 +1343,7 @@ async function serveChatCompletions(
       durationMs: Date.now() - t0,
     });
 
+    if (!result.ok) requestMeasurement(req)?.end('error');
     if (!result.ok && isOutageError(result.error)) {
       closeDestination(destAfter, describeCause(result.error));
     }
@@ -1342,6 +1394,14 @@ async function serveChatCompletions(
       // NOTE: state store upsert removed (non-streaming path) — same as streaming.
     }
 
+    if (
+      requestMeasurement(req) &&
+      result.ok &&
+      /\S/.test(finalContent) &&
+      finalContent !== '(no response)' &&
+      !out.detached
+    )
+      requestMeasurement(req)?.deliverOnResponseEnd();
     out.writeHead(200, {
       'Content-Type': 'application/json',
       ...invalidToolsHeader,

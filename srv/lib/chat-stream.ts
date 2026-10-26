@@ -14,6 +14,7 @@ import {
   failDialogueResponse,
 } from './dialogue-chat';
 import { type LongSession, longSessions } from './long-session';
+import { responseMeasurement } from './usage/request-records';
 
 /** One response owns its heartbeat, error and terminal, including queue waits. */
 export function chatStream(
@@ -38,6 +39,7 @@ export function chatStream(
   });
   res.on('finish', stop);
   return {
+    measurement: responseMeasurement(res),
     signal: controller.signal,
     get opened() {
       return opened;
@@ -63,6 +65,7 @@ export function chatStream(
       if (ended) return;
       ended = true;
       stop();
+      responseMeasurement(res)?.end('error');
       // A failed response must never count as an ended outbox delivery.
       failDialogueResponse(res);
       out.write(
@@ -104,6 +107,7 @@ export async function streamDialogue(opts: {
   let closed = false;
   let failure: unknown;
   let text = '';
+  let explicitMessages = false;
   const push = (chunk: Chunk) =>
     new Promise<void>((written) => {
       queue.push({ chunk, written });
@@ -175,8 +179,11 @@ export async function streamDialogue(opts: {
         if (!chunk.ok) throw chunk.error;
         const v = chunk.value;
         if (v.clhMessageId) comment('message-id', v.clhMessageId);
-        else if (v.clhMessageEnd) comment('message-end', v.clhMessageEnd);
-        else if (v.clhTurnEnd) comment('turn-end');
+        else if (v.clhMessageEnd) {
+          if (stream.measurement) explicitMessages = true;
+          comment('message-end', v.clhMessageEnd);
+          if (!stream.out.detached) stream.measurement?.messageDelivered();
+        } else if (v.clhTurnEnd) comment('turn-end');
         else if (v.status) comment('status', JSON.stringify(v.status));
         else {
           text += v.content || '';
@@ -184,6 +191,14 @@ export async function streamDialogue(opts: {
           await push({ ok: true, value });
         }
       }
+      if (
+        stream.measurement &&
+        !explicitMessages &&
+        /\S/.test(text) &&
+        !stream.out.detached
+      )
+        stream.measurement?.messageDelivered();
+      stream.measurement?.turnEnded();
       opts.onTurnEnd?.(text, opts.agent.hasFollow());
     });
   } catch (error) {
@@ -200,11 +215,17 @@ export async function streamDialogue(opts: {
             comment('message-id', item.message.id);
             await content(item.message.text);
             comment('message-end', item.message.id);
-            if (!stream.out.detached && !stream.signal.aborted) item.written();
-          } else if (item.reason === 'error') {
-            throw new Error('Background planner turn failed');
-          } else if (item.note)
-            await content(`${text ? '\n\n' : ''}${item.note}`);
+            if (!stream.out.detached && !stream.signal.aborted) {
+              item.written();
+              stream.measurement?.messageDelivered();
+            }
+          } else if (item.kind === 'end') {
+            stream.measurement?.end(item.reason);
+            if (item.reason === 'error') {
+              throw new Error('Background planner turn failed');
+            } else if (item.note)
+              await content(`${text ? '\n\n' : ''}${item.note}`);
+          }
         }
     } catch (error) {
       failure = error;

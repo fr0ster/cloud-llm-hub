@@ -441,3 +441,24 @@ describe('migration safety', () => {
     expect(await collect(target)).toHaveLength(3);
   });
 });
+
+test.each(['request', 'llm'])(
+  'retrieval belongs to the request measure (%s)',
+  async (measure: string) => {
+    const runtime = await initUsage(
+      cfg('memory', { LLM_AGENT_USAGE_MEASURE: measure }),
+    );
+    if (!runtime) throw new Error('Expected usage runtime');
+    runtime.recorder.record({
+      kind: 'x.hub.retrieval',
+      context: {},
+      outcome: 'ok',
+      values: { collections: 2, chunks: 3, chars: 10, injected: true },
+    });
+    await runtime.close(1000);
+    const records = await collect(runtime.reader());
+    expect(
+      records.filter((r: UsageRecord) => r.kind === 'x.hub.retrieval'),
+    ).toHaveLength(measure === 'request' ? 1 : 0);
+  },
+);

@@ -284,10 +284,13 @@ export async function initUsage(
       now,
     });
     const wrap = (recorder: IUsageRecorder): IUsageRecorder => ({
-      record(input) {
-        const kind = input.kind.startsWith('x.hub.')
-          ? input.kind.slice(6).split('.')[0]
-          : input.kind.split('.')[0];
+      record(input: Parameters<IUsageRecorder['record']>[0]) {
+        const kind =
+          input.kind === 'x.hub.retrieval'
+            ? 'request'
+            : input.kind.startsWith('x.hub.')
+              ? input.kind.slice(6).split('.')[0]
+              : input.kind.split('.')[0];
         if (
           input.kind === 'x.usage.lost' ||
           (isMeasure(kind) && cfg.measure.includes(kind))

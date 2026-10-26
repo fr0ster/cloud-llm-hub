@@ -263,7 +263,7 @@ describe('absent means today', () => {
 
   it('still resolves the agent before admitting', () => {
     const src = readFileSync(join(__dirname, '../../srv/agent-mcp.ts'), 'utf8');
-    const body = src.slice(src.indexOf('export async function executeStep'));
+    const body = src.slice(src.indexOf('export function executeStep'));
     expect(body.indexOf('getSmartAgent(')).toBeLessThan(
       body.indexOf('admitPipeline('),
     );

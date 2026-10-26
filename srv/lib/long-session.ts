@@ -42,6 +42,7 @@ export type OpenRefusal = { refused: 'SESSION_LIMIT' | 'SESSION_EXISTS' };
 export type RunRefusal = { refused: 'SESSION_BUSY' | 'SESSION_CLOSED' };
 
 export interface LongSessionHooks {
+  onOpen?(s: LongSession): void;
   /** ABAP close, state delete, record delete. */
   onClose(s: LongSession, reason: CloseReason): Promise<void>;
   /** Record write (throttled by the store). */
@@ -115,6 +116,7 @@ export class LongSessionRegistry {
       active: 0,
       holds: 0,
     });
+    this.hooks.onOpen?.(session);
     this.hooks.onTouch?.(session);
     return session;
   }

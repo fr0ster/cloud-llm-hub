@@ -25,6 +25,8 @@ import {
 import cds from '@sap/cds';
 import { OrchestrationEmbeddingClient } from '@sap-ai-sdk/orchestration';
 import express from 'express';
+import { executeStep } from '../../srv/agent-mcp';
+import { handleAnthropicMessages } from '../../srv/anthropic-handler';
 import { collectionRetrieval } from '../../srv/lib/collection-retrieval';
 import { dialogueChat } from '../../srv/lib/dialogue-chat';
 import { closeDialogue, dialogueFor } from '../../srv/lib/dialogue-sessions';
@@ -49,6 +51,9 @@ import { handleChatCompletions } from '../../srv/openai-handler';
 
 const mockAuthenticatedUser = new AsyncLocalStorage<string>();
 const mockWorkers = new Map<string, ISubAgent>();
+let mockStepAgent:
+  | Awaited<ReturnType<SmartAgentBuilder['build']>>['agent']
+  | undefined;
 let mockPlanner: Awaited<ReturnType<SmartAgentBuilder['build']>>['agent'];
 const mockQuery = jest.fn(
   async (embedding: { toVector(): Promise<number[]> }) => {
@@ -118,7 +123,7 @@ jest.mock('../../srv/agent-manager', () => ({
     )
     .agentManagerMock(),
   getSmartAgent: async () => ({
-    agent: { deps: { ragStores: {} } },
+    agent: mockStepAgent ?? { deps: { ragStores: {} } },
     workers: mockWorkers,
     recMcp: { getToolRecords: () => [], dropRequest() {} },
     criticLlm: {},
@@ -829,105 +834,144 @@ test('SAP batch reconstructs indexed vectors and rejects missing, duplicate and 
   expect(records).toHaveLength(embed.mock.calls.length);
 });
 
-test('successive long-session OpenAI requests share retrieval, guard and planner attribution through session middleware', async () => {
-  const built = await new SmartAgentBuilder({
-    skipModelValidation: true,
-    agent: { classificationEnabled: false, ragTranslateEnabled: false },
-  })
-    .withMainLlm(fakeLlm(plainAnswer))
-    .build();
-  mockPlanner = guardLlmOnlyAgent(built.agent, {
-    decide: fakeLlm(() => ({
-      content: '{"action":false}',
-      finishReason: 'stop',
-    })),
-    why: 'waiting',
-  });
-  const embed = jest
-    .spyOn(OrchestrationEmbeddingClient.prototype, 'embed')
-    .mockResolvedValue(await sdkResponse());
-  const embedding = buildEmbedding({
-    kind: 'sap-ai-core',
-    model: 'text-embedding-3-small',
-  });
-  if (!embedding) throw new Error('Expected embedding');
-  mockEmbedder = agentQueryEmbedder(embedding, 'collection-retrieval');
-  const registry = new LongSessionRegistry(
-    { ttlMs: 3600000, maxSessions: 10, maxPerUser: 10, queueLength: 3 },
-    lifecycleHooks(),
-  );
-  const session = registry.open('alice', {
-    key: 'handler-long-session',
-    destination: 'TEST',
-  });
-  if ('refused' in session) throw new Error('Session refused');
-  setLongSessionsForTest(registry);
-  const app = express();
-  app.use(express.json());
-  app.use(
-    sessionMiddleware({
-      userIdOf: () => 'alice',
-      resolveSession: async (user, key) => registry.get(user, key),
-    }),
-  );
-  app.post('/chat/completions', handleChatCompletions);
-  const server = createServer(app);
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  if (!address || typeof address === 'string')
-    throw new Error('Expected address');
-  try {
-    for (let index = 0; index < 2; index++) {
-      const response = await fetch(
-        `http://127.0.0.1:${address.port}/chat/completions`,
-        {
-          method: 'POST',
-          signal: AbortSignal.timeout(2000),
-          headers: {
-            'content-type': 'application/json',
-            'x-clh-session': session.key,
-            'x-sap-destination': 'TEST',
-            'x-rag-collections': 'selected',
-          },
-          body: JSON.stringify({
-            model: 'm',
-            messages: [{ role: 'user', content: 'PROMPT_SENTINEL' }],
-          }),
-        },
-      );
-      expect(response.status).toBe(200);
-      expect(await response.text()).toContain('RESULT_SENTINEL');
-    }
-    const records = (await rows()).filter(
-      (r) =>
-        r.context.sessionId === session.key &&
-        (r.kind === 'llm.call' || r.kind === 'embedding.call'),
+test.each([
+  ['openai', false],
+  ['openai', true],
+  ['anthropic', false],
+  ['anthropic', true],
+])(
+  'real dialogue %s (stream=%s) correlates request, retrieval, embedding and LLM records',
+  async (protocol: string | boolean, stream: string | boolean) => {
+    const before = (await rows()).length;
+    const built = await new SmartAgentBuilder({
+      skipModelValidation: true,
+      agent: { classificationEnabled: false, ragTranslateEnabled: false },
+    })
+      .withMainLlm(fakeLlm(plainAnswer))
+      .build();
+    mockPlanner = guardLlmOnlyAgent(built.agent, {
+      decide: fakeLlm(() => ({
+        content: '{"action":false}',
+        finishReason: 'stop',
+      })),
+      why: 'waiting',
+    });
+    const embed = jest
+      .spyOn(OrchestrationEmbeddingClient.prototype, 'embed')
+      .mockResolvedValue(await sdkResponse());
+    const embedding = buildEmbedding({
+      kind: 'sap-ai-core',
+      model: 'text-embedding-3-small',
+    });
+    if (!embedding) throw new Error('Expected embedding');
+    mockEmbedder = agentQueryEmbedder(embedding, 'collection-retrieval');
+    const registry = new LongSessionRegistry(
+      { ttlMs: 3600000, maxSessions: 10, maxPerUser: 10, queueLength: 3 },
+      lifecycleHooks(),
     );
-    expect(embed).toHaveBeenCalledTimes(2);
-    expect(records).toHaveLength(6);
-    const requestIds = new Set(records.map((r) => r.context.requestId));
-    expect(requestIds.size).toBe(2);
-    for (const requestId of requestIds) {
-      expect(requestId).toEqual(expect.any(String));
-      const request = records.filter((r) => r.context.requestId === requestId);
-      expect(request).toHaveLength(3);
-      expect(request.map((r) => r.context.component).sort()).toEqual(
-        ['collection-retrieval', 'llm-only-guard', undefined].sort(),
+    const session = registry.open('alice', {
+      key: 'handler-long-session',
+      destination: 'TEST',
+    });
+    if ('refused' in session) throw new Error('Session refused');
+    setLongSessionsForTest(registry);
+    const app = express();
+    app.use(express.json());
+    app.use(
+      sessionMiddleware({
+        userIdOf: () => 'alice',
+        resolveSession: async (user: string, key: string) =>
+          registry.get(user, key),
+      }),
+    );
+    app.post(
+      '/chat/completions',
+      protocol === 'openai' ? handleChatCompletions : handleAnthropicMessages,
+    );
+    const server = createServer(app);
+    await new Promise<void>(
+      (resolve: (value: void | PromiseLike<void>) => void) =>
+        server.listen(0, '127.0.0.1', resolve),
+    );
+    const address = server.address();
+    if (!address || typeof address === 'string')
+      throw new Error('Expected address');
+    try {
+      for (let index = 0; index < 2; index++) {
+        const response = await fetch(
+          `http://127.0.0.1:${address.port}/chat/completions`,
+          {
+            method: 'POST',
+            signal: AbortSignal.timeout(2000),
+            headers: {
+              'content-type': 'application/json',
+              'x-clh-session': session.key,
+              'x-sap-destination': 'TEST',
+              'x-rag-collections': 'selected',
+            },
+            body: JSON.stringify({
+              model: 'm',
+              stream,
+              max_tokens: 100,
+              messages: [{ role: 'user', content: 'PROMPT_SENTINEL' }],
+            }),
+          },
+        );
+        expect(response.status).toBe(200);
+        expect(await response.text()).toContain('RESULT_SENTINEL');
+      }
+      const records = (await rows())
+        .slice(before)
+        .filter(
+          (r: UsageRecord) =>
+            r.context.sessionId === session.key &&
+            [
+              'llm.call',
+              'embedding.call',
+              'x.hub.request',
+              'x.hub.retrieval',
+            ].includes(r.kind),
+        );
+      expect(embed).toHaveBeenCalledTimes(2);
+      expect(records).toHaveLength(10);
+      const requestIds = new Set(
+        records.map((r: UsageRecord) => r.context.requestId),
       );
-      for (const record of request)
-        expect(record.context).toMatchObject({
-          userId: 'alice',
-          sessionId: session.key,
-          requestId,
-        });
+      expect(requestIds.size).toBe(2);
+      for (const requestId of requestIds) {
+        expect(requestId).toEqual(expect.any(String));
+        const request = records.filter(
+          (r: UsageRecord) => r.context.requestId === requestId,
+        );
+        expect(request).toHaveLength(5);
+        expect(
+          request
+            .filter(
+              (r: UsageRecord) =>
+                r.kind === 'llm.call' || r.kind === 'embedding.call',
+            )
+            .map((r: UsageRecord) => r.context.component)
+            .sort(),
+        ).toEqual(['collection-retrieval', 'llm-only-guard', undefined].sort());
+        for (const record of request)
+          expect(record.context).toMatchObject({
+            userId: 'alice',
+            sessionId: session.key,
+            requestId,
+            traceId: requestId,
+          });
+      }
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(
+        (resolve: (value: void | PromiseLike<void>) => void) =>
+          server.close(() => resolve()),
+      );
+      await closeDialogue('alice', session.key, 'explicit');
+      setLongSessionsForTest(undefined);
     }
-  } finally {
-    server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    await closeDialogue('alice', session.key, 'explicit');
-    setLongSessionsForTest(undefined);
-  }
-});
+  },
+);
 
 test('concurrent long-session OpenAI requests isolate all foreground and background usage', async () => {
   let release!: () => void;
@@ -1238,6 +1282,121 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
     );
     for (const entry of cases)
       await closeDialogue(entry.userId, entry.sessionId, 'explicit');
+    setLongSessionsForTest(undefined);
+  }
+});
+
+test('real MCP agent tool loop correlates request, LLM and dispatched MCP records', async () => {
+  const before = (await rows()).length;
+  const mcp: IMcpClient = {
+    async listTools() {
+      return {
+        ok: true,
+        value: [
+          {
+            name: 'read',
+            description: 'read',
+            inputSchema: { type: 'object', properties: {} },
+          },
+        ],
+      };
+    },
+    async callTool(name: string, _args: object, options?: CallOptions) {
+      options?.usage?.record({
+        kind: 'tool.call',
+        context: {},
+        tool: name,
+        dispatched: true,
+        embedded: false,
+        outcome: 'ok',
+        transportOutcome: 'ok',
+        toolOutcome: 'ok',
+        durationMs: 1,
+      });
+      return {
+        ok: true,
+        value: { content: [{ type: 'text', text: 'tool result' }] },
+      };
+    },
+  };
+  const built = await new SmartAgentBuilder({
+    skipModelValidation: true,
+    agent: { classificationEnabled: false, ragTranslateEnabled: false },
+  })
+    .withMainLlm(
+      fakeLlm((messages: Message[]) =>
+        messages.some((message: Message) => message.role === 'tool')
+          ? plainAnswer()
+          : {
+              content: '',
+              finishReason: 'tool_calls',
+              toolCalls: [{ id: 'read-call', name: 'read', arguments: {} }],
+            },
+      ),
+    )
+    .withMcpClients([mcp])
+    .build();
+  mockStepAgent = built.agent;
+  const registry = new LongSessionRegistry(
+    { ttlMs: 60000, maxSessions: 10, maxPerUser: 10, queueLength: 3 },
+    lifecycleHooks(),
+  );
+  const session = registry.open('alice', {
+    key: 'mcp-correlation',
+    destination: 'TEST',
+  });
+  if ('refused' in session) throw new Error('Session refused');
+  setLongSessionsForTest(registry);
+  const app = express();
+  app.use(express.json());
+  app.post('/', async (req: express.Request, res: express.Response) => {
+    res.json(
+      await executeStep(
+        req,
+        { userId: 'alice', exposition: undefined },
+        { task: 'run', session: session.key },
+      ),
+    );
+  });
+  const server = createServer(app);
+  await new Promise<void>((resolve: () => void) =>
+    server.listen(0, '127.0.0.1', resolve),
+  );
+  const address = server.address();
+  if (!address || typeof address === 'string')
+    throw new Error('Missing address');
+  try {
+    const response = await fetch(`http://127.0.0.1:${address.port}/`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(await response.text()).toContain('RESULT_SENTINEL');
+    const records = (await rows())
+      .slice(before)
+      .filter((record: UsageRecord) =>
+        ['x.hub.request', 'llm.call', 'tool.call'].includes(record.kind),
+      );
+    expect(records.map((record: UsageRecord) => record.kind)).toEqual(
+      expect.arrayContaining(['x.hub.request', 'llm.call', 'tool.call']),
+    );
+    const request = records.find(
+      (record: UsageRecord) => record.kind === 'x.hub.request',
+    );
+    expect(request?.context.requestId).toEqual(expect.any(String));
+    for (const record of records)
+      expect(record.context).toMatchObject({
+        requestId: request?.context.requestId,
+        traceId: request?.context.requestId,
+        sessionId: session.key,
+      });
+  } finally {
+    mockStepAgent = undefined;
+    server.closeAllConnections();
+    await new Promise<void>((resolve: () => void) =>
+      server.close(() => resolve()),
+    );
+    await registry.closeAll('explicit');
     setLongSessionsForTest(undefined);
   }
 });

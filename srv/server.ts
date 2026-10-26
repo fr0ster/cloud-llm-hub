@@ -1,3 +1,11 @@
+import {
+  beginUsageShutdown,
+  closeUsageSessions,
+} from './lib/usage/session-records';
+import {
+  USAGE_SHUTDOWN_TIMEOUT_MS,
+  withinUsageShutdownBudget,
+} from './lib/usage/shutdown';
 /**
  * Custom server.ts for CAP bootstrap.
  * This file is automatically loaded by CAP and registers streaming endpoints.
@@ -959,9 +967,25 @@ cds.on('served', () => {
 // ABAP sessions end, their state and records stay for revival. A close waits
 // for the session's running request, which the gatekeeper's abort ends.
 cds.on('shutdown', async () => {
+  if (!usageRuntime()) {
+    const closing = longSessionsIfReady()?.closeAll('shutdown');
+    shutdownGatekeeper();
+    await closing;
+    return;
+  }
+  const usageDeadline = Date.now() + USAGE_SHUTDOWN_TIMEOUT_MS;
+  beginUsageShutdown();
   const closing = longSessionsIfReady()?.closeAll('shutdown');
-  shutdownGatekeeper();
-  await closing;
-  // Task 3: plain-session close records must also precede usage shutdown.
-  await usageRuntime()?.close(5000);
+  const pipelines = shutdownGatekeeper();
+  if (usageRuntime()) {
+    await withinUsageShutdownBudget(
+      Promise.all([closing, pipelines]).then(() => {}),
+      Math.max(0, usageDeadline - Date.now()),
+    );
+  } else {
+    await closing;
+    await pipelines;
+  }
+  await closeUsageSessions(Math.max(0, usageDeadline - Date.now()));
+  await usageRuntime()?.close(USAGE_SHUTDOWN_TIMEOUT_MS);
 });

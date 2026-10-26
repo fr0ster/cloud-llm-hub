@@ -48,8 +48,7 @@ function sessionStoreKey(sessionId: string, userId: string): string {
 /** Periodic cleanup of expired sessions. `.unref()` so the timer doesn't keep the
  *  Node process (or Jest workers) alive after everything else exits. The TTL
  *  is the session's one TTL (`LLM_AGENT_SESSION_TTL_MS`), read at each pass. */
-setInterval(() => {
-  const now = Date.now();
+export function sweepSessionHistory(now: number = Date.now()): void {
   const ttlMs = sessionConfig().ttlMs;
   for (const [id, entry] of sessionStore) {
     if (now - entry.lastAccess > ttlMs) {
@@ -60,7 +59,8 @@ setInterval(() => {
       deleteRunRecord(userId, sessionId);
     }
   }
-}, SESSION_CLEANUP_INTERVAL_MS).unref();
+}
+setInterval(() => sweepSessionHistory(), SESSION_CLEANUP_INTERVAL_MS).unref();
 
 /** Get session history for a specific user. Returns empty array if none. */
 export function getSessionHistory(

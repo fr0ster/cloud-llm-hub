@@ -85,7 +85,7 @@ jest.mock('../../srv/env-setup', () => ({}));
 
 test.each([true, false])(
   'plain OpenAI/Anthropic requests and agent MCP execute_step propagate session context (usage: %s)',
-  async (enabled) => {
+  async (enabled: boolean) => {
     harness.reset();
     const runtime = enabled
       ? await initUsage(
@@ -172,7 +172,7 @@ test.each([true, false])(
         for await (const row of runtime
           .reader()
           .read({ from: 0, to: Number.MAX_SAFE_INTEGER }))
-          records.push(row);
+          if (row.kind === 'tool.call') records.push(row);
         expect(records).toHaveLength(3);
         expect(records.map((r) => r.context.sessionId)).toEqual([
           's-usage',
@@ -336,7 +336,7 @@ function files(directory: string): string[] {
 
 test.each([true, false])(
   'every concrete LLM/embedder construction receives the runtime recorder only when enabled (%s)',
-  async (enabled) => {
+  async (enabled: boolean) => {
     const runtime = enabled
       ? await initUsage(
           readUsageConfig({

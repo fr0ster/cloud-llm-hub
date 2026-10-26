@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Added
 
-- Usage recording runtime with configurable sinks, retention and memory fallback (off by default), session and request context propagation, helper role labels, and hub-owned provider recording.
+- Usage recording runtime with configurable sinks, retention and memory fallback (off by default), session and request context propagation, helper role labels, hub-owned provider recording, session lifecycle and request records, and retrieval injection sizes. Session closes take a storage snapshot before cleanup; synchronous eviction uses the cached snapshot.
 - `MCP_Admin` and MCP Admin Access for administrative endpoints only, with no tool access.
 
 ### Removed
