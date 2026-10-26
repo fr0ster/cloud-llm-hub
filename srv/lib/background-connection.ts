@@ -11,6 +11,7 @@ import {
   warmSystemIdentity,
 } from './system-identity-cache';
 import { resolveSystemType } from './system-type';
+import { processConnectionOpened } from './usage/process-resources';
 
 interface BuiltConnection {
   connection: IAbapConnection;
@@ -104,6 +105,7 @@ export async function buildConnectionForDestination(
   });
   try {
     await conn.connect();
+    processConnectionOpened(conn);
   } catch (error) {
     await safeStop(conn);
     throw error;

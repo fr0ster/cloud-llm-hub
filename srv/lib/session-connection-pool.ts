@@ -24,6 +24,12 @@ import {
 } from './request-system-context';
 import { compare } from './session-connection';
 import { cachedSystemIdentity } from './system-identity-cache';
+import {
+  processConnectionClosed,
+  processConnectionOpened,
+  processConnectionSource,
+} from './usage/process-resources';
+import { usageRuntime } from './usage/runtime-state';
 
 export interface ConnectionSnapshot {
   headers: Record<string, string>;
@@ -272,6 +278,8 @@ interface Waiter {
 }
 export class SessionConnectionPool {
   #entries = new Set<Entry>();
+  #releaseSource?: () => void;
+  #settledForCounting?: WeakSet<Entry>;
   #opening = new Set<Promise<void>>();
   #waiters: Waiter[] = [];
   #closed = false;
@@ -287,6 +295,8 @@ export class SessionConnectionPool {
   retire(): void {
     for (const entry of this.#entries) {
       if (!entry.busy) {
+        // Once retired, this closing identity no longer lives in the pool registry.
+        processConnectionOpened(entry.value.connection);
         this.#entries.delete(entry);
         void safeStop(entry.value.connection);
       }
@@ -363,6 +373,21 @@ export class SessionConnectionPool {
               return;
             }
             this.#entries.add({ value, busy: false, version });
+            if (usageRuntime()?.enabled('process')) {
+              this.#settledForCounting ??= new WeakSet<Entry>();
+              this.#releaseSource ??= processConnectionSource(
+                (): Iterable<IAbapConnection> =>
+                  [...this.#entries]
+                    .filter(
+                      (entry: Entry): boolean =>
+                        !this.#settledForCounting?.has(entry),
+                    )
+                    .map(
+                      (entry: Entry): IAbapConnection => entry.value.connection,
+                    ),
+              );
+              processConnectionClosed(value.connection);
+            }
           },
           (error) => {
             this.#take()?.reject(
@@ -385,10 +410,18 @@ export class SessionConnectionPool {
       this.#take()?.reject(new Error('Connection pool closed'));
     this.#closing = (async () => {
       await Promise.all(
-        [...this.#entries].map((e) => safeStop(e.value.connection)),
+        [...this.#entries].map((entry: Entry): Promise<void> => {
+          const stopping = safeStop(entry.value.connection);
+          if (!usageRuntime()?.enabled('process')) return stopping;
+          return stopping.finally((): void => {
+            this.#settledForCounting?.add(entry);
+          });
+        }),
       );
       await Promise.all([...this.#opening]);
       this.#entries.clear();
+      this.#releaseSource?.();
+      this.#releaseSource = undefined;
     })();
     return this.#closing;
   }

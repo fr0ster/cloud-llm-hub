@@ -25,6 +25,11 @@ import {
   readRequestCredential,
   safeStop,
 } from './request-connection';
+import {
+  processConnectionClosed,
+  processConnectionOpened,
+} from './usage/process-resources';
+import { usageRuntime } from './usage/runtime-state';
 
 /** A request the long-session middleware has bound to its session. */
 export type LongSessionRequest = Request & { longSession?: LongSession };
@@ -139,6 +144,11 @@ export async function acquireSessionConnection(
   if (established.handled || !established.connection) return { handled: true };
   if (s.connection) await dropSessionConnection(s);
   s.connection = established.connection;
+  if (
+    usageRuntime()?.enabled('process') &&
+    longSessionsIfReady()?.get(s.userId, s.key) === s
+  )
+    processConnectionClosed(established.connection);
   s.dumpScope = established.dumpScope;
   s.binding = established.credential ?? readRequestCredential(req);
   const changed = s.destination !== destination;
@@ -166,6 +176,7 @@ export async function releaseRequestConnection(
 /** Stops the held connection and forgets it with its credential. */
 export async function dropSessionConnection(s: LongSession): Promise<void> {
   const connection = s.connection;
+  if (connection) processConnectionOpened(connection);
   s.connection = undefined;
   s.dumpScope = undefined;
   s.binding = undefined;

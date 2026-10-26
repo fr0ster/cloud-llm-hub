@@ -31,6 +31,26 @@ import type { DoorRefusalReason } from './throttle-surfacing';
 
 let retention: SessionRetention | undefined;
 
+export function processAdmissionCounts(): {
+  activeSessions: number;
+  admissionQueueLength: number;
+  runningTasks: number;
+} {
+  const sessions = longSessionsIfReady();
+  return {
+    activeSessions:
+      (sessions?.size() ?? 0) +
+      (retention?.countExcept(
+        (userId: string, sessionId: string): boolean =>
+          sessions?.containsIdentity(userId, sessionId) ?? false,
+      ) ?? 0),
+    admissionQueueLength: door?.snapshot().queued ?? 0,
+    runningTasks: usageRuntime()?.enabled('process')
+      ? (retention?.countLeases('pipeline') ?? 0)
+      : 0,
+  };
+}
+
 /** An open long session, not closing. */
 function isOpenLongSession(userId: string, sessionId: string): boolean {
   return longSessionsIfReady()?.has(userId, sessionId) ?? false;

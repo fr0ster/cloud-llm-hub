@@ -257,6 +257,16 @@ export class LongSessionRegistry {
     return n;
   }
 
+  *connections(): IterableIterator<IAbapConnection> {
+    for (const entry of this.entries.values()) {
+      if (entry.session.connection) yield entry.session.connection;
+    }
+  }
+
+  containsIdentity(userId: string, key: string): boolean {
+    return this.entries.has(slot(userId, key));
+  }
+
   touch(userId: string, key: string): void {
     const s = this.get(userId, key);
     if (!s) return;

@@ -38,6 +38,10 @@ import { maskLoginForLog } from './log-mask';
 import type { CredentialBinding } from './long-session';
 import { bearerToken, computeDumpScope, type DumpScope } from './principal';
 import { resolveSystemType } from './system-type';
+import {
+  processConnectionClosed,
+  processConnectionOpened,
+} from './usage/process-resources';
 
 export type CredentialError = Error & {
   statusCode?: number;
@@ -204,6 +208,7 @@ export async function establishRequestConnection(
     });
     try {
       await conn.connect();
+      processConnectionOpened(conn);
     } catch (error) {
       await safeStop(conn);
       throw error;
@@ -310,6 +315,7 @@ export async function safeStop(connection?: IAbapConnection): Promise<void> {
     } catch {
       // Swallow — best-effort teardown must never throw into the caller's finally.
     }
+    processConnectionClosed(connection);
     return;
   }
   try {
@@ -327,6 +333,7 @@ export async function safeStop(connection?: IAbapConnection): Promise<void> {
   } catch {
     // Swallow — same reasoning as above.
   }
+  if (connection) processConnectionClosed(connection);
 }
 
 /** Best-effort release of a per-request connection (call in `finally`).

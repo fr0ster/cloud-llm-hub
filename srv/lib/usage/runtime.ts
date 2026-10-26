@@ -74,6 +74,7 @@ export interface UsageRuntime {
   enabled(kind: Measure): boolean;
   /** Future storage/process meters register only when their measure is enabled. */
   schedule(kind: Measure, tick: () => void, intervalMs: number): void;
+  onClose(stop: () => void): void;
   close(timeoutMs: number): ReturnType<IUsageControl['close']>;
 }
 const readable = (s: Sink): s is Sink & IUsageReader =>
@@ -99,6 +100,7 @@ export async function initUsage(
   const fallback: string[] = [];
   let lastErrorCode: string | undefined;
   let closed = false;
+  const closeHooks = new Set<() => void>();
   const warn = (code: string) => {
     lastErrorCode = code;
     log.warn(`Usage runtime: ${code}`);
@@ -319,6 +321,10 @@ export async function initUsage(
         if (cfg.measure.includes(kind) && !closed) schedule(tick, intervalMs);
       },
       reader: () => read,
+      onClose(stop: () => void): void {
+        if (closed) stop();
+        else closeHooks.add(stop);
+      },
       status() {
         let sqliteFileSize: number | undefined;
         if (
@@ -347,6 +353,8 @@ export async function initUsage(
       async close(timeoutMs) {
         closed = true;
         for (const timer of timers) cancel(timer);
+        for (const stop of closeHooks) stop();
+        closeHooks.clear();
         const result = await control.close(timeoutMs);
         if (usageRuntime() === runtime) setUsageRuntimeForTest(undefined);
         return result;

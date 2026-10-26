@@ -114,6 +114,20 @@ function pendingClose(): NonNullable<Entry['closing']> {
 }
 
 export class SessionRetention {
+  countLeases(kind: LeaseKind): number {
+    let count = 0;
+    for (const entry of this.entries.values())
+      for (const lease of entry.leases) if (lease.kind === kind) count++;
+    return count;
+  }
+
+  countExcept(exclude: (userId: string, sessionId: string) => boolean): number {
+    let count = 0;
+    for (const entry of this.entries.values()) {
+      if (!exclude(entry.userId, entry.sessionId)) count++;
+    }
+    return count;
+  }
   private readonly entries = new Map<string, Entry>();
   private evictions = 0;
   private cleanupFailures = 0;

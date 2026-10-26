@@ -95,6 +95,7 @@ import {
 import { createSessionRecordStore } from './lib/session-record-store';
 import { openAiSessionRefusal } from './lib/throttle-surfacing';
 import { readUsageConfig } from './lib/usage/config';
+import { startProcessMeter, stopProcessMeter } from './lib/usage/process-meter';
 import {
   initUsage,
   type UsageRuntime,
@@ -938,6 +939,12 @@ cds.on('served', () => {
       ),
     )
     .then((runtime: UsageRuntime | undefined) => {
+      if (runtime?.enabled('process'))
+        startProcessMeter(
+          runtime,
+          readUsageConfig(process.env, getAgentConfig().rag.backends.session)
+            .processIntervalMs,
+        );
       if (runtime?.enabled('storage'))
         startStorageMeter(
           runtime,
@@ -1005,5 +1012,6 @@ cds.on('shutdown', async () => {
   await closeUsageSessions(Math.max(0, usageDeadline - Date.now()));
   const runtime = usageRuntime();
   if (runtime) stopStorageMeter(runtime);
+  if (runtime) stopProcessMeter(runtime);
   await usageRuntime()?.close(USAGE_SHUTDOWN_TIMEOUT_MS);
 });
