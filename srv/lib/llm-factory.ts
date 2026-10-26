@@ -25,6 +25,7 @@ import { SapCoreAIProvider } from '@mcp-abap-adt/sap-aicore-llm';
 import cds from '@sap/cds';
 import type { LlmProvider } from '../agent-config';
 import { captureLlm } from './context-capture';
+import { usageRuntime } from './usage/runtime';
 
 export interface HubLlmConfig {
   provider: LlmProvider;
@@ -119,7 +120,9 @@ export async function makeHubLlm(
   temperature: number,
 ): Promise<ILlm> {
   const maxTokens = cfg.maxTokens != null ? Number(cfg.maxTokens) : undefined;
+  const usage = usageRuntime()?.recorder;
   const common = {
+    ...(usage ? { usage } : {}),
     model: cfg.model,
     temperature,
     maxTokens,

@@ -1,6 +1,7 @@
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
+import { usageRuntime } from './lib/usage/runtime';
 /**
  * Anthropic Messages API handler for SmartAgent.
  *
@@ -389,6 +390,13 @@ async function serveMessages(
       ? dialogueChat(req, userId, s, destination, res)
       : handle.agent;
 
+  const usage = usageRuntime()
+    ?.forSession({
+      sessionId: sessionId ?? traceId,
+      userId,
+      destination: destination,
+    })
+    .with({ requestId: traceId, traceId });
   const agentOpts = {
     stream,
     ...options,
@@ -400,6 +408,7 @@ async function serveMessages(
       exposition: callerExposition,
     },
     trace: { ...options?.trace, traceId },
+    ...(usage ? { usage } : {}),
   };
 
   // Bind the per-request SAP connection for the whole agent run so MCP tool
@@ -449,6 +458,7 @@ async function serveMessages(
       sessionId,
       log,
       res.headersSent,
+      agentOpts.usage,
     );
     if (retrieval.refusal) {
       if (early?.opened) {

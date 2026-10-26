@@ -1,3 +1,5 @@
+import type { CallOptions, Message } from '@mcp-abap-adt/llm-agent';
+
 /**
  * Drive a chat channel in-process: a fake request and response, and the agent,
  * connection and config seams mocked. Each test file wires the mocks with
@@ -21,7 +23,7 @@ export const harness = {
     roles: string[];
   },
   events: [] as string[],
-  seenOptions: [] as Array<Record<string, unknown>>,
+  seenOptions: [] as CallOptions[],
   /** Hold agent resolution open, as a destination still warming would. */
   agentGate: Promise.resolve() as Promise<void>,
   /** Set to a destination name to make `isDestinationClosed` say yes to it. */
@@ -58,15 +60,15 @@ export const harness = {
     destination: string;
   }>,
   process: async (
-    _messages: unknown,
-    _opts: Record<string, unknown>,
+    _messages: Message[],
+    _opts: CallOptions,
   ): Promise<Chunk> => ({
     ok: true,
     value: { content: 'done', stopReason: 'stop' },
   }),
   stream: async function* (
-    _messages: unknown,
-    _opts: Record<string, unknown>,
+    _messages: Message[],
+    _opts: CallOptions,
   ): AsyncIterable<Chunk> {
     yield { ok: true, value: { content: 'done' } };
     yield { ok: true, value: { finishReason: 'stop' } };
@@ -102,13 +104,13 @@ export const harness = {
 const handle = {
   agent: {
     deps: { ragStores: {} },
-    process: (m: unknown, o: Record<string, unknown>) => {
+    process: (m: Message[], o: CallOptions) => {
       harness.seenOptions.push(o);
       harness.events.push('pipeline');
       harness.requestSystemAtPipeline.push(harness.activeRequestSystem);
       return harness.process(m, o);
     },
-    streamProcess: (m: unknown, o: Record<string, unknown>) => {
+    streamProcess: (m: Message[], o: CallOptions) => {
       harness.seenOptions.push(o);
       harness.events.push('pipeline');
       harness.requestSystemAtPipeline.push(harness.activeRequestSystem);

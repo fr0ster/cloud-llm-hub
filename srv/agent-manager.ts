@@ -447,8 +447,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
   async query(
     embedding: IQueryEmbedding,
     k: number,
-    options?: {
-      signal?: AbortSignal;
+    options?: CallOptions & {
       ragFilter?: { namespace?: string; exposition?: string[] };
     },
   ) {
@@ -465,7 +464,17 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
         : { text: embedding.text, needsAbapSystem: true };
     if (decision.text !== embedding.text) {
       embedding = this.queryEmbedder
-        ? new QueryEmbedding(decision.text, this.queryEmbedder, options)
+        ? new QueryEmbedding(decision.text, this.queryEmbedder, {
+            ...options,
+            ...(options?.usage
+              ? {
+                  usage: options.usage.with({
+                    role: 'embedding',
+                    component: 'query-embedder',
+                  }),
+                }
+              : {}),
+          })
         : new TextOnlyEmbedding(decision.text);
     }
     const log = cds.log('tool-rag');
@@ -1162,7 +1171,7 @@ export function getProviders(): Providers {
  */
 export function getQueryEmbedder(): IQueryEmbedder | undefined {
   const e = providers?.embedding;
-  return e ? agentQueryEmbedder(e) : undefined;
+  return e ? agentQueryEmbedder(e, 'collection-retrieval') : undefined;
 }
 
 /** False until server startup has built the providers; requests wait for it. */

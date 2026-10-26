@@ -67,6 +67,7 @@ import {
   throttleOf,
   unverifiedWriteFor,
 } from './lib/throttle-surfacing';
+import { usageRuntime } from './lib/usage/runtime';
 import { runWithSessionId } from './request-session';
 import { honouredSessionId, sessionIdOf, type WithSession } from './session-id';
 import {
@@ -777,6 +778,13 @@ async function serveChatCompletions(
       return [];
     })();
 
+    const usage = usageRuntime()
+      ?.forSession({
+        sessionId: sessionId ?? traceId,
+        userId,
+        destination: destAfter,
+      })
+      .with({ requestId: traceId, traceId });
     // The parsed body: a raw request carries it only in `body`, not `req.body`.
     const retrieval = await collections.retrieve(
       { headers: req.headers, body },
@@ -785,6 +793,7 @@ async function serveChatCompletions(
       sessionId,
       log,
       res.headersSent,
+      usage,
     );
     if (retrieval.refusal) {
       if (early?.opened) {
@@ -817,6 +826,7 @@ async function serveChatCompletions(
         exposition: callerExposition,
       },
       trace: { traceId },
+      ...(usage ? { usage } : {}),
       sessionLogger: {
         logStep(name: string, data: unknown) {
           if (

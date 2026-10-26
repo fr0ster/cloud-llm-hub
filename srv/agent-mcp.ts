@@ -87,6 +87,7 @@ import {
   throttleOf,
   unverifiedWriteFor,
 } from './lib/throttle-surfacing';
+import { usageRuntime } from './lib/usage/runtime';
 import {
   getRequestHistory,
   runWithSessionId,
@@ -333,6 +334,13 @@ async function executeStepRun(
       dumpScope = dumpScopeForConnection(built, userId);
     }
 
+    const usage = usageRuntime()
+      ?.forSession({
+        sessionId: sessionId ?? traceId,
+        userId,
+        destination: targetDestination,
+      })
+      .with({ requestId: traceId, traceId });
     const opts = {
       stream: false,
       externalTools: [],
@@ -342,6 +350,7 @@ async function executeStepRun(
         exposition,
       },
       trace: { traceId },
+      ...(usage ? { usage } : {}),
       // Surface skill selection on the planner path (chat has its own
       // sessionLogger; execute_step had none, so skill matching was invisible).
       sessionLogger: {
@@ -383,6 +392,7 @@ async function executeStepRun(
                 );
                 if (result.ok && agentHandle.executor) {
                   const verdict = await evaluateGated({
+                    usage: opts.usage,
                     content: result.value.content ?? '',
                     records: agentHandle.recMcp.getToolRecords(traceId),
                     ...getReviewSignals(),

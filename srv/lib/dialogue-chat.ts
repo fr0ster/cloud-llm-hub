@@ -134,6 +134,14 @@ export function dialogueChat(
         handle.replies.set(trace, { id: replyId, createdAt });
         const answer = await handle.session
           .send(userText(message), {
+            ...(handle.usage
+              ? {
+                  usage: handle.usage.with({
+                    requestId: trace.traceId,
+                    traceId: trace.traceId,
+                  }),
+                }
+              : {}),
             signal: opts?.signal,
             trace,
           })
@@ -208,6 +216,14 @@ export function dialogueChat(
       handle.replies.set(trace, { id: replyId, createdAt });
       const sending = handle.session
         .send(userText(message), {
+          ...(handle.usage
+            ? {
+                usage: handle.usage.with({
+                  requestId: trace.traceId,
+                  traceId: trace.traceId,
+                }),
+              }
+            : {}),
           signal: opts?.signal,
           trace,
           onPartial(chunk) {

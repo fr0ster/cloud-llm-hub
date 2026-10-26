@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Added
 
-- Usage recording runtime with configurable sinks, retention and memory fallback (off by default).
+- Usage recording runtime with configurable sinks, retention and memory fallback (off by default), session and request context propagation, helper role labels, and hub-owned provider recording.
 - `MCP_Admin` and MCP Admin Access for administrative endpoints only, with no tool access.
 
 ### Removed

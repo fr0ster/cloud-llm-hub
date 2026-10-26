@@ -1,4 +1,4 @@
-import type { Message } from '@mcp-abap-adt/llm-agent';
+import type { IUsageRecorder, Message } from '@mcp-abap-adt/llm-agent';
 import type cds from '@sap/cds';
 import type { Request } from 'express';
 import { getCollectionRegistry, getQueryEmbedder } from '../agent-manager';
@@ -42,6 +42,7 @@ export function collectionRetrieval(agent: unknown) {
       sessionId: string | undefined,
       log: ReturnType<typeof cds.log>,
       headersSent = false,
+      usage?: IUsageRecorder,
     ): Promise<
       | { messages: Message[]; refusal?: never }
       | {
@@ -174,7 +175,18 @@ export function collectionRetrieval(agent: unknown) {
           );
           const embedder = getQueryEmbedder();
           const embedding = embedder
-            ? new QueryEmbedding(queryText, embedder)
+            ? new QueryEmbedding(
+                queryText,
+                embedder,
+                usage
+                  ? {
+                      usage: usage.with({
+                        role: 'embedding',
+                        component: 'collection-retrieval',
+                      }),
+                    }
+                  : undefined,
+              )
             : new TextOnlyEmbedding(queryText);
 
           const relevantTexts: string[] = [];
