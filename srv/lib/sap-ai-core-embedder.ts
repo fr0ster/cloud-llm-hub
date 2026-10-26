@@ -43,6 +43,17 @@ export class SapAiCoreEmbedder implements IEmbedder {
     vector: number[];
     usage?: { promptTokens: number; totalTokens: number };
   }> {
+    const createClient = (): OrchestrationEmbeddingClient =>
+      new OrchestrationEmbeddingClient(
+        { embeddings: { model: { name: this.model as EmbeddingModel } } },
+        this.resourceGroup ? { resourceGroup: this.resourceGroup } : undefined,
+      );
+    if (!(options?.usage ?? this.usage)) {
+      const client = createClient();
+      const response = await client.embed({ input: text });
+      return this.decode(response);
+    }
+
     const request = beginEmbeddingRequest(
       options,
       startOperation(options),
@@ -60,33 +71,12 @@ export class SapAiCoreEmbedder implements IEmbedder {
     let failure: Error | undefined;
     let inputTokens: number | undefined;
     try {
-      const client = new OrchestrationEmbeddingClient(
-        { embeddings: { model: { name: this.model as EmbeddingModel } } },
-        this.resourceGroup ? { resourceGroup: this.resourceGroup } : undefined,
-      );
+      const client = createClient();
       const response = await client.embed({ input: text });
       inputTokens = response.getTokenUsage()?.prompt_tokens;
-      const embeddings = response.getEmbeddings();
-      if (!embeddings || embeddings.length === 0) {
-        throw new Error('No embeddings returned from SAP AI Core');
-      }
-
-      const embedding = embeddings[0].embedding;
-
-      // Handle base64-encoded embeddings
-      if (typeof embedding === 'string') {
-        const buffer = Buffer.from(embedding, 'base64');
-        const float32 = new Float32Array(
-          buffer.buffer,
-          buffer.byteOffset,
-          buffer.length / 4,
-        );
-        outcome = 'ok';
-        return { vector: Array.from(float32) };
-      }
-
+      const result = this.decode(response);
       outcome = 'ok';
-      return { vector: embedding };
+      return result;
     } catch (error) {
       if (error instanceof Error) failure = error;
       outcome =
@@ -104,5 +94,27 @@ export class SapAiCoreEmbedder implements IEmbedder {
         tokensSource: inputTokens === undefined ? 'unknown' : 'provider',
       });
     }
+  }
+
+  private decode(
+    response: Awaited<ReturnType<OrchestrationEmbeddingClient['embed']>>,
+  ): { vector: number[] } {
+    const embeddings = response.getEmbeddings();
+    if (!embeddings || embeddings.length === 0) {
+      throw new Error('No embeddings returned from SAP AI Core');
+    }
+
+    const embedding = embeddings[0].embedding;
+    // Handle base64-encoded embeddings
+    if (typeof embedding === 'string') {
+      const buffer = Buffer.from(embedding, 'base64');
+      const float32 = new Float32Array(
+        buffer.buffer,
+        buffer.byteOffset,
+        buffer.length / 4,
+      );
+      return { vector: Array.from(float32) };
+    }
+    return { vector: embedding };
   }
 }

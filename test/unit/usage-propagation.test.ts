@@ -14,6 +14,7 @@ import type {
   TaskRecord,
   UsageContext,
 } from '@mcp-abap-adt/llm-agent';
+import * as llmAgent from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
   type ILlm,
@@ -85,6 +86,15 @@ import {
 } from '../../srv/lib/usage/runtime';
 import { handleChatCompletions } from '../../srv/openai-handler';
 import { fakePipelineLlm } from './helpers/usage-pipeline';
+
+jest.mock('@mcp-abap-adt/llm-agent', (): typeof llmAgent => {
+  const actual = jest.requireActual<typeof llmAgent>('@mcp-abap-adt/llm-agent');
+  return {
+    ...actual,
+    startOperation: jest.fn(actual.startOperation),
+    beginEmbeddingRequest: jest.fn(actual.beginEmbeddingRequest),
+  };
+});
 
 const mockAuthenticatedUser = new AsyncLocalStorage<string>();
 const mockWorkers = new Map<string, ISubAgent>();
@@ -1010,9 +1020,15 @@ test('SAP usage off returns embeddings for an aborted caller without passing a s
   const off = await initUsage(readUsageConfig({ LLM_AGENT_USAGE: 'off' }));
   setUsageRuntimeForTest(off);
   const before = (await rows()).length;
+  const response = await sdkResponse();
+  const operation = jest.mocked(llmAgent.startOperation);
+  const request = jest.mocked(llmAgent.beginEmbeddingRequest);
+  operation.mockClear();
+  request.mockClear();
+  const tokenUsage = jest.spyOn(response, 'getTokenUsage');
   const embed = jest
     .spyOn(OrchestrationEmbeddingClient.prototype, 'embed')
-    .mockResolvedValue(await sdkResponse());
+    .mockResolvedValue(response);
   const sap = new SapAiCoreEmbedder({ model: 'text-embedding-3-small' });
   const ctrl = new AbortController();
   ctrl.abort();
@@ -1023,6 +1039,9 @@ test('SAP usage off returns embeddings for an aborted caller without passing a s
     },
   );
   expect(embed.mock.calls).toEqual([[{ input: 'DOCUMENT_SENTINEL' }]]);
+  expect(operation).not.toHaveBeenCalled();
+  expect(request).not.toHaveBeenCalled();
+  expect(tokenUsage).not.toHaveBeenCalled();
   expect((await rows()).length).toBe(before);
 });
 
