@@ -19,7 +19,7 @@ The contract, transports and sinks live in llm-agent: `docs/superpowers/specs/20
 - **Per-session coverage.** Every resource the hub spends is recorded per session, with user, turn, task, role and destination where known:
   - LLM, embedding and SAP tool calls, and tasks (through llm-agent's instrumentation, plus the hub-owned providers below);
   - the hub's own measurements.
-- **Context size per LLM request.** How much context each LLM request sends, for the planner, the executor and every helper LLM: messages per role, characters, tool definitions, and tokens where the provider reports them. This comes from the request shape of `llm.call` (llm-agent spec, revision 5), with the role labels below, plus `x.hub.retrieval` for the retrieved context the hub injects.
+- **Context size per LLM request.** How much context each LLM request sends, for the planner, the executor and every helper LLM: messages and characters per role, tool definitions, and tokens where the provider reports them, measured on what the request actually sent. This comes from the request shape of `llm.call` (llm-agent spec, revision 5), with the role labels below, plus `x.hub.retrieval` for the retrieved context the hub injects.
 - **Export.** Records, including the evidence of losses, can be exported for analysis.
 - **Configuration.** The sinks, the measurements, the intervals and the retention are configurable.
 
@@ -103,8 +103,8 @@ How storage is measured:
 - **When.** At session close, and every `LLM_AGENT_USAGE_STORAGE_INTERVAL_MS` for live sessions and users.
 
 **`x.hub.retrieval`**, one per collection-retrieval injection (`srv/lib/collection-retrieval.ts`), in the request's context:
-- `collections`: collections searched; `chunks`: chunks injected; `chars`: characters of the injected context; `injected`: whether anything was added.
-- With `llm.call`'s `userChars` it shows how much of a request's user content is retrieved context.
+- `collections`: collections searched; `chunks`: chunks injected; `chars`: the length of the injected context, the chunks joined with their separators, without the marker line; `injected`: whether anything was added.
+- **It accounts the retrieval event, not each call.** It says how much retrieved context entered the request's conversation. Which later LLM calls carried it is not recorded: some strip it (the LLM-only guard uses `userTextOf`). Each `llm.call`'s own `userChars` shows what that call actually sent.
 - It belongs to the `request` measure of `LLM_AGENT_USAGE_MEASURE`.
 
 **`x.hub.process`**, every `LLM_AGENT_USAGE_PROCESS_INTERVAL_MS`:

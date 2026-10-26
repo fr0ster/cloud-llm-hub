@@ -134,7 +134,7 @@ The design's goal "context size per LLM request" needs the request shape in ever
   - two concurrent sessions do not swap context;
   - a plain session request and an agent MCP `execute_step` carry their session;
   - the step reviewer, guard classifier, retrieval embedding and query embedder record with their `role` and `component`;
-  - planner, executor and helper `llm.call` records carry the request shape (`inputMessages`, the per-role chars, `toolDefs`, `toolDefsChars`) of the messages the fake LLM received;
+  - planner, executor and helper `llm.call` records carry the request shape (`inputMessages`, the per-role message counts and chars, `toolDefs`, `toolDefsChars`) of the messages the fake LLM received;
   - `SapAiCoreEmbedder` records ok, error and abort;
   - with usage off: no recorder is passed anywhere, and results are unchanged;
   - **real-pipeline scenario**, the design's completeness check: the real hub pipeline with fake LLM and MCP transports.
@@ -161,7 +161,7 @@ The design's goal "context size per LLM request" needs the request shape in ever
   - Collection sweeps only affect storage measures, not the session lifecycle.
   - the request ends in `srv/openai-handler.ts`, `srv/anthropic-handler.ts` and `srv/agent-mcp.ts`.
 - Create: `srv/lib/usage/hub-records.ts`, with typed builders `sessionRecord(...)`, `requestRecord(...)`, `retrievalRecord(...)` and their `x.hub.*` value shapes, using only numbers, labels and flags.
-- **`x.hub.retrieval`:** emitted by `srv/lib/collection-retrieval.ts` on the request recorder for every retrieval, with the spec's fields; test: two collections, three chunks injected → one record with `collections: 2`, `chunks: 3`, `chars` equal to the injected text length, `injected: true`; no relevant chunk → `injected: false`, `chunks: 0`.
+- **`x.hub.retrieval`:** emitted by `srv/lib/collection-retrieval.ts` on the request recorder for every retrieval, with the spec's fields; test: two collections, three chunks injected → one record with `collections: 2`, `chunks: 3`, `chars` equal to the joined chunks with separators and without the marker, `injected: true`; no relevant chunk → `injected: false`, `chunks: 0`.
   The runtime's measure filter (`srv/lib/usage/runtime.ts`, Task 1) maps `x.hub.retrieval` to the `request` measure; test: `LLM_AGENT_USAGE_MEASURE=request` keeps it, `llm` alone drops it.
 - **`x.hub.session` and `x.hub.request` fields:** exactly the spec's tables, including:
   - `responseEndAt` versus `operationEndAt` (work after a disconnect);
@@ -234,7 +234,7 @@ The design's goal "context size per LLM request" needs the request shape in ever
   - **CSV** uses a hub exporter (`srv/lib/usage/csv.ts`):
     - the common columns;
     - one column per known `x.hub.*` value: session, request, retrieval, storage, storage.user and process, from the typed builders of Task 3, with the Task 4 and 5 shapes;
-    - the library kinds' fields, including the `llm.call` request shape (`inputMessages`, `inputChars`, the per-role chars, `toolDefs`, `toolDefsChars`) and the `component` context label;
+    - the library kinds' fields, including the `llm.call` request shape (`inputMessages`, `inputChars`, the per-role message counts and chars, `toolDefs`, `toolDefsChars`) and the `component` context label;
     - a `loss_evidence` column.
     - Unknown extension values go to a trailing `extra_json` column.
   - recording off gives 404 with a clear message;
