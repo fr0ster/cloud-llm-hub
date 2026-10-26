@@ -26,14 +26,23 @@ export interface UsageConfig {
   retentionDays: number;
   userId: 'hash' | 'plain';
 }
-function choice<T extends string>(
+function isChoice<T extends readonly string[]>(
   raw: string,
-  allowed: readonly T[],
+  allowed: T,
+): raw is T[number] {
+  return allowed.some((value) => value === raw);
+}
+export function isMeasure(raw: string): raw is Measure {
+  return isChoice(raw, MEASURES);
+}
+function choice<const T extends readonly string[]>(
+  raw: string,
+  allowed: T,
   name: string,
-): T {
-  if (!allowed.includes(raw as T))
+): T[number] {
+  if (!isChoice(raw, allowed))
     throw new Error(`Invalid ${name}: expected ${allowed.join(', ')}`);
-  return raw as T;
+  return raw;
 }
 export function readUsageConfig(
   env: NodeJS.ProcessEnv = process.env,

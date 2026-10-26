@@ -14,7 +14,7 @@ export class MigratableBuffer implements IUsageSink, IUsageReader {
   private closed = false;
   private records = new Map<string, UsageRecord>();
   private target?: IUsageSink & IUsageReader;
-  private tail: Promise<unknown> = Promise.resolve();
+  private tail: Promise<void> = Promise.resolve();
   constructor(
     private readonly limit: number,
     private readonly resource?: IUsageSink,
@@ -25,7 +25,7 @@ export class MigratableBuffer implements IUsageSink, IUsageReader {
   get migrated(): boolean {
     return this.target !== undefined;
   }
-  private serial<T>(run: () => Promise<T>): Promise<T> {
+  private serial(run: () => Promise<void>): Promise<void> {
     const next = this.tail.then(run);
     this.tail = next.catch(() => undefined);
     return next;

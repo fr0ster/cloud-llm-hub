@@ -34,7 +34,7 @@ const collect = async (reader: {
   for await (const r of reader.read(q)) rows.push(r);
   return rows;
 };
-const cfg = (sinks = 'memory', extra = {}) =>
+const cfg = (sinks: string = 'memory', extra: NodeJS.ProcessEnv = {}) =>
   readUsageConfig({
     LLM_AGENT_USAGE: 'on',
     LLM_AGENT_USAGE_SINKS: sinks,
@@ -43,15 +43,26 @@ const cfg = (sinks = 'memory', extra = {}) =>
 function harness(extra: UsageDeps = {}) {
   const ticks: { fn: () => void; ms: number }[] = [];
   const deps: UsageDeps = {
-    setInterval: ((fn: () => void, ms: number) => {
+    setInterval: (fn: () => void, ms: number) => {
       ticks.push({ fn, ms });
-      return { unref() {} };
-    }) as unknown as typeof setInterval,
-    clearInterval: jest.fn(),
-    log: { warn: jest.fn() },
+      const timer = setInterval(() => {}, ms);
+      clearInterval(timer);
+      return timer;
+    },
+    clearInterval: jest.fn<
+      ReturnType<typeof clearInterval>,
+      Parameters<typeof clearInterval>
+    >(),
+    log: { warn: jest.fn<void, [message: string]>() },
     ...extra,
   };
   return { deps, ticks };
+}
+function bufferFor(runtime: UsageRuntime): MigratableBuffer {
+  const reader = runtime.reader();
+  if (!(reader instanceof MigratableBuffer))
+    throw new Error('Expected migration buffer');
+  return reader;
 }
 const settle = async () => {
   for (let i = 0; i < 30; i++) await Promise.resolve();
@@ -68,7 +79,7 @@ describe('usage runtime', () => {
     return r;
   }
   it('off creates nothing', async () => {
-    const factory = jest.fn();
+    const factory = jest.fn(() => memorySink({ limit: 20 }));
     expect(
       await initUsage(readUsageConfig({}), { factories: { sqlite: factory } }),
     ).toBeUndefined();
@@ -126,14 +137,14 @@ describe('usage runtime', () => {
     expect(deps.log?.warn).toHaveBeenCalledWith(
       'Usage runtime: HANA_UNAVAILABLE',
     );
-    await (r.reader() as MigratableBuffer).write([record('a')]);
+    await bufferFor(r).write([record('a')]);
     expect((await collect(r.reader())).map((r) => r.id)).toEqual(['a']);
     expect(await collect(target)).toEqual([]);
     unavailable = false;
     ticks.find((t) => t.ms === 300000)?.fn();
     await settle();
     expect((await collect(target)).map((r) => r.id)).toEqual(['a']);
-    expect((r.reader() as MigratableBuffer).size).toBe(0);
+    expect(bufferFor(r).size).toBe(0);
     expect(r.status()).toMatchObject({ readingSink: 'hana', fallback: [] });
   });
   it('retains only database sinks at startup and daily', async () => {
@@ -171,7 +182,7 @@ describe('usage runtime', () => {
       const pg = Object.assign(memorySink({ limit: 20 }), {
         deleteOlderThan: jest.fn(async () => {
           if (mode === 'reject') throw new Error('retention failed');
-          return undefined as unknown as number;
+          return undefined;
         }),
       });
       const r = await start(
@@ -208,7 +219,7 @@ describe('usage runtime', () => {
         fallback: ['hana-unavailable'],
         readingSink: 'memory',
       });
-      const buffer = r.reader() as MigratableBuffer;
+      const buffer = bufferFor(r);
       await buffer.write([record('buffered')]);
       const retry = ticks.find((t) => t.ms === 300000)?.fn;
       retry?.();
@@ -276,19 +287,21 @@ describe('usage runtime', () => {
       deps,
     );
     r.recorder.record(record('a'));
-    r.schedule('process', jest.fn(), 30000);
-    r.schedule('storage', jest.fn(), 600000);
+    r.schedule('process', jest.fn<void, []>(), 30000);
+    r.schedule('storage', jest.fn<void, []>(), 600000);
     await r.close(1000);
     expect(await collect(r.reader())).toEqual([]);
     expect(ticks).toEqual([]);
     expect(r.enabled('process')).toBe(false);
   });
   it('reports all recorder counters including unconfirmed', async () => {
-    const fake = {
-      record: jest.fn(),
-      with: jest.fn(),
+    const fake: IUsageRecorder & IUsageControl = {
+      record: jest.fn<void, Parameters<IUsageRecorder['record']>>(),
+      with: jest.fn<IUsageRecorder, Parameters<IUsageRecorder['with']>>(
+        () => fake,
+      ),
       close: jest.fn(async () => ({ delivered: 3, lost: 2, unconfirmed: 4 })),
-      flush: jest.fn(),
+      flush: jest.fn(async () => {}),
       stats: () => ({
         buffered: 1,
         delivered: 3,
@@ -296,7 +309,7 @@ describe('usage runtime', () => {
         unconfirmed: 4,
         lastErrorCode: 'AMBIGUOUS',
       }),
-    } as unknown as IUsageRecorder & IUsageControl;
+    };
     const r = await start(cfg(), harness({ recorderFactory: () => fake }).deps);
     expect(r.status()).toMatchObject({
       buffered: 1,
@@ -320,7 +333,7 @@ describe('usage runtime', () => {
     };
     const { deps, ticks } = harness({ factories: { hana: () => sink } });
     const r = await start(cfg('hana'), deps);
-    const buffer = r.reader() as MigratableBuffer;
+    const buffer = bufferFor(r);
     await buffer.write([record('a')]);
     expect(r.status().readingSink).toBe('memory');
     missing = false;

@@ -18,17 +18,27 @@ import { createHanaUsageSink } from '@mcp-abap-adt/llm-usage-hana';
 import { createPgUsageSink } from '@mcp-abap-adt/llm-usage-pg';
 import type { RagConfig } from '../../agent-config';
 import { hanaConnection, pgConnection } from '../rag-provider-factory';
-import type { Measure, SinkName, UsageConfig } from './config';
+import {
+  isMeasure,
+  type Measure,
+  type SinkName,
+  type UsageConfig,
+} from './config';
 import { MigratableBuffer } from './migratable-buffer';
 
 type Sink = IUsageSink &
-  Partial<IUsageReader> & { deleteOlderThan?(ms: number): Promise<number> };
+  Partial<IUsageReader> & {
+    deleteOlderThan?(ms: number): Promise<number | undefined>;
+  };
 export interface UsageDeps {
   rag?: RagConfig;
   env?: NodeJS.ProcessEnv;
   factories?: Partial<Record<SinkName, () => Sink | Promise<Sink>>>;
   now?: () => number;
-  setInterval?: typeof setInterval;
+  setInterval?: (
+    tick: () => void,
+    ms: number,
+  ) => ReturnType<typeof setInterval>;
   clearInterval?: typeof clearInterval;
   log?: { warn(message: string): void };
   recorderFactory?: typeof createUsageRecorder;
@@ -76,7 +86,8 @@ export async function initUsage(
   if (!cfg.enabled) return undefined;
   const now = deps.now ?? Date.now;
   const timers: ReturnType<typeof setInterval>[] = [];
-  const every = deps.setInterval ?? setInterval;
+  const every: NonNullable<UsageDeps['setInterval']> =
+    deps.setInterval ?? setInterval;
   const cancel = deps.clearInterval ?? clearInterval;
   const log = deps.log ?? console;
   const sinks: Sink[] = [];
@@ -279,7 +290,7 @@ export async function initUsage(
           : input.kind.split('.')[0];
         if (
           input.kind === 'x.usage.lost' ||
-          cfg.measure.includes(kind as Measure)
+          (isMeasure(kind) && cfg.measure.includes(kind))
         )
           recorder.record(input);
       },
