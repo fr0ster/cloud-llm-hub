@@ -86,6 +86,8 @@ import {
 } from './lib/session-middleware';
 import { createSessionRecordStore } from './lib/session-record-store';
 import { openAiSessionRefusal } from './lib/throttle-surfacing';
+import { readUsageConfig } from './lib/usage/config';
+import { initUsage, usageRuntime } from './lib/usage/runtime';
 import { createMCPServerForRequest } from './mcp-manager';
 import {
   handleChatCompletions,
@@ -912,7 +914,14 @@ cds.on('served', () => {
   // its settings), never an outage: the process exits non-zero so the platform
   // reports it instead of a healthy instance answering 503 forever. An agent
   // warm-up failure can be an outage (AI Core, a destination) and is retried.
-  startProviders(getAgentConfig())
+  Promise.resolve()
+    .then(() =>
+      initUsage(
+        readUsageConfig(process.env, getAgentConfig().rag.backends.session),
+        { rag: getAgentConfig().rag },
+      ),
+    )
+    .then(() => startProviders(getAgentConfig()))
     .then((p) => {
       initProviders(p);
       registerRagRoutes(ragRouter, getCollectionRegistry());
@@ -953,4 +962,6 @@ cds.on('shutdown', async () => {
   const closing = longSessionsIfReady()?.closeAll('shutdown');
   shutdownGatekeeper();
   await closing;
+  // Task 3: plain-session close records must also precede usage shutdown.
+  await usageRuntime()?.close(5000);
 });

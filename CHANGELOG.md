@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Added
 
+- Usage recording runtime with configurable sinks, retention and memory fallback (off by default).
 - `MCP_Admin` and MCP Admin Access for administrative endpoints only, with no tool access.
 
 ### Removed
