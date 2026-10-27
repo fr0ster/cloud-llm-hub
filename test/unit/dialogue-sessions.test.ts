@@ -18,7 +18,11 @@ jest.mock('../../srv/lib/background-connection', () => ({
 
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import { getRequestContext } from '@mcp-abap-adt/lib/request-context';
-import type { ISubAgentInput, ISubAgentResult } from '@mcp-abap-adt/llm-agent';
+import type {
+  ISubAgentInput,
+  ISubAgentResult,
+  TokenUsage,
+} from '@mcp-abap-adt/llm-agent';
 import {
   PlannerToolsClient,
   SmartAgentBuilder,
@@ -58,6 +62,7 @@ const mockPlannerTurns: string[] = [];
 const mockEnvironments: string[] = [];
 let mockGoal = 'read';
 let mockPlannerHook: ((text: string) => Promise<void>) | undefined;
+let mockPlanUsage: TokenUsage | undefined;
 let mockPlan:
   | {
       plan?: string;
@@ -103,7 +108,10 @@ jest.mock('../../srv/agent-manager', () => ({
       await mockPlannerHook?.(text);
       if (mockPlan) {
         await new PlannerToolsClient().callTool('update_plan', mockPlan);
-        return { ok: true, value: { content: 'Plan updated' } };
+        return {
+          ok: true,
+          value: { content: 'Plan updated', usage: mockPlanUsage },
+        };
       }
       if (!text.startsWith('[task events]'))
         await new PlannerToolsClient().callTool('delegate_task', {
@@ -197,6 +205,7 @@ beforeEach(() => {
   mockEnvironments.length = 0;
   mockGoal = 'read';
   mockPlannerHook = undefined;
+  mockPlanUsage = undefined;
   mockPlan = undefined;
   mockRun.mockReset().mockResolvedValue({ output: 'read done' });
   jest.mocked(evaluateGated).mockResolvedValue({ ok: true });
@@ -263,6 +272,61 @@ test.each([false, true])(
     }
   },
 );
+
+test('live subscribers receive summed planner usage on the first user reply emission', async () => {
+  const { h } = await ready();
+  mockPlanUsage = { promptTokens: 3, completionTokens: 2, totalTokens: 5 };
+  let calls = 0;
+  mockPlannerHook = async () => {
+    calls++;
+    mockPlan =
+      calls === 1
+        ? { steps: [{ id: 'read', goal: 'Read records' }], status: 'active' }
+        : {
+            steps: [{ id: 'read', goal: 'Read records' }],
+            status: 'waiting_user',
+            question: 'Proceed?',
+          };
+  };
+  const events: DialogueEvent[] = [];
+  const unsubscribe = h.subscribe((event) => events.push(event));
+  try {
+    for (const [id, expectedCalls, expectedUsage] of [
+      [
+        'corrected-reply',
+        2,
+        { promptTokens: 6, completionTokens: 4, totalTokens: 10 },
+      ],
+      ['next-reply', 3, mockPlanUsage],
+    ] as const) {
+      const trace = { traceId: id };
+      h.replies.set(trace, { id, createdAt: 123 });
+      try {
+        await h.session.send('go', { trace });
+        await h.outbox.flushed();
+      } finally {
+        h.replies.delete(trace);
+      }
+      expect(calls).toBe(expectedCalls);
+      const messages = events.filter(
+        (event) => event.kind === 'message' && event.message.id === id,
+      );
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toEqual({
+        kind: 'message',
+        message: {
+          id,
+          createdAt: 123,
+          text: 'Plan updated',
+          trigger: 'user',
+          usage: { planner: expectedUsage },
+        },
+      });
+    }
+  } finally {
+    unsubscribe();
+  }
+});
 
 test('a save during the turn emits no settled', async () => {
   const { h } = await ready();
@@ -431,6 +495,8 @@ test('delegated worker has system, session, owner, task history, admission, conn
 });
 test('honesty notice reaches task output and planner', async () => {
   const { h } = await ready();
+  const events: DialogueEvent[] = [];
+  h.subscribe((event) => events.push(event));
   const usage = { promptTokens: 7, completionTokens: 4, totalTokens: 11 };
   mockRun.mockResolvedValue({ output: 'read done', usage });
   jest.mocked(evaluateGated).mockResolvedValue({
@@ -465,6 +531,10 @@ test('honesty notice reaches task output and planner', async () => {
     tasks: [
       { id: h.session.snapshot().tasks[0].id, worker: 'executor', usage },
     ],
+  });
+  expect(events.find((event) => event.kind === 'message')).toEqual({
+    kind: 'message',
+    message: h.outbox.pending()[0],
   });
 });
 test('subscribers receive task events and messages; messages stay in outbox for both tabs until acknowledged', async () => {
