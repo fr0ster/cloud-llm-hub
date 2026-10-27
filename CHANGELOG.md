@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- Add a developer CLI to analyse LLM context sizes, token distributions and retrieval injections in downloaded usage SQLite files.
+
 ## [9.7.0] - 2026-10-27
 
 ### Added

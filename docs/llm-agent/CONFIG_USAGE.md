@@ -276,3 +276,13 @@ curl --fail --show-error \
 ```
 
 Use a token carrying `MCP_Admin`; repeat for each index. Browser downloads through the approuter select an instance through normal routing; use the targeted backend request above to retrieve every instance. Files are named `usage-<instance>-<UTC yyyyMMddTHHmmssZ>.sqlite` and can be opened locally with SQLite tools.
+
+### Analyse downloaded context sizes
+
+From the repository root, run `npm run usage:context -- <downloaded.sqlite>` to summarize all sessions by role, model and component, with retrieval statistics per session and a grand total. Add `--session <id-prefix>` or `--since <ISO>` to filter, `--calls` for calls grouped by request, or `--json` for a machine-readable summary. Together, `--calls --json` returns `{ summary, calls }`, with calls grouped by session, request ID and turn ID.
+
+```sh
+npm run usage:context -- usage.sqlite --session ls-123 --calls
+```
+
+KB means characters divided by 1024, not bytes: the recorded sizes are character counts. Msg KB uses `inputChars` (or the sum of system, user, assistant and tool-result characters when absent). Ctx KB adds the separately recorded `toolDefsChars` to Msg KB. The summary reports total, average, p95 and maximum for both; calls show both sizes. JSON exposes `messageKB` and `contextKB`. Per-part token counts marked `≈` are estimates split proportionally by part characters. Percentiles use nearest rank; missing counters count as zero. Malformed JSON records are skipped and counted.
