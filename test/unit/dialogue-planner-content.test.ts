@@ -289,3 +289,39 @@ test('retrieval uses trace identity and preserves temporary input order', async 
   }
   expect(input).toEqual([{ role: 'user', content: 'hello' }]);
 });
+
+test('all planner wrappers forward stopSignal to SmartAgent.process', async () => {
+  const { SmartAgent } = await import('@mcp-abap-adt/llm-agent-libs');
+  const process = jest
+    .spyOn(SmartAgent.prototype, 'process')
+    .mockResolvedValue({
+      ok: true,
+      value: {
+        content: 'waiting',
+        iterations: 1,
+        toolCallCount: 0,
+        stopReason: 'stop',
+      },
+    });
+  try {
+    const agent: InstanceType<typeof SmartAgent> = Object.create(
+      SmartAgent.prototype,
+    );
+    const contexts = new WeakMap<object, string>();
+    const trace = { traceId: 'wait' };
+    contexts.set(trace, 'context');
+    const planner = plannerWithEnvironment(
+      plannerWithRetrievedContext(plannerWithParagraphs(agent), contexts),
+      () => 'Hub',
+    );
+    const stopSignal = new AbortController().signal;
+    await planner.process([], { stopSignal, trace });
+    expect(process).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({ stopSignal }),
+    );
+    expect(process.mock.calls[0][1]?.stopSignal).toBe(stopSignal);
+  } finally {
+    process.mockRestore();
+  }
+});

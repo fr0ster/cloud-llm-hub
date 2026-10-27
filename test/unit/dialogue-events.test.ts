@@ -365,3 +365,29 @@ test.each([undefined, 'waiting_user', 'done'])(
     res.emit('close');
   },
 );
+
+test('wait events are live frames with no replay id', async () => {
+  const res = response();
+  await handleDialogueEvents(
+    request({
+      longSession: { userId: 'alice', key: 'ls-a', destination: 'DEV' },
+    }),
+    res,
+  );
+  const tasks = [
+    {
+      id: 't1',
+      worker: 'executor',
+      goal: 'read',
+      state: 'running' as const,
+      elapsedMs: 90000,
+      toolCalls: 12,
+      maxToolCalls: 40,
+    },
+  ];
+  listener({ kind: 'wait', tasks });
+  expect(res.write).toHaveBeenLastCalledWith(
+    `event: wait\ndata: ${JSON.stringify({ tasks })}\n\n`,
+  );
+  res.emit('close');
+});

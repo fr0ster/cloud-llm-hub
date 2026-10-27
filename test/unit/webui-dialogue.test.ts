@@ -1196,3 +1196,59 @@ test.each(['AbortError', 'stream failure'])(
     ui.stopDialogueEvents();
   },
 );
+
+test('wait updates server elapsed time and tool counts without chat messages and keeps ticking', async () => {
+  const ui = harness(100000);
+  ui.fetch.mockResolvedValue(
+    stream(
+      'event: wait\ndata: {"tasks":[{"id":"t1","worker":"executor","goal":"<goal>","state":"running","elapsedMs":90000,"toolCalls":12,"maxToolCalls":40},{"id":"t2","worker":"checker","goal":"check","state":"queued","elapsedMs":0,"toolCalls":0}]}\n\n',
+    ),
+  );
+  const subscription = ui.subscribeDialogueEvents('key');
+  await flush();
+  expect(ui.active.innerHTML).toContain('t1 executor: &lt;goal&gt;');
+  expect(ui.active.innerHTML).toContain('1:30');
+  expect(ui.active.innerHTML).toContain('12/40 tools');
+  expect(ui.active.innerHTML).toContain('0 tools');
+  expect(ui.nodes).toHaveLength(0);
+  ui.setNow(102000);
+  for (const tick of ui.intervals) tick();
+  expect(ui.active.innerHTML).toContain('1:32');
+  subscription.stop();
+});
+
+test.each(['task', 'tasks'])(
+  '%s state change resets queued wait elapsed time to startedAt',
+  async (event) => {
+    const ui = harness(100000);
+    const running = {
+      id: 't1',
+      worker: 'executor',
+      goal: 'work',
+      state: 'running',
+      createdAt: 10000,
+      startedAt: 98000,
+    };
+    ui.fetch.mockResolvedValue(
+      stream(
+        'event: wait\ndata: {"tasks":[{"id":"t1","worker":"executor","goal":"work","state":"queued","elapsedMs":90000}]}\n\n',
+      ),
+    );
+    const subscription = ui.subscribeDialogueEvents('key');
+    await flush();
+    expect(ui.active.innerHTML).toContain('1:30');
+    ui.fetch.mockResolvedValue(
+      stream(
+        `event: ${event}\ndata: ${JSON.stringify(event === 'tasks' ? [running] : running)}\n\n`,
+      ),
+    );
+    await ui.timers[0].fn();
+    await flush();
+    expect(ui.active.innerHTML).toContain('0:02');
+    expect(ui.active.innerHTML).not.toContain('1:30');
+    ui.setNow(101000);
+    for (const tick of ui.intervals) tick();
+    expect(ui.active.innerHTML).toContain('0:03');
+    subscription.stop();
+  },
+);

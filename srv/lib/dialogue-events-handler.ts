@@ -91,6 +91,7 @@ export async function handleDialogueEvents(
             id: event.id,
             usage: dialogueUsageToWire(sumPlannerUsage([event.usage])),
           });
+        else if (event.kind === 'wait') send('wait', { tasks: event.tasks });
         else if (event.kind === 'plan') send('plan', event.plan);
         else if (event.kind === 'task') send('task', taskView(event.task));
       },

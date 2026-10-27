@@ -196,6 +196,8 @@ export interface AgentConfig {
       maxTasks: number;
       maxCorrections: number;
       followMaxMs: number;
+      waitTickMs?: number;
+      longTaskMs?: number;
     };
     planBudget?: {
       maxSteps?: number;
@@ -623,6 +625,8 @@ export function loadAgentConfig(): AgentConfig {
           ) ?? 6,
         maxTasks: dialogueMaxTasks(),
         maxCorrections: dialogueMaxCorrections(),
+        waitTickMs: dialogueWaitLimit('LLM_AGENT_DIALOGUE_WAIT_TICK_MS'),
+        longTaskMs: dialogueWaitLimit('LLM_AGENT_DIALOGUE_LONG_TASK_MS'),
         followMaxMs:
           readPositiveIntFrom(
             process.env,
@@ -852,6 +856,17 @@ export function parseMaxToolCalls(
   if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value < 1)
     throw new BuildValidationError(
       'Invalid LLM_AGENT_MAX_TOOL_CALLS: expected a positive integer',
+    );
+  return value;
+}
+
+function dialogueWaitLimit(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const value = /^[0-9]+$/.test(raw) ? Number(raw) : Number.NaN;
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw new BuildValidationError(
+      `Invalid ${name}: expected a nonnegative whole number`,
     );
   return value;
 }

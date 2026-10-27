@@ -593,11 +593,11 @@
                 const main = mainRequests.find(task => task.state === 'running');
                 box.innerHTML = '<div>\u25cf main \u00b7 ' + (main ? 'working ' + formatElapsed(now - main.startedAt) : 'listening') + '</div>' + active.map((task, index) => {
                     const since = task.startedAt ?? task.createdAt;
-                    const elapsed = formatElapsed(now - (since ?? now));
+                    const elapsed = formatElapsed(task.elapsedMs === undefined ? now - (since ?? now) : task.elapsedMs + now - task.waitReceivedAt);
                     const time = task.state === 'queued' ? ('queued ' + elapsed).trim() : elapsed || 'running';
                     return '<div class="agent-child" title="' + escapeHtml(String(task.goal || '')) + '">' + (index === active.length - 1 ? '└ ' : '├ ')
                         + escapeHtml(String(task.id)) + ' ' + escapeHtml(String(task.worker || '')) + ': ' + escapeHtml(String(task.goal || ''))
-                        + ' <span class="agent-time">· ' + escapeHtml(time) + '</span></div>';
+                        + ' <span class="agent-time">· ' + escapeHtml(time) + (task.toolCalls === undefined ? '' : ' \u00b7 ' + escapeHtml(String(task.toolCalls)) + (task.maxToolCalls === undefined ? '' : '/' + escapeHtml(String(task.maxToolCalls))) + ' tools') + '</span></div>';
                 }).join('');
                 renderTasks();
             };
@@ -613,6 +613,13 @@
         function subscribeDialogueEvents(key) {
             let stopped = false, delay = 1000, timer, controller, reader, lastId;
             let tasks = [];
+            function clearWaitOnStateChange(task, previous) {
+                if (previous && task.state !== undefined && task.state !== previous.state) {
+                    delete task.elapsedMs;
+                    delete task.waitReceivedAt;
+                }
+                return task;
+            }
             dialogueOpen = true; renderActiveAgents(tasks);
             function renderPlan(plan) {
                 if (!Array.isArray(plan.steps) && typeof plan.text !== 'string') return;
@@ -665,10 +672,22 @@
                                 lastId = id;
                             } else if (event === 'usage') { renderMessageUsage(key, parsed.id, parsed.usage); }
                             else if (event === 'plan') { renderPlan(parsed); }
-                            else if (event === 'tasks' && Array.isArray(parsed)) { tasks = parsed; renderActiveAgents(tasks); }
+                            else if (event === 'tasks' && Array.isArray(parsed)) {
+                                tasks = parsed.map(task => clearWaitOnStateChange(task, tasks.find(previous => previous.id === task.id)));
+                                renderActiveAgents(tasks);
+                            }
+                            else if (event === 'wait' && Array.isArray(parsed.tasks)) {
+                                const now = Date.now();
+                                for (const update of parsed.tasks) {
+                                    const index = tasks.findIndex(task => task.id === update.id);
+                                    const task = { ...(index < 0 ? {} : tasks[index]), ...update, waitReceivedAt: now };
+                                    if (index < 0) tasks.push(task); else tasks[index] = task;
+                                }
+                                renderActiveAgents(tasks);
+                            }
                             else if (event === 'task' && parsed.id) {
                                 const index = tasks.findIndex(task => task.id === parsed.id);
-                                if (index < 0) tasks.push(parsed); else tasks[index] = { ...tasks[index], ...parsed };
+                                if (index < 0) tasks.push(parsed); else tasks[index] = clearWaitOnStateChange({ ...tasks[index], ...parsed }, tasks[index]);
                                 renderActiveAgents(tasks);
                             }
                         }
