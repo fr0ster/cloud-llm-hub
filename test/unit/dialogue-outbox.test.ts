@@ -218,3 +218,40 @@ test('upsert replaces an unconfirmed reply and preserves confirmed text', async 
   expect(box.history()).toEqual([{ ...message('reply'), text: 'complete' }]);
   expect(box.pending()).toEqual([]);
 });
+
+test('usage updates reach passed cursors once without replaying a message', async () => {
+  const box = new DialogueOutbox([], async () => {});
+  const messages: string[] = [];
+  const updates: string[] = [];
+  box.subscribe(
+    (reply) => messages.push(reply.id),
+    undefined,
+    (id) => updates.push(id),
+  );
+  await box.add([message('reply')]);
+  const enriched = {
+    ...message('reply'),
+    usage: {
+      planner: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+    },
+  };
+  await box.upsert([enriched]);
+  await box.upsert([enriched]);
+  expect(messages).toEqual(['reply']);
+  expect(updates).toEqual(['reply']);
+  const replay: string[] = [];
+  box.subscribe(
+    (reply) => replay.push(reply.id),
+    'reply',
+    (id) => replay.push(id),
+  );
+  await box.upsert([
+    {
+      ...enriched,
+      usage: {
+        planner: { promptTokens: 4, completionTokens: 2, totalTokens: 6 },
+      },
+    },
+  ]);
+  expect(replay).toEqual(['reply']);
+});

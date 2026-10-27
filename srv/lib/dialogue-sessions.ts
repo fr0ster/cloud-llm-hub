@@ -69,6 +69,7 @@ type PlanStep = Plan['steps'][number];
 export type DialogueEvent =
   | { kind: 'settled'; outcome: 'ok' | 'failed'; trigger: 'user' | 'event' }
   | { kind: 'message'; message: PlannerMessage }
+  | { kind: 'usage'; id: string; usage: NonNullable<PlannerMessage['usage']> }
   | { kind: 'plan'; plan: DialoguePlan }
   | {
       kind: 'task';
@@ -374,12 +375,13 @@ async function open(
                     task: input.task,
                     history: getRequestHistory(),
                   });
-                  return verdict.ok
-                    ? result
-                    : {
-                        ...result,
-                        output: result.output + renderNotice(verdict),
-                      };
+                  return {
+                    ...result,
+                    usage: addTokenUsage(result.usage, verdict.usage),
+                    output: verdict.ok
+                      ? result.output
+                      : result.output + renderNotice(verdict),
+                  };
                 },
                 ctx.lease.dumpScope,
                 factory.exposition,
@@ -701,6 +703,7 @@ async function open(
       const unsubscribeMessages = outbox.subscribe(
         (message) => fn({ kind: 'message', message }),
         cursor,
+        (id, usage) => fn({ kind: 'usage', id, usage }),
       );
       return () => {
         unsubscribeMessages();

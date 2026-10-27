@@ -1,4 +1,4 @@
-import type { ToolCallRecord } from '@mcp-abap-adt/llm-agent';
+import type { ILlm, ToolCallRecord } from '@mcp-abap-adt/llm-agent';
 import {
   buildReviewMessages,
   evaluateGated,
@@ -437,3 +437,35 @@ describe('reviewStep', () => {
     expect(v).toBeNull();
   });
 });
+
+test.each(['false', 'true', 'invalid'])(
+  'reviewer preserves model usage for verdict %s',
+  async (verdict) => {
+    const usage = { promptTokens: 7, completionTokens: 4, totalTokens: 11 };
+    const llm: ILlm = {
+      model: 'critic',
+      chat: async () => ({
+        ok: true,
+        value: {
+          content:
+            verdict === 'invalid'
+              ? 'invalid'
+              : `{"possiblyFake":${verdict},"confidence":"high","reasons":"test"}`,
+          finishReason: 'stop',
+          usage,
+        },
+      }),
+      streamChat: async function* () {},
+    };
+    const result = await evaluateGated({
+      content: 'answer',
+      request: 'Read ZDOMAIN',
+      records: [],
+      llm,
+    });
+    expect(result.usage).toEqual({
+      ...usage,
+      models: { critic: { ...usage, requests: 1 } },
+    });
+  },
+);

@@ -106,6 +106,23 @@ test('unacknowledged replay across reconnect, live messages/tasks, heartbeat and
     expect.stringContaining('event: task'),
   );
   listener({
+    kind: 'usage',
+    id: 'm1',
+    usage: {
+      planner: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+      tasks: [
+        {
+          id: 't1',
+          worker: 'executor',
+          usage: { promptTokens: 7, completionTokens: 4, totalTokens: 11 },
+        },
+      ],
+    },
+  });
+  expect(res.write).toHaveBeenLastCalledWith(
+    'event: usage\ndata: {"id":"m1","usage":{"prompt_tokens":10,"completion_tokens":6,"total_tokens":16,"x_hub":{"planner":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5},"subagents":[{"prompt_tokens":7,"completion_tokens":4,"total_tokens":11,"task_id":"t1","worker":"executor"}]}}}\n\n',
+  );
+  listener({
     kind: 'message',
     message: {
       id: 'm2',

@@ -398,3 +398,54 @@ it('execute_step returns executor usage and ends with the footer with recording 
     else process.env.LLM_AGENT_USAGE = previous;
   }
 });
+
+it.each([true, false])(
+  'execute_step reports reviewer usage separately for verdict ok=%s',
+  async (ok) => {
+    const reviewer = await import('../../srv/lib/step-reviewer');
+    const usage = { promptTokens: 2, completionTokens: 1, totalTokens: 3 };
+    const review = jest.spyOn(reviewer, 'evaluateGated').mockResolvedValue(
+      ok
+        ? { ok: true, usage }
+        : {
+            ok: false,
+            usage,
+            issues: [
+              {
+                kind: 'unsupported-claim',
+                confidence: 'high',
+                reasons: 'test',
+              },
+            ],
+          },
+    );
+    const { handle } = await directHandle();
+    harness.process = async () => ({
+      ok: true,
+      value: {
+        content: 'done',
+        usage: { promptTokens: 7, completionTokens: 4, totalTokens: 11 },
+      },
+    });
+    try {
+      const result = await executeStep(req, caller, { task: 'work' });
+      expect(result).toMatchObject({
+        structuredContent: {
+          usage: { prompt_tokens: 7, completion_tokens: 4, total_tokens: 11 },
+          usage_reviewer: {
+            prompt_tokens: 2,
+            completion_tokens: 1,
+            total_tokens: 3,
+          },
+        },
+      });
+      expect(result.content[0]?.text).toMatch(
+        /\[usage\] prompt=7 completion=4 total=11 reviewer=3$/,
+      );
+      expect(review).toHaveBeenCalledTimes(1);
+    } finally {
+      review.mockRestore();
+      Reflect.deleteProperty(handle, 'executor');
+    }
+  },
+);

@@ -1,8 +1,10 @@
 import type {
   ILlm,
   IUsageRecorder,
+  TokenUsage,
   ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
+import { addTokenUsage } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { suspicion, tokenStats } from './review-signals';
 import {
@@ -217,7 +219,12 @@ export async function reviewStep(
     content: string;
     history?: ReviewTurn[];
   },
-  deps: { llm: ILlm; timeoutMs?: number; usage?: IUsageRecorder },
+  deps: {
+    llm: ILlm;
+    timeoutMs?: number;
+    usage?: IUsageRecorder;
+    onUsage?: (usage: TokenUsage) => void;
+  },
 ): Promise<StepReview | null> {
   const timeoutMs = deps.timeoutMs ?? 8000;
   const ctrl = new AbortController();
@@ -246,6 +253,15 @@ export async function reviewStep(
       timeout,
     ]);
     if (res === null || !res.ok) return null;
+    if (res.value.usage) {
+      const usage = res.value.usage;
+      deps.onUsage?.({
+        ...usage,
+        ...(deps.llm.model
+          ? { models: { [deps.llm.model]: { ...usage, requests: 1 } } }
+          : {}),
+      });
+    }
     return parseReviewVerdict(res.value.content);
   } catch {
     return null;
@@ -287,7 +303,7 @@ export async function evaluateGated(input: {
   task?: string;
   /** The turns before this one, so a fact the user supplied is not "unsupported". */
   history?: ReviewTurn[];
-}): Promise<ReviewVerdict> {
+}): Promise<ReviewVerdict & { usage?: TokenUsage }> {
   if (!stepReviewEnabled(process.env)) return { ok: true };
 
   const deterministic = evaluateDeterministic(input.content, input.records);
@@ -304,6 +320,7 @@ export async function evaluateGated(input: {
   log.info('step review triggered', { reasons: signal.reasons });
   const executedTools = input.records.map(parseToolOutcome);
   let review: StepReview | null;
+  let usage: TokenUsage | undefined;
   try {
     review = await reviewStep(
       {
@@ -315,6 +332,9 @@ export async function evaluateGated(input: {
       },
       {
         llm: input.llm,
+        onUsage: (callUsage) => {
+          usage = addTokenUsage(usage, callUsage);
+        },
         usage: input.usage,
         timeoutMs: loadStepReviewTimeoutMs(process.env),
       },
@@ -322,7 +342,8 @@ export async function evaluateGated(input: {
   } catch {
     review = null;
   }
-  if (!review?.possiblyFake) return deterministic;
+  if (!review?.possiblyFake)
+    return { ...deterministic, ...(usage ? { usage } : {}) };
 
   const llmIssue: ReviewIssue = {
     kind: 'unsupported-claim',
@@ -331,6 +352,7 @@ export async function evaluateGated(input: {
   };
   return {
     ok: false,
+    ...(usage ? { usage } : {}),
     issues: deterministic.ok ? [llmIssue] : [...deterministic.issues, llmIssue],
   };
 }

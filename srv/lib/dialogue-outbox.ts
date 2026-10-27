@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type { PlannerMessage } from '@mcp-abap-adt/llm-agent';
 
 import { stripNoMessage } from './no-message';
@@ -25,12 +26,14 @@ export class DialogueOutbox {
   private subscribers = new Set<{
     fn: (message: PlannerMessage) => void;
     cursor?: string;
+    usage?: (id: string, usage: NonNullable<PlannerMessage['usage']>) => void;
   }>();
   subscribe(
     fn: (message: PlannerMessage) => void,
     cursor?: string,
+    usage?: (id: string, usage: NonNullable<PlannerMessage['usage']>) => void,
   ): () => void {
-    const subscriber = { fn, cursor };
+    const subscriber = { fn, cursor, usage };
     this.subscribers.add(subscriber);
     this.emit();
     return () => {
@@ -139,6 +142,23 @@ export class DialogueOutbox {
   add(messages: PlannerMessage[]): Promise<void> {
     return this.addEntries(messages, []);
   }
+  private updateUsage(existing: OutboxEntry, message: PlannerMessage): void {
+    if (!message.usage || isDeepStrictEqual(existing.usage, message.usage))
+      return;
+    existing.usage = message.usage;
+    const index = this.messages.indexOf(existing);
+    for (const subscriber of this.subscribers) {
+      const cursor = this.messages.findIndex(
+        (entry) => entry.id === subscriber.cursor,
+      );
+      if (cursor < index) continue;
+      try {
+        subscriber.usage?.(existing.id, message.usage);
+      } catch {
+        /* Isolate subscribers. */
+      }
+    }
+  }
   private addEntries(
     messages: PlannerMessage[],
     replacements: PlannerMessage[],
@@ -146,7 +166,7 @@ export class DialogueOutbox {
     return this.write(async () => {
       for (const message of cleanMessages(messages)) {
         const existing = this.messages.find((entry) => entry.id === message.id);
-        if (existing && message.usage) existing.usage = message.usage;
+        if (existing) this.updateUsage(existing, message);
         if (!this.seen.has(message.id)) {
           this.messages.push(message);
           this.seen.add(message.id);
@@ -155,9 +175,9 @@ export class DialogueOutbox {
       for (const message of cleanMessages(replacements)) {
         const existing = this.messages.find((entry) => entry.id === message.id);
         if (existing) {
+          this.updateUsage(existing, message);
           if (!existing.confirmed) {
             existing.text = message.text;
-            if (message.usage) existing.usage = message.usage;
           }
         } else if (!this.seen.has(message.id)) {
           this.messages.push(message);
