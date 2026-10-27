@@ -47,6 +47,7 @@ test('chat elapsed time includes synchronous transcript rendering before the req
     source + '\nstopTimer(); setStatus(elapsed()); }; sendMessage();',
     {
       chatSendSequence: 0,
+      dialogueOpen: false,
       ready: true,
       hubSignedOut: false,
       userInput: { value: 'hello' },

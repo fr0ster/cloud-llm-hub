@@ -1,12 +1,39 @@
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 
+interface MessageNode {
+  innerHTML: string;
+  textContent?: string;
+}
+type Chunk = { done: boolean; value?: Uint8Array };
+interface UiApi {
+  sendMessage(): Promise<void>;
+  renderMessageVersion(
+    key: string,
+    id: string,
+    text: string,
+    complete: boolean,
+  ): void;
+  subscribeDialogueEvents(key: string): { stop(): void };
+  startDialogueEvents(key: string): void;
+  stopDialogueEvents(): void;
+  markdownToHtml(text: string): string;
+  runActiveProbe(): Promise<void>;
+  fileArtifacts: Record<
+    string,
+    { path: string; content: string; encoding: string; render: string }
+  >;
+  replaceSession(key: string): void;
+  ack(key: string): string | undefined;
+  view(key: string, id: string): { node: MessageNode };
+  signOut(): void;
+}
 const html = readFileSync('app/chat/webapp/index.html', 'utf8');
 const flush = async () => {
   for (let i = 0; i < 30; i++) await Promise.resolve();
 };
-function harness(now?: number) {
-  const nodes: any[] = [];
+function harness(now?: number, realSessionRecovery = false) {
+  const nodes: MessageNode[] = [];
   const list = { innerHTML: '', style: {} };
   const plan = { hidden: true, open: false };
   const planText = { innerHTML: '' };
@@ -18,6 +45,7 @@ function harness(now?: number) {
   const locks = new Set();
   const placeholders = new Map();
   const userInput = { value: '', focus: jest.fn() };
+  const storage = new Map([['clh.session', 'key']]);
   const context = {
     Date:
       now === undefined
@@ -47,7 +75,12 @@ function harness(now?: number) {
     setStatus: jest.fn(),
     setIdleStatus: jest.fn(),
     renderMermaidDiagrams: jest.fn(),
-    localStorage: { getItem: () => 'key' },
+    localStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    },
+    showSessionNotice: jest.fn(),
     hubFetch: fetch,
     hubSignedOut: false,
     connectedDestination: 'SAP',
@@ -103,7 +136,7 @@ function harness(now?: number) {
       },
     },
     chatWindow: {
-      appendChild: (node: any) => nodes.push(node),
+      appendChild: (node: MessageNode) => nodes.push(node),
       insertAdjacentHTML: (_where: string, text: string) => {
         const id = /id="([^"]+)"/.exec(text)?.[1];
         if (id)
@@ -126,11 +159,18 @@ function harness(now?: number) {
     html.indexOf('        function markdownToHtml('),
     html.indexOf('        // Check model availability'),
   );
-  const api = runInNewContext(
-    html.slice(
-      html.indexOf('        const FILE_MIME_TYPES'),
-      html.indexOf('        // Lazy-loaded RAG'),
-    ) +
+  const api: UiApi = runInNewContext(
+    (realSessionRecovery
+      ? 'let sessionOpening = null;\n' +
+        html.slice(
+          html.indexOf('        async function ensureSession()'),
+          html.indexOf('        async function closeSession()'),
+        )
+      : '') +
+      html.slice(
+        html.indexOf('        const FILE_MIME_TYPES'),
+        html.indexOf('        // Lazy-loaded RAG'),
+      ) +
       html.slice(
         html.indexOf('        function getFileExt('),
         html.indexOf('        function copyArtifact('),
@@ -169,6 +209,9 @@ function harness(now?: number) {
     planStatus,
     active,
     intervals,
+    setNow: (time: number) => {
+      now = time;
+    },
   };
 }
 function stream(text: string) {
@@ -284,7 +327,9 @@ test('standalone dedupes replay without ack, sends cursor and handles task snaps
   expect(ui.nodes).toHaveLength(1);
   expect(ui.nodes[0].innerHTML).toContain('&lt;script&gt;');
   expect(ui.nodes[0].innerHTML).toContain('AGENT:');
-  expect(ui.list.innerHTML).toContain('✓ &lt;t&gt;: &lt;goal&gt;');
+  expect(ui.list.innerHTML).toContain(
+    '\u2713 &lt;t&gt; \u00b7 subagent : &lt;goal&gt;',
+  );
   expect(ui.list.innerHTML).not.toContain('gone');
   expect(
     ui.fetch.mock.calls.some(([url]: [string]) => url.endsWith('/ack')),
@@ -319,7 +364,7 @@ test('409 stops retries; network failures back off to 30 seconds', async () => {
 });
 test('new session cancels pending reader and ignores late data; clear removes tasks', async () => {
   const ui = harness();
-  let resolveRead!: (value: any) => void;
+  let resolveRead!: (value: Chunk) => void;
   const cancel = jest.fn(async () => {});
   ui.fetch
     .mockResolvedValueOnce({
@@ -328,7 +373,7 @@ test('new session cancels pending reader and ignores late data; clear removes ta
       body: {
         getReader: () => ({
           read: () =>
-            new Promise((resolve) => {
+            new Promise<Chunk>((resolve) => {
               resolveRead = resolve;
             }),
           cancel,
@@ -510,20 +555,20 @@ test('only queued and running subagents show above the input with elapsed time',
   const subscription = ui.subscribeDialogueEvents('key');
   await flush();
   expect(ui.active.hidden).toBe(false);
-  expect(ui.active.innerHTML).toContain('main agent · 2 active');
+  expect(ui.active.innerHTML).toContain('main \u00b7 listening');
   expect(ui.active.innerHTML).toContain('├ T2 executor: read &lt;dump&gt;');
   expect(ui.active.innerHTML).toMatch(/1:0[5-9]/);
   expect(ui.active.innerHTML).toContain('└ T3 checker: check');
   expect(ui.active.innerHTML).toContain('· queued');
   expect(ui.active.innerHTML).not.toContain('old');
-  expect(ui.list.innerHTML).toContain('T1: old');
+  expect(ui.list.innerHTML).toContain('T1 \u00b7 subagent executor: old');
   expect(ui.intervals).toHaveLength(1);
   subscription.stop();
   ui.stopDialogueEvents();
   expect(ui.active.hidden).toBe(true);
   expect(ui.active.innerHTML).toBe('');
 });
-test('the active list hides when every subagent finishes', async () => {
+test('the main line listens when every subagent finishes', async () => {
   const ui = harness();
   const running = { id: 'T1', worker: 'executor', goal: 'g', state: 'running' };
   ui.fetch.mockResolvedValue(
@@ -533,8 +578,9 @@ test('the active list hides when every subagent finishes', async () => {
   );
   const subscription = ui.subscribeDialogueEvents('key');
   await flush();
-  expect(ui.active.hidden).toBe(true);
-  expect(ui.active.innerHTML).toBe('');
+  expect(ui.active.hidden).toBe(false);
+  expect(ui.active.innerHTML).toContain('main \u00b7 listening');
+  expect(ui.active.innerHTML).not.toContain('agent-child');
   subscription.stop();
 });
 test('PLAN and TASKS panels share the collapse rule; active agents sit above the input', () => {
@@ -553,8 +599,8 @@ test('PLAN and TASKS panels share the collapse rule; active agents sit above the
 });
 
 function controlledStream() {
-  let resolve: (chunk: any) => void;
-  const queue: any[] = [];
+  let resolve: ((chunk: Chunk) => void) | undefined;
+  const queue: Chunk[] = [];
   return {
     response: {
       ok: true,
@@ -564,10 +610,11 @@ function controlledStream() {
           read: () =>
             queue.length
               ? Promise.resolve(queue.shift())
-              : new Promise((r) => {
+              : new Promise<Chunk>((r) => {
                   resolve = r;
                 }),
           releaseLock: jest.fn(),
+          cancel: async () => {},
         }),
       },
     },
@@ -578,7 +625,7 @@ function controlledStream() {
           : { value: new TextEncoder().encode(text), done: false };
       if (resolve) {
         const r = resolve;
-        resolve = undefined as any;
+        resolve = undefined;
         r(chunk);
       } else queue.push(chunk);
     },
@@ -781,11 +828,11 @@ test('two messages at the same time keep distinct artifact ids and contents', ()
   expect(ids[1]).toBeDefined();
   expect(ids[0]).not.toBe(ids[1]);
   expect(Object.keys(ui.fileArtifacts)).toHaveLength(2);
-  expect(ui.fileArtifacts[ids[0]]).toMatchObject({
+  expect(ui.fileArtifacts[ids[0] ?? '']).toMatchObject({
     path: 'a.txt',
     content: 'alpha',
   });
-  expect(ui.fileArtifacts[ids[1]]).toMatchObject({
+  expect(ui.fileArtifacts[ids[1] ?? '']).toMatchObject({
     path: 'b.txt',
     content: 'beta',
   });
@@ -793,10 +840,10 @@ test('two messages at the same time keep distinct artifact ids and contents', ()
 
 test('a pending response keeps messages and acknowledgement on its request session', async () => {
   const ui = harness();
-  let resolve!: (value: any) => void;
+  let resolve!: (value: ReturnType<typeof stream>) => void;
   ui.fetch.mockImplementationOnce(
     () =>
-      new Promise((r) => {
+      new Promise<ReturnType<typeof stream>>((r) => {
         resolve = r;
       }),
   );
@@ -899,3 +946,253 @@ test('history usage and usage events create and replace stats on the matching me
   expect(ui.nodes[1].innerHTML.match(/class="stats-bar"/g)).toHaveLength(1);
   subscription.stop();
 });
+
+test('main requests work until stream end and remain in the interleaved journal', async () => {
+  const ui = harness(100000);
+  ui.fetch.mockResolvedValue(
+    stream(
+      'event: tasks\ndata: [{"id":"sub","worker":"executor","goal":"sub goal","state":"running","startedAt":101000}]\n\n',
+    ),
+  );
+  ui.startDialogueEvents('key');
+  await flush();
+  expect(ui.active.innerHTML).toContain('main \u00b7 listening');
+  const response = controlledStream();
+  ui.fetch.mockResolvedValue(response.response);
+  ui.userInput.value = 'hello <world>';
+  const sent = ui.sendMessage();
+  await flush();
+  expect(ui.active.innerHTML).toContain('main \u00b7 working 0:00');
+  expect(ui.list.innerHTML).toContain(
+    '\u25b6 main: \u00abhello &lt;world&gt;\u00bb',
+  );
+  ui.setNow(107000);
+  for (const tick of ui.intervals) tick();
+  expect(ui.active.innerHTML).toContain('working 0:07');
+  expect(ui.list.innerHTML.indexOf('main:')).toBeLessThan(
+    ui.list.innerHTML.indexOf('subagent'),
+  );
+  response.push(messageWire('older-reply', 'replayed earlier answer'));
+  await flush();
+  expect(ui.active.innerHTML).toContain('main \u00b7 working');
+  expect(ui.list.innerHTML).toContain(
+    '\u25b6 main: \u00abhello &lt;world&gt;\u00bb',
+  );
+  expect(ui.list.innerHTML).not.toMatch(/\d+:\d{2}/);
+  response.push();
+  await sent;
+  expect(ui.active.innerHTML).toContain('main \u00b7 listening');
+  expect(ui.list.innerHTML).toContain(
+    '\u2713 main: \u00abhello &lt;world&gt;\u00bb',
+  );
+  ui.stopDialogueEvents();
+});
+test('404 recovery keeps the main request running in the replacement journal until stream end', async () => {
+  const ui = harness(100000, true);
+  const events = controlledStream();
+  const response = controlledStream();
+  const requestKeys: string[] = [];
+  ui.fetch.mockImplementation(
+    async (url: string, opts: { headers: Record<string, string> }) => {
+      if (url === '/v1/session/events') return events.response;
+      if (url === '/v1/session')
+        return { ok: true, json: async () => ({ session: 'replacement' }) };
+      requestKeys.push(opts.headers['x-clh-session']);
+      if (requestKeys.length === 1)
+        return {
+          status: 404,
+          clone: () => ({
+            json: async () => ({ error: { code: 'SESSION_NOT_FOUND' } }),
+          }),
+        };
+      return response.response;
+    },
+  );
+  ui.startDialogueEvents('key');
+  ui.userInput.value = 'recovered request';
+  const sent = ui.sendMessage();
+  await flush();
+  expect(requestKeys).toEqual(['key', 'replacement']);
+  expect(ui.localStorage.getItem('clh.session')).toBe('replacement');
+  expect(ui.active.innerHTML).toContain('main \u00b7 working');
+  expect(ui.list.innerHTML).toContain(
+    '\u25b6 main: \u00abrecovered request\u00bb',
+  );
+  expect(ui.list.innerHTML.match(/main:/g)).toHaveLength(1);
+  expect(ui.list.innerHTML).not.toMatch(/\d+:\d{2}/);
+  response.push();
+  await sent;
+  expect(ui.active.innerHTML).toContain('main \u00b7 listening');
+  expect(ui.list.innerHTML).toContain(
+    '\u2713 main: \u00abrecovered request\u00bb',
+  );
+  events.push();
+  ui.stopDialogueEvents();
+});
+
+test('an earlier task events reply leaves the current request working until its stream ends', async () => {
+  const ui = harness();
+  const events = controlledStream();
+  ui.fetch.mockResolvedValue(events.response);
+  ui.startDialogueEvents('key');
+  await flush();
+  const response = controlledStream();
+  ui.fetch.mockResolvedValue(response.response);
+  ui.userInput.value = 'request A';
+  const sent = ui.sendMessage();
+  await flush();
+
+  events.push(
+    'id: earlier-task-reply\nevent: message\ndata: {"text":"earlier task finished"}\n\n',
+  );
+  await flush();
+  expect(
+    ui.nodes.some((node) => node.innerHTML.includes('earlier task finished')),
+  ).toBe(true);
+  expect(ui.active.innerHTML).toContain('main \u00b7 working');
+  expect(ui.list.innerHTML).toContain('\u25b6 main: \u00abrequest A\u00bb');
+
+  response.push(messageWire('request-a-reply', 'answer A'));
+  await flush();
+  expect(ui.active.innerHTML).toContain('main \u00b7 working');
+  expect(ui.list.innerHTML).toContain('\u25b6 main: \u00abrequest A\u00bb');
+  response.push();
+  await sent;
+  expect(ui.list.innerHTML).toContain('\u2713 main: \u00abrequest A\u00bb');
+  events.push();
+  ui.stopDialogueEvents();
+});
+
+test.each([
+  ['plain assistant reply', delta('answer'), '\u2713'],
+  [
+    'partial assistant segment',
+    ': message-id partial\n\n' + delta('answer'),
+    '\u2713',
+  ],
+  ['no reply', '', '\u2713'],
+])('normal stream end records %s', async (_label, wire, symbol) => {
+  const ui = harness();
+  ui.fetch.mockResolvedValue(stream(''));
+  ui.startDialogueEvents('key');
+  await flush();
+  ui.fetch.mockResolvedValue(stream(wire));
+  ui.userInput.value = 'request';
+  await ui.sendMessage();
+  expect(ui.list.innerHTML).toContain(symbol + ' main: \u00abrequest\u00bb');
+  ui.stopDialogueEvents();
+});
+
+test('journal shows statuses and errors without times or durations', async () => {
+  const ui = harness(100000);
+  const tasks = [
+    {
+      id: 'a',
+      worker: 'executor',
+      goal: 'done goal',
+      state: 'done',
+      createdAt: 1000,
+      startedAt: 2000,
+      finishedAt: 9000,
+    },
+    {
+      id: 'b',
+      worker: 'checker',
+      goal: 'bad goal',
+      state: 'failed',
+      createdAt: 10000,
+      error: '<failure>',
+    },
+    {
+      id: 'c',
+      worker: 'executor',
+      goal: 'stop goal',
+      state: 'interrupted',
+      createdAt: 11000,
+    },
+    {
+      id: 'd',
+      worker: 'executor',
+      goal: 'running goal',
+      state: 'running',
+      startedAt: 90000,
+    },
+  ];
+  ui.fetch.mockResolvedValue(
+    stream(`event: tasks\ndata: ${JSON.stringify(tasks)}\n\n`),
+  );
+  const sub = ui.subscribeDialogueEvents('key');
+  await flush();
+  expect(ui.list.innerHTML).toContain(
+    '\u2713 a \u00b7 subagent executor: done goal</div>',
+  );
+  expect(ui.list.innerHTML).toContain(
+    '\u2717 b \u00b7 subagent checker: bad goal \u00b7 &lt;failure&gt;',
+  );
+  expect(ui.list.innerHTML).toContain(
+    '\u25a0 c \u00b7 subagent executor: stop goal</div>',
+  );
+  expect(ui.list.innerHTML).toContain(
+    '\u25b6 d \u00b7 subagent executor: running goal',
+  );
+  expect(ui.list.innerHTML).not.toMatch(/\d+:\d{2}/);
+  expect(ui.list.innerHTML).toContain(
+    'title="bad goal \u00b7 &lt;failure&gt;"',
+  );
+  expect(ui.active.innerHTML).toContain('0:10');
+  expect(ui.active.innerHTML).not.toContain('done goal');
+  sub.stop();
+});
+test('failed request records the error and returns main to listening', async () => {
+  const ui = harness();
+  ui.fetch.mockResolvedValue(stream(''));
+  ui.startDialogueEvents('key');
+  await flush();
+  ui.fetch.mockRejectedValue(new Error('offline'));
+  ui.userInput.value = 'request';
+  await ui.sendMessage();
+  expect(ui.list.innerHTML).toContain(
+    '\u2717 main: \u00abrequest\u00bb \u00b7 offline',
+  );
+  expect(ui.active.innerHTML).toContain('main \u00b7 listening');
+  ui.stopDialogueEvents();
+});
+
+test.each(['AbortError', 'stream failure'])(
+  'request failures include %s in the journal',
+  async (message) => {
+    const ui = harness();
+    ui.fetch.mockResolvedValue(stream(''));
+    ui.startDialogueEvents('key');
+    await flush();
+    let replayed = false;
+    ui.fetch.mockResolvedValue({
+      ok: true,
+      headers: { get: () => null },
+      body: {
+        getReader: () => ({
+          read: async () => {
+            if (!replayed) {
+              replayed = true;
+              return {
+                done: false,
+                value: new TextEncoder().encode(
+                  messageWire('older-reply', 'earlier answer'),
+                ),
+              };
+            }
+            throw new Error(message);
+          },
+          releaseLock: () => {},
+        }),
+      },
+    });
+    ui.userInput.value = 'request';
+    await ui.sendMessage();
+    expect(ui.list.innerHTML).toContain(
+      '\u2717 main: \u00abrequest\u00bb \u00b7 ' + message,
+    );
+    expect(ui.active.innerHTML).toContain('listening');
+    ui.stopDialogueEvents();
+  },
+);

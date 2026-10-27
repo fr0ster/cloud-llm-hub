@@ -539,6 +539,26 @@
         }
         // Dialogue events
         let dialogueSubscription = null;
+        let dialogueOpen = false, dialogueTasks = [], mainRequests = [];
+        function finishMain(request, error) {
+            if (!request || request.state !== 'running') return;
+            request.state = error ? 'failed' : 'done'; request.finishedAt = Date.now();
+            if (error) request.error = error;
+            renderActiveAgents(dialogueTasks);
+        }
+        function renderTasks() {
+            const tasks = [...mainRequests, ...dialogueTasks].sort((a, b) => (a.startedAt ?? a.createdAt ?? 0) - (b.startedAt ?? b.createdAt ?? 0));
+            if (tasks.length) showDialoguePanel(document.getElementById('dialogue-tasks-panel'));
+            const counts = new Map();
+            for (const task of tasks) counts.set(task.state, (counts.get(task.state) || 0) + 1);
+            document.getElementById('dialogue-tasks-status').textContent = [...counts].map(([state, count]) => count + ' ' + state).join(' \u00b7 ');
+            document.getElementById('dialogue-tasks').innerHTML = tasks.map(task => {
+                const symbol = ({ running: '\u25b6', queued: '\u2026', done: '\u2713', failed: '\u2717', stopped: '\u25a0', interrupted: '\u25a0' })[task.state] || '\u2026';
+                const label = task.main ? 'main: \u00ab' + task.goal.slice(0, 60) + '\u00bb' : task.id + ' \u00b7 subagent ' + (task.worker || '') + ': ' + (task.goal || '');
+                const detail = task.state === 'failed' && task.error ? ' \u00b7 ' + task.error : '';
+                return '<div class="dialogue-task" title="' + escapeHtml([task.goal, task.error].filter(Boolean).join(' \u00b7 ')) + '">' + symbol + ' ' + escapeHtml(label + detail) + '</div>';
+            }).join('');
+        }
         function stopDialogueEvents() {
             dialogueSubscription?.stop(); dialogueSubscription = null;
             document.getElementById('dialogue-tasks-panel').hidden = true;
@@ -549,6 +569,7 @@
             document.getElementById('dialogue-plan').open = false;
             document.getElementById('dialogue-plan-text').innerHTML = '';
             document.getElementById('dialogue-plan-status').textContent = '';
+            dialogueOpen = false; mainRequests = [];
             renderActiveAgents([]);
         }
         // Collapsible PLAN and TASKS panels share one rule: they start collapsed
@@ -563,24 +584,26 @@
             return Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
         }
         function renderActiveAgents(tasks) {
+            dialogueTasks = tasks;
             const box = document.getElementById('dialogue-active');
-            const active = tasks.filter(task => task.state === 'running' || task.state === 'queued');
-            clearInterval(activeAgentsTimer); activeAgentsTimer = null;
-            if (!active.length) { box.hidden = true; box.innerHTML = ''; return; }
+            if (!dialogueOpen) { clearInterval(activeAgentsTimer); activeAgentsTimer = null; box.hidden = true; box.innerHTML = ''; return; }
             const draw = () => {
+                const active = dialogueTasks.filter(task => task.state === 'running' || task.state === 'queued');
                 const now = Date.now();
-                box.innerHTML = '<div>● main agent · ' + active.length + ' active</div>' + active.map((task, index) => {
-                    const since = task.startedAt || task.createdAt;
-                    const elapsed = since ? formatElapsed(now - since) : '';
+                const main = mainRequests.find(task => task.state === 'running');
+                box.innerHTML = '<div>\u25cf main \u00b7 ' + (main ? 'working ' + formatElapsed(now - main.startedAt) : 'listening') + '</div>' + active.map((task, index) => {
+                    const since = task.startedAt ?? task.createdAt;
+                    const elapsed = formatElapsed(now - (since ?? now));
                     const time = task.state === 'queued' ? ('queued ' + elapsed).trim() : elapsed || 'running';
                     return '<div class="agent-child" title="' + escapeHtml(String(task.goal || '')) + '">' + (index === active.length - 1 ? '└ ' : '├ ')
                         + escapeHtml(String(task.id)) + ' ' + escapeHtml(String(task.worker || '')) + ': ' + escapeHtml(String(task.goal || ''))
                         + ' <span class="agent-time">· ' + escapeHtml(time) + '</span></div>';
                 }).join('');
+                renderTasks();
             };
             draw();
             box.hidden = false;
-            activeAgentsTimer = setInterval(draw, 1000);
+            if (activeAgentsTimer === null) activeAgentsTimer = setInterval(draw, 1000);
         }
         function startDialogueEvents(key) {
             if (hubSignedOut) return;
@@ -590,6 +613,7 @@
         function subscribeDialogueEvents(key) {
             let stopped = false, delay = 1000, timer, controller, reader, lastId;
             let tasks = [];
+            dialogueOpen = true; renderActiveAgents(tasks);
             function renderPlan(plan) {
                 if (!Array.isArray(plan.steps) && typeof plan.text !== 'string') return;
                 showDialoguePanel(document.getElementById('dialogue-plan'));
@@ -604,21 +628,13 @@
                     }).join('') + (plan.text ? markdownToHtml(plan.text) : '')
                     : markdownToHtml(plan.text);
             }
-            function renderTasks() {
-                if (tasks.length) showDialoguePanel(document.getElementById('dialogue-tasks-panel'));
-                renderActiveAgents(tasks);
-                const counts = new Map();
-                for (const task of tasks) counts.set(task.state, (counts.get(task.state) || 0) + 1);
-                document.getElementById('dialogue-tasks-status').textContent = [...counts].map(([state, count]) => count + ' ' + state).join(' \u00b7 ');
-                document.getElementById('dialogue-tasks').innerHTML = tasks.map(task => '<div class="dialogue-task" title="' + escapeHtml(String(task.goal || '')) + '">' + stepSymbol(task) + ' ' + escapeHtml(String(task.id)) + ': ' + escapeHtml(String(task.goal || '')) + '</div>').join('');
-            }
             async function connect() {
                 if (stopped || hubSignedOut) return;
                 controller = new AbortController();
                 try {
                     const response = await hubFetch('/v1/session/events', { method: 'GET', signal: controller.signal, headers: { ...sessionHeaders(), 'x-clh-session': key, Accept: 'text/event-stream', ...(lastId ? { 'Last-Event-ID': lastId } : {}) } });
                     if (stopped || hubSignedOut) return;
-                    if (response.status === 409) { stopped = true; return; }
+                    if (response.status === 409) { stopped = true; dialogueOpen = false; renderActiveAgents([]); return; }
                     if (!response.ok) throw new Error('HTTP ' + response.status);
                     reader = response.body.getReader();
                     const decoder = new TextDecoder();
@@ -649,11 +665,11 @@
                                 lastId = id;
                             } else if (event === 'usage') { renderMessageUsage(key, parsed.id, parsed.usage); }
                             else if (event === 'plan') { renderPlan(parsed); }
-                            else if (event === 'tasks' && Array.isArray(parsed)) { tasks = parsed; renderTasks(); }
+                            else if (event === 'tasks' && Array.isArray(parsed)) { tasks = parsed; renderActiveAgents(tasks); }
                             else if (event === 'task' && parsed.id) {
                                 const index = tasks.findIndex(task => task.id === parsed.id);
                                 if (index < 0) tasks.push(parsed); else tasks[index] = { ...tasks[index], ...parsed };
-                                renderTasks();
+                                renderActiveAgents(tasks);
                             }
                         }
                     }
@@ -664,7 +680,7 @@
                 }
             }
             void connect();
-            return { key, stop() { stopped = true; clearTimeout(timer); controller?.abort(); if (reader) void reader.cancel().catch(() => {}); } };
+            return { key, stop() { clearInterval(activeAgentsTimer); activeAgentsTimer = null; stopped = true; clearTimeout(timer); controller?.abort(); if (reader) void reader.cancel().catch(() => {}); } };
         }
 
         // Input history (Up/Down arrow navigation like terminal)
@@ -1867,6 +1883,8 @@
             const text = userInput.value.trim();
             if (!text) return;
             const t0 = Date.now();
+            let mainRequest = dialogueOpen ? { main: true, goal: text, state: 'running', startedAt: t0, createdAt: t0 } : null;
+            if (mainRequest) { mainRequests.push(mainRequest); renderActiveAgents(dialogueTasks); }
             const selectedDest = getSelectedDestination();
 
             inputHistory.push(text);
@@ -1940,6 +1958,10 @@
                 if (classifierSelect.value) reqBody.classifier_model = classifierSelect.value;
                 // Send only current message — SmartAgent manages session history internally.
                 await ensureSession();
+                if (!mainRequest && dialogueOpen) {
+                    mainRequest = { main: true, goal: text, state: 'running', startedAt: t0, createdAt: t0 };
+                    mainRequests.push(mainRequest); renderActiveAgents(dialogueTasks);
+                }
                 const requestKey = sessionKey;
                 const headers = { 'Content-Type': 'application/json', ...getSapCredHeaders(), 'x-clh-ack': sessionAcks.get(requestKey) || 'none' };
                 if (selectedDest) headers['X-SAP-Destination'] = selectedDest;
@@ -1952,7 +1974,13 @@
 
                 let streamKey = requestKey;
                 const response = await sessionFetch('/v1/chat/completions', {
-                    onSessionKey: key => { streamKey = key; },
+                    onSessionKey: key => {
+                        streamKey = key;
+                        // Session recovery resets the journal; keep this request in its actual session.
+                        if (mainRequest && dialogueOpen && !mainRequests.includes(mainRequest)) {
+                            mainRequests.push(mainRequest); renderActiveAgents(dialogueTasks);
+                        }
+                    },
                     method: 'POST',
                     headers,
                     body: JSON.stringify(reqBody)
@@ -2217,6 +2245,7 @@
                 }
 
             } catch (e) {
+                if (mainRequest) finishMain(mainRequest, e.message || String(e));
                 stopTimer();
                 if (hubSignedOut) {
                     if (!userInput.value) userInput.value = text;
@@ -2242,6 +2271,7 @@
                 return;
             }
 
+            finishMain(mainRequest);
             setIdleStatus();
             releaseTurn();
             userInput.focus();

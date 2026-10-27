@@ -52,7 +52,7 @@ export async function handleDialogueEvents(
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
-  const send = (event: string, data: unknown, id?: string) => {
+  const send = (event: string, data: object, id?: string) => {
     if (closed) return;
     try {
       res.write(
@@ -92,7 +92,7 @@ export async function handleDialogueEvents(
             usage: dialogueUsageToWire(sumPlannerUsage([event.usage])),
           });
         else if (event.kind === 'plan') send('plan', event.plan);
-        else if (event.kind === 'task') send('task', event.task);
+        else if (event.kind === 'task') send('task', taskView(event.task));
       },
       typeof cursor === 'string' ? cursor : undefined,
     );
