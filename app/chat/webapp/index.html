@@ -2125,13 +2125,13 @@
                 const durationSec = ((Date.now() - t0) / 1000).toFixed(1);
                 let usageHtml = `<div class="stats-bar"><span>TIME: <span class="val">${durationSec}s</span></span>`;
                 if (usage) {
-                    const total = (usage.prompt_tokens || 0) + (usage.completion_tokens || 0);
+                    const total = usage.total_tokens ?? ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0));
                     usageHtml += `<span>TOKENS: <span class="val">${total}</span> (in: ${usage.prompt_tokens || 0} / out: ${usage.completion_tokens || 0})</span>`;
                     // Per-model breakdown (classifier, embedder, main)
                     if (usage.models && typeof usage.models === 'object') {
                         const parts = Object.entries(usage.models).map(([model, u]) => {
                             const short = model.replace(/^anthropic--/, '').replace(/^.*--/, '');
-                            return `${short}: ${u.promptTokens || 0}+${u.completionTokens || 0}`;
+                            return `${short}: ${u.prompt_tokens ?? u.promptTokens ?? 0}+${u.completion_tokens ?? u.completionTokens ?? 0}`;
                         });
                         if (parts.length > 1) {
                             usageHtml += `<span style="color:#666;font-size:11px">[${parts.join(' | ')}]</span>`;

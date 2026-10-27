@@ -10,6 +10,7 @@ import {
 import { longSessionsIfReady } from './long-session';
 import type { LongSessionRequest } from './session-connection';
 import { taskView } from './task-view';
+import { dialogueUsageToWire, sumPlannerUsage } from './usage-wire';
 
 /** Read-only view of complete session messages, plans and tasks for all tabs.
  * The open channel is the WebUI's live connection, so it counts as session
@@ -75,7 +76,16 @@ export async function handleDialogueEvents(
     const detach = handle.subscribe(
       (event) => {
         if (event.kind === 'message')
-          send('message', event.message, event.message.id);
+          send(
+            'message',
+            {
+              ...event.message,
+              usage: dialogueUsageToWire(
+                sumPlannerUsage([event.message.usage]),
+              ),
+            },
+            event.message.id,
+          );
         else if (event.kind === 'plan') send('plan', event.plan);
         else if (event.kind === 'task') send('task', event.task);
       },

@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- Every answer reports its token usage. Dialogue answers (OpenAI-compatible API, WebUI, Anthropic-compatible API) return the total plus `usage.x_hub` with the planner's usage and each subagent task's usage (`task_id`, `worker`, per-model entries); streamed answers send it after the last delivered message, messages delivered later by id carry their own. Agent MCP `execute_step` returns the executor's usage in `structuredContent.usage` and a `[usage] prompt=… completion=… total=…` line. Works with usage recording off. Planner usage records now keep role `planner` (the tool loop labels `component: 'tool-loop'`) and the final answer after background tasks keeps the originating request id (llm-agent 30.14.0, llm-agent-libs 30.12.0).
+
 ## [9.6.0] - 2026-10-27
 
 ### Added

@@ -3,6 +3,7 @@ import {
   requestMeasurement,
 } from './lib/usage/request-records';
 import type { UsageSession } from './lib/usage/storage-snapshot';
+import { tokenUsageToWire } from './lib/usage-wire';
 /**
  * Planner/controller MCP surface — a SEPARATE MCP endpoint that exposes
  * tools for an external planner (e.g. Claude Code):
@@ -144,7 +145,7 @@ const EXECUTE_STEP_DESCRIPTION = [
   '',
   'For multi-step work call `session_open` first, pass its key as `session` in every call, and call `session_close` when done. With `session`, execute_step continues the conversation and ABAP connection (debugger, locks). Calls of one session run one after another. Without `session`, each call is independent as before.',
   '',
-  "Every result ends with the executor's token usage (prompt/completion/total) and iteration/tool-call counts. Use it to track and budget what the executor spends across your plan.",
+  'Every result with known usage ends with [usage] prompt=<n> completion=<n> total=<n> and includes structuredContent.usage. Use it to track and budget what the executor spends across your plan.',
 ].join('\n');
 
 export interface AgentMcpResult {
@@ -543,11 +544,6 @@ async function executeStepRun(
       );
     }
 
-    // Transparent pass-through: return the executor's output VERBATIM — no
-    // PROBLEM banner, no usage footer, no reshaping. This MCP is a thin proxy
-    // to the agent; whatever the agent produced is exactly what the caller
-    // gets. Diagnostics stay server-side in the log below.
-    //
     const rawContent = r.value.content ?? '';
     if (measurement && /\S/.test(rawContent) && !callerSignal?.aborted)
       measurement?.deliverOnResponseEnd();
@@ -568,7 +564,17 @@ async function executeStepRun(
       recordTurn(sessionId, userId, lastUser, rawContent);
     }
     if (longSession && takeRevivalNotice(longSession)) notice = 'revived';
-    return textResult(notice ? `${notice}\n${rawContent}` : rawContent, false);
+    const wireUsage = tokenUsageToWire(r.value.usage);
+    const content = notice ? `${notice}\n${rawContent}` : rawContent;
+    return {
+      ...textResult(
+        wireUsage
+          ? `${content}\n[usage] prompt=${wireUsage.prompt_tokens} completion=${wireUsage.completion_tokens} total=${wireUsage.total_tokens}`
+          : content,
+        false,
+      ),
+      ...(wireUsage ? { structuredContent: { usage: wireUsage } } : {}),
+    };
   } catch (err) {
     if (targetDestination && isOutageError(err)) {
       closeDestination(targetDestination, describeCause(err));

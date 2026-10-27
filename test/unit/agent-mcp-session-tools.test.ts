@@ -372,3 +372,29 @@ it('execute_step scopes the tool gate bypass to the executor call', async () => 
   });
   expect(isToolGateBypassed()).toBe(false);
 });
+
+it('execute_step returns executor usage and ends with the footer with recording off', async () => {
+  const previous = process.env.LLM_AGENT_USAGE;
+  delete process.env.LLM_AGENT_USAGE;
+  try {
+    harness.process = async () => ({
+      ok: true,
+      value: {
+        content: 'done',
+        usage: { promptTokens: 7, completionTokens: 4, totalTokens: 11 },
+      },
+    });
+    const result = await executeStep(req, caller, { task: 'work' });
+    expect(result).toMatchObject({
+      structuredContent: {
+        usage: { prompt_tokens: 7, completion_tokens: 4, total_tokens: 11 },
+      },
+    });
+    expect(result.content[0]?.text).toMatch(
+      /\[usage\] prompt=7 completion=4 total=11$/,
+    );
+  } finally {
+    if (previous === undefined) delete process.env.LLM_AGENT_USAGE;
+    else process.env.LLM_AGENT_USAGE = previous;
+  }
+});

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { PlannerMessageUsage } from '@mcp-abap-adt/llm-agent';
 import {
   AnthropicApiAdapter,
   type ApiRequestContext,
@@ -15,6 +16,11 @@ import {
 } from './dialogue-chat';
 import { type LongSession, longSessions } from './long-session';
 import { responseMeasurement } from './usage/request-records';
+import {
+  dialogueUsageToWire,
+  sumPlannerUsage,
+  tokenUsageToWire,
+} from './usage-wire';
 
 /** One response owns its heartbeat, error and terminal, including queue waits. */
 export function chatStream(
@@ -108,6 +114,7 @@ export async function streamDialogue(opts: {
   let failure: unknown;
   let text = '';
   let explicitMessages = false;
+  const deliveredUsage: Array<PlannerMessageUsage | undefined> = [];
   const push = (chunk: Chunk) =>
     new Promise<void>((written) => {
       queue.push({ chunk, written });
@@ -147,8 +154,18 @@ export async function streamDialogue(opts: {
         for await (const event of new AnthropicApiAdapter().transformStream(
           source,
           opts.context,
-        ))
-          stream.out.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
+        )) {
+          const usage =
+            event.event === 'message_delta'
+              ? sumPlannerUsage(deliveredUsage)
+              : undefined;
+          if (usage) {
+            stream.out.write(
+              `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { input_tokens: usage.promptTokens, output_tokens: usage.completionTokens, x_hub: usage.x_hub } })}\n\n`,
+            );
+          } else
+            stream.out.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
+        }
       } else {
         let usage: LlmStreamChunk['usage'];
         for await (const chunk of source) {
@@ -157,9 +174,12 @@ export async function streamDialogue(opts: {
           if (chunk.value.usage) usage = chunk.value.usage;
         }
         delta('', 'stop');
-        if (usage)
+        const wireUsage =
+          dialogueUsageToWire(sumPlannerUsage(deliveredUsage)) ??
+          tokenUsageToWire(usage);
+        if (wireUsage)
           stream.out.write(
-            `data: ${JSON.stringify({ ...base, choices: [], usage: { prompt_tokens: usage.promptTokens, completion_tokens: usage.completionTokens, total_tokens: usage.totalTokens } })}\n\n`,
+            `data: ${JSON.stringify({ ...base, choices: [], usage: wireUsage })}\n\n`,
           );
         stream.out.write('data: [DONE]\n\n');
       }
@@ -178,6 +198,7 @@ export async function streamDialogue(opts: {
       for await (const chunk of opts.source) {
         if (!chunk.ok) throw chunk.error;
         const v = chunk.value;
+        if (v.clhUsage) deliveredUsage.push(v.clhUsage);
         if (v.clhMessageId) comment('message-id', v.clhMessageId);
         else if (v.clhMessageEnd) {
           if (stream.measurement) explicitMessages = true;
@@ -211,6 +232,7 @@ export async function streamDialogue(opts: {
       if (follow)
         for await (const item of follow) {
           if (item.kind === 'message') {
+            deliveredUsage.push(item.message.usage);
             if (text) await content('\n\n');
             comment('message-id', item.message.id);
             await content(item.message.text);

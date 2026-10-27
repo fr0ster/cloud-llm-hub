@@ -1171,7 +1171,9 @@ test.each([
             )
             .map((r: UsageRecord): string | undefined => r.context.component)
             .sort(),
-        ).toEqual(['collection-retrieval', 'llm-only-guard', undefined].sort());
+        ).toEqual(
+          ['collection-retrieval', 'llm-only-guard', 'tool-loop'].sort(),
+        );
         for (const record of request)
           expect(record.context).toMatchObject({
             userId: 'alice',
@@ -1488,7 +1490,8 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
         own.some(
           (row: UsageRecord): boolean =>
             row.kind === 'llm.call' &&
-            row.context.role === 'tool-loop' &&
+            row.context.role === 'planner' &&
+            row.context.component === 'tool-loop' &&
             !row.context.taskId,
         ),
       ).toBe(true);

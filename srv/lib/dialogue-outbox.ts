@@ -145,6 +145,8 @@ export class DialogueOutbox {
   ): Promise<void> {
     return this.write(async () => {
       for (const message of cleanMessages(messages)) {
+        const existing = this.messages.find((entry) => entry.id === message.id);
+        if (existing && message.usage) existing.usage = message.usage;
         if (!this.seen.has(message.id)) {
           this.messages.push(message);
           this.seen.add(message.id);
@@ -153,7 +155,10 @@ export class DialogueOutbox {
       for (const message of cleanMessages(replacements)) {
         const existing = this.messages.find((entry) => entry.id === message.id);
         if (existing) {
-          if (!existing.confirmed) existing.text = message.text;
+          if (!existing.confirmed) {
+            existing.text = message.text;
+            if (message.usage) existing.usage = message.usage;
+          }
         } else if (!this.seen.has(message.id)) {
           this.messages.push(message);
           this.seen.add(message.id);

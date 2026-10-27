@@ -51,6 +51,28 @@ export interface DialogueStoreBackend {
 }
 const str = z.string();
 const num = z.number().finite();
+const tokenUsage = z.object({
+  promptTokens: num,
+  completionTokens: num,
+  totalTokens: num,
+  models: z
+    .record(
+      str,
+      z.object({
+        promptTokens: num,
+        completionTokens: num,
+        totalTokens: num,
+        requests: num,
+      }),
+    )
+    .optional(),
+});
+const plannerUsage = z.object({
+  planner: tokenUsage.optional(),
+  tasks: z
+    .array(z.object({ id: str, worker: str, usage: tokenUsage }))
+    .optional(),
+});
 const message = z.object({
   role: z.enum(['user', 'assistant', 'system', 'tool']),
   content: str.max(20000).nullable(),
@@ -143,6 +165,7 @@ const schema = z.object({
           'stopped',
           'interrupted',
         ]),
+        usage: tokenUsage.optional(),
         budgetExhausted: z.boolean().optional(),
         toolCalls: num.optional(),
         maxToolCalls: num.optional(),
@@ -166,6 +189,7 @@ const schema = z.object({
       text: str,
       createdAt: num,
       trigger: z.enum(['user', 'event']),
+      usage: plannerUsage.optional(),
     }),
   ),
   savedAt: num,

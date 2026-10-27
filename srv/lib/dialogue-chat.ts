@@ -4,6 +4,7 @@ import type {
   LlmStreamChunk,
   Message,
   OrchestratorError,
+  PlannerMessageUsage,
   Result,
   SmartAgentResponse,
 } from '@mcp-abap-adt/llm-agent';
@@ -22,8 +23,10 @@ import { NoMessageFilter, stripNoMessage } from './no-message';
 import { ragContextOf, userTextOf } from './rag-context-marker';
 import { extractText } from './session-turns';
 import { responseMeasurement } from './usage/request-records';
+import { type DialogueUsage, sumPlannerUsage } from './usage-wire';
 
 export type DialogueStreamChunk = LlmStreamChunk & {
+  clhUsage?: PlannerMessageUsage;
   clhMessageId?: string;
   clhMessageEnd?: string;
   clhTurnEnd?: true;
@@ -47,7 +50,9 @@ export function dialogueChat(
   process(
     messages: Message[],
     opts?: AgentCallOptions,
-  ): Promise<Result<SmartAgentResponse, OrchestratorError>>;
+  ): Promise<
+    Result<SmartAgentResponse & { usage?: DialogueUsage }, OrchestratorError>
+  >;
   streamProcess(
     messages: Message[],
     opts?: AgentCallOptions,
@@ -159,6 +164,7 @@ export function dialogueChat(
             text,
             createdAt,
             trigger: 'user' as const,
+            usage: answer.usage,
           };
           await handle.outbox.upsert([reply]);
           carried.push(reply);
@@ -172,6 +178,7 @@ export function dialogueChat(
           ok: true,
           value: {
             content: carried.map((m) => m.text).join('\n\n'),
+            usage: sumPlannerUsage(carried.map((m) => m.usage)),
             stopReason: 'stop',
             iterations: 0,
             toolCallCount: 0,
@@ -184,6 +191,7 @@ export function dialogueChat(
     async *streamProcess(messages, opts) {
       const { handle, pending, complete } = await open();
       let hasContent = false;
+      let replyUsage: PlannerMessageUsage | undefined;
       for (const message of pending) {
         if (!message.text.trim()) continue;
         if (hasContent) yield { ok: true, value: { content: '\n\n' } };
@@ -191,7 +199,14 @@ export function dialogueChat(
         yield { ok: true, value: { content: '', clhMessageId: message.id } };
         yield { ok: true, value: { content: message.text } };
         delivery.carried(message.id);
-        yield { ok: true, value: { content: '', clhMessageEnd: message.id } };
+        yield {
+          ok: true,
+          value: {
+            content: '',
+            clhMessageEnd: message.id,
+            clhUsage: message.usage,
+          },
+        };
       }
       const replyId = randomUUID();
       const createdAt = Date.now();
@@ -243,6 +258,7 @@ export function dialogueChat(
         })
         .then(
           (answer) => {
+            replyUsage = answer.usage;
             const content = receivedPartial
               ? filter.finish()
               : stripNoMessage(answer.text);
@@ -285,12 +301,15 @@ export function dialogueChat(
       if (failure) throw failure;
       if (text.trim()) {
         await handle.outbox.upsert([
-          { id: replyId, text, createdAt, trigger: 'user' },
+          { id: replyId, text, createdAt, trigger: 'user', usage: replyUsage },
         ]);
         delivery.carried(replyId);
       }
       if (replyStarted)
-        yield { ok: true, value: { content: '', clhMessageEnd: replyId } };
+        yield {
+          ok: true,
+          value: { content: '', clhMessageEnd: replyId, clhUsage: replyUsage },
+        };
       yield { ok: true, value: { content: '', clhTurnEnd: true } };
       if (handle.state().status) followHandle = handle;
       complete();

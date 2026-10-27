@@ -115,6 +115,19 @@ jest.mock('../../srv/agent-manager', () => ({
         ok: true,
         value: {
           content: text.startsWith('[task events]') ? text : 'delegated',
+          usage: {
+            promptTokens: 3,
+            completionTokens: 2,
+            totalTokens: 5,
+            models: {
+              m: {
+                promptTokens: 3,
+                completionTokens: 2,
+                totalTokens: 5,
+                requests: 1,
+              },
+            },
+          },
         },
       };
     },
@@ -418,6 +431,8 @@ test('delegated worker has system, session, owner, task history, admission, conn
 });
 test('honesty notice reaches task output and planner', async () => {
   const { h } = await ready();
+  const usage = { promptTokens: 7, completionTokens: 4, totalTokens: 11 };
+  mockRun.mockResolvedValue({ output: 'read done', usage });
   jest.mocked(evaluateGated).mockResolvedValue({
     ok: false,
     issues: [
@@ -432,6 +447,25 @@ test('honesty notice reaches task output and planner', async () => {
   await until(() => h.outbox.pending().length > 0);
   expect(h.session.snapshot().tasks[0].output).toContain('UNVERIFIED_WRITE:');
   expect(h.outbox.pending()[0].text).toContain('UNVERIFIED_WRITE:');
+  expect(h.session.snapshot().tasks[0].usage).toEqual(usage);
+  expect(h.outbox.pending()[0].usage).toEqual({
+    planner: {
+      promptTokens: 3,
+      completionTokens: 2,
+      totalTokens: 5,
+      models: {
+        m: {
+          promptTokens: 3,
+          completionTokens: 2,
+          totalTokens: 5,
+          requests: 1,
+        },
+      },
+    },
+    tasks: [
+      { id: h.session.snapshot().tasks[0].id, worker: 'executor', usage },
+    ],
+  });
 });
 test('subscribers receive task events and messages; messages stay in outbox for both tabs until acknowledged', async () => {
   const { h } = await ready();
