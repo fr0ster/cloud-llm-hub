@@ -486,6 +486,32 @@
         const messageViews = new Map();
         const sessionAcks = new Map();
         let chatSendSequence = 0;
+        // A response's final usage chunk is the whole request's total; a single
+        // message's own usage (events channel) must not overwrite it.
+        function renderMessageUsage(key, id, usage, requestTotal = false) {
+            const view = messageViews.get(key + ':' + id);
+            if (!view || !usage) return;
+            if (view.requestTotal && !requestTotal) return;
+            if (requestTotal) view.requestTotal = true;
+            const total = u => u.total_tokens ?? ((u.prompt_tokens || 0) + (u.completion_tokens || 0));
+            let html = `<div class="stats-bar"><span>TOKENS: <span class="val">${total(usage)}</span> (in: ${usage.prompt_tokens || 0} / out: ${usage.completion_tokens || 0})</span>`;
+            if (usage.models && typeof usage.models === 'object') {
+                const parts = Object.entries(usage.models).map(([model, u]) => {
+                    const short = model.replace(/^anthropic--/, '').replace(/^.*--/, '');
+                    return `${short}: ${u.prompt_tokens ?? u.promptTokens ?? 0}+${u.completion_tokens ?? u.completionTokens ?? 0}`;
+                });
+                if (parts.length > 1) html += `<span style="color:#666;font-size:11px">[${escapeHtml(parts.join(' | '))}]</span>`;
+            }
+            if (usage.x_hub) {
+                const parts = [];
+                if (usage.x_hub.planner) parts.push('planner: ' + total(usage.x_hub.planner));
+                for (const task of usage.x_hub.subagents || []) parts.push(task.task_id + '\u00b7' + task.worker + ': ' + total(task));
+                if (parts.length) html += `<span style="color:#666;font-size:11px">[${escapeHtml(parts.join(' | '))}]</span>`;
+            }
+            view.usageHtml = html + '</div>';
+            view.node.querySelector('.stats-bar')?.remove();
+            view.node.insertAdjacentHTML('beforeend', view.usageHtml);
+        }
         function renderMessageVersion(key, id, text, complete) {
             const viewKey = key + ':' + id;
             let view = messageViews.get(viewKey);
@@ -501,7 +527,8 @@
             view.text = text;
             if (complete) view.parser.finish();
             const rendered = view.parser.render();
-            view.node.innerHTML = '<span class="agent"><b>> AGENT:</b> ' + rendered.html + '</span>';
+            view.contentHtml = '<span class="agent"><b>> AGENT:</b> ' + rendered.html + '</span>';
+            view.node.innerHTML = view.contentHtml + (view.usageHtml || '');
             if (complete) void renderMermaidDiagrams(rendered.mermaidIds);
             view.complete = complete;
             if (complete) {
@@ -618,8 +645,10 @@
                                 id = id || parsed.id;
                                 if (!id || typeof parsed.text !== 'string') continue;
                                 renderMessageVersion(key, id, parsed.text, true);
+                                renderMessageUsage(key, id, parsed.usage);
                                 lastId = id;
-                            } else if (event === 'plan') { renderPlan(parsed); }
+                            } else if (event === 'usage') { renderMessageUsage(key, parsed.id, parsed.usage); }
+                            else if (event === 'plan') { renderPlan(parsed); }
                             else if (event === 'tasks' && Array.isArray(parsed)) { tasks = parsed; renderTasks(); }
                             else if (event === 'task' && parsed.id) {
                                 const index = tasks.findIndex(task => task.id === parsed.id);
@@ -1959,7 +1988,7 @@
                 let buffer = '';
                 phase = 'STREAMING';
                 const fileParser = createFileParser();
-                let segmentId = null, segmentText = '', framed = false, noteNode = null;
+                let segmentId = null, lastMessageId = null, segmentText = '', framed = false, noteNode = null;
                 function contentSegment(text) {
                     if (segmentId) {
                         segmentText += text;
@@ -1986,7 +2015,7 @@
                             for (const line of part.split('\n')) {
                                 const trimmed = line.trim();
                                 if (trimmed.startsWith(': message-id ')) {
-                                    framed = true; segmentId = trimmed.slice(13).trim(); segmentText = ''; noteNode = null;
+                                    framed = true; segmentId = trimmed.slice(13).trim(); lastMessageId = segmentId; segmentText = ''; noteNode = null;
                                     document.getElementById(thinkingId)?.remove();
                                     continue;
                                 }
@@ -2018,7 +2047,10 @@
                                     const data = JSON.parse(trimmed.substring(6));
 
                                     if (data.error && data.error.message) throw new Error(data.error.message);
-                                    if (data.usage) usage = data.usage;
+                                    if (data.usage) {
+                                        usage = data.usage;
+                                        if (lastMessageId) renderMessageUsage(streamKey, lastMessageId, usage, true);
+                                    }
                                     if (!data.choices || !data.choices.length) continue;
 
                                     const delta = data.choices[0].delta || {};
