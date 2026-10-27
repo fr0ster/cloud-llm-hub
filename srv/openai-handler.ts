@@ -5,6 +5,7 @@ import {
   measureRequest,
   requestMeasurement,
 } from './lib/usage/request-records';
+import { responseUsageToWire } from './lib/usage-wire';
 /**
  * OpenAI-compatible HTTP handlers for SmartAgent.
  *
@@ -1419,7 +1420,9 @@ async function serveChatCompletions(
             finish_reason: finalFinishReason,
           },
         ],
-        usage: finalUsage || {
+        usage: (useDialogue && result.ok
+          ? responseUsageToWire(result.value.usage)
+          : finalUsage) || {
           prompt_tokens: 0,
           completion_tokens: 0,
           total_tokens: 0,

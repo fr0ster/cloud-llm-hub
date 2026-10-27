@@ -84,7 +84,23 @@ function harness(now?: number) {
         })[id] ??
         placeholders.get(id) ??
         (id.startsWith('thinking-') ? null : list),
-      createElement: () => ({}),
+      createElement: () => {
+        const node = {
+          innerHTML: '',
+          querySelector: (_selector: string) => ({
+            remove: () => {
+              node.innerHTML = node.innerHTML.replace(
+                /<div class="stats-bar">.*?<\/div>/s,
+                '',
+              );
+            },
+          }),
+          insertAdjacentHTML: (_where: string, text: string) => {
+            node.innerHTML += text;
+          },
+        };
+        return node;
+      },
     },
     chatWindow: {
       appendChild: (node: any) => nodes.push(node),
@@ -815,4 +831,71 @@ test('probe notice preserves a cached partial message node and its completion', 
   expect(ui.nodes).toContain(ui.view('key', 'm').node);
   expect(node.innerHTML).toContain('completed answer');
   expect(html).not.toMatch(/chatWindow\.innerHTML\s*\+=/);
+});
+
+const tokenUsage = (total: number) => ({
+  prompt_tokens: total - 2,
+  completion_tokens: 2,
+  total_tokens: total,
+});
+
+test('dialogue final stream usage belongs to the last message including follow usage', async () => {
+  const ui = harness();
+  const usage = {
+    ...tokenUsage(30),
+    models: {
+      'anthropic--planner': tokenUsage(10),
+      'hub--worker': tokenUsage(20),
+    },
+    x_hub: {
+      planner: tokenUsage(10),
+      subagents: [{ ...tokenUsage(20), task_id: '<task>', worker: 'worker' }],
+    },
+  };
+  ui.fetch.mockResolvedValue(
+    stream(
+      messageWire('first', 'first answer') +
+        messageWire('last', 'follow answer') +
+        `data: ${JSON.stringify({ choices: [], usage })}\n\n`,
+    ),
+  );
+  ui.userInput.value = 'question';
+  await ui.sendMessage();
+  expect(ui.nodes[0].innerHTML).not.toContain('stats-bar');
+  expect(ui.nodes[1].innerHTML).toContain('follow answer');
+  expect(ui.nodes[1].innerHTML).toContain(
+    'TOKENS: <span class="val">30</span> (in: 28 / out: 2)',
+  );
+  expect(ui.nodes[1].innerHTML).toContain(
+    'planner: 10 | &lt;task&gt;\u00b7worker: 20',
+  );
+  expect(ui.nodes[1].innerHTML).toContain('planner: 8+2 | worker: 18+2');
+  expect(ui.nodes[1].innerHTML.match(/class="stats-bar"/g)).toHaveLength(1);
+});
+
+test('history usage and usage events create and replace stats on the matching message', async () => {
+  const ui = harness();
+  const message = (id: string, usage?: ReturnType<typeof tokenUsage>) =>
+    `event: message\ndata: ${JSON.stringify({ id, text: id, usage })}\n\n`;
+  const update = (id: string, total: number) =>
+    `event: usage\ndata: ${JSON.stringify({ id, usage: tokenUsage(total) })}\n\n`;
+  ui.fetch.mockResolvedValue(
+    stream(
+      message('history', tokenUsage(10)) +
+        message('live') +
+        update('live', 20) +
+        update('live', 30),
+    ),
+  );
+  const subscription = ui.subscribeDialogueEvents('key');
+  await flush();
+  expect(ui.nodes).toHaveLength(2);
+  expect(ui.nodes[0].innerHTML).toContain(
+    'TOKENS: <span class="val">10</span>',
+  );
+  expect(ui.nodes[1].innerHTML).toContain(
+    'TOKENS: <span class="val">30</span>',
+  );
+  expect(ui.nodes[1].innerHTML.match(/class="stats-bar"/g)).toHaveLength(1);
+  subscription.stop();
 });

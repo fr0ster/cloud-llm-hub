@@ -6,6 +6,7 @@ import {
   requestMeasurement,
 } from './lib/usage/request-records';
 import { usageRuntime } from './lib/usage/runtime';
+import { responseUsageToWire } from './lib/usage-wire';
 /**
  * Anthropic Messages API handler for SmartAgent.
  *
@@ -700,7 +701,23 @@ async function serveMessages(
         !out.detached
       )
         requestMeasurement(req)?.deliverOnResponseEnd();
-      out.json(200, adapter.formatResult(result.value, context));
+      const formatted = adapter.formatResult(result.value, context);
+      const wireUsage = useDialogue
+        ? responseUsageToWire(result.value.usage)
+        : undefined;
+      out.json(
+        200,
+        wireUsage && typeof formatted === 'object' && formatted !== null
+          ? {
+              ...formatted,
+              usage: {
+                input_tokens: wireUsage.prompt_tokens,
+                output_tokens: wireUsage.completion_tokens,
+                ...('x_hub' in wireUsage ? { x_hub: wireUsage.x_hub } : {}),
+              },
+            }
+          : formatted,
+      );
     } else {
       if (isOutageError(result.error)) {
         closeDestination(destination, describeCause(result.error));

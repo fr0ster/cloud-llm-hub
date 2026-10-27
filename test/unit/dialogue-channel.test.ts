@@ -248,6 +248,13 @@ for (const anthropic of [false, true])
 for (const anthropic of [false, true])
   for (const stream of [false, true]) {
     it(`${anthropic ? 'anthropic' : 'openai'} stream=${stream}: pending first, answer and history`, async () => {
+      send.mockResolvedValue({
+        text: 'answer',
+        usage: {
+          planner: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+        },
+      });
+
       const req = fakeReq(
         {
           model: 'm',
@@ -281,6 +288,32 @@ for (const anthropic of [false, true])
         );
       } else {
         const payload = JSON.parse(res.body);
+        expect(payload.usage).toEqual(
+          anthropic
+            ? {
+                input_tokens: 3,
+                output_tokens: 2,
+                x_hub: {
+                  planner: {
+                    prompt_tokens: 3,
+                    completion_tokens: 2,
+                    total_tokens: 5,
+                  },
+                },
+              }
+            : {
+                prompt_tokens: 3,
+                completion_tokens: 2,
+                total_tokens: 5,
+                x_hub: {
+                  planner: {
+                    prompt_tokens: 3,
+                    completion_tokens: 2,
+                    total_tokens: 5,
+                  },
+                },
+              },
+        );
         expect(
           anthropic
             ? payload.content[0].text
@@ -965,13 +998,35 @@ for (const anthropic of [false, true]) {
     send.mockImplementation(async (...args) => {
       const answer = await originalSend(...args);
       const pending = outbox.pending();
-      jest
-        .mocked(outbox.pending)
-        .mockReturnValue([
-          ...pending,
-          { id: 'follow-id', text: 'follow', createdAt: 3, trigger: 'event' },
-        ]);
-      return answer;
+      jest.mocked(outbox.pending).mockReturnValue([
+        ...pending,
+        {
+          id: 'follow-id',
+          text: 'follow',
+          createdAt: 3,
+          trigger: 'event',
+          usage: {
+            planner: { promptTokens: 2, completionTokens: 1, totalTokens: 3 },
+            tasks: [
+              {
+                id: 't1',
+                worker: 'executor',
+                usage: {
+                  promptTokens: 7,
+                  completionTokens: 4,
+                  totalTokens: 11,
+                },
+              },
+            ],
+          },
+        },
+      ]);
+      return {
+        ...answer,
+        usage: {
+          planner: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+        },
+      };
     });
     const res = fakeRes();
     await handler(streamingRequest(), res as unknown as Response);
@@ -979,6 +1034,22 @@ for (const anthropic of [false, true]) {
       expect(
         getSessionHistory(session.key, 'alice').map((m) => m.content),
       ).toEqual(['hi', `${visible}\n\nfollow`]);
+    }
+
+    expect(res.body).toContain(
+      '"x_hub":{"planner":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8},"subagents":[{"prompt_tokens":7,"completion_tokens":4,"total_tokens":11,"task_id":"t1","worker":"executor"}]}',
+    );
+    if (anthropic) {
+      expect(res.body).toContain('"input_tokens":12,"output_tokens":7');
+      expect(res.body.match(/event: message_delta\n/g)).toHaveLength(1);
+    } else {
+      expect(res.body).toContain(
+        '"prompt_tokens":12,"completion_tokens":7,"total_tokens":19',
+      );
+      expect(res.body.match(/"choices":\[\],"usage":/g)).toHaveLength(1);
+      expect(res.body.indexOf('"choices":[],"usage":')).toBeLessThan(
+        res.body.indexOf('data: [DONE]'),
+      );
     }
     expect(res.body.match(/: turn-end/g)).toHaveLength(1);
     expect(res.body.indexOf(': turn-end')).toBeLessThan(

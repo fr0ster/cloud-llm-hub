@@ -359,3 +359,41 @@ it('round trips confirmed outbox entries and ack mode, and loads legacy rows', a
     ackMode: true,
   });
 });
+
+it('round trips task, pending and outbox usage and still loads legacy state', async () => {
+  const usage = {
+    promptTokens: 3,
+    completionTokens: 2,
+    totalTokens: 5,
+    models: {
+      m: { promptTokens: 3, completionTokens: 2, totalTokens: 5, requests: 1 },
+    },
+  };
+  const message = {
+    id: 'reply',
+    text: 'done',
+    createdAt: 1,
+    trigger: 'event' as const,
+    usage: { planner: usage, tasks: [{ id: 't1', worker: 'executor', usage }] },
+  };
+  const value = {
+    ...state,
+    tasks: [
+      {
+        id: 't1',
+        worker: 'executor',
+        goal: 'work',
+        state: 'done' as const,
+        createdAt: 1,
+        usage,
+      },
+    ],
+    pending: [message],
+    outbox: [message],
+  };
+  const store = getDialogueStoreBackend();
+  await store.save('alice', 'usage', value);
+  expect(await store.load('alice', 'usage')).toEqual(value);
+  await store.save('alice', 'legacy-usage', state);
+  expect(await store.load('alice', 'legacy-usage')).toEqual(state);
+});

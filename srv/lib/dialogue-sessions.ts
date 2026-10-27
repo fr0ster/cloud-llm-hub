@@ -9,7 +9,9 @@ import type {
   IUsageRecorder,
   PlannerMessage,
   TaskRecord,
+  TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
+import { addTokenUsage } from '@mcp-abap-adt/llm-agent';
 import {
   DialogueSession,
   SemaphorePool,
@@ -67,6 +69,7 @@ type PlanStep = Plan['steps'][number];
 export type DialogueEvent =
   | { kind: 'settled'; outcome: 'ok' | 'failed'; trigger: 'user' | 'event' }
   | { kind: 'message'; message: PlannerMessage }
+  | { kind: 'usage'; id: string; usage: NonNullable<PlannerMessage['usage']> }
   | { kind: 'plan'; plan: DialoguePlan }
   | {
       kind: 'task';
@@ -238,6 +241,10 @@ async function open(
   const retrievedContexts = new WeakMap<object, string>();
   const replies = new WeakMap<object, { id: string; createdAt: number }>();
   let turnReply: { id: string; createdAt: number } | undefined;
+  // Planner usage of the user turn, summed over corrective calls; published with
+  // the reply so live subscribers see it on first emission.
+  const replyUsage = new WeakMap<object, TokenUsage>();
+  let turnReplyUsage: TokenUsage | undefined;
   const turnPlanner = plannerWithEnvironment(
     plannerWithRetrievedContext(
       plannerWithParagraphs(planner),
@@ -368,12 +375,13 @@ async function open(
                     task: input.task,
                     history: getRequestHistory(),
                   });
-                  return verdict.ok
-                    ? result
-                    : {
-                        ...result,
-                        output: result.output + renderNotice(verdict),
-                      };
+                  return {
+                    ...result,
+                    usage: addTokenUsage(result.usage, verdict.usage),
+                    output: verdict.ok
+                      ? result.output
+                      : result.output + renderNotice(verdict),
+                  };
                 },
                 ctx.lease.dumpScope,
                 factory.exposition,
@@ -449,6 +457,7 @@ async function open(
       settledSeq++;
       if (outcome === 'failed') lastFailedSeq = settledSeq;
       turnReply = undefined;
+      turnReplyUsage = undefined;
       await outbox.flushed();
       emit({ kind: 'settled', outcome, trigger });
     },
@@ -469,13 +478,23 @@ async function open(
         async process(input, options) {
           const reply = options.trace && replies.get(options.trace);
           turnReply = undefined;
+          turnReplyUsage = undefined;
           try {
             const result = await runWithContextCapture(
               { component: 'planner', sessionKey: key },
               () => turnPlanner.process(input, options),
             );
             // The library appends this successful result before its final save.
-            if (result.ok) turnReply = reply;
+            if (result.ok) {
+              turnReply = reply;
+              const trace = options.trace;
+              const usage =
+                reply && trace
+                  ? addTokenUsage(replyUsage.get(trace), result.value.usage)
+                  : undefined;
+              if (trace && usage) replyUsage.set(trace, usage);
+              turnReplyUsage = usage;
+            }
             return result;
           } finally {
             for (const task of session?.snapshot().tasks ?? []) emitTask(task);
@@ -512,6 +531,9 @@ async function open(
                     createdAt: turnReply.createdAt,
                     text,
                     trigger: 'user',
+                    ...(turnReplyUsage
+                      ? { usage: { planner: turnReplyUsage } }
+                      : {}),
                   },
                 ]
               : [],
@@ -681,6 +703,7 @@ async function open(
       const unsubscribeMessages = outbox.subscribe(
         (message) => fn({ kind: 'message', message }),
         cursor,
+        (id, usage) => fn({ kind: 'usage', id, usage }),
       );
       return () => {
         unsubscribeMessages();

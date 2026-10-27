@@ -1,3 +1,7 @@
+import express from 'express';
+import { dialogueChat } from '../../srv/lib/dialogue-chat';
+import { sumPlannerUsage } from '../../srv/lib/usage-wire';
+
 jest.mock('../../srv/connections/destinationResolver', () => ({
   resolveDestinationSapConfig: jest.fn(async () => ({
     authenticationType: 'BasicAuthentication',
@@ -18,7 +22,11 @@ jest.mock('../../srv/lib/background-connection', () => ({
 
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import { getRequestContext } from '@mcp-abap-adt/lib/request-context';
-import type { ISubAgentInput, ISubAgentResult } from '@mcp-abap-adt/llm-agent';
+import type {
+  ISubAgentInput,
+  ISubAgentResult,
+  TokenUsage,
+} from '@mcp-abap-adt/llm-agent';
 import {
   PlannerToolsClient,
   SmartAgentBuilder,
@@ -58,6 +66,7 @@ const mockPlannerTurns: string[] = [];
 const mockEnvironments: string[] = [];
 let mockGoal = 'read';
 let mockPlannerHook: ((text: string) => Promise<void>) | undefined;
+let mockPlanUsage: TokenUsage | undefined;
 let mockPlan:
   | {
       plan?: string;
@@ -89,6 +98,7 @@ jest.mock('../../srv/agent-config', () => ({
 }));
 jest.mock('../../srv/agent-manager', () => ({
   releasePlannerAgent: jest.fn(),
+  setSessionDestination: jest.fn(),
   buildPlannerAgent: jest.fn(async () => ({
     process: async (messages: { content: string }[]) => {
       mockEnvironments.push(
@@ -103,7 +113,10 @@ jest.mock('../../srv/agent-manager', () => ({
       await mockPlannerHook?.(text);
       if (mockPlan) {
         await new PlannerToolsClient().callTool('update_plan', mockPlan);
-        return { ok: true, value: { content: 'Plan updated' } };
+        return {
+          ok: true,
+          value: { content: 'Plan updated', usage: mockPlanUsage },
+        };
       }
       if (!text.startsWith('[task events]'))
         await new PlannerToolsClient().callTool('delegate_task', {
@@ -115,6 +128,19 @@ jest.mock('../../srv/agent-manager', () => ({
         ok: true,
         value: {
           content: text.startsWith('[task events]') ? text : 'delegated',
+          usage: {
+            promptTokens: 3,
+            completionTokens: 2,
+            totalTokens: 5,
+            models: {
+              m: {
+                promptTokens: 3,
+                completionTokens: 2,
+                totalTokens: 5,
+                requests: 1,
+              },
+            },
+          },
         },
       };
     },
@@ -184,6 +210,7 @@ beforeEach(() => {
   mockEnvironments.length = 0;
   mockGoal = 'read';
   mockPlannerHook = undefined;
+  mockPlanUsage = undefined;
   mockPlan = undefined;
   mockRun.mockReset().mockResolvedValue({ output: 'read done' });
   jest.mocked(evaluateGated).mockResolvedValue({ ok: true });
@@ -250,6 +277,61 @@ test.each([false, true])(
     }
   },
 );
+
+test('live subscribers receive summed planner usage on the first user reply emission', async () => {
+  const { h } = await ready();
+  mockPlanUsage = { promptTokens: 3, completionTokens: 2, totalTokens: 5 };
+  let calls = 0;
+  mockPlannerHook = async () => {
+    calls++;
+    mockPlan =
+      calls === 1
+        ? { steps: [{ id: 'read', goal: 'Read records' }], status: 'active' }
+        : {
+            steps: [{ id: 'read', goal: 'Read records' }],
+            status: 'waiting_user',
+            question: 'Proceed?',
+          };
+  };
+  const events: DialogueEvent[] = [];
+  const unsubscribe = h.subscribe((event) => events.push(event));
+  try {
+    for (const [id, expectedCalls, expectedUsage] of [
+      [
+        'corrected-reply',
+        2,
+        { promptTokens: 6, completionTokens: 4, totalTokens: 10 },
+      ],
+      ['next-reply', 3, mockPlanUsage],
+    ] as const) {
+      const trace = { traceId: id };
+      h.replies.set(trace, { id, createdAt: 123 });
+      try {
+        await h.session.send('go', { trace });
+        await h.outbox.flushed();
+      } finally {
+        h.replies.delete(trace);
+      }
+      expect(calls).toBe(expectedCalls);
+      const messages = events.filter(
+        (event) => event.kind === 'message' && event.message.id === id,
+      );
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toEqual({
+        kind: 'message',
+        message: {
+          id,
+          createdAt: 123,
+          text: 'Plan updated',
+          trigger: 'user',
+          usage: { planner: expectedUsage },
+        },
+      });
+    }
+  } finally {
+    unsubscribe();
+  }
+});
 
 test('a save during the turn emits no settled', async () => {
   const { h } = await ready();
@@ -418,6 +500,10 @@ test('delegated worker has system, session, owner, task history, admission, conn
 });
 test('honesty notice reaches task output and planner', async () => {
   const { h } = await ready();
+  const events: DialogueEvent[] = [];
+  h.subscribe((event) => events.push(event));
+  const usage = { promptTokens: 7, completionTokens: 4, totalTokens: 11 };
+  mockRun.mockResolvedValue({ output: 'read done', usage });
   jest.mocked(evaluateGated).mockResolvedValue({
     ok: false,
     issues: [
@@ -432,6 +518,29 @@ test('honesty notice reaches task output and planner', async () => {
   await until(() => h.outbox.pending().length > 0);
   expect(h.session.snapshot().tasks[0].output).toContain('UNVERIFIED_WRITE:');
   expect(h.outbox.pending()[0].text).toContain('UNVERIFIED_WRITE:');
+  expect(h.session.snapshot().tasks[0].usage).toEqual(usage);
+  expect(h.outbox.pending()[0].usage).toEqual({
+    planner: {
+      promptTokens: 3,
+      completionTokens: 2,
+      totalTokens: 5,
+      models: {
+        m: {
+          promptTokens: 3,
+          completionTokens: 2,
+          totalTokens: 5,
+          requests: 1,
+        },
+      },
+    },
+    tasks: [
+      { id: h.session.snapshot().tasks[0].id, worker: 'executor', usage },
+    ],
+  });
+  expect(events.find((event) => event.kind === 'message')).toEqual({
+    kind: 'message',
+    message: h.outbox.pending()[0],
+  });
 });
 test('subscribers receive task events and messages; messages stay in outbox for both tabs until acknowledged', async () => {
   const { h } = await ready();
@@ -1130,6 +1239,126 @@ test.each([false, true])(
       createdAt: 123,
       text: 'Plan updated',
       trigger: 'user',
+    });
+  },
+);
+
+test('a corrective user turn publishes consumed task usage after its live reply', async () => {
+  const { h } = await ready();
+  const taskUsage = { promptTokens: 7, completionTokens: 4, totalTokens: 11 };
+  let finish!: () => void;
+  mockRun.mockImplementation(
+    () =>
+      new Promise<ISubAgentResult>((resolve) => {
+        finish = () => resolve({ output: 'done', usage: taskUsage });
+      }),
+  );
+  await h.session.send('start');
+  await until(() => !!finish);
+  mockPlanUsage = { promptTokens: 3, completionTokens: 2, totalTokens: 5 };
+  let calls = 0;
+  mockPlannerHook = async () => {
+    calls++;
+    if (calls === 1) {
+      finish();
+      await until(() => h.session.snapshot().tasks[0]?.state === 'done');
+      mockPlan = { steps: [{ id: 'read', goal: 'Read' }], status: 'active' };
+    } else {
+      mockPlan = {
+        steps: [{ id: 'read', goal: 'Read' }],
+        status: 'waiting_user',
+        question: 'Proceed?',
+      };
+    }
+  };
+  const events: DialogueEvent[] = [];
+  h.subscribe((event) => events.push(event));
+  const app = express();
+  app.get('/', async (req, res) => {
+    const result = await dialogueChat(
+      req,
+      'alice',
+      {
+        userId: 'alice',
+        key: 'key',
+        createdAt: 0,
+        lastActivity: 0,
+        revived: false,
+      },
+      'TEST',
+      res,
+    ).process([{ role: 'user', content: 'go' }]);
+    res.json(result.ok ? { ok: true } : result);
+  });
+  const server = app.listen(0);
+  try {
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('No port');
+    const response = await fetch(`http://127.0.0.1:${address.port}/`);
+    expect(await response.json()).toEqual({ ok: true });
+    const reply = events.find(
+      (event) => event.kind === 'message' && event.message.trigger === 'user',
+    );
+    if (!reply || reply.kind !== 'message') throw new Error('Missing reply');
+    const update = events.find(
+      (event) => event.kind === 'usage' && event.id === reply.message.id,
+    );
+    if (!update || update.kind !== 'usage')
+      throw new Error('Missing usage update');
+    expect(events.indexOf(update)).toBeGreaterThan(events.indexOf(reply));
+    expect(
+      events.filter(
+        (event) =>
+          event.kind === 'message' && event.message.id === reply.message.id,
+      ),
+    ).toHaveLength(1);
+    expect(sumPlannerUsage([update.usage])?.totalTokens).toBe(21);
+    expect(update.usage.tasks).toEqual([
+      {
+        id: h.session.snapshot().tasks[0].id,
+        worker: 'executor',
+        usage: taskUsage,
+      },
+    ]);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test.each([true, false])(
+  'reviewer usage is included in task usage for verdict ok=%s',
+  async (ok) => {
+    const { h } = await ready();
+    mockRun.mockResolvedValue({
+      output: 'read done',
+      usage: { promptTokens: 7, completionTokens: 4, totalTokens: 11 },
+    });
+    const usage = { promptTokens: 2, completionTokens: 1, totalTokens: 3 };
+    jest.mocked(evaluateGated).mockResolvedValue(
+      ok
+        ? { ok: true, usage }
+        : {
+            ok: false,
+            usage,
+            issues: [
+              {
+                kind: 'unsupported-claim',
+                confidence: 'high',
+                reasons: 'test',
+              },
+            ],
+          },
+    );
+    await h.session.send('go');
+    await until(() => h.session.snapshot().tasks[0]?.state === 'done');
+    expect(h.session.snapshot().tasks[0].usage).toMatchObject({
+      promptTokens: 9,
+      completionTokens: 5,
+      totalTokens: 14,
     });
   },
 );
