@@ -2758,7 +2758,7 @@ export const HUB_ADAPTIVE_CONTROLLER_SYSTEM =
   '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.';
 
 export const HUB_DIALOGUE_STORAGE_RULES = [
-  "Storing, collecting or remembering results means the hub's RAG collection (rag_add), never objects in the SAP system.",
+  "Storing, collecting or remembering results without a named target means the hub's RAG collection (rag_add); write results into SAP objects only when the request names that target.",
   'When the request or a skill asks to keep results, store them where it says; if it names no collection or scope, use a persistent user collection (rag_add scope user); if the target or scope is unclear, ask the user.',
   'Do not create, change, activate or run objects in the SAP system unless the user asked for that change. Reading and analysis tasks only read.',
   'When the plan checks stored results, the checker reads them back (records exist and match), not just that a tool exists.',

@@ -58,6 +58,7 @@ test('planner prepares a complete brief and asks before narrowing scope', () => 
     'when a check of stored results is planned',
     'When the request or a skill asks to keep results, store them where it says',
     'if the target or scope is unclear, ask the user',
+    "without a named target means the hub's RAG collection (rag_add)",
   ])
     expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(rule);
   for (const rule of [
