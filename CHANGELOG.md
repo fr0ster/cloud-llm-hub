@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- Request wall clock and planner/subagent execution times in `usage.x_hub`, WebUI TIME display, and executor duration in Agent MCP usage and footer (llm-agent 30.16.0 / libs 30.14.0).
+
 ### Changed
 
 - Add planner wait mode with optional wait tick and long-task intervals, live wait SSE updates, and server elapsed time/tool counts in the WebUI agents line (llm-agent 30.15.0 / libs 30.13.0).

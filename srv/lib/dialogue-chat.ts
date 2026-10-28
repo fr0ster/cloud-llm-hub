@@ -178,7 +178,10 @@ export function dialogueChat(
           ok: true,
           value: {
             content: carried.map((m) => m.text).join('\n\n'),
-            usage: sumPlannerUsage(carried.map((m) => m.usage)),
+            usage: sumPlannerUsage(
+              carried.map((m) => m.usage),
+              { durationMs: Date.now() - createdAt },
+            ),
             stopReason: 'stop',
             iterations: 0,
             toolCallCount: 0,

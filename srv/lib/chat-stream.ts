@@ -28,6 +28,7 @@ export function chatStream(
   protocol: 'openai' | 'anthropic',
   session?: LongSession,
 ) {
+  const createdAt = Date.now();
   const out = detachedSink(res);
   const controller = new AbortController();
   let opened = false;
@@ -45,6 +46,7 @@ export function chatStream(
   });
   res.on('finish', stop);
   return {
+    createdAt,
     measurement: responseMeasurement(res),
     signal: controller.signal,
     get opened() {
@@ -157,7 +159,9 @@ export async function streamDialogue(opts: {
         )) {
           const usage =
             event.event === 'message_delta'
-              ? sumPlannerUsage(deliveredUsage)
+              ? sumPlannerUsage(deliveredUsage, {
+                  durationMs: Date.now() - stream.createdAt,
+                })
               : undefined;
           if (usage) {
             stream.out.write(
@@ -175,8 +179,11 @@ export async function streamDialogue(opts: {
         }
         delta('', 'stop');
         const wireUsage =
-          dialogueUsageToWire(sumPlannerUsage(deliveredUsage)) ??
-          tokenUsageToWire(usage);
+          dialogueUsageToWire(
+            sumPlannerUsage(deliveredUsage, {
+              durationMs: Date.now() - stream.createdAt,
+            }),
+          ) ?? tokenUsageToWire(usage);
         if (wireUsage)
           stream.out.write(
             `data: ${JSON.stringify({ ...base, choices: [], usage: wireUsage })}\n\n`,

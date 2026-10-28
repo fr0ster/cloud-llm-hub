@@ -146,7 +146,7 @@ const EXECUTE_STEP_DESCRIPTION = [
   '',
   'For multi-step work call `session_open` first, pass its key as `session` in every call, and call `session_close` when done. With `session`, execute_step continues the conversation and ABAP connection (debugger, locks). Calls of one session run one after another. Without `session`, each call is independent as before.',
   '',
-  'Every result with known usage ends with [usage] prompt=<n> completion=<n> total=<n> and includes structuredContent.usage. When a reviewer runs, its tokens are separate in structuredContent.usage_reviewer and reviewer=<n> in the footer. Use it to track and budget what the executor spends across your plan.',
+  'Every result with known usage ends with [usage] prompt=<n> completion=<n> total=<n> time=<seconds>s (one decimal) and includes structuredContent.usage. When a reviewer runs, its tokens are separate in structuredContent.usage_reviewer and reviewer=<n> in the footer. Use it to track and budget what the executor spends across your plan.',
 ].join('\n');
 
 export interface AgentMcpResult {
@@ -314,6 +314,7 @@ async function executeStepRun(
   callerSignal?: AbortSignal,
   longSession?: LongSession,
 ) {
+  const stepStartedAt = Date.now();
   const measurement = requestMeasurement(req);
   const log = cds.log('agent-mcp');
   const { userId, exposition } = caller;
@@ -567,13 +568,17 @@ async function executeStepRun(
       recordTurn(sessionId, userId, lastUser, rawContent);
     }
     if (longSession && takeRevivalNotice(longSession)) notice = 'revived';
-    const wireUsage = tokenUsageToWire(r.value.usage);
+    const durationMs = Date.now() - stepStartedAt;
+    const tokens = tokenUsageToWire(r.value.usage);
+    const wireUsage = tokens
+      ? { ...tokens, duration_ms: durationMs }
+      : undefined;
     const wireReviewerUsage = tokenUsageToWire(reviewerUsage);
     const content = notice ? `${notice}\n${rawContent}` : rawContent;
     return {
       ...textResult(
         wireUsage || wireReviewerUsage
-          ? `${content}\n[usage]${wireUsage ? ` prompt=${wireUsage.prompt_tokens} completion=${wireUsage.completion_tokens} total=${wireUsage.total_tokens}` : ''}${wireReviewerUsage ? ` reviewer=${wireReviewerUsage.total_tokens}` : ''}`
+          ? `${content}\n[usage]${wireUsage ? ` prompt=${wireUsage.prompt_tokens} completion=${wireUsage.completion_tokens} total=${wireUsage.total_tokens}` : ''}${wireReviewerUsage ? ` reviewer=${wireReviewerUsage.total_tokens}` : ''} time=${(durationMs / 1000).toFixed(1)}s`
           : content,
         false,
       ),

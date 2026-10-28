@@ -294,6 +294,7 @@ for (const anthropic of [false, true])
                 input_tokens: 3,
                 output_tokens: 2,
                 x_hub: {
+                  duration_ms: expect.any(Number),
                   planner: {
                     prompt_tokens: 3,
                     completion_tokens: 2,
@@ -306,6 +307,7 @@ for (const anthropic of [false, true])
                 completion_tokens: 2,
                 total_tokens: 5,
                 x_hub: {
+                  duration_ms: expect.any(Number),
                   planner: {
                     prompt_tokens: 3,
                     completion_tokens: 2,
@@ -1007,10 +1009,12 @@ for (const anthropic of [false, true]) {
           trigger: 'event',
           usage: {
             planner: { promptTokens: 2, completionTokens: 1, totalTokens: 3 },
+            plannerMs: 100,
             tasks: [
               {
                 id: 't1',
                 worker: 'executor',
+                durationMs: 400,
                 usage: {
                   promptTokens: 7,
                   completionTokens: 4,
@@ -1025,6 +1029,7 @@ for (const anthropic of [false, true]) {
         ...answer,
         usage: {
           planner: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+          plannerMs: 200,
         },
       };
     });
@@ -1036,8 +1041,12 @@ for (const anthropic of [false, true]) {
       ).toEqual(['hi', `${visible}\n\nfollow`]);
     }
 
+    expect(res.body).toMatch(/"x_hub":\{"duration_ms":\d+,/);
     expect(res.body).toContain(
-      '"x_hub":{"planner":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8},"subagents":[{"prompt_tokens":7,"completion_tokens":4,"total_tokens":11,"task_id":"t1","worker":"executor"}]}',
+      '"planner":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8,"duration_ms":300}',
+    );
+    expect(res.body).toContain(
+      '"subagents":[{"prompt_tokens":7,"completion_tokens":4,"total_tokens":11,"duration_ms":400,"task_id":"t1","worker":"executor"}]',
     );
     if (anthropic) {
       expect(res.body).toContain('"input_tokens":12,"output_tokens":7');
@@ -1458,4 +1467,17 @@ it('empty pending messages do not add a separator before the reply', async () =>
   const chunks = await chunksOf(directChat().agent);
   expect(chunks.map((c) => c.content || '').join('')).toBe('answer');
   expect(chunks.some((c) => c.clhMessageId === 'empty')).toBe(false);
+});
+
+it('non-streaming dialogue usage includes nonnegative request wall clock', async () => {
+  send.mockResolvedValue({
+    text: 'timed answer',
+    usage: {
+      planner: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+    },
+  });
+  const result = await directChat().agent.process([]);
+  if (!result.ok) throw new Error('Expected successful dialogue');
+  expect(result.value.usage?.x_hub.duration_ms).toEqual(expect.any(Number));
+  expect(result.value.usage?.x_hub.duration_ms).toBeGreaterThanOrEqual(0);
 });

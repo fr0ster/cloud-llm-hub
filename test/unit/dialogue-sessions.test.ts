@@ -520,6 +520,7 @@ test('honesty notice reaches task output and planner', async () => {
   expect(h.outbox.pending()[0].text).toContain('UNVERIFIED_WRITE:');
   expect(h.session.snapshot().tasks[0].usage).toEqual(usage);
   expect(h.outbox.pending()[0].usage).toEqual({
+    plannerMs: expect.any(Number),
     planner: {
       promptTokens: 3,
       completionTokens: 2,
@@ -534,7 +535,12 @@ test('honesty notice reaches task output and planner', async () => {
       },
     },
     tasks: [
-      { id: h.session.snapshot().tasks[0].id, worker: 'executor', usage },
+      {
+        id: h.session.snapshot().tasks[0].id,
+        worker: 'executor',
+        usage,
+        durationMs: expect.any(Number),
+      },
     ],
   });
   expect(events.find((event) => event.kind === 'message')).toEqual({
@@ -830,6 +836,7 @@ test('outbox history and acknowledgement mode survive shutdown/reopen', async ()
   await h.outbox.enterAckMode();
   const messages = h.outbox.pending();
   expect(messages.length).toBeGreaterThan(0);
+  expect(messages[0].usage?.plannerMs).toEqual(expect.any(Number));
   await closeDialogue('alice', 'key', 'shutdown');
   const restored = await dialogueFor('alice', 'key', 'TEST');
   expect(restored.outbox.pending()).toEqual(messages);
@@ -1319,6 +1326,7 @@ test('a corrective user turn publishes consumed task usage after its live reply'
         id: h.session.snapshot().tasks[0].id,
         worker: 'executor',
         usage: taskUsage,
+        durationMs: expect.any(Number),
       },
     ]);
   } finally {

@@ -387,11 +387,16 @@ it('execute_step returns executor usage and ends with the footer with recording 
     const result = await executeStep(req, caller, { task: 'work' });
     expect(result).toMatchObject({
       structuredContent: {
-        usage: { prompt_tokens: 7, completion_tokens: 4, total_tokens: 11 },
+        usage: {
+          prompt_tokens: 7,
+          completion_tokens: 4,
+          total_tokens: 11,
+          duration_ms: expect.any(Number),
+        },
       },
     });
     expect(result.content[0]?.text).toMatch(
-      /\[usage\] prompt=7 completion=4 total=11$/,
+      /\[usage\] prompt=7 completion=4 total=11 time=\d+\.\ds$/,
     );
   } finally {
     if (previous === undefined) delete process.env.LLM_AGENT_USAGE;
@@ -431,7 +436,12 @@ it.each([true, false])(
       const result = await executeStep(req, caller, { task: 'work' });
       expect(result).toMatchObject({
         structuredContent: {
-          usage: { prompt_tokens: 7, completion_tokens: 4, total_tokens: 11 },
+          usage: {
+            prompt_tokens: 7,
+            completion_tokens: 4,
+            total_tokens: 11,
+            duration_ms: expect.any(Number),
+          },
           usage_reviewer: {
             prompt_tokens: 2,
             completion_tokens: 1,
@@ -440,7 +450,7 @@ it.each([true, false])(
         },
       });
       expect(result.content[0]?.text).toMatch(
-        /\[usage\] prompt=7 completion=4 total=11 reviewer=3$/,
+        /\[usage\] prompt=7 completion=4 total=11 reviewer=3 time=\d+\.\ds$/,
       );
       expect(review).toHaveBeenCalledTimes(1);
     } finally {

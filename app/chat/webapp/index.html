@@ -21,7 +21,7 @@
         .trace-step b { color: #fff; }
         .trace-args { color: #666; font-size: 11px; display: block; margin-top: 2px; font-style: italic; }
 
-        .stats-bar { margin-top: 10px; font-size: 12px; color: #888; display: flex; gap: 20px; padding: 6px 0; }
+        .stats-bar { margin-top: 10px; font-size: 12px; color: #888; display: flex; flex-wrap: wrap; gap: 20px; padding: 6px 0; }
         .stats-bar .val { color: #ff00ff; font-weight: bold; }
 
         .input-area { display: flex; gap: 10px; padding-bottom: 10px; }
@@ -507,6 +507,25 @@
                 if (usage.x_hub.planner) parts.push('planner: ' + total(usage.x_hub.planner));
                 for (const task of usage.x_hub.subagents || []) parts.push(task.task_id + '\u00b7' + task.worker + ': ' + total(task));
                 if (parts.length) html += `<span style="color:#666;font-size:11px">[${escapeHtml(parts.join(' | '))}]</span>`;
+            }
+            if (usage.x_hub) {
+                const duration = ms => {
+                    const seconds = Math.floor(ms / 1000);
+                    const minutes = Math.floor(seconds / 60);
+                    return minutes >= 60
+                        ? `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
+                        : `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
+                };
+                const parts = [];
+                if (usage.x_hub.planner?.duration_ms !== undefined) parts.push('planner: ' + duration(usage.x_hub.planner.duration_ms));
+                for (const task of usage.x_hub.subagents || []) {
+                    if (task.duration_ms !== undefined) parts.push(task.task_id + '\u00b7' + task.worker + ': ' + duration(task.duration_ms));
+                }
+                const totalTime = usage.x_hub.duration_ms;
+                if (totalTime !== undefined || parts.length) {
+                    const text = 'TIME:' + (totalTime !== undefined ? ' ' + duration(totalTime) : '') + (parts.length ? ' [' + parts.join(' | ') + ']' : '');
+                    html += `<span style="color:#666;font-size:11px;flex-basis:100%">${escapeHtml(text)}</span>`;
+                }
             }
             view.usageHtml = html + '</div>';
             view.node.querySelector('.stats-bar')?.remove();

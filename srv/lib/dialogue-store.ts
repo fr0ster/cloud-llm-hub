@@ -69,8 +69,16 @@ const tokenUsage = z.object({
 });
 const plannerUsage = z.object({
   planner: tokenUsage.optional(),
+  plannerMs: num.optional(),
   tasks: z
-    .array(z.object({ id: str, worker: str, usage: tokenUsage }))
+    .array(
+      z.object({
+        id: str,
+        worker: str,
+        usage: tokenUsage,
+        durationMs: num.optional(),
+      }),
+    )
     .optional(),
 });
 const message = z.object({
