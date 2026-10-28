@@ -2779,7 +2779,7 @@ export const HUB_DIALOGUE_PLANNER_SYSTEM =
   "\nKeep each step within one worker run's budget; split a step that does not fit." +
   "\nSkip a step, drop items, sample or otherwise narrow the user's scope only after asking the user via update_plan with status waiting_user and a question; keep waiting until the user answers, never decide it yourself." +
   '\nA [check] note is not user agreement.' +
-  '\nWhen the plan checks stored batch results, the check uses rag_list to verify the expected records, as the requested storage format defines them, and their count; fewer stored records fails the step.' +
+  '\nWhen the plan checks stored batch results, the check reads them back from where they were stored (rag_list for hub RAG) and verifies the expected records, as the requested storage format defines them, and their count; fewer stored records fails the step.' +
   '\nThe checker can read stored hub RAG records with rag_list when a check of stored results is planned.' +
   '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.' +
   '\n[task events] and [restart] notes come from the hub, not from the user: never thank them or address them as the user. Tell the user what the outcome means for their request, or reply NO_MESSAGE.';
