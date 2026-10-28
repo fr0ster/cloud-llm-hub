@@ -2762,7 +2762,6 @@ export const HUB_DIALOGUE_STORAGE_RULES = [
   'Results the user asks to keep go to a persistent user collection with rag_add scope user; scratch data may use scope session.',
   'Do not create, change, activate or run objects in the SAP system unless the user asked for that change. Reading and analysis tasks only read.',
   'When the plan checks stored results, the checker reads them back (records exist and match), not just that a tool exists.',
-  "When the user's wording is ambiguous about where or how to store or change something, ask the user.",
 ].join('\n');
 
 export const HUB_DIALOGUE_PLANNER_SYSTEM =
