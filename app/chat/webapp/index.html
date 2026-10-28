@@ -596,8 +596,8 @@
                     const elapsed = formatElapsed(task.elapsedMs === undefined ? now - (since ?? now) : task.elapsedMs + now - task.waitReceivedAt);
                     const time = task.state === 'queued' ? ('queued ' + elapsed).trim() : elapsed || 'running';
                     return '<div class="agent-child" title="' + escapeHtml(String(task.goal || '')) + '">' + (index === active.length - 1 ? '└ ' : '├ ')
-                        + escapeHtml(String(task.id)) + ' ' + escapeHtml(String(task.worker || '')) + ': ' + escapeHtml(String(task.goal || ''))
-                        + ' <span class="agent-time">· ' + escapeHtml(time) + (task.toolCalls === undefined ? '' : ' \u00b7 ' + escapeHtml(String(task.toolCalls)) + (task.maxToolCalls === undefined ? '' : '/' + escapeHtml(String(task.maxToolCalls))) + ' tools') + '</span></div>';
+                        + escapeHtml(String(task.id)) + ' ' + escapeHtml(String(task.worker || ''))
+                        + ' <span class="agent-time">· ' + escapeHtml(time) + (task.toolCalls === undefined ? '' : ' \u00b7 ' + escapeHtml(String(task.toolCalls)) + (task.maxToolCalls === undefined ? '' : '/' + escapeHtml(String(task.maxToolCalls))) + ' tools') + '</span>' + (task.goal ? ': ' + escapeHtml(String(task.goal)) : '') + '</div>';
                 }).join('');
                 renderTasks();
             };
