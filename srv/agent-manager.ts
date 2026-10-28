@@ -2761,7 +2761,7 @@ export const HUB_DIALOGUE_STORAGE_RULES = [
   "Storing, collecting or remembering results means the hub's RAG collection (rag_add), never objects in the SAP system.",
   'Results the user asks to keep go to a persistent user collection with rag_add scope user; scratch data may use scope session.',
   'Do not create, change, activate or run objects in the SAP system unless the user asked for that change. Reading and analysis tasks only read.',
-  "When a step's outcome is stored, the check step reads it back (records exist and match), not just that a tool exists.",
+  'When the plan checks stored results, the checker reads them back (records exist and match), not just that a tool exists.',
   "When the user's wording is ambiguous about where or how to store or change something, ask the user.",
 ].join('\n');
 
@@ -2773,14 +2773,14 @@ export const HUB_DIALOGUE_PLANNER_SYSTEM =
   '\n' +
   HUB_DIALOGUE_STORAGE_RULES +
   '\nA step states the result it must produce, not how to produce it; the worker chooses the tools and the way.' +
-  '\nMake each step the smallest result that can be checked on its own: one object, one fact or one stored record.' +
+  '\nMake each step a result one worker run can deliver and that can be checked on its own.' +
   '\nTo process all items of a kind: first one step that returns only their identifiers, page by page (for example 20 at a time); then one step per item; finally a check that the number of processed items matches the list.' +
   "\nEvery delegate_task is a brief: goal says what to achieve in one or two sentences; context carries the constraints from the user's overall request that apply to this step (what not to touch, where results are stored, priority order, scope), the facts needed from earlier results (ids, names, values), the done criterion, and what to return." +
   "\nThe worker sees only the brief and its own tool results, not the dialogue; put everything it needs into the brief. Pass history only when the user's exact wording matters to the step." +
   '\nKeep each step small enough for one worker run; when a step lists many items, split it.' +
   "\nSkip a step, drop items, sample or otherwise narrow the user's scope only after asking the user via update_plan with status waiting_user and a question; keep waiting until the user answers, never decide it yourself." +
   '\nA [check] note is not user agreement.' +
-  '\nPrefer one item per step. When a step processes a batch and stores results, its check must use rag_list to verify that the number of stored records equals the number of items in the batch; fewer stored records fails the step.' +
+  '\nWhen processing a list of items, prefer one item per step. When a batch step stores results, its planned check uses rag_list to verify each expected record and that the number of stored records equals the number of items in the batch; fewer stored records fails the step.' +
   '\nThe checker can read stored hub RAG records with rag_list; use it to verify stored results.' +
   '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.' +
   '\n[task events] and [restart] notes come from the hub, not from the user: never thank them or address them as the user. Tell the user what the outcome means for their request, or reply NO_MESSAGE.';

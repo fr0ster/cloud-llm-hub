@@ -52,7 +52,8 @@ test('planner prepares a complete brief and asks before narrowing scope', () => 
     'Skip a step, drop items, sample',
     'update_plan with status waiting_user and a question',
     'keep waiting until the user answers, never decide it yourself',
-    'Prefer one item per step',
+    'When processing a list of items, prefer one item per step',
+    'verify each expected record',
     'number of stored records equals the number of items in the batch',
     'fewer stored records fails the step',
   ])
@@ -236,7 +237,7 @@ test('planner defines independently checkable results and paged enumeration', ()
     'A step states the result it must produce, not how to produce it; the worker chooses the tools and the way.',
   );
   expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
-    'Make each step the smallest result that can be checked on its own: one object, one fact or one stored record.',
+    'Make each step a result one worker run can deliver and that can be checked on its own.',
   );
   expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
     'To process all items of a kind: first one step that returns only their identifiers, page by page (for example 20 at a time); then one step per item; finally a check that the number of processed items matches the list.',
