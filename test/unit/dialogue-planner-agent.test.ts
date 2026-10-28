@@ -56,6 +56,8 @@ test('planner prepares a complete brief and asks before narrowing scope', () => 
     'as the requested storage format defines them',
     'fewer stored records fails the step',
     'when a check of stored results is planned',
+    'When the request or a skill asks to keep results, store them where it says',
+    'if the target or scope is unclear, ask the user',
   ])
     expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(rule);
   for (const rule of [
@@ -63,6 +65,8 @@ test('planner prepares a complete brief and asks before narrowing scope', () => 
     'Prefer one item per step',
     'then one step per item; finally',
     "When a step's outcome is stored, the check step reads it back",
+    'scratch data may use scope session',
+    "When the user's wording is ambiguous about where or how to store",
   ])
     expect(HUB_DIALOGUE_PLANNER_SYSTEM).not.toContain(rule);
 });
