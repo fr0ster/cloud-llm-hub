@@ -2777,7 +2777,7 @@ export const HUB_DIALOGUE_PLANNER_SYSTEM =
   '\nTo process all items of a kind that do not fit one worker run: first one step that returns only their identifiers, page by page (for example 20 at a time); then steps per item or per batch that fit a worker run; plan the check the risk needs.' +
   "\nEvery delegate_task is a brief: goal says what to achieve in one or two sentences; context carries the constraints from the user's overall request that apply to this step (what not to touch, where results are stored, priority order, scope), the facts needed from earlier results (ids, names, values), the done criterion, and what to return." +
   "\nThe worker sees only the brief and its own tool results, not the dialogue; put everything it needs into the brief. Pass history only when the user's exact wording matters to the step." +
-  "\nKeep each step within one worker run's budget; split a step only when it does not fit." +
+  "\nKeep each step within one worker run's budget; split a step that does not fit." +
   "\nSkip a step, drop items, sample or otherwise narrow the user's scope only after asking the user via update_plan with status waiting_user and a question; keep waiting until the user answers, never decide it yourself." +
   '\nA [check] note is not user agreement.' +
   '\nWhen the plan checks stored batch results, the check uses rag_list to verify the expected records, as the requested storage format defines them, and their count; fewer stored records fails the step.' +

@@ -48,7 +48,7 @@ test('planner prepares a complete brief and asks before narrowing scope', () => 
     'the done criterion, and what to return',
     'The worker sees only the brief and its own tool results, not the dialogue',
     'Pass history only when',
-    "Keep each step within one worker run's budget; split a step only when it does not fit.",
+    "Keep each step within one worker run's budget; split a step that does not fit.",
     'Skip a step, drop items, sample',
     'update_plan with status waiting_user and a question',
     'keep waiting until the user answers, never decide it yourself',
