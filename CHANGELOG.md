@@ -11,7 +11,7 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
-- Hub planner rules follow the library's good-planner guidance: steps are results one worker run can deliver, read-back checks of stored results only where the plan checks them, one item per step only for item lists.
+- Hub planner rules follow the library's good-planner guidance: steps are results one worker run can deliver, read-back checks of stored results only where the plan checks them, one item per step only for item lists (llm-agent-libs 30.16.0).
 - Add planner wait mode with optional wait tick and long-task intervals, live wait SSE updates, and server elapsed time/tool counts in the WebUI agents line (llm-agent 30.15.0 / libs 30.13.0).
 
 - WebUI dialogue mode: the agents line is always shown (`● main · listening` / `working`, plus active subagents), and TASKS is a journal of every task of the session, main-flow requests and subagent tasks, marked done, running, queued, failed (with the error) or stopped. The `task` events stream sends the same trimmed task view as the snapshot, now with `finishedAt` and a truncated `error`.
