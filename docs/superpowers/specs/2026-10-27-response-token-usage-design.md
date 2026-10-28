@@ -26,7 +26,7 @@ interface WireTokens {
 type WireAgentUsage = WireTokens & { duration_ms?: number };
 interface HubUsageBreakdown {
   duration_ms?: number;
-  planner?: WireAgentUsage;
+  planner?: WireAgentUsage | { duration_ms: number };
   subagents?: Array<WireAgentUsage & { task_id: string; worker: string }>;
 }
 ```
@@ -37,7 +37,9 @@ Subagent duration is its running time (`finishedAt - startedAt`); repeated task 
 the maximum duration. Request `x_hub.duration_ms` is hub wall clock from request start to
 final usage assembly, including queue wait and follow. Event messages have no request total.
 Parts do not add up to the total because tasks run in parallel and turns have gaps.
-Unknown durations are omitted. WebUI displays TIME in m:ss or h:mm:ss.
+Unknown durations are omitted. A known planner duration is emitted even without planner tokens,
+as a duration-only planner entry; token totals remain unchanged. WebUI omits duration-only
+planner entries from the token breakdown and displays their TIME in m:ss or h:mm:ss.
 
 - **OpenAI / WebUI** (`/v1/chat/completions`): `usage = { prompt_tokens, completion_tokens,
   total_tokens, x_hub: HubUsageBreakdown }`; totals = planner + all subagents of the planner messages

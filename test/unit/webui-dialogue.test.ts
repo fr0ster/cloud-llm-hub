@@ -1321,3 +1321,25 @@ test('TIME formats hours and escapes agent labels', async () => {
     'TIME: 1:00:00 [&lt;task&gt;\u00b7executor: 0:00]',
   );
 });
+
+test('duration-only planner appears in TIME but not the token breakdown', async () => {
+  const ui = harness();
+  const usage = {
+    ...tokenUsage(5),
+    x_hub: {
+      planner: { duration_ms: 171000 },
+      subagents: [{ ...tokenUsage(5), task_id: 't1', worker: 'executor' }],
+    },
+  };
+  ui.fetch.mockResolvedValue(
+    stream(
+      messageWire('timed', 'answer') +
+        `data: ${JSON.stringify({ choices: [], usage })}\n\n`,
+    ),
+  );
+  ui.userInput.value = 'question';
+  await ui.sendMessage();
+  const rendered = ui.nodes[0].innerHTML;
+  expect(rendered.split('TIME:')[0]).not.toContain('planner:');
+  expect(rendered).toContain('TIME: [planner: 2:51]');
+});

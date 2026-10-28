@@ -504,7 +504,8 @@
             }
             if (usage.x_hub) {
                 const parts = [];
-                if (usage.x_hub.planner) parts.push('planner: ' + total(usage.x_hub.planner));
+                const planner = usage.x_hub.planner;
+                if (planner && (planner.total_tokens !== undefined || planner.prompt_tokens !== undefined || planner.completion_tokens !== undefined)) parts.push('planner: ' + total(planner));
                 for (const task of usage.x_hub.subagents || []) parts.push(task.task_id + '\u00b7' + task.worker + ': ' + total(task));
                 if (parts.length) html += `<span style="color:#666;font-size:11px">[${escapeHtml(parts.join(' | '))}]</span>`;
             }

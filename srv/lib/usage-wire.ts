@@ -21,7 +21,7 @@ export interface WireTokens {
 export type WireAgentUsage = WireTokens & { duration_ms?: number };
 export interface HubUsageBreakdown {
   duration_ms?: number;
-  planner?: WireAgentUsage;
+  planner?: WireAgentUsage | { duration_ms: number };
   subagents?: Array<WireAgentUsage & { task_id: string; worker: string }>;
 }
 export type DialogueUsage = TokenUsage & { x_hub: HubUsageBreakdown };
@@ -99,7 +99,9 @@ export function sumPlannerUsage(
               ...(plannerMs !== undefined ? { duration_ms: plannerMs } : {}),
             },
           }
-        : {}),
+        : plannerMs !== undefined
+          ? { planner: { duration_ms: plannerMs } }
+          : {}),
       ...(tasks.size
         ? {
             subagents: Array.from(tasks, ([task_id, task]) => ({

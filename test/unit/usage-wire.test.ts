@@ -107,3 +107,24 @@ it('omits unknown durations and preserves known zero durations', () => {
       ?.x_hub,
   ).toMatchObject({ duration_ms: 0, planner: { duration_ms: 0 } });
 });
+
+it.each([0, 120])(
+  'preserves planner duration %s without planner tokens',
+  (plannerMs: number) => {
+    const result = sumPlannerUsage([
+      {
+        plannerMs,
+        tasks: [{ id: 't1', worker: 'executor', usage }],
+      },
+    ]);
+    expect(result).toEqual({
+      ...usage,
+      x_hub: {
+        planner: { duration_ms: plannerMs },
+        subagents: [
+          { ...tokenUsageToWire(usage), task_id: 't1', worker: 'executor' },
+        ],
+      },
+    });
+  },
+);

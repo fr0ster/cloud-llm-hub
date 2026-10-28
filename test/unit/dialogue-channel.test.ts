@@ -1469,15 +1469,32 @@ it('empty pending messages do not add a separator before the reply', async () =>
   expect(chunks.some((c) => c.clhMessageId === 'empty')).toBe(false);
 });
 
-it('non-streaming dialogue usage includes nonnegative request wall clock', async () => {
-  send.mockResolvedValue({
-    text: 'timed answer',
-    usage: {
-      planner: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
-    },
-  });
-  const result = await directChat().agent.process([]);
-  if (!result.ok) throw new Error('Expected successful dialogue');
-  expect(result.value.usage?.x_hub.duration_ms).toEqual(expect.any(Number));
-  expect(result.value.usage?.x_hub.duration_ms).toBeGreaterThanOrEqual(0);
+it('non-streaming duration includes queue wait and open setup while preserving reply time', async () => {
+  let now = 1000;
+  const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+  try {
+    const upsert = jest.spyOn(outbox, 'upsert');
+    refresh.mockImplementationOnce(async () => {
+      now += 300;
+    });
+    send.mockImplementationOnce(async () => {
+      now += 200;
+      return {
+        text: 'timed answer',
+        usage: {
+          planner: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+        },
+      };
+    });
+    const { agent } = directChat();
+    now += 500;
+    const result = await agent.process([]);
+    if (!result.ok) throw new Error('Expected successful dialogue');
+    expect(result.value.usage?.x_hub.duration_ms).toBe(1000);
+    expect(upsert).toHaveBeenCalledWith([
+      expect.objectContaining({ text: 'timed answer', createdAt: 1800 }),
+    ]);
+  } finally {
+    clock.mockRestore();
+  }
 });
