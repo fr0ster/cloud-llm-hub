@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Added
 
+- Live tools in context and executed call counts for the main planner and subagents in the WebUI agents line.
 - Request wall clock and planner/subagent execution times in `usage.x_hub`, WebUI TIME display, and executor duration in Agent MCP usage and footer (llm-agent 30.16.0 / libs 30.14.0).
 
 ### Changed

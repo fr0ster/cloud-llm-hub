@@ -17,13 +17,36 @@ import {
   supersedeFollow,
 } from './dialogue-follow';
 import type { Delivery } from './dialogue-outbox';
-import { dialogueFor } from './dialogue-sessions';
+import {
+  type DialogueHandle,
+  dialogueFor,
+  type PlannerCounts,
+} from './dialogue-sessions';
 import type { LongSession } from './long-session';
 import { NoMessageFilter, stripNoMessage } from './no-message';
 import { ragContextOf, userTextOf } from './rag-context-marker';
 import { extractText } from './session-turns';
 import { responseMeasurement } from './usage/request-records';
 import { type DialogueUsage, sumPlannerUsage } from './usage-wire';
+
+function plannerObservers(handle: DialogueHandle) {
+  let counts: PlannerCounts = {};
+  handle.plannerCounts(counts);
+  return {
+    onToolCallCount(count: number, max?: number) {
+      counts = { ...counts, toolCalls: count, maxToolCalls: max };
+      handle.plannerCounts(counts);
+    },
+    onToolsSelected(selected: number, available: number) {
+      counts = {
+        ...counts,
+        toolsSelected: selected,
+        toolsAvailable: available,
+      };
+      handle.plannerCounts(counts);
+    },
+  };
+}
 
 export type DialogueStreamChunk = LlmStreamChunk & {
   clhUsage?: PlannerMessageUsage;
@@ -141,6 +164,7 @@ export function dialogueChat(
         handle.replies.set(trace, { id: replyId, createdAt });
         const answer = await handle.session
           .send(userText(message), {
+            ...plannerObservers(handle),
             ...(handle.usage
               ? {
                   usage: handle.usage.with({
@@ -237,6 +261,7 @@ export function dialogueChat(
       handle.replies.set(trace, { id: replyId, createdAt });
       const sending = handle.session
         .send(userText(message), {
+          ...plannerObservers(handle),
           ...(handle.usage
             ? {
                 usage: handle.usage.with({

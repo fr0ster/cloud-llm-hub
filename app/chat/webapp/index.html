@@ -235,7 +235,7 @@
                 <li><b>Send</b> or <b>Enter</b> &mdash; submit the message.</li>
                 <li><b>CLR</b> &mdash; wipe history and start a fresh session.</li>
                 <li><b>LOG</b> &mdash; download the current session as text.</li>
-                <li><b>PLAN</b> / <b>TASKS</b> &mdash; dialogue plan steps and background tasks; click the title to collapse or expand. TASKS shows counts per state; both start collapsed and keep your choice. Above the input, only the running and queued subagents of the main agent are listed with their elapsed time.</li>
+                <li><b>PLAN</b> / <b>TASKS</b> &mdash; dialogue plan steps and background tasks; click the title to collapse or expand. TASKS shows counts per state; both start collapsed and keep your choice. Above the input, only the running and queued subagents of the main agent are listed with their elapsed time. Tools are tool definitions in context out of available; calls are executed tool calls.</li>
                 <li><b>STATUS</b> &mdash; <span style="color:#00ff00">green</span> idle, <span style="color:#ffcc00">yellow</span> streaming, <span style="color:#ff5555">red</span> error.</li>
                 <li>Long answers stream live. Wait for <b>STATUS</b> to turn green again.</li>
               </ul>
@@ -562,6 +562,7 @@
         let dialogueOpen = false, dialogueTasks = [], mainRequests = [];
         function finishMain(request, error) {
             if (!request || request.state !== 'running') return;
+            delete request.toolsSelected; delete request.toolsAvailable; delete request.toolCalls; delete request.maxToolCalls;
             request.state = error ? 'failed' : 'done'; request.finishedAt = Date.now();
             if (error) request.error = error;
             renderActiveAgents(dialogueTasks);
@@ -603,6 +604,10 @@
             const seconds = Math.max(0, Math.floor(ms / 1000));
             return Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
         }
+        function agentCounts(task) {
+            return (task.toolsSelected === undefined ? '' : ' \u00b7 ' + escapeHtml(String(task.toolsSelected)) + (task.toolsAvailable === undefined ? '' : '/' + escapeHtml(String(task.toolsAvailable))) + ' tools')
+                + (task.toolCalls === undefined ? '' : ' \u00b7 ' + escapeHtml(String(task.toolCalls)) + (task.maxToolCalls === undefined ? '' : '/' + escapeHtml(String(task.maxToolCalls))) + ' calls');
+        }
         function renderActiveAgents(tasks) {
             dialogueTasks = tasks;
             const box = document.getElementById('dialogue-active');
@@ -611,13 +616,13 @@
                 const active = dialogueTasks.filter(task => task.state === 'running' || task.state === 'queued');
                 const now = Date.now();
                 const main = mainRequests.find(task => task.state === 'running');
-                box.innerHTML = '<div>\u25cf main \u00b7 ' + (main ? 'working ' + formatElapsed(now - main.startedAt) : 'listening') + '</div>' + active.map((task, index) => {
+                box.innerHTML = '<div>\u25cf main \u00b7 ' + (main ? 'working ' + formatElapsed(now - main.startedAt) + agentCounts(main) : 'listening') + '</div>' + active.map((task, index) => {
                     const since = task.startedAt ?? task.createdAt;
                     const elapsed = formatElapsed(task.elapsedMs === undefined ? now - (since ?? now) : task.elapsedMs + now - task.waitReceivedAt);
                     const time = task.state === 'queued' ? ('queued ' + elapsed).trim() : elapsed || 'running';
                     return '<div class="agent-child" title="' + escapeHtml(String(task.goal || '')) + '">' + (index === active.length - 1 ? '└ ' : '├ ')
                         + escapeHtml(String(task.id)) + ' ' + escapeHtml(String(task.worker || ''))
-                        + ' <span class="agent-time">· ' + escapeHtml(time) + (task.toolCalls === undefined ? '' : ' \u00b7 ' + escapeHtml(String(task.toolCalls)) + (task.maxToolCalls === undefined ? '' : '/' + escapeHtml(String(task.maxToolCalls))) + ' tools') + '</span>' + (task.goal ? ': ' + escapeHtml(String(task.goal)) : '') + '</div>';
+                        + ' <span class="agent-time">· ' + escapeHtml(time) + agentCounts(task) + '</span>' + (task.goal ? ': ' + escapeHtml(String(task.goal)) : '') + '</div>';
                 }).join('');
                 renderTasks();
             };
@@ -695,6 +700,15 @@
                             else if (event === 'tasks' && Array.isArray(parsed)) {
                                 tasks = parsed.map(task => clearWaitOnStateChange(task, tasks.find(previous => previous.id === task.id)));
                                 renderActiveAgents(tasks);
+                            }
+                            else if (event === 'planner') {
+                                const main = mainRequests.find(task => task.state === 'running');
+                                if (main) {
+                                    for (const field of ['toolsSelected', 'toolsAvailable', 'toolCalls', 'maxToolCalls']) {
+                                        if (typeof parsed[field] === 'number') main[field] = parsed[field]; else delete main[field];
+                                    }
+                                    renderActiveAgents(tasks);
+                                }
                             }
                             else if (event === 'wait' && Array.isArray(parsed.tasks)) {
                                 const now = Date.now();

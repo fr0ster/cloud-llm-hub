@@ -67,7 +67,15 @@ import { usageRuntime } from './usage/runtime';
 type Plan = Exclude<DialogueState['plan'], string | undefined>;
 type PlanStep = Plan['steps'][number];
 
+export interface PlannerCounts {
+  toolsSelected?: number;
+  toolsAvailable?: number;
+  toolCalls?: number;
+  maxToolCalls?: number;
+}
+
 export type DialogueEvent =
+  | ({ kind: 'planner' } & PlannerCounts)
   | ({ kind: 'wait' } & DialogueSignals['dialogue.wait'])
   | { kind: 'settled'; outcome: 'ok' | 'failed'; trigger: 'user' | 'event' }
   | { kind: 'message'; message: PlannerMessage }
@@ -115,6 +123,7 @@ export interface DialogueHandle {
     settledSeq: number;
     lastFailedSeq: number;
   };
+  plannerCounts(counts: PlannerCounts): void;
   hasSubscribers(): boolean;
   drainPending(): Promise<void>;
   factory: SessionConnectionFactory;
@@ -697,6 +706,7 @@ async function open(
       };
     },
     drainPending,
+    plannerCounts: (counts) => emit({ kind: 'planner', ...counts }),
     hasSubscribers: () => subscribers.size > 0,
     factory,
     pool,
