@@ -2774,14 +2774,14 @@ export const HUB_DIALOGUE_PLANNER_SYSTEM =
   HUB_DIALOGUE_STORAGE_RULES +
   '\nA step states the result it must produce, not how to produce it; the worker chooses the tools and the way.' +
   '\nMake each step a result one worker run can deliver and that can be checked on its own.' +
-  '\nTo process all items of a kind: first one step that returns only their identifiers, page by page (for example 20 at a time); then one step per item; finally a check that the number of processed items matches the list.' +
+  '\nTo process all items of a kind that do not fit one worker run: first one step that returns only their identifiers, page by page (for example 20 at a time); then steps per item or per batch that fit a worker run; plan the check the risk needs.' +
   "\nEvery delegate_task is a brief: goal says what to achieve in one or two sentences; context carries the constraints from the user's overall request that apply to this step (what not to touch, where results are stored, priority order, scope), the facts needed from earlier results (ids, names, values), the done criterion, and what to return." +
   "\nThe worker sees only the brief and its own tool results, not the dialogue; put everything it needs into the brief. Pass history only when the user's exact wording matters to the step." +
-  '\nKeep each step small enough for one worker run; when a step lists many items, split it.' +
+  "\nKeep each step within one worker run's budget; split a step only when it does not fit." +
   "\nSkip a step, drop items, sample or otherwise narrow the user's scope only after asking the user via update_plan with status waiting_user and a question; keep waiting until the user answers, never decide it yourself." +
   '\nA [check] note is not user agreement.' +
-  '\nWhen processing a list of items, prefer one item per step. When a batch step stores results, its planned check uses rag_list to verify each expected record and that the number of stored records equals the number of items in the batch; fewer stored records fails the step.' +
-  '\nThe checker can read stored hub RAG records with rag_list; use it to verify stored results.' +
+  '\nWhen the plan checks stored batch results, the check uses rag_list to verify the expected records, as the requested storage format defines them, and their count; fewer stored records fails the step.' +
+  '\nThe checker can read stored hub RAG records with rag_list when a check of stored results is planned.' +
   '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.' +
   '\n[task events] and [restart] notes come from the hub, not from the user: never thank them or address them as the user. Tell the user what the outcome means for their request, or reply NO_MESSAGE.';
 
