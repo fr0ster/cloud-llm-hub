@@ -1424,6 +1424,50 @@ test('planner counts update the running request and clear after completion', asy
   ui.stopDialogueEvents();
 });
 
+test('planner counts belong to the newest running request and survive older follow completion', async () => {
+  const ui = harness(100000);
+  const events = controlledStream();
+  const a = controlledStream();
+  const b = controlledStream();
+  ui.fetch
+    .mockResolvedValueOnce(events.response)
+    .mockResolvedValueOnce(a.response)
+    .mockResolvedValueOnce(b.response);
+  ui.startDialogueEvents('key');
+  await flush();
+  ui.userInput.value = 'first';
+  const first = ui.sendMessage();
+  await flush();
+  a.push(messageWire('first', 'answer') + ': turn-end\n\n');
+  await flush();
+  expect(ui.locks.size).toBe(0);
+
+  ui.setNow(107000);
+  ui.userInput.value = 'second';
+  const second = ui.sendMessage();
+  await flush();
+  events.push(
+    'event: planner\ndata: {"toolsSelected":7,"toolsAvailable":12,"toolCalls":3,"maxToolCalls":10}\n\n',
+  );
+  await flush();
+  expect(ui.active.innerHTML).toContain('working 0:07');
+  expect(ui.active.innerHTML).toContain('7/12 tools');
+  expect(ui.active.innerHTML).toContain('3/10 calls');
+
+  a.push();
+  await first;
+  expect(ui.active.innerHTML).toContain('working 0:00');
+  expect(ui.active.innerHTML).toContain('7/12 tools');
+  expect(ui.active.innerHTML).toContain('3/10 calls');
+
+  b.push();
+  await second;
+  expect(ui.active.innerHTML).toContain('main \u00b7 listening');
+  expect(ui.active.innerHTML).not.toContain('tools');
+  expect(ui.active.innerHTML).not.toContain('calls');
+  ui.stopDialogueEvents();
+});
+
 test('subagent tools render when call counts are unknown', async () => {
   const ui = harness(100000);
   ui.fetch.mockResolvedValue(

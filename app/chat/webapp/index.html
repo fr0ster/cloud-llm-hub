@@ -616,7 +616,8 @@
                 const active = dialogueTasks.filter(task => task.state === 'running' || task.state === 'queued');
                 const now = Date.now();
                 const main = mainRequests.find(task => task.state === 'running');
-                box.innerHTML = '<div>\u25cf main \u00b7 ' + (main ? 'working ' + formatElapsed(now - main.startedAt) + agentCounts(main) : 'listening') + '</div>' + active.map((task, index) => {
+                const newestMain = [...mainRequests].reverse().find(task => task.state === 'running');
+                box.innerHTML = '<div>\u25cf main \u00b7 ' + (main ? 'working ' + formatElapsed(now - main.startedAt) + agentCounts(newestMain) : 'listening') + '</div>' + active.map((task, index) => {
                     const since = task.startedAt ?? task.createdAt;
                     const elapsed = formatElapsed(task.elapsedMs === undefined ? now - (since ?? now) : task.elapsedMs + now - task.waitReceivedAt);
                     const time = task.state === 'queued' ? ('queued ' + elapsed).trim() : elapsed || 'running';
@@ -702,7 +703,7 @@
                                 renderActiveAgents(tasks);
                             }
                             else if (event === 'planner') {
-                                const main = mainRequests.find(task => task.state === 'running');
+                                const main = [...mainRequests].reverse().find(task => task.state === 'running');
                                 if (main) {
                                     for (const field of ['toolsSelected', 'toolsAvailable', 'toolCalls', 'maxToolCalls']) {
                                         if (typeof parsed[field] === 'number') main[field] = parsed[field]; else delete main[field];
