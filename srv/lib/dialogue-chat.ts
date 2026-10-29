@@ -63,6 +63,7 @@ export function dialogueChat(
   ): AsyncIterable<FollowItem> | undefined;
   hasFollow(): boolean;
 } {
+  const requestStartedAt = Date.now();
   let followHandle: Awaited<ReturnType<typeof dialogueFor>> | undefined;
   let delivery: Delivery;
   let since: number;
@@ -178,7 +179,10 @@ export function dialogueChat(
           ok: true,
           value: {
             content: carried.map((m) => m.text).join('\n\n'),
-            usage: sumPlannerUsage(carried.map((m) => m.usage)),
+            usage: sumPlannerUsage(
+              carried.map((m) => m.usage),
+              { durationMs: Date.now() - requestStartedAt },
+            ),
             stopReason: 'stop',
             iterations: 0,
             toolCallCount: 0,

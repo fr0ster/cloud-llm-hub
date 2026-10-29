@@ -141,18 +141,20 @@ test('unacknowledged replay across reconnect, live messages/tasks, heartbeat and
     kind: 'usage',
     id: 'm1',
     usage: {
+      plannerMs: 120,
       planner: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
       tasks: [
         {
           id: 't1',
           worker: 'executor',
+          durationMs: 340,
           usage: { promptTokens: 7, completionTokens: 4, totalTokens: 11 },
         },
       ],
     },
   });
   expect(res.write).toHaveBeenLastCalledWith(
-    'event: usage\ndata: {"id":"m1","usage":{"prompt_tokens":10,"completion_tokens":6,"total_tokens":16,"x_hub":{"planner":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5},"subagents":[{"prompt_tokens":7,"completion_tokens":4,"total_tokens":11,"task_id":"t1","worker":"executor"}]}}}\n\n',
+    'event: usage\ndata: {"id":"m1","usage":{"prompt_tokens":10,"completion_tokens":6,"total_tokens":16,"x_hub":{"planner":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5,"duration_ms":120},"subagents":[{"prompt_tokens":7,"completion_tokens":4,"total_tokens":11,"duration_ms":340,"task_id":"t1","worker":"executor"}]}}}\n\n',
   );
   listener({
     kind: 'message',

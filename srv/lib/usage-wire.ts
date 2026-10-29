@@ -18,9 +18,11 @@ export interface WireTokens {
     }
   >;
 }
+export type WireAgentUsage = WireTokens & { duration_ms?: number };
 export interface HubUsageBreakdown {
-  planner?: WireTokens;
-  subagents?: Array<WireTokens & { task_id: string; worker: string }>;
+  duration_ms?: number;
+  planner?: WireAgentUsage | { duration_ms: number };
+  subagents?: Array<WireAgentUsage & { task_id: string; worker: string }>;
 }
 export type DialogueUsage = TokenUsage & { x_hub: HubUsageBreakdown };
 export function tokenUsageToWire(usage: TokenUsage): WireTokens;
@@ -54,15 +56,31 @@ export function tokenUsageToWire(
 }
 export function sumPlannerUsage(
   messages: Iterable<PlannerMessageUsage | undefined>,
+  opts?: { durationMs?: number },
 ): DialogueUsage | undefined {
   let planner: TokenUsage | undefined;
-  const tasks = new Map<string, { worker: string; usage: TokenUsage }>();
+  let plannerMs: number | undefined;
+  const tasks = new Map<
+    string,
+    { worker: string; usage: TokenUsage; durationMs?: number }
+  >();
   for (const usage of messages) {
+    if (usage?.plannerMs !== undefined)
+      plannerMs = (plannerMs ?? 0) + usage.plannerMs;
     planner = addTokenUsage(planner, usage?.planner);
     for (const task of usage?.tasks ?? []) {
       const combined = addTokenUsage(tasks.get(task.id)?.usage, task.usage);
+      const previousMs = tasks.get(task.id)?.durationMs;
+      const durationMs =
+        task.durationMs === undefined
+          ? previousMs
+          : Math.max(previousMs ?? task.durationMs, task.durationMs);
       if (combined)
-        tasks.set(task.id, { worker: task.worker, usage: combined });
+        tasks.set(task.id, {
+          worker: task.worker,
+          usage: combined,
+          ...(durationMs !== undefined ? { durationMs } : {}),
+        });
     }
   }
   let total = planner;
@@ -71,11 +89,26 @@ export function sumPlannerUsage(
   return {
     ...total,
     x_hub: {
-      ...(planner ? { planner: tokenUsageToWire(planner) } : {}),
+      ...(opts?.durationMs !== undefined
+        ? { duration_ms: opts.durationMs }
+        : {}),
+      ...(planner
+        ? {
+            planner: {
+              ...tokenUsageToWire(planner),
+              ...(plannerMs !== undefined ? { duration_ms: plannerMs } : {}),
+            },
+          }
+        : plannerMs !== undefined
+          ? { planner: { duration_ms: plannerMs } }
+          : {}),
       ...(tasks.size
         ? {
             subagents: Array.from(tasks, ([task_id, task]) => ({
               ...tokenUsageToWire(task.usage),
+              ...(task.durationMs !== undefined
+                ? { duration_ms: task.durationMs }
+                : {}),
               task_id,
               worker: task.worker,
             })),

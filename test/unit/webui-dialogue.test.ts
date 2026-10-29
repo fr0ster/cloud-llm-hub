@@ -965,6 +965,7 @@ test('dialogue final stream usage belongs to the last message including follow u
     'planner: 10 | &lt;task&gt;\u00b7worker: 20',
   );
   expect(ui.nodes[1].innerHTML).toContain('planner: 8+2 | worker: 18+2');
+  expect(ui.nodes[1].innerHTML).not.toContain('TIME:');
   expect(ui.nodes[1].innerHTML.match(/class="stats-bar"/g)).toHaveLength(1);
 });
 
@@ -1303,3 +1304,93 @@ test.each(['task', 'tasks'])(
     subscription.stop();
   },
 );
+
+test.each([true, false])(
+  'TIME line includes agent durations with request total=%s',
+  async (withTotal: boolean) => {
+    const ui = harness();
+    const usage = {
+      ...tokenUsage(30),
+      x_hub: {
+        ...(withTotal ? { duration_ms: 362000 } : {}),
+        planner: { ...tokenUsage(10), duration_ms: 171000 },
+        subagents: [
+          {
+            ...tokenUsage(10),
+            task_id: 't1',
+            worker: 'executor',
+            duration_ms: 97000,
+          },
+          {
+            ...tokenUsage(10),
+            task_id: 't2',
+            worker: 'executor',
+            duration_ms: 54000,
+          },
+          { ...tokenUsage(0), task_id: 't3', worker: 'executor' },
+        ],
+      },
+    };
+    ui.fetch.mockResolvedValue(
+      stream(
+        messageWire('timed', 'answer') +
+          `data: ${JSON.stringify({ choices: [], usage })}\n\n`,
+      ),
+    );
+    ui.userInput.value = 'question';
+    await ui.sendMessage();
+    expect(ui.nodes[0].innerHTML).toContain(
+      `TIME:${withTotal ? ' 6:02' : ''} [planner: 2:51 | t1\u00b7executor: 1:37 | t2\u00b7executor: 0:54]`,
+    );
+  },
+);
+test('TIME formats hours and escapes agent labels', async () => {
+  const ui = harness();
+  const usage = {
+    ...tokenUsage(5),
+    x_hub: {
+      duration_ms: 3600000,
+      subagents: [
+        {
+          ...tokenUsage(5),
+          task_id: '<task>',
+          worker: 'executor',
+          duration_ms: 0,
+        },
+      ],
+    },
+  };
+  ui.fetch.mockResolvedValue(
+    stream(
+      messageWire('timed', 'answer') +
+        `data: ${JSON.stringify({ choices: [], usage })}\n\n`,
+    ),
+  );
+  ui.userInput.value = 'question';
+  await ui.sendMessage();
+  expect(ui.nodes[0].innerHTML).toContain(
+    'TIME: 1:00:00 [&lt;task&gt;\u00b7executor: 0:00]',
+  );
+});
+
+test('duration-only planner appears in TIME but not the token breakdown', async () => {
+  const ui = harness();
+  const usage = {
+    ...tokenUsage(5),
+    x_hub: {
+      planner: { duration_ms: 171000 },
+      subagents: [{ ...tokenUsage(5), task_id: 't1', worker: 'executor' }],
+    },
+  };
+  ui.fetch.mockResolvedValue(
+    stream(
+      messageWire('timed', 'answer') +
+        `data: ${JSON.stringify({ choices: [], usage })}\n\n`,
+    ),
+  );
+  ui.userInput.value = 'question';
+  await ui.sendMessage();
+  const rendered = ui.nodes[0].innerHTML;
+  expect(rendered.split('TIME:')[0]).not.toContain('planner:');
+  expect(rendered).toContain('TIME: [planner: 2:51]');
+});

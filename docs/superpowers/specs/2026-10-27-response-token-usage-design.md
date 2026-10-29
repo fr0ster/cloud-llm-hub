@@ -23,11 +23,23 @@ interface WireTokens {
   total_tokens: number;
   models?: Record<string, { prompt_tokens: number; completion_tokens: number; total_tokens: number; requests: number }>;
 }
+type WireAgentUsage = WireTokens & { duration_ms?: number };
 interface HubUsageBreakdown {
-  planner?: WireTokens;
-  subagents?: Array<WireTokens & { task_id: string; worker: string }>;
+  duration_ms?: number;
+  planner?: WireAgentUsage | { duration_ms: number };
+  subagents?: Array<WireAgentUsage & { task_id: string; worker: string }>;
 }
 ```
+
+Durations are optional milliseconds (llm-agent >= 30.16.0 / libs >= 30.14.0).
+Planner duration sums planner turns, including corrective calls and excluding queue wait.
+Subagent duration is its running time (`finishedAt - startedAt`); repeated task reports use
+the maximum duration. Request `x_hub.duration_ms` is hub wall clock from request start to
+final usage assembly, including queue wait and follow. Event messages have no request total.
+Parts do not add up to the total because tasks run in parallel and turns have gaps.
+Unknown durations are omitted. A known planner duration is emitted even without planner tokens,
+as a duration-only planner entry; token totals remain unchanged. WebUI omits duration-only
+planner entries from the token breakdown and displays their TIME in m:ss or h:mm:ss.
 
 - **OpenAI / WebUI** (`/v1/chat/completions`): `usage = { prompt_tokens, completion_tokens,
   total_tokens, x_hub: HubUsageBreakdown }`; totals = planner + all subagents of the planner messages
@@ -40,9 +52,9 @@ interface HubUsageBreakdown {
 - **Anthropic** (`/v1/messages`): `usage.input_tokens` / `usage.output_tokens` = totals, plus
   `usage.x_hub: HubUsageBreakdown`; streaming in the final `message_delta`.
 - **Agent MCP `execute_step`** (executor runs directly, no planner): `structuredContent.usage:
-  WireTokens` (executor) and, when the step reviewer ran, `structuredContent.usage_reviewer:
+  WireAgentUsage` (executor; `duration_ms` measures wall clock around the step) and, when the step reviewer ran, `structuredContent.usage_reviewer:
   WireTokens`; the text result ends with one line
-  `[usage] prompt=<n> completion=<n> total=<n>` (the tool description already promises a usage
+  `[usage] prompt=<n> completion=<n> total=<n> time=<seconds>s` (one decimal) (the tool description already promises a usage
   footer — make description and behaviour agree).
 
 ## Hub changes
