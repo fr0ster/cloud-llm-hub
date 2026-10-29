@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- WebUI dialogue mode: the agents line is always shown (`● main · listening` / `working`, plus active subagents), and TASKS is a journal of every task of the session, main-flow requests and subagent tasks, marked done, running, queued, failed (with the error) or stopped. The `task` events stream sends the same trimmed task view as the snapshot, now with `finishedAt` and a truncated `error`.
+
 ## [9.7.0] - 2026-10-27
 
 ### Added

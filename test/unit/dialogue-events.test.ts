@@ -1,9 +1,14 @@
 import { EventEmitter } from 'node:events';
+import express, { type Request, type Response } from 'express';
 import {
   handleDialogueAck,
   handleDialogueEvents,
 } from '../../srv/lib/dialogue-events-handler';
 import { DialogueOutbox } from '../../srv/lib/dialogue-outbox';
+import type {
+  DialogueEvent,
+  DialogueHandle,
+} from '../../srv/lib/dialogue-sessions';
 
 jest.mock('@sap/cds', () => ({
   __esModule: true,
@@ -16,7 +21,7 @@ jest.mock('../../srv/agent-config', () => ({
   }),
 }));
 let outbox: DialogueOutbox;
-let listener: (e: any) => void;
+let listener: (e: DialogueEvent) => void;
 const unsubscribe = jest.fn();
 const persist = jest.fn(async () => {});
 let taskState = 'running';
@@ -48,13 +53,15 @@ jest.mock('../../srv/lib/dialogue-sessions', () => ({
             state: taskState,
             createdAt: 100,
             startedAt: 200,
+            finishedAt: 900,
+            error: 'x'.repeat(350),
             output: 'secret output',
           },
         ],
       }),
     },
     outbox,
-    subscribe: (fn: any, cursor?: string) => {
+    subscribe: (fn: (event: DialogueEvent) => void, cursor?: string) => {
       listener = fn;
       const detach = outbox.subscribe(
         (message) => fn({ kind: 'message', message }),
@@ -72,8 +79,25 @@ jest.mock('../../srv/lib/long-session', () => ({
   longSessionsIfReady: () => ({ touch }),
 }));
 
+function request(fields: {
+  longSession?: { userId: string; key: string; destination?: string };
+  headers?: Record<string, string>;
+  body?: object;
+}): Request {
+  const base: Request = Object.create(express.request);
+  return Object.assign(base, { headers: {} }, fields);
+}
+type SessionMocks = {
+  lookupDialogue: jest.Mock<Promise<DialogueHandle | undefined>, []>;
+  onDialogueCreated: jest.Mock<
+    () => void,
+    [string, string, (handle: DialogueHandle) => void]
+  >;
+};
 function response() {
-  return Object.assign(new EventEmitter(), {
+  const base: Response = Object.create(express.response);
+  EventEmitter.call(base);
+  return Object.assign(base, {
     status: jest.fn().mockReturnThis(),
     json: jest.fn(),
     setHeader: jest.fn(),
@@ -88,7 +112,7 @@ test('unacknowledged replay across reconnect, live messages/tasks, heartbeat and
     longSession: { userId: 'alice', key: 'ls-a', destination: 'DEV' },
   };
   const res = response();
-  await handleDialogueEvents(req as any, res as any);
+  await handleDialogueEvents(request(req), res);
   // The approuter compresses responses unless they say no-transform, and a
   // compressed SSE stream is buffered: nothing would reach the browser live.
   expect(res.setHeader).toHaveBeenCalledWith(
@@ -100,10 +124,18 @@ test('unacknowledged replay across reconnect, live messages/tasks, heartbeat and
   );
   listener({
     kind: 'task',
-    task: { id: 't', worker: 'executor', goal: 'read', state: 'done' },
+    task: {
+      id: 't',
+      worker: 'executor',
+      goal: 'read',
+      state: 'done',
+      createdAt: 100,
+      finishedAt: 900,
+      error: 'x'.repeat(350),
+    },
   });
   expect(res.write).toHaveBeenLastCalledWith(
-    expect.stringContaining('event: task'),
+    `event: task\ndata: ${JSON.stringify({ id: 't', worker: 'executor', goal: 'read', state: 'done', createdAt: 100, finishedAt: 900, error: 'x'.repeat(300) })}\n\n`,
   );
   listener({
     kind: 'usage',
@@ -151,7 +183,7 @@ test('unacknowledged replay across reconnect, live messages/tasks, heartbeat and
   expect(unsubscribe).toHaveBeenCalledTimes(1);
   expect(jest.getTimerCount()).toBe(0);
   const again = response();
-  await handleDialogueEvents(req as any, again as any);
+  await handleDialogueEvents(request(req), again);
   expect(again.write).toHaveBeenCalledWith(expect.stringContaining('id: m1'));
   expect(again.write.mock.calls[0][0]).toContain('event: tasks');
   again.emit('close');
@@ -161,7 +193,7 @@ test.each([undefined, { userId: 'bob', key: 'ls-a' }])(
   'missing or foreign session is 404',
   async (longSession) => {
     const res = response();
-    await handleDialogueEvents({ longSession } as any, res as any);
+    await handleDialogueEvents(request({ longSession }), res);
     expect(res.status).toHaveBeenCalledWith(404);
   },
 );
@@ -173,15 +205,15 @@ test('Last-Event-ID skips rendered prefix and ack ownership is enforced', async 
     body: { id: 'm1' },
   };
   const res = response();
-  await handleDialogueEvents(req as any, res as any);
+  await handleDialogueEvents(request(req), res);
   expect(res.write).toHaveBeenCalledTimes(1); // snapshot only
-  await handleDialogueAck(req as any, response() as any);
+  await handleDialogueAck(request(req), response());
   expect(outbox.pending().map((message) => message.id)).toEqual(['m1']);
   expect(persist).not.toHaveBeenCalled();
   const denied = response();
   await handleDialogueAck(
-    { ...req, longSession: { userId: 'bob', key: 'ls-a' } } as any,
-    denied as any,
+    request({ ...req, longSession: { userId: 'bob', key: 'ls-a' } }),
+    denied,
   );
   expect(denied.status).toHaveBeenCalledWith(404);
   res.emit('close');
@@ -192,15 +224,17 @@ test.each(['running', 'done'])(
     taskState = state;
     const res = response();
     await handleDialogueEvents(
-      { longSession: { userId: 'alice', key: 'ls-a' } } as any,
-      res as any,
+      request({ longSession: { userId: 'alice', key: 'ls-a' } }),
+      res,
     );
     expect(res.write.mock.calls[0][0]).toContain('event: tasks');
     expect(res.write.mock.calls[0][0]).toContain(`"state":"${state}"`);
     expect(res.write.mock.calls[0][0]).toContain(
-      '"createdAt":100,"startedAt":200',
+      '"createdAt":100,"finishedAt":900',
     );
     expect(res.write.mock.calls[0][0]).not.toContain('secret output');
+    expect(res.write.mock.calls[0][0]).toContain('x'.repeat(300));
+    expect(res.write.mock.calls[0][0]).not.toContain('x'.repeat(301));
     expect(res.write.mock.calls[1][0]).toContain('id: m1');
     res.emit('close');
   },
@@ -211,29 +245,34 @@ test('failed SSE write retains message for reconnect and cleans subscriber', asy
   broken.write.mockImplementation(() => {
     throw new Error('EPIPE');
   });
-  await handleDialogueEvents(req as any, broken as any);
+  await handleDialogueEvents(request(req), broken);
   expect(unsubscribe).not.toHaveBeenCalled();
   const next = response();
-  await handleDialogueEvents(req as any, next as any);
+  await handleDialogueEvents(request(req), next);
   expect(next.write).toHaveBeenCalledWith(expect.stringContaining('id: m1'));
   next.emit('close');
 });
 
 test('events before chat stays open and attaches to creation; ack never creates', async () => {
-  const sessions = jest.requireMock('../../srv/lib/dialogue-sessions');
+  const sessions = jest.requireMock<SessionMocks>(
+    '../../srv/lib/dialogue-sessions',
+  );
   sessions.lookupDialogue.mockResolvedValueOnce(undefined);
   const res = response();
   const req = { longSession: { userId: 'alice', key: 'ls-a' } };
-  await handleDialogueEvents(req as any, res as any);
+  await handleDialogueEvents(request(req), res);
   expect(res.flushHeaders).toHaveBeenCalled();
   expect(res.write).toHaveBeenCalledWith('event: tasks\ndata: []\n\n');
-  const attach = sessions.onDialogueCreated.mock.calls.at(-1)[2];
+  const registration = sessions.onDialogueCreated.mock.calls.at(-1);
+  if (!registration) throw new Error('Missing dialogue listener');
+  const attach = registration[2];
   const handle = await sessions.lookupDialogue();
+  if (!handle) throw new Error('Missing dialogue handle');
   attach(handle);
   expect(res.write).toHaveBeenCalledWith(expect.stringContaining('id: m1'));
   sessions.lookupDialogue.mockClear();
   const ackRes = response();
-  await handleDialogueAck({ ...req, body: { id: 'm1' } } as any, ackRes as any);
+  await handleDialogueAck(request({ ...req, body: { id: 'm1' } }), ackRes);
   expect(ackRes.status).toHaveBeenCalledWith(204);
   expect(sessions.lookupDialogue).not.toHaveBeenCalled();
   expect(persist).not.toHaveBeenCalled();
@@ -251,8 +290,8 @@ test('the view shows confirmed messages too', async () => {
   ]);
   const res = response();
   await handleDialogueEvents(
-    { longSession: { userId: 'alice', key: 'ls-a' } } as any,
-    res as any,
+    request({ longSession: { userId: 'alice', key: 'ls-a' } }),
+    res,
   );
   const messages = res.write.mock.calls
     .map(([body]) => body)
@@ -270,12 +309,14 @@ test.each([undefined, {}, { id: '' }, { id: 'm1' }, { id: 'unknown' }])(
     const delivery = outbox.beginDelivery();
     delivery.carried('m1');
     delivery.ended();
-    const sessions = jest.requireMock('../../srv/lib/dialogue-sessions');
+    const sessions = jest.requireMock<SessionMocks>(
+      '../../srv/lib/dialogue-sessions',
+    );
     const before = outbox.history();
     const res = response();
     await handleDialogueAck(
-      { longSession: { userId: 'alice', key: 'ls-a' }, body } as any,
-      res as any,
+      request({ longSession: { userId: 'alice', key: 'ls-a' }, body }),
+      res,
     );
     expect(res.status).toHaveBeenCalledWith(204);
     expect(res.end).toHaveBeenCalledTimes(1);
@@ -290,8 +331,8 @@ test.each([undefined, {}, { id: '' }, { id: 'm1' }, { id: 'unknown' }])(
 test('settled is not sent', async () => {
   const res = response();
   await handleDialogueEvents(
-    { longSession: { userId: 'alice', key: 'ls-a' } } as any,
-    res as any,
+    request({ longSession: { userId: 'alice', key: 'ls-a' } }),
+    res,
   );
   res.write.mockClear();
   listener({ kind: 'settled', outcome: 'ok', trigger: 'event' });
@@ -311,8 +352,8 @@ test.each([undefined, 'waiting_user', 'done'])(
     planState = { plan: 'Private plan', planStatus: status };
     const res = response();
     await handleDialogueEvents(
-      { longSession: { userId: 'alice', key: 'ls-a' } } as any,
-      res as any,
+      request({ longSession: { userId: 'alice', key: 'ls-a' } }),
+      res,
     );
     expect(res.write).toHaveBeenCalledWith(
       `event: plan\ndata: ${JSON.stringify({ text: 'Private plan', status: status ?? 'active' })}\n\n`,
