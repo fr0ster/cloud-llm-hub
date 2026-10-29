@@ -35,7 +35,7 @@ test('planner supports planner and checker verification', () => {
     expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(rule);
   }
   expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
-    'The checker can read stored hub RAG records with rag_list; use it to verify stored results.',
+    'The checker can read stored hub RAG records with rag_list when a check of stored results is planned.',
   );
   expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain('For check.by planner');
 });
@@ -48,15 +48,28 @@ test('planner prepares a complete brief and asks before narrowing scope', () => 
     'the done criterion, and what to return',
     'The worker sees only the brief and its own tool results, not the dialogue',
     'Pass history only when',
-    'when a step lists many items, split it',
+    "Keep each step within one worker run's budget; split a step that does not fit.",
     'Skip a step, drop items, sample',
     'update_plan with status waiting_user and a question',
     'keep waiting until the user answers, never decide it yourself',
-    'Prefer one item per step',
-    'number of stored records equals the number of items in the batch',
+    'When the plan checks stored batch results',
+    'as the requested storage format defines them',
     'fewer stored records fails the step',
+    'when a check of stored results is planned',
+    'When the request or a skill asks to keep results, store them where it says',
+    'if the target or scope is unclear, ask the user',
+    "without a named target means the hub's RAG collection (rag_add)",
   ])
     expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(rule);
+  for (const rule of [
+    'when a step lists many items, split it',
+    'Prefer one item per step',
+    'then one step per item; finally',
+    "When a step's outcome is stored, the check step reads it back",
+    'scratch data may use scope session',
+    "When the user's wording is ambiguous about where or how to store",
+  ])
+    expect(HUB_DIALOGUE_PLANNER_SYSTEM).not.toContain(rule);
 });
 
 test('planner uses the structured board and library delegation contract', () => {
@@ -236,10 +249,10 @@ test('planner defines independently checkable results and paged enumeration', ()
     'A step states the result it must produce, not how to produce it; the worker chooses the tools and the way.',
   );
   expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
-    'Make each step the smallest result that can be checked on its own: one object, one fact or one stored record.',
+    'Make each step a result one worker run can deliver and that can be checked on its own.',
   );
   expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
-    'To process all items of a kind: first one step that returns only their identifiers, page by page (for example 20 at a time); then one step per item; finally a check that the number of processed items matches the list.',
+    'To process all items of a kind that do not fit one worker run: first one step that returns only their identifiers, page by page (for example 20 at a time); then steps per item or per batch that fit a worker run; plan the check the risk needs.',
   );
 });
 
