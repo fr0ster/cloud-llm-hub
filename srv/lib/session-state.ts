@@ -4,6 +4,10 @@ import {
   isProvidersReady,
 } from '../agent-manager';
 import { clearSession, hasSessionHistory } from '../session-store';
+import {
+  deleteCollectionOverrides,
+  hasCollectionOverrides,
+} from './collection-toggle';
 import { hasDialogueState } from './dialogue-store';
 import { hasRunRecord } from './run-record-store';
 
@@ -21,6 +25,7 @@ import { hasRunRecord } from './run-record-store';
  * lease between the decision and the deletion.
  */
 export function deleteSessionState(userId: string, sessionId: string): void {
+  deleteCollectionOverrides(userId, sessionId);
   clearSession(sessionId, userId);
   forgetSessionDestination(userId, sessionId);
   // Before startup has built the providers there is no registry, and so no
@@ -36,6 +41,7 @@ export function deleteSessionState(userId: string, sessionId: string): void {
  */
 export function hasSessionState(userId: string, sessionId: string): boolean {
   return (
+    hasCollectionOverrides(userId, sessionId) ||
     hasSessionHistory(sessionId, userId) ||
     hasRunRecord(userId, sessionId) ||
     hasDialogueState(userId, sessionId) ||

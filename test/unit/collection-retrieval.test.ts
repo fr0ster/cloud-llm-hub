@@ -8,6 +8,7 @@ import type { Message } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { getCollectionRegistry } from '../../srv/agent-manager';
 import { resolveRouteId } from '../../srv/collection-ids';
+import { CollectionBackendError } from '../../srv/lib/collection-persistence';
 import {
   collectionRetrieval,
   requestedCollectionIds,
@@ -25,6 +26,27 @@ const req = (header?: string, body: unknown = {}) => ({
 const query = jest.fn();
 const registry = {
   ready: Promise.resolve(),
+  heldPresetFor: jest.fn((): string | undefined => undefined),
+  getEnabled: jest.fn((): boolean | undefined => undefined),
+  getCollection: jest.fn(
+    async (): Promise<{
+      id: string;
+      logicalId: string;
+      scope: string;
+      owner: string;
+      sessionId?: string;
+    }> => ({
+      id: 'physical',
+      logicalId: 'selected',
+      scope: 'user',
+      owner: 'alice',
+    }),
+  ),
+  listCollections: jest.fn(
+    async (): Promise<
+      Array<{ id: string; logicalId: string; scope: string; owner: string }>
+    > => [],
+  ),
   degradedOf: jest.fn(),
   getRagStores: jest.fn(async () => ({ selected: { query } })),
   getRagStore: jest.fn(async () => ({ query })),
@@ -34,10 +56,67 @@ beforeEach(() => {
   jest.mocked(getCollectionRegistry).mockReturnValue(registry as never);
   jest.mocked(resolveRouteId).mockResolvedValue('physical');
   registry.degradedOf.mockResolvedValue(undefined);
+  registry.getEnabled.mockReturnValue(undefined);
   query.mockResolvedValue({
     ok: true,
     value: [{ text: 'knowledge', score: 1 }],
   });
+});
+
+it('logs once and continues without retrieval when unselected enumeration fails', async () => {
+  registry.listCollections.mockRejectedValueOnce(new Error('restore failed'));
+  const log = cds.log('enumeration-test');
+  const warn = jest.spyOn(log, 'warn').mockImplementation(() => {});
+  const original = {};
+  const agent = { deps: { ragStores: original } };
+  const messages: Message[] = [{ role: 'user', content: 'question' }];
+  try {
+    expect(
+      await collectionRetrieval(agent).retrieve(
+        req(),
+        messages,
+        'alice',
+        undefined,
+        log,
+      ),
+    ).toEqual({ messages });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(query).not.toHaveBeenCalled();
+    expect(registry.getRagStores).not.toHaveBeenCalled();
+    expect(agent.deps.ragStores).toBe(original);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it('keeps the structured 503 refusal for an explicit selection when restore fails', async () => {
+  const failure = new CollectionBackendError('restore', {
+    name: 'RagError',
+    code: 'COLLECTIONS_UNAVAILABLE',
+    message: 'restore failed',
+  });
+  registry.ready = Promise.reject(failure);
+  try {
+    expect(
+      await collectionRetrieval({ deps: { ragStores: {} } }).retrieve(
+        req('selected'),
+        [],
+        'alice',
+        undefined,
+        cds.log('test'),
+      ),
+    ).toEqual({
+      refusal: {
+        status: 503,
+        message: failure.message,
+        kind: 'service_unavailable',
+      },
+    });
+    expect(registry.listCollections).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+  } finally {
+    registry.ready = Promise.resolve();
+  }
 });
 
 it('reads header or body ids, with header precedence', () => {
@@ -162,4 +241,66 @@ it('restores injected stores after a search failure', async () => {
     step.restore();
   }
   expect(agent.deps.ragStores).toBe(original);
+});
+
+it('filters disabled collections before querying or injecting stores', async () => {
+  registry.getEnabled.mockReturnValue(false);
+  const step = collectionRetrieval({ deps: { ragStores: {} } });
+  const messages: Message[] = [{ role: 'user', content: 'question' }];
+  expect(
+    await step.retrieve(
+      req('selected'),
+      messages,
+      'alice',
+      'session',
+      cds.log('test'),
+    ),
+  ).toEqual({ messages });
+  expect(registry.getRagStore).not.toHaveBeenCalled();
+  expect(registry.getRagStores).not.toHaveBeenCalled();
+});
+
+it('uses enabled defaults without a selection and respects an empty client intersection', async () => {
+  const list = jest.spyOn(registry, 'listCollections');
+  list.mockResolvedValueOnce([
+    { id: 'physical', logicalId: 'selected', scope: 'user', owner: 'alice' },
+  ]);
+  const step = collectionRetrieval({ deps: { ragStores: {} } });
+  await step.retrieve(
+    req(),
+    [{ role: 'user', content: 'question' }],
+    'alice',
+    undefined,
+    cds.log('test'),
+  );
+  expect(query).toHaveBeenCalledTimes(1);
+  query.mockClear();
+  await step.retrieve(
+    req(undefined, { rag_collections: [] }),
+    [{ role: 'user', content: 'question' }],
+    'alice',
+    undefined,
+    cds.log('test'),
+  );
+  expect(query).not.toHaveBeenCalled();
+});
+
+it('allows explicitly attached session uploads for that request', async () => {
+  registry.getEnabled.mockReturnValue(false);
+  registry.getCollection.mockResolvedValueOnce({
+    id: 'physical',
+    logicalId: 'uploads',
+    scope: 'session',
+    owner: 'alice',
+    sessionId: 'session',
+  });
+  const step = collectionRetrieval({ deps: { ragStores: {} } });
+  await step.retrieve(
+    req(undefined, { rag_collections: ['uploads'] }),
+    [{ role: 'user', content: 'question' }],
+    'alice',
+    'session',
+    cds.log('test'),
+  );
+  expect(query).toHaveBeenCalledTimes(1);
 });

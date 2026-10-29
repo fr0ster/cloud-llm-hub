@@ -926,3 +926,11 @@ Each events subscriber has its own last emitted message cursor. Pending messages
 are emitted in outbox order even when persistence fails; persistence retries on
 the serialized save path. Acknowledgements remove the prefix through a known ID.
 Reconnects can pass `Last-Event-ID` to skip the rendered prefix.
+
+### Session collection search toggle
+
+`PATCH /v1/rag/collections/:id/enabled` with `{ "enabled": false }` and the current session header (`x-clh-session`, or the session cookie) changes only that user's session. `GET /v1/rag/collections` returns `enabled` (effective session state) and `defaultEnabled`. Use `{ "enabled": false, "scope": "default" }` to edit the default with the existing owner/admin permissions. Without a session, PATCH and GET retain default behavior.
+
+Session overrides take precedence over collection defaults. They are deleted with session state. Long sessions persist overrides in their session record (SQLite/HANA/PG as configured) and restore them with the destination and history after restart; plain sessions keep overrides in memory, like their destination state.
+
+Request retrieval uses enabled collections; `rag_collections` and `X-Rag-Collections` only narrow that set, including an explicit empty list. A request explicitly selecting its session `uploads` collection can use attached files for that request. Planner knowledge checks enablement on every search, so the next turn observes a toggle. Tool selection and built-in skills use separate tool/skill stores rather than these user collections. Executor history remains session memory. Explicit RAG tools are unchanged: `rag_list` can read a disabled collection when the caller has read access; add/correct/deprecate retain their existing permissions.

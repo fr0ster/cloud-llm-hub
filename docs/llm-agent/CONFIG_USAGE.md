@@ -279,3 +279,11 @@ curl --fail --show-error \
 ```
 
 Use a token carrying `MCP_Admin`; repeat for each index. Browser downloads through the approuter select an instance through normal routing; use the targeted backend request above to retrieve every instance. Files are named `usage-<instance>-<UTC yyyyMMddTHHmmssZ>.sqlite` and can be opened locally with SQLite tools.
+
+### Session collection search toggle
+
+`PATCH /v1/rag/collections/:id/enabled` with `{ "enabled": false }` and the current session header (`x-clh-session`, or the session cookie) changes only that user's session. `GET /v1/rag/collections` returns `enabled` (effective session state) and `defaultEnabled`. Use `{ "enabled": false, "scope": "default" }` to edit the default with the existing owner/admin permissions. Without a session, PATCH and GET retain default behavior.
+
+Session overrides take precedence over collection defaults. They are deleted with session state. Long sessions persist overrides in their session record (SQLite/HANA/PG as configured) and restore them with the destination and history after restart; plain sessions keep overrides in memory, like their destination state.
+
+Request retrieval uses enabled collections; `rag_collections` and `X-Rag-Collections` only narrow that set, including an explicit empty list. A request explicitly selecting its session `uploads` collection can use attached files for that request. Planner knowledge checks enablement on every search, so the next turn observes a toggle. Tool selection and built-in skills use separate tool/skill stores rather than these user collections. Executor history remains session memory. Explicit RAG tools are unchanged: `rag_list` can read a disabled collection when the caller has read access; add/correct/deprecate retain their existing permissions.

@@ -13,6 +13,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
+- Collection search toggles are session scoped, persisted with long sessions, and enforced in request retrieval and each planner knowledge search. Collection defaults remain editable with owner/admin permissions.
+
 - Hub planner rules follow the library's good-planner guidance: steps are results one worker run can deliver, read-back checks of stored results only where the plan checks them, one item per step only for item lists; the planner reads requests literally and a stopped task is hard-aborted after a grace period (llm-agent-libs 30.17.0).
 - Add planner wait mode with optional wait tick and long-task intervals, live wait SSE updates, and server elapsed time/tool counts in the WebUI agents line (llm-agent 30.15.0 / libs 30.13.0).
 

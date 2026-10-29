@@ -85,7 +85,23 @@ const body = () => ({
   messages: [{ role: 'user', content: 'hi' }],
 });
 
-beforeEach(() => harness.reset());
+beforeEach(async () => {
+  harness.reset();
+  const registry = manager.getCollectionRegistry();
+  for (const id of ['col-1', 'col-2']) {
+    if (!(await registry.getCollection(id))) {
+      await registry.createCollection({
+        id,
+        logicalId: id,
+        displayName: id,
+        description: '',
+        scope: 'user',
+        owner: 'bob',
+      });
+    }
+    await registry.setEnabled('bob', id, true);
+  }
+});
 afterEach(() => {
   jest.restoreAllMocks();
   configure();

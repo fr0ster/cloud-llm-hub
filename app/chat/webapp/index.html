@@ -2408,7 +2408,7 @@
         /** RAG collections cache — populated by loadCollections() from the server listing.
          *  Each entry is the raw object from GET /v1/rag/collections, which includes:
          *  id, logicalId, scope, displayName, enabled, documentCount, backend, description.
-         *  Enabled state is persistent on the server (PATCH /v1/rag/collections/:id/enabled).
+         *  Enabled state is scoped to the current session on the server (PATCH /v1/rag/collections/:id/enabled).
          */
         let ragCollectionsCache = [];
 
@@ -2424,7 +2424,7 @@
             try {
                 await ragFetch(`/v1/rag/collections/${encodeURIComponent(id)}/enabled`, {
                     method: 'PATCH',
-                    body: JSON.stringify({ enabled: newEnabled }),
+                    body: JSON.stringify({ enabled: newEnabled, scope: 'session' }),
                 });
             } catch (err) {
                 alert('Failed to toggle collection: ' + err.message);

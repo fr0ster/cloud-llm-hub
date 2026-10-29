@@ -30,6 +30,11 @@ import {
   SESSION_MAX_MESSAGES,
 } from '../session-store';
 import {
+  configureCollectionOverridePersistence,
+  restoreCollectionOverrides,
+  sessionCollectionOverrides,
+} from './collection-toggle';
+import {
   closeDialogue,
   lookupDialogue,
   touchDialogue,
@@ -89,6 +94,7 @@ function recordOf(s: LongSession): SessionRecord {
     createdAt: s.createdAt,
     lastActivity: s.lastActivity,
     ttlMs: longSessions().ttlMs,
+    collectionOverrides: sessionCollectionOverrides(s.userId, s.key),
     ...(s.destination !== undefined
       ? { destination: s.destination }
       : undefined),
@@ -125,6 +131,10 @@ export class SessionNotReadyError extends Error {
 /** The registry's hooks; `store` is where records go (none: no revival). */
 export function lifecycleHooks(store?: SessionRecordStore): LongSessionHooks {
   records = store;
+  configureCollectionOverridePersistence(async (userId, key) => {
+    const session = longSessionsIfReady()?.get(userId, key);
+    if (session) await records?.put(recordOf(session));
+  });
   closed.clear();
   reviving.clear();
   return {
@@ -384,6 +394,8 @@ async function revive(
       return longSessions().get(userId, key);
     throw new SessionLimitError();
   }
+  if (rec.collectionOverrides)
+    restoreCollectionOverrides(userId, key, rec.collectionOverrides);
   if (rec.destination !== undefined)
     setSessionDestination(userId, key, rec.destination);
   if (!hasSessionHistory(key, userId)) {

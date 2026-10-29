@@ -25,6 +25,7 @@ export async function plannerContext(options: {
   names: string[];
   collection: (name: string) => Promise<IRag | null>;
   warn: (message: string) => void;
+  enabled?: (name: string) => Promise<boolean>;
 }): Promise<PlannerRetrievalOptions> {
   const result: PlannerRetrievalOptions = {};
   const embedding = options.embedding;
@@ -47,16 +48,22 @@ export async function plannerContext(options: {
   for (const name of options.names) {
     try {
       const rag = await options.collection(name);
-      if (rag)
-        knowledge.push(
-          new RagPlannerKnowledge(
-            name,
-            rag,
-            embedding.retrieval,
-            embedding.key,
-          ),
+      if (rag) {
+        const source = new RagPlannerKnowledge(
+          name,
+          rag,
+          embedding.retrieval,
+          embedding.key,
         );
-      else options.warn(`Planner knowledge collection missing: ${name}`);
+        knowledge.push({
+          name,
+          embeddingKey: source.embeddingKey,
+          search: async (query, k, callOptions) => {
+            if (options.enabled && !(await options.enabled(name))) return [];
+            return source.search(query, k, callOptions);
+          },
+        });
+      } else options.warn(`Planner knowledge collection missing: ${name}`);
     } catch (err) {
       options.warn(
         `Planner knowledge collection unavailable: ${name}: ${err instanceof Error ? err.message : String(err)}`,

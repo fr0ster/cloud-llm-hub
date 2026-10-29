@@ -12,6 +12,7 @@ import {
   PersistentHistoryStore,
   storePrefixFor,
 } from './collection-persistence';
+import { collectionEnabled } from './collection-toggle';
 import { plannerContext, plannerMemoryStore } from './planner-context';
 import {
   forgetScopedPlannerMemory,
@@ -87,6 +88,19 @@ export async function plannerSessionOptions(
           }
         : undefined,
       names: getAgentConfig().agent.plannerKnowledge ?? [],
+      enabled: async (name) => {
+        const registry = getCollectionRegistry();
+        const id = await resolveByName(
+          registry,
+          name,
+          userId,
+          undefined,
+          false,
+          'user',
+        );
+        const meta = id ? await registry.getCollection(id) : null;
+        return !!meta && collectionEnabled(registry, userId, key, meta);
+      },
       collection: async (name) => {
         const registry = getCollectionRegistry();
         const id = await resolveByName(

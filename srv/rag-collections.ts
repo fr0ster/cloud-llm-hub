@@ -1300,7 +1300,10 @@ export class CollectionRegistry {
   }
 
   getEnabled(userId: string, physicalId: string): boolean | undefined {
-    return this.enabledByUser.get(userId)?.get(physicalId);
+    const stored = this.collections.get(physicalId);
+    return this.enabledByUser
+      .get(stored?.persistent ? (stored.meta.owner ?? '') : userId)
+      ?.get(physicalId);
   }
 
   /**
