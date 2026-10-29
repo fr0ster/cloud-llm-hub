@@ -5,9 +5,9 @@ import {
   PlannerToolsClient,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
+  plannerWithAttachments,
   plannerWithEnvironment,
   plannerWithParagraphs,
-  plannerWithRetrievedContext,
 } from '../../srv/lib/dialogue-planner-content';
 
 test('wrappers preserve paragraph content when DialogueSession buffers content partials', async () => {
@@ -125,11 +125,14 @@ test('queued user context stays out of an active event and its corrections', asy
   const trace = { traceId: 'queued' };
   const entered = deferred();
   const release = deferred();
-  const calls: Array<{ input: string; trace: unknown }> = [];
+  const calls: Array<{
+    input: string;
+    trace: Parameters<PlannerAgent['process']>[1]['trace'];
+  }> = [];
   const session = await DialogueSession.open({
     id: 'queued-context',
     maxCorrections: 1,
-    planner: plannerWithRetrievedContext(
+    planner: plannerWithAttachments(
       {
         async process(input, options) {
           if (input.at(-1)?.content?.endsWith('seed')) {
@@ -181,11 +184,11 @@ test('queued user context stays out of an active event and its corrections', asy
     expect(calls).toHaveLength(4);
     for (const call of calls.slice(0, 2)) {
       expect(call.trace).toBeUndefined();
-      expect(call.input).not.toContain('[retrieved context]');
+      expect(call.input).not.toContain('[attached files]');
     }
     for (const call of calls.slice(2)) {
       expect(call.trace).toBe(trace);
-      expect(call.input).toContain('[retrieved context]');
+      expect(call.input).toContain('[attached files]');
       expect(call.input).toContain('knowledge');
     }
     expect(contexts.has(trace)).toBe(false);
@@ -196,17 +199,20 @@ test('queued user context stays out of an active event and its corrections', asy
   }
 });
 
-test('event drained immediately after a user send has no retrieved context', async () => {
+test('event drained immediately after a user send has no attachment content', async () => {
   const contexts = new WeakMap<object, string>();
   const trace = { traceId: 'finished' };
   const eventDone = deferred();
   const workerDone = deferred();
-  const calls: Array<{ input: string; trace: unknown; associated: boolean }> =
-    [];
+  const calls: Array<{
+    input: string;
+    trace: Parameters<PlannerAgent['process']>[1]['trace'];
+    associated: boolean;
+  }> = [];
   const session = await DialogueSession.open({
     id: 'finished-context',
     maxCorrections: 0,
-    planner: plannerWithRetrievedContext(
+    planner: plannerWithAttachments(
       {
         async process(input, options) {
           calls.push({
@@ -253,17 +259,17 @@ test('event drained immediately after a user send has no retrieved context', asy
     await session.send('hello', { trace });
     await eventDone.promise;
     expect(calls).toHaveLength(2);
-    expect(calls[0].input).toContain('[retrieved context]');
+    expect(calls[0].input).toContain('[attached files]');
     expect(calls[1].trace).toBeUndefined();
     expect(calls[1].associated).toBe(true);
-    expect(calls[1].input).not.toContain('[retrieved context]');
+    expect(calls[1].input).not.toContain('[attached files]');
   } finally {
     contexts.delete(trace);
     await session.close();
   }
 });
 
-test('retrieval uses trace identity and preserves temporary input order', async () => {
+test('attachments use trace identity and preserves temporary input order', async () => {
   const contexts = new WeakMap<object, string>();
   const trace = { traceId: 'same-id' };
   contexts.set(trace, 'knowledge');
@@ -272,20 +278,20 @@ test('retrieval uses trace identity and preserves temporary input order', async 
     Parameters<PlannerAgent['process']>
   >(async () => ({ ok: true, value: { content: 'ok' } }));
   const planner = plannerWithEnvironment(
-    plannerWithRetrievedContext({ process }, contexts),
+    plannerWithAttachments({ process }, contexts),
     () => 'Hub',
   );
   const input = [{ role: 'user' as const, content: 'hello' }];
   await planner.process(input, { trace });
   expect(process.mock.calls.at(-1)?.[0]).toEqual([
     { role: 'user', content: '[environment]\nHub' },
-    { role: 'user', content: expect.stringContaining('[retrieved context]') },
+    { role: 'user', content: expect.stringContaining('[attached files]') },
     ...input,
   ]);
   for (const options of [{}, { trace: { ...trace } }]) {
     await planner.process(input, options);
     expect(JSON.stringify(process.mock.calls.at(-1)?.[0])).not.toContain(
-      '[retrieved context]',
+      '[attached files]',
     );
   }
   expect(input).toEqual([{ role: 'user', content: 'hello' }]);
@@ -312,7 +318,7 @@ test('all planner wrappers forward stopSignal to SmartAgent.process', async () =
     const trace = { traceId: 'wait' };
     contexts.set(trace, 'context');
     const planner = plannerWithEnvironment(
-      plannerWithRetrievedContext(plannerWithParagraphs(agent), contexts),
+      plannerWithAttachments(plannerWithParagraphs(agent), contexts),
       () => 'Hub',
     );
     const stopSignal = new AbortController().signal;

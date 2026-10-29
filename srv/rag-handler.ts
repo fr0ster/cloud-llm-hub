@@ -905,6 +905,7 @@ export function registerRagRoutes(
           filename: name,
           chunks: chunks.length,
           added: result.added,
+          documentIds: docs.map((doc) => doc.id),
           errors: result.errors,
         });
       } catch (err) {

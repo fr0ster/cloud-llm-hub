@@ -5,7 +5,7 @@ import {
   dialogueChat,
 } from '../../srv/lib/dialogue-chat';
 import { DialogueOutbox } from '../../srv/lib/dialogue-outbox';
-import { plannerWithRetrievedContext } from '../../srv/lib/dialogue-planner-content';
+import { plannerWithAttachments } from '../../srv/lib/dialogue-planner-content';
 import type { DialogueHandle } from '../../srv/lib/dialogue-sessions';
 import {
   admitPipeline,
@@ -28,9 +28,10 @@ jest.mock(
   }),
   { virtual: true },
 );
-jest.mock('../../srv/agent-manager', () =>
-  require('./helpers/channel-harness').agentManagerMock(),
-);
+jest.mock('../../srv/agent-manager', () => ({
+  ...require('./helpers/channel-harness').agentManagerMock(),
+  getQueryEmbedder: jest.fn(() => undefined),
+}));
 jest.mock('../../srv/agent-config', () => ({
   ...require('./helpers/channel-harness').agentConfigMock(),
   getAgentConfig: () => ({ agent: { chatCoordinator: 'dialogue' } }),
@@ -115,7 +116,7 @@ beforeEach(() => {
   session = registry.open('alice', {}) as LongSession;
   jest.mocked(dialogueFor).mockResolvedValue({
     plannerCounts,
-    retrievedContexts: turnContext,
+    attachments: turnContext,
     replies: new WeakMap(),
     factory: { refresh },
     drainPending: async () => {},
@@ -668,15 +669,20 @@ it.each(['NO_MESSAGE', 'NO_MESSAGE answer NO_MESSAGE'])(
 
 for (const anthropic of [false, true])
   for (const stream of [false, true])
-    for (const retrieved of [false, true]) {
+    for (const retrieved of [false, true, 'uploads']) {
       it(`planner receives current user text (anthropic=${anthropic}, stream=${stream}, retrieved=${retrieved})`, async () => {
         const { getCollectionRegistry } = require('../../srv/agent-manager');
+        const retrieval = await import('../../srv/lib/collection-retrieval');
+        const retrieve = jest.spyOn(retrieval, 'collectionRetrieval');
+        const manager = await import('../../srv/agent-manager');
+        const embedder = jest.mocked(manager.getQueryEmbedder);
+        embedder.mockClear();
         const plannerProcess = jest.fn(async () => ({
           ok: true as const,
           value: { content: 'answer' },
         }));
         send.mockImplementation(async (text, opts) => {
-          await plannerWithRetrievedContext(
+          await plannerWithAttachments(
             { process: plannerProcess },
             turnContext,
           ).process([{ role: 'user', content: text }], opts);
@@ -687,6 +693,13 @@ for (const anthropic of [false, true])
           id: 'docs__u_alice',
           owner: 'alice',
           scope: 'user',
+        });
+        jest.spyOn(registry, 'getDocument').mockResolvedValue({
+          id: 'file',
+          text: 'attached content',
+          metadata: {},
+          enabled: true,
+          createdAt: '2026-10-29',
         });
         jest.spyOn(registry, 'degradedOf').mockResolvedValue(undefined);
         jest.spyOn(registry, 'getRagStores').mockResolvedValue({});
@@ -707,17 +720,29 @@ for (const anthropic of [false, true])
             session.key,
           ) as unknown as Request & { longSession: LongSession };
           req.longSession = session;
-          if (retrieved) req.headers['x-rag-collections'] = 'docs__u_alice';
+          if (retrieved === 'uploads')
+            req.body.attachment_document_ids = ['file'];
+          if (retrieved === 'uploads' && !stream)
+            req.body.rag_collections = ['uploads'];
+          else if (retrieved)
+            req.headers['x-rag-collections'] =
+              retrieved === 'uploads' ? 'uploads' : 'docs__u_alice';
           await (anthropic ? handleAnthropicMessages : handleChatCompletions)(
             req,
             fakeRes() as unknown as Response,
           );
           expect(send).toHaveBeenCalledWith('hi', expect.anything());
           const input = JSON.stringify(plannerProcess.mock.calls);
-          if (retrieved) {
-            expect(input).toContain('[retrieved context]');
-            expect(input).toContain('knowledge');
-          } else expect(input).not.toContain('[retrieved context]');
+          expect(input).not.toContain('[retrieved context]');
+          expect(input).not.toContain('knowledge');
+          if (retrieved === 'uploads') {
+            expect(input).toContain('[attached files]');
+            expect(input).toContain('attached content');
+          } else expect(input).not.toContain('[attached files]');
+          expect(retrieve).not.toHaveBeenCalled();
+          expect(embedder).not.toHaveBeenCalled();
+          expect(registry.getRagStore).not.toHaveBeenCalled();
+          expect(registry.getRagStores).not.toHaveBeenCalled();
           expect(turnContext.has(send.mock.calls.at(-1)?.[1].trace)).toBe(
             false,
           );
@@ -1266,7 +1291,7 @@ for (const anthropic of [false, true]) {
 
 for (const anthropic of [false, true]) {
   for (const readiness of [false, true]) {
-    it(`setup rejection ends the stream and heartbeat (anthropic=${anthropic}, readiness=${readiness})`, async () => {
+    it(`unavailable request retrieval does not block dialogue or leave a heartbeat (anthropic=${anthropic}, readiness=${readiness})`, async () => {
       const { getCollectionRegistry } = await import('../../srv/agent-manager');
       const retrieval = await import('../../srv/lib/collection-retrieval');
       const { CollectionBackendError } = await import(
@@ -1306,14 +1331,10 @@ for (const anthropic of [false, true]) {
         );
         expect(res.statusCode).toBe(200);
         expect(res.writableEnded).toBe(true);
-        expect(res.body).toContain(error.message);
-        expect(res.body).toContain(
-          anthropic ? 'event: error' : '"type":"server_error"',
-        );
-        expect(res.body).not.toContain('[DONE]');
-        expect(res.body).not.toContain('message_stop');
-        expect(res.body).not.toContain('"finish_reason":"stop"');
-        expect(ended).not.toHaveBeenCalled();
+        expect(res.body).not.toContain(error.message);
+        expect(res.body).toContain('answer');
+        expect(res.body).toContain(anthropic ? 'message_stop' : '[DONE]');
+        expect(send).toHaveBeenCalled();
         const body = res.body;
         await jest.advanceTimersByTimeAsync(20_000);
         expect(res.body).toBe(body);

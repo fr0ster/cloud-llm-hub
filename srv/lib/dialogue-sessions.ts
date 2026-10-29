@@ -34,9 +34,9 @@ import {
 import { runWithContextCapture } from './context-capture';
 import { DialogueOutbox, type OutboxEntry } from './dialogue-outbox';
 import {
+  plannerWithAttachments,
   plannerWithEnvironment,
   plannerWithParagraphs,
-  plannerWithRetrievedContext,
 } from './dialogue-planner-content';
 import { runWithDialogueRagTools } from './dialogue-rag-tools';
 import { dialogueSignals } from './dialogue-signals';
@@ -110,7 +110,7 @@ export interface DialogueHandle {
   destination: string;
   session: DialogueSession;
   usage?: IUsageRecorder;
-  retrievedContexts: WeakMap<object, string>;
+  attachments: WeakMap<object, string>;
   replies: WeakMap<object, { id: string; createdAt: number }>;
   outbox: DialogueOutbox;
   state(): {
@@ -250,7 +250,7 @@ async function open(
     destination,
   });
   const factory = new SessionConnectionFactory(userId, key);
-  const retrievedContexts = new WeakMap<object, string>();
+  const attachments = new WeakMap<object, string>();
   const replies = new WeakMap<object, { id: string; createdAt: number }>();
   let turnReply: { id: string; createdAt: number } | undefined;
   // Planner usage of the user turn, summed over corrective calls; published with
@@ -258,10 +258,7 @@ async function open(
   const replyUsage = new WeakMap<object, TokenUsage>();
   let turnReplyUsage: TokenUsage | undefined;
   const turnPlanner = plannerWithEnvironment(
-    plannerWithRetrievedContext(
-      plannerWithParagraphs(planner),
-      retrievedContexts,
-    ),
+    plannerWithAttachments(plannerWithParagraphs(planner), attachments),
     () => {
       const connection = longSessionsIfReady()?.get(userId, key)?.connection;
       const identity = connection
@@ -682,7 +679,7 @@ async function open(
     destination,
     session,
     ...(usage ? { usage } : {}),
-    retrievedContexts,
+    attachments,
     replies,
     outbox,
     state() {

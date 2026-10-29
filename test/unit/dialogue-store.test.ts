@@ -1,6 +1,6 @@
 import {
+  plannerWithAttachments,
   plannerWithEnvironment,
-  plannerWithRetrievedContext,
 } from '../../srv/lib/dialogue-planner-content';
 
 jest.mock('@sap/cds', () => ({
@@ -359,16 +359,16 @@ it('dialogue activity touches persistence at most once per 60 seconds', async ()
   }
 });
 
-it('saves dialogue state when temporary retrieved context exceeds the message limit', async () => {
+it('saves dialogue state when temporary attachment content exceeds the message limit', async () => {
   const context = new WeakMap<object, string>();
-  const knowledge = 'retrieved knowledge '.repeat(6000);
+  const knowledge = 'attached content '.repeat(6000);
   const inputs: string[] = [];
   const store = createDialogueStateStore('alice', 'large-context');
   const session = await DialogueSession.open({
     id: 'large-context',
     store,
     planner: plannerWithEnvironment(
-      plannerWithRetrievedContext(
+      plannerWithAttachments(
         {
           async process(input) {
             inputs.push(JSON.stringify(input));
@@ -387,10 +387,10 @@ it('saves dialogue state when temporary retrieved context exceeds the message li
     await session.send('hello', { trace }).finally(() => context.delete(trace));
     expect(inputs[0]).toContain(knowledge);
     const snapshot = session.snapshot();
-    expect(JSON.stringify(snapshot)).not.toContain('retrieved knowledge');
+    expect(JSON.stringify(snapshot)).not.toContain('attached content');
     expect(await store.load('large-context')).toEqual(snapshot);
     await session.send('next');
-    expect(inputs.at(-1)).not.toContain('[retrieved context]');
+    expect(inputs.at(-1)).not.toContain('[attached files]');
     expect(await store.load('large-context')).toEqual(session.snapshot());
   } finally {
     await session.close();

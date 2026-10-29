@@ -65,6 +65,8 @@ function harness(now?: number, realSessionRecovery = false) {
     getSelectedModel: () => '',
     getSapCredHeaders: () => ({}),
     getActiveRagCollections: () => [],
+    attachedFiles: [] as Array<{ documentIds: string[] }>,
+    renderAttachedFiles: jest.fn(),
     getRagTools: async () => [],
     classifierSelect: { value: '' },
     inputHistory: [],
@@ -1480,4 +1482,109 @@ test('subagent tools render when call counts are unknown', async () => {
   expect(ui.active.innerHTML).toContain('18/120 tools</span>');
   expect(ui.active.innerHTML).not.toContain('calls');
   subscription.stop();
+});
+
+test.each([': turn-end', 'data: [DONE]'])(
+  'attached chunk IDs clear only after %s',
+  async (marker) => {
+    const ui = harness();
+    ui.attachedFiles.push({ documentIds: ['new-chunk-1', 'new-chunk-2'] });
+    const response = controlledStream();
+    ui.fetch
+      .mockResolvedValueOnce(response.response)
+      .mockResolvedValue(stream(''));
+    ui.userInput.value = 'attached';
+    const sent = ui.sendMessage();
+    await flush();
+    expect(ui.attachedFiles).toHaveLength(1);
+    expect(ui.renderAttachedFiles).not.toHaveBeenCalled();
+    response.push(messageWire('attached-reply', 'answer') + marker + '\n\n');
+    response.push();
+    await sent;
+    expect(
+      JSON.parse(ui.fetch.mock.calls[0][1].body).attachment_document_ids,
+    ).toEqual(['new-chunk-1', 'new-chunk-2']);
+    expect(ui.attachedFiles).toHaveLength(0);
+    ui.userInput.value = 'next message';
+    await ui.sendMessage();
+    expect(
+      JSON.parse(ui.fetch.mock.calls[1][1].body).attachment_document_ids,
+    ).toEqual([]);
+  },
+);
+
+test.each(['server error', 'connection drop', 'empty EOF', 'partial EOF'])(
+  'attachments stay visible after %s and accompany a retry',
+  async (failure) => {
+    const ui = harness();
+    const attachment = { documentIds: ['retry-chunk'] };
+    ui.attachedFiles.push(attachment);
+    const failedResponse =
+      failure === 'server error'
+        ? stream(
+            'data: {"error":{"message":"attachment or planner failed"}}\n\n',
+          )
+        : failure === 'empty EOF' || failure === 'partial EOF'
+          ? stream(
+              failure === 'partial EOF' ? messageWire('partial', 'answer') : '',
+            )
+          : {
+              ...stream(''),
+              body: {
+                getReader: () => ({
+                  read: async (): Promise<Chunk> => {
+                    throw new Error('connection dropped');
+                  },
+                  releaseLock: jest.fn(),
+                }),
+              },
+            };
+    ui.fetch
+      .mockResolvedValueOnce(failedResponse)
+      .mockResolvedValueOnce(
+        stream(messageWire('retry-reply', 'answer') + 'data: [DONE]\n\n'),
+      );
+    ui.userInput.value = 'attached';
+    await ui.sendMessage();
+    expect(ui.attachedFiles).toEqual([attachment]);
+    expect(ui.renderAttachedFiles).not.toHaveBeenCalled();
+    ui.userInput.value = 'retry';
+    await ui.sendMessage();
+    for (const call of ui.fetch.mock.calls) {
+      expect(JSON.parse(call[1].body).attachment_document_ids).toEqual([
+        'retry-chunk',
+      ]);
+    }
+    expect(ui.attachedFiles).toHaveLength(0);
+    expect(ui.renderAttachedFiles).toHaveBeenCalledTimes(1);
+  },
+);
+
+test('attachments added during a send remain for the next message', async () => {
+  const ui = harness();
+  const original = { documentIds: ['original-chunk'] };
+  const added = { documentIds: ['added-during-flight'] };
+  ui.attachedFiles.push(original);
+  const response = controlledStream();
+  ui.fetch
+    .mockResolvedValueOnce(response.response)
+    .mockResolvedValue(stream('data: [DONE]\n\n'));
+  ui.userInput.value = 'first';
+  const sent = ui.sendMessage();
+  await flush();
+  ui.attachedFiles.push(added);
+  response.push(messageWire('first-reply', 'answer') + ': turn-end\n\n');
+  response.push();
+  await sent;
+  expect(
+    JSON.parse(ui.fetch.mock.calls[0][1].body).attachment_document_ids,
+  ).toEqual(['original-chunk']);
+  expect(ui.attachedFiles).toEqual([added]);
+  expect(ui.renderAttachedFiles).toHaveBeenCalledTimes(1);
+  ui.userInput.value = 'next';
+  await ui.sendMessage();
+  expect(
+    JSON.parse(ui.fetch.mock.calls[1][1].body).attachment_document_ids,
+  ).toEqual(['added-during-flight']);
+  expect(ui.attachedFiles).toHaveLength(0);
 });

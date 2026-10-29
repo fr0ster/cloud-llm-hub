@@ -741,7 +741,10 @@ async function serveChatCompletions(
 
   const chatAgent =
     useDialogue && s
-      ? dialogueChat(req, userId, s, destAfter, res)
+      ? dialogueChat(req, userId, s, destAfter, res, {
+          headers: req.headers,
+          body,
+        })
       : handle.agent;
 
   // Admitted after the agent is resolved: a caller waiting for a destination to
@@ -783,7 +786,9 @@ async function serveChatCompletions(
   }
 
   // Install stores only after admission; restore them in finally.
-  const collections = collectionRetrieval(handle.agent);
+  const collections = useDialogue
+    ? undefined
+    : collectionRetrieval(handle.agent);
 
   try {
     // Track which destination this session is using. A switch keeps the
@@ -830,29 +835,31 @@ async function serveChatCompletions(
       .with({ requestId: traceId, traceId });
     requestMeasurement(req)?.bind(usage);
     // The parsed body: a raw request carries it only in `body`, not `req.body`.
-    const retrieval = await collections.retrieve(
-      { headers: req.headers, body },
-      normalizedMessages,
-      userId,
-      sessionId,
-      log,
-      res.headersSent,
-      usage,
-    );
-    if (retrieval.refusal) {
-      if (early?.opened) {
-        early.error({
-          error: { message: retrieval.refusal.message, type: 'server_error' },
+    if (collections) {
+      const retrieval = await collections.retrieve(
+        { headers: req.headers, body },
+        normalizedMessages,
+        userId,
+        sessionId,
+        log,
+        res.headersSent,
+        usage,
+      );
+      if (retrieval.refusal) {
+        if (early?.opened) {
+          early.error({
+            error: { message: retrieval.refusal.message, type: 'server_error' },
+          });
+          return;
+        }
+        res.writeHead(retrieval.refusal.status, {
+          'Content-Type': 'application/json',
         });
+        res.end(jsonError(retrieval.refusal.message, retrieval.refusal.kind));
         return;
       }
-      res.writeHead(retrieval.refusal.status, {
-        'Content-Type': 'application/json',
-      });
-      res.end(jsonError(retrieval.refusal.message, retrieval.refusal.kind));
-      return;
+      normalizedMessages = retrieval.messages;
     }
-    normalizedMessages = retrieval.messages;
 
     const pipelineLog = cds.log('smart-pipeline');
     const opts = {
@@ -1430,7 +1437,7 @@ async function serveChatCompletions(
       }),
     );
   } finally {
-    collections.restore();
+    collections?.restore();
     // The pipeline has returned, so it starts no more calls. Wait for the ones it
     // started, then end the ADT session, then give the slot back — last.
     await pipeline.drain();

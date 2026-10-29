@@ -17,6 +17,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
+- Dialogue chat skips request-level collection retrieval and its embedding calls. Workers and planning knowledge keep collection access; explicitly attached uploads reach the planner as a temporary preview bounded to 16,000 characters and 100 records. Other coordinators retain request retrieval.
+
 - Collection search toggles are session scoped, persisted with long sessions, and enforced in request retrieval and each planner knowledge search. Collection defaults remain editable with owner/admin permissions.
 
 - Hub planner rules follow the library's good-planner guidance: steps are results one worker run can deliver, read-back checks of stored results only where the plan checks them, one item per step only for item lists; the planner reads requests literally and a stopped task is hard-aborted after a grace period (llm-agent-libs 30.17.0).

@@ -1981,6 +1981,7 @@
             function stopTimer() { clearInterval(timer); }
 
             try {
+                const messageAttachments = attachedFiles.slice();
                 const ragTools = await getRagTools();
                 const reqBody = {
                     messages: [{ role: 'user', content: text }],
@@ -2026,6 +2027,8 @@
                     reqBody.rag_collections = activeRagCollections;
                 }
 
+                reqBody.attachment_document_ids = messageAttachments.flatMap(file => file.documentIds);
+
                 let streamKey = requestKey;
                 const response = await sessionFetch('/v1/chat/completions', {
                     onSessionKey: key => {
@@ -2064,10 +2067,10 @@
                     }
                     throw new Error('HTTP ' + response.status + ': ' + errText);
                 }
-
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
+                let turnComplete = false;
                 phase = 'STREAMING';
                 const fileParser = createFileParser();
                 let segmentId = null, lastMessageId = null, segmentText = '', framed = false, noteNode = null;
@@ -2109,6 +2112,7 @@
                                     continue;
                                 }
                                 if (trimmed === ': turn-end') {
+                                    turnComplete = true;
                                     framed = true;
                                     document.getElementById(thinkingId)?.remove();
                                     releaseTurn(); continue;
@@ -2122,7 +2126,10 @@
                                     if (el) el.innerHTML = renderStepTrail(stepStates) + '<span class="agent"><b>> AGENT:</b> ' + fileParser.render().html + '</span>';
                                 }
                                 if (!trimmed || trimmed.charAt(0) === ':') continue;
-                                if (trimmed === 'data: [DONE]') continue;
+                                if (trimmed === 'data: [DONE]') {
+                                    turnComplete = true;
+                                    continue;
+                                }
                                 if (!trimmed.startsWith('data: ')) continue;
 
                                 try {
@@ -2177,6 +2184,13 @@
 
                 } finally { reader.releaseLock(); releaseTurn(); }
                 stopTimer();
+                if (turnComplete) {
+                    for (const file of messageAttachments) {
+                        const index = attachedFiles.indexOf(file);
+                        if (index !== -1) attachedFiles.splice(index, 1);
+                    }
+                    renderAttachedFiles();
+                }
 
                 // Process GenerateFile tool calls from external tool calls
                 const generateFileCalls = [];
@@ -2371,7 +2385,7 @@
                 const chunks = data.chunks;
                 const added = typeof data.added === 'number' ? data.added : chunks;
                 const failed = chunks - added;
-                attachedFiles.push({ name: file.name, chunks, added, failed });
+                attachedFiles.push({ name: file.name, chunks, added, failed, documentIds: data.documentIds });
                 renderAttachedFiles();
                 if (failed > 0) {
                     alert(

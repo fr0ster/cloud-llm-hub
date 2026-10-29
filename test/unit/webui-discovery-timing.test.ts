@@ -41,7 +41,7 @@ test('chat elapsed time includes synchronous transcript rendering before the req
   };
   const source = html.slice(
     html.indexOf('        async function sendMessage()'),
-    html.indexOf('            try {\n                const ragTools'),
+    html.indexOf('            try {\n                const messageAttachments'),
   );
   runInNewContext(
     source + '\nstopTimer(); setStatus(elapsed()); }; sendMessage();',
