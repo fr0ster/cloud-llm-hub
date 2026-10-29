@@ -485,6 +485,7 @@ async function open(
   };
   try {
     session = await DialogueSession.open({
+      timeZone: config.timeZone,
       ...(await plannerSessionOptions(userId, key)),
       ...(usage ? { usage } : {}),
       id: key,

@@ -128,7 +128,23 @@ export function parsePlannerKnowledge(env: NodeJS.ProcessEnv): string[] {
   return names;
 }
 
+export function parseTimeZone(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const value = env.LLM_AGENT_TIME_ZONE?.trim();
+  if (!value) return undefined;
+  try {
+    new Intl.DateTimeFormat('en-GB', { timeZone: value });
+  } catch {
+    throw new BuildValidationError(
+      'Invalid LLM_AGENT_TIME_ZONE: expected an IANA time zone',
+    );
+  }
+  return value;
+}
+
 export interface AgentConfig {
+  timeZone?: string;
   /**
    * LLM Configuration
    */
@@ -610,6 +626,7 @@ export function loadAgentConfig(): AgentConfig {
   );
 
   const config: AgentConfig = {
+    timeZone: parseTimeZone(),
     llm: {
       contextCapture: parseContextCapture(),
       provider,

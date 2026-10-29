@@ -1,8 +1,9 @@
-import type { StreamChunk } from '@mcp-abap-adt/llm-agent';
+import type { ILlm, StreamChunk } from '@mcp-abap-adt/llm-agent';
 import {
   DialogueSession,
   type PlannerAgent,
   PlannerToolsClient,
+  SmartAgentBuilder,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
   plannerWithAttachments,
@@ -330,5 +331,63 @@ test('all planner wrappers forward stopSignal to SmartAgent.process', async () =
     expect(process.mock.calls[0][1]?.stopSignal).toBe(stopSignal);
   } finally {
     process.mockRestore();
+  }
+});
+
+test('dialogue planner receives exactly one session request-time line through content wrappers', async () => {
+  const inputs: string[] = [];
+  const chat: ILlm['chat'] = async (messages) => {
+    inputs.push(messages.map((message) => message.content ?? '').join('\n'));
+    return messages.some((message) => message.role === 'tool')
+      ? { ok: true, value: { content: 'done', finishReason: 'stop' } }
+      : {
+          ok: true,
+          value: {
+            content: '',
+            finishReason: 'tool_calls',
+            toolCalls: [{ id: 'list', name: 'list_tasks', arguments: {} }],
+          },
+        };
+  };
+  const llm: ILlm = {
+    chat,
+    async *streamChat(messages, tools, options) {
+      yield await chat(messages, tools, options);
+    },
+  };
+  const { agent: planner } = await new SmartAgentBuilder({
+    skipModelValidation: true,
+    agent: { timeZone: 'Asia/Tbilisi', classificationEnabled: false },
+  })
+    .withMainLlm(llm)
+    .withMcpClients([new PlannerToolsClient()])
+    .withClassification(false)
+    .withMode('hard')
+    .build();
+  const session = await DialogueSession.open({
+    id: 'request-time',
+    timeZone: 'Asia/Tbilisi',
+    planner: plannerWithEnvironment(
+      plannerWithParagraphs(planner),
+      () => 'Hub',
+    ),
+    board: { workers: new Map(), maxConcurrent: 1 },
+  });
+  try {
+    await session.send('hello');
+    expect(inputs.length).toBeGreaterThanOrEqual(2);
+    expect(
+      new Set(inputs.map((input) => input.match(/\[request time\][^\n]*/)?.[0]))
+        .size,
+    ).toBe(1);
+    for (const input of inputs) {
+      expect(input.match(/\[request time\]/g)).toHaveLength(1);
+      expect(input).toContain('(Asia/Tbilisi)');
+      expect(input).toContain(
+        'The context gives the time the request started.',
+      );
+    }
+  } finally {
+    await session.close();
   }
 });

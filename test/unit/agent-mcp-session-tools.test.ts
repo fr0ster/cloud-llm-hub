@@ -459,3 +459,21 @@ it.each([true, false])(
     }
   },
 );
+
+it('execute_step preserves HTTP arrival time while agent resolution waits', async () => {
+  const request = new Proxy(req, {});
+  const gate = deferred();
+  harness.agentGate = gate.promise;
+  const clock = jest.spyOn(Date, 'now').mockReturnValue(1793275200000);
+  try {
+    const done = executeStep(request, caller, { task: 'first' });
+    clock.mockReturnValue(1793275260000);
+    gate.resolve();
+    await done;
+    expect(harness.seenOptions).toHaveLength(1);
+    expect(harness.seenOptions[0].requestStartedAt).toBe(1793275200000);
+  } finally {
+    gate.resolve();
+    clock.mockRestore();
+  }
+});

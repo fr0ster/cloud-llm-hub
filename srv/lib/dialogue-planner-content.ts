@@ -1,6 +1,9 @@
 import type { PlannerAgent } from '@mcp-abap-adt/llm-agent-libs';
 
-/** Inject into the library's temporary turn input, never its conversation. */
+/**
+ * Inject into the library's temporary turn input, never its conversation.
+ * DialogueSession already supplies the request-time line; preserve its options.
+ */
 export function plannerWithEnvironment(
   planner: PlannerAgent,
   environment: () => string,

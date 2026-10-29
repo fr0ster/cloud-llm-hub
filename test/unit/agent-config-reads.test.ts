@@ -3,11 +3,23 @@ import {
   loadAgentConfig,
   parseDestinationMapping,
   parseSkillRagK,
+  parseTimeZone,
 } from '../../srv/agent-config';
 
 // Settings that used to be read from process.env at their point of use. They
 // are parsed once, here, and handed in (config is parsed only in agent-config).
 describe('agent config: settings read at the point of use before', () => {
+  it('validates the deployment time zone and leaves the UTC default to the library', () => {
+    expect(parseTimeZone({})).toBeUndefined();
+    expect(parseTimeZone({ LLM_AGENT_TIME_ZONE: '  ' })).toBeUndefined();
+    expect(parseTimeZone({ LLM_AGENT_TIME_ZONE: ' Asia/Tbilisi ' })).toBe(
+      'Asia/Tbilisi',
+    );
+    expect(() =>
+      parseTimeZone({ LLM_AGENT_TIME_ZONE: 'invalid/zone' }),
+    ).toThrow('LLM_AGENT_TIME_ZONE');
+  });
+
   it('parseSkillRagK: default 3, truncated, floored at 0', () => {
     expect(parseSkillRagK({})).toBe(3);
     expect(parseSkillRagK({ LLM_AGENT_SKILL_RAG_K: 'x' })).toBe(3);
@@ -30,6 +42,7 @@ describe('agent config: settings read at the point of use before', () => {
     beforeEach(() => {
       process.env = { ...saved };
       for (const k of [
+        'LLM_AGENT_TIME_ZONE',
         'LLM_AGENT_CLASSIFIER_MODEL',
         'LLM_AGENT_PLANNER_MODEL',
         'LLM_AGENT_SKILL_RAG_K',
@@ -57,6 +70,14 @@ describe('agent config: settings read at the point of use before', () => {
         );
       },
     );
+
+    it('loads the deployment time zone and rejects invalid startup configuration', () => {
+      expect(loadAgentConfig().timeZone).toBeUndefined();
+      process.env.LLM_AGENT_TIME_ZONE = ' Asia/Tbilisi ';
+      expect(loadAgentConfig().timeZone).toBe('Asia/Tbilisi');
+      process.env.LLM_AGENT_TIME_ZONE = 'invalid/zone';
+      expect(() => loadAgentConfig()).toThrow('LLM_AGENT_TIME_ZONE');
+    });
 
     it('classifier model falls back to the main model', () => {
       expect(loadAgentConfig().llm.classifierModel).toBe('main-model');

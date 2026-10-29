@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Socket } from 'node:net';
 import type { IUsageRecorder } from '@mcp-abap-adt/llm-agent';
 import type { Request, Response } from 'express';
+import { requestStart } from '../request-start';
 import { type EndReason, type Protocol, requestRecord } from './hub-records';
 import { usageRuntime } from './runtime';
 import {
@@ -46,7 +47,7 @@ export function measureRequest(
   const runtime = usageRuntime();
   if (!runtime || (!runtime.enabled('request') && !runtime.enabled('session')))
     return undefined;
-  const startedAt = Date.now();
+  const startedAt = requestStart(req);
   // Establish the pipeline's trace before admission; requestId is derived from it.
   const traceId =
     protocol === 'mcp-agent' ? `agent-step-${randomUUID()}` : randomUUID();

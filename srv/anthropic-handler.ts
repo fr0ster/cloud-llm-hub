@@ -1,6 +1,7 @@
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
+import { requestStart } from './lib/request-start';
 import {
   measureRequest,
   requestMeasurement,
@@ -87,6 +88,7 @@ export function handleAnthropicMessages(
   req: Request,
   res: Response,
 ): Promise<void> {
+  requestStart(req);
   const runtime = usageRuntime();
   if (!runtime || (!runtime.enabled('request') && !runtime.enabled('session')))
     return handleAnthropicMessagesMeasured(req, res);
@@ -446,6 +448,7 @@ async function serveMessages(
   const agentOpts = {
     stream,
     ...options,
+    requestStartedAt: requestStart(req),
     // After the spread: nothing in `options` may override the admission's signal.
     signal: pipeline.signal,
     sessionId,
