@@ -247,6 +247,9 @@ jest.mock('../../srv/agent-manager', (): object => ({
   runWithRequestConnection: <T>(_connection: object, fn: () => T): T => fn(),
   getQueryEmbedder: (): IQueryEmbedder | undefined => mockEmbedder,
   getCollectionRegistry: (): {
+    getCollection: import('../../srv/rag-collections').CollectionRegistry['getCollection'];
+    getEnabled: import('../../srv/rag-collections').CollectionRegistry['getEnabled'];
+    listCollections: import('../../srv/rag-collections').CollectionRegistry['listCollections'];
     ready: Promise<void>;
     degradedOf: () => Promise<undefined>;
     getRagStores: () => Promise<Record<string, never>>;
@@ -258,6 +261,19 @@ jest.mock('../../srv/agent-manager', (): object => ({
       >;
     }>;
   } => ({
+    getCollection: async (id) => ({
+      id,
+      logicalId: id,
+      displayName: id,
+      description: '',
+      scope: 'user',
+      owner: 'alice',
+      createdAt: new Date(0).toISOString(),
+      documentCount: 1,
+      sourceCount: 1,
+    }),
+    getEnabled: () => true,
+    listCollections: async () => [],
     ready: Promise.resolve(),
     degradedOf: async (): Promise<undefined> => undefined,
     getRagStores: async (): Promise<Record<string, never>> => ({}),

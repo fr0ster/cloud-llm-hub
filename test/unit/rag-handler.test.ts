@@ -43,6 +43,12 @@ import {
   sessionCollectionId,
   userCollectionId,
 } from '../../srv/collection-ids';
+import {
+  configureCollectionOverridePersistence,
+  sessionCollectionOverrides,
+  setCollectionOverride,
+} from '../../srv/lib/collection-toggle';
+import { deleteSession } from '../../srv/lib/gatekeeper';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { registerRagRoutes } from '../../srv/rag-handler';
 
@@ -203,6 +209,147 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
     registerRagRoutes(router, registry);
     routes = r;
     asAnonymous();
+  });
+
+  test('close waits for toggle persistence and refuses toggles while closing and after deletion', async () => {
+    const userId = 'alice@example.com';
+    const sid = 'toggle-close-race';
+    asUser(userId);
+    const id = userCollectionId('race', userId);
+    await registry.createCollection({
+      id,
+      logicalId: 'race',
+      scope: 'user',
+      owner: userId,
+      displayName: 'Race',
+      description: '',
+    });
+    setCollectionOverride(userId, sid, 'seed', true);
+    let finish = (): void => {};
+    let entered = (): void => {};
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    configureCollectionOverridePersistence(async () => {
+      entered();
+      await pending;
+    });
+    const toggle = () =>
+      runWithMiddleware(
+        routes,
+        'PATCH',
+        '/rag/collections/:id/enabled',
+        makeReq({
+          method: 'PATCH',
+          path: '/enabled',
+          params: { id },
+          headers: { cookie: `clh_session=${sid}` },
+          body: { enabled: false },
+        }),
+      );
+    try {
+      const writing = toggle();
+      await started;
+      let removed = false;
+      const closing = deleteSession(userId, sid).then(() => {
+        removed = true;
+      });
+      expect((await toggle())._status).toBe(410);
+      expect(removed).toBe(false);
+      expect(sessionCollectionOverrides(userId, sid)?.[id]).toBe(false);
+      finish();
+      expect((await writing)._status).toBe(200);
+      await closing;
+      expect(sessionCollectionOverrides(userId, sid)).toBeUndefined();
+      const gone = await toggle();
+      expect(gone._status).toBe(410);
+      expect(gone._body).toMatchObject({ error: { code: 'session_closed' } });
+      expect(sessionCollectionOverrides(userId, sid)).toBeUndefined();
+    } finally {
+      finish();
+      configureCollectionOverridePersistence(async () => {});
+    }
+  });
+
+  test('session PATCH changes effective listing without changing the default', async () => {
+    asUser('alice@example.com');
+    setCollectionOverride(
+      'alice@example.com',
+      'toggle-api-session',
+      'seed',
+      true,
+    );
+    const id = userCollectionId('toggle-api', 'alice@example.com');
+    await registry.createCollection({
+      id,
+      logicalId: 'toggle-api',
+      scope: 'user',
+      owner: 'alice@example.com',
+      displayName: 'Toggle',
+      description: '',
+    });
+    const patch = await runWithMiddleware(
+      routes,
+      'PATCH',
+      '/rag/collections/:id/enabled',
+      makeReq({
+        method: 'PATCH',
+        path: '/enabled',
+        params: { id },
+        headers: { cookie: 'clh_session=toggle-api-session' },
+        body: { enabled: false },
+      }),
+    );
+    expect(patch._status).toBe(200);
+    expect(registry.getEnabled('alice@example.com', id)).toBeUndefined();
+    const list = findRoute(routes, 'GET', '/rag/collections');
+    if (!list) throw new Error('missing list route');
+    const res = makeRes();
+    await list.handler(
+      makeReq({ headers: { cookie: 'clh_session=toggle-api-session' } }),
+      res.res,
+    );
+    expect(res._body).toMatchObject({
+      collections: [{ id, enabled: false, defaultEnabled: true }],
+    });
+    const other = makeRes();
+    await list.handler(
+      makeReq({ headers: { cookie: 'clh_session=another-session' } }),
+      other.res,
+    );
+    expect(other._body).toMatchObject({
+      collections: [{ id, enabled: true, defaultEnabled: true }],
+    });
+    const defaultPatch = await runWithMiddleware(
+      routes,
+      'PATCH',
+      '/rag/collections/:id/enabled',
+      makeReq({
+        method: 'PATCH',
+        path: '/enabled',
+        params: { id },
+        headers: { cookie: 'clh_session=toggle-api-session' },
+        body: { enabled: false, scope: 'default' },
+      }),
+    );
+    expect(defaultPatch._status).toBe(200);
+    expect(registry.getEnabled('alice@example.com', id)).toBe(false);
+    asUser('bob@example.com');
+    const denied = await runWithMiddleware(
+      routes,
+      'PATCH',
+      '/rag/collections/:id/enabled',
+      makeReq({
+        method: 'PATCH',
+        path: '/enabled',
+        params: { id },
+        body: { enabled: true, scope: 'default' },
+      }),
+    );
+    expect(denied._status).toBe(404);
   });
 
   // -------------------------------------------------------------------------

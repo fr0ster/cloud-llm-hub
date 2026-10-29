@@ -172,3 +172,20 @@ it('retains a run-only session until its run record TTL expires', async () => {
     jest.useRealTimers();
   }
 });
+
+import {
+  sessionCollectionOverrides,
+  setCollectionOverride,
+} from '../../srv/lib/collection-toggle';
+
+it('deletes collection overrides with session state, preserving another session', () => {
+  setCollectionOverride('alice', 'toggle-cleanup', 'planning', false);
+  setCollectionOverride('alice', 'toggle-retained', 'planning', true);
+  expect(hasSessionState('alice', 'toggle-cleanup')).toBe(true);
+  deleteSessionState('alice', 'toggle-cleanup');
+  expect(sessionCollectionOverrides('alice', 'toggle-cleanup')).toBeUndefined();
+  expect(sessionCollectionOverrides('alice', 'toggle-retained')).toEqual({
+    planning: true,
+  });
+  deleteSessionState('alice', 'toggle-retained');
+});

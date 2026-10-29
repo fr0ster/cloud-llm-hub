@@ -16,6 +16,12 @@ import {
   userCollectionId,
 } from './collection-ids';
 import { CollectionBackendError } from './lib/collection-persistence';
+import {
+  collectionDefault,
+  collectionEnabled,
+  persistCollectionOverrides,
+  setCollectionOverride,
+} from './lib/collection-toggle';
 import { leaseSession } from './lib/gatekeeper';
 import {
   isRefusal,
@@ -37,6 +43,7 @@ import {
 import { runWithSessionId } from './request-session';
 import {
   carriesSessionHeader,
+  honouredSessionId,
   sessionIdOf,
   type WithSession,
 } from './session-id';
@@ -147,7 +154,7 @@ export function registerRagRoutes(
     // would match every anonymous-owned legacy collection (cross-user leak).
     const effectiveUserId =
       userId && userId !== 'anonymous' ? userId : undefined;
-    const sid = sessionIdOf(req);
+    const sid = honouredSessionId(req);
 
     let collections: Awaited<ReturnType<typeof registry.listCollections>>;
     // Set while the restore of persistent collections is not ready: only the
@@ -166,8 +173,6 @@ export function registerRagRoutes(
       (c) => c.scope !== 'session' || c.sessionId === sid,
     );
 
-    const defaultEnabled = (c: { preset?: boolean }) => !c.preset;
-
     const mapped = collections.map((c) => ({
       id: c.id,
       logicalId: c.logicalId,
@@ -182,10 +187,8 @@ export function registerRagRoutes(
       preset: c.preset,
       // Only on a persistent collection restored degraded.
       ...(c.status ? { status: c.status, statusError: c.statusError } : {}),
-      enabled:
-        effectiveUserId !== undefined
-          ? (registry.getEnabled(effectiveUserId, c.id) ?? defaultEnabled(c))
-          : defaultEnabled(c),
+      enabled: collectionEnabled(registry, effectiveUserId ?? '', sid, c),
+      defaultEnabled: collectionDefault(registry, effectiveUserId ?? '', c),
     }));
 
     json(res, 200, {
@@ -489,7 +492,13 @@ export function registerRagRoutes(
       }
       const isQuery = req.path.endsWith('/query');
       const mode: 'read' | 'write' =
-        req.method === 'GET' || isQuery ? 'read' : 'write';
+        req.method === 'GET' ||
+        isQuery ||
+        (req.path.endsWith('/enabled') &&
+          honouredSessionId(req) &&
+          req.body?.scope !== 'default')
+          ? 'read'
+          : 'write';
       if (!canAccess(meta, mode, res)) return;
       next();
     },
@@ -527,7 +536,21 @@ export function registerRagRoutes(
           error(res, 404, 'Collection not found');
           return;
         }
-        await registry.setEnabled(getUserId(), physId, !!enabled);
+        const sid = honouredSessionId(req);
+        if (sid && req.body.scope !== 'default') {
+          const userId = getUserId();
+          const lease = leaseSession(userId, sid, 'rag', { presented: true });
+          if (isRefusal(lease)) {
+            refuseLease(res, lease);
+            return;
+          }
+          try {
+            setCollectionOverride(userId, sid, physId, !!enabled);
+            await persistCollectionOverrides(userId, sid);
+          } finally {
+            lease.release();
+          }
+        } else await registry.setEnabled(getUserId(), physId, !!enabled);
       } catch (err) {
         failure(res, err, 500);
         return;

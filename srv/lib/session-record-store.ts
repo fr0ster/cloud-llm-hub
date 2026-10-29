@@ -42,6 +42,7 @@ export interface SessionRecord {
   lastActivity: number;
   ttlMs: number;
   destination?: string;
+  collectionOverrides?: Record<string, boolean>;
   closedAt?: number;
 }
 
@@ -66,6 +67,9 @@ function stored(r: SessionRecord): SessionRecord {
     lastActivity: r.lastActivity,
     ttlMs: r.ttlMs,
     ...(r.destination !== undefined ? { destination: r.destination } : {}),
+    ...(r.collectionOverrides
+      ? { collectionOverrides: { ...r.collectionOverrides } }
+      : {}),
     ...(r.closedAt !== undefined ? { closedAt: r.closedAt } : {}),
   };
 }
@@ -86,6 +90,13 @@ function decode(text: string): SessionRecord | undefined {
     typeof o.createdAt !== 'number' ||
     typeof o.lastActivity !== 'number' ||
     typeof o.ttlMs !== 'number' ||
+    (o.collectionOverrides !== undefined &&
+      (!o.collectionOverrides ||
+        typeof o.collectionOverrides !== 'object' ||
+        Array.isArray(o.collectionOverrides) ||
+        !Object.values(o.collectionOverrides).every(
+          (value) => typeof value === 'boolean',
+        ))) ||
     (o.destination !== undefined && typeof o.destination !== 'string') ||
     (o.closedAt !== undefined && typeof o.closedAt !== 'number')
   )
@@ -108,6 +119,7 @@ export class SessionRecordOwnerError extends Error {
  * key never written by this process is written.
  */
 abstract class SerialSessionRecordStore implements SessionRecordStore {
+  private readonly collectionFlags = new Map<string, string>();
   private readonly destinations = new Map<string, string | undefined>();
   private readonly written = new Map<string, number>();
   private readonly queues = new Map<string, Promise<unknown>>();
@@ -138,6 +150,8 @@ abstract class SerialSessionRecordStore implements SessionRecordStore {
       if (
         last !== undefined &&
         this.destinations.get(r.key) === r.destination &&
+        this.collectionFlags.get(r.key) ===
+          JSON.stringify(r.collectionOverrides) &&
         r.lastActivity - last < TOUCH_INTERVAL_MS
       )
         return;
@@ -150,6 +164,7 @@ abstract class SerialSessionRecordStore implements SessionRecordStore {
       if (await this.deleteRecord(userId, key)) {
         this.written.delete(key);
         this.destinations.delete(key);
+        this.collectionFlags.delete(key);
       }
     });
   }
@@ -161,6 +176,7 @@ abstract class SerialSessionRecordStore implements SessionRecordStore {
     await this.writeRecord(r);
     this.written.set(r.key, r.lastActivity);
     this.destinations.set(r.key, r.destination);
+    this.collectionFlags.set(r.key, JSON.stringify(r.collectionOverrides));
   }
 
   private serial<T>(key: string, run: () => Promise<T>): Promise<T> {

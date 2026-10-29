@@ -143,3 +143,17 @@ describe('ProviderSessionRecordStore', () => {
     expect(upsertRaw).not.toHaveBeenCalled();
   });
 });
+
+it('persists override changes within the activity throttle and across restart', async () => {
+  const file = path.join(dir, 'toggles.db');
+  const store = sqliteStore(file);
+  const r = { ...record(), collectionOverrides: { planning: false } };
+  await store.put(r);
+  await store.touch({ ...r, collectionOverrides: { planning: true } });
+  const restarted = sqliteStore(file);
+  expect((await restarted.get(r.userId, r.key))?.collectionOverrides).toEqual({
+    planning: true,
+  });
+  await store.delete(r.userId, r.key);
+  expect(await restarted.get(r.userId, r.key)).toBeUndefined();
+});

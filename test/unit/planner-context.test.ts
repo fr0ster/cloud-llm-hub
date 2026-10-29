@@ -103,3 +103,30 @@ describe('planner context', () => {
     ).toThrow('at most 10');
   });
 });
+
+it('checks knowledge enablement on every search after opening', async () => {
+  const rag = new InMemoryRag();
+  const query = jest.spyOn(rag, 'query');
+  let enabled = false;
+  const result = await plannerContext({
+    memory: () => undefined,
+    embedding: {
+      retrieval: symmetricEmbedder({ embed: async () => ({ vector: [1, 0] }) }),
+      key: 'test',
+    },
+    names: ['planning'],
+    collection: async () => rag,
+    enabled: async () => enabled,
+    warn: jest.fn(),
+  });
+  const knowledge = result.plannerKnowledge?.[0];
+  if (!knowledge) throw new Error('missing knowledge');
+  expect(await knowledge.search({ text: 'question' }, 3)).toEqual([]);
+  expect(query).not.toHaveBeenCalled();
+  enabled = true;
+  await knowledge.search({ text: 'question' }, 3);
+  expect(query).toHaveBeenCalledTimes(1);
+  enabled = false;
+  await knowledge.search({ text: 'question' }, 3);
+  expect(query).toHaveBeenCalledTimes(1);
+});

@@ -5,6 +5,7 @@ import { getCollectionRegistry, getQueryEmbedder } from '../agent-manager';
 import { resolveRouteId } from '../collection-ids';
 import { CollectionSearchRag } from '../rag-collections';
 import { CollectionBackendError } from './collection-persistence';
+import { collectionEnabled } from './collection-toggle';
 import { withRagContext } from './rag-context-marker';
 import { retrievalRecord } from './usage/hub-records';
 import { usageRuntime } from './usage/runtime';
@@ -12,14 +13,17 @@ import { usageRuntime } from './usage/runtime';
 export function requestedCollectionIds(
   req: Pick<Request, 'headers' | 'body'>,
 ): string[] {
-  const header = req.headers['x-rag-collections'] as string | undefined;
-  if (header)
+  const rawHeader = req.headers['x-rag-collections'];
+  const header = Array.isArray(rawHeader) ? rawHeader.join(',') : rawHeader;
+  if (header !== undefined)
     return header
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
   const collections = req.body?.rag_collections;
-  return Array.isArray(collections) ? collections : [];
+  return Array.isArray(collections)
+    ? collections.filter((id): id is string => typeof id === 'string')
+    : [];
 }
 
 /**
@@ -59,7 +63,28 @@ export function collectionRetrieval(agent: unknown) {
       const measureRetrieval = usage && usageRuntime()?.enabled('request');
       let chunks = 0;
       let chars = 0;
-      const ragCollectionIds = requestedCollectionIds(req);
+      const requested = requestedCollectionIds(req);
+      const hasSelection =
+        req.headers['x-rag-collections'] !== undefined ||
+        req.body?.rag_collections !== undefined;
+      let ragCollectionIds = requested;
+      if (!hasSelection) {
+        try {
+          ragCollectionIds = (
+            await getCollectionRegistry().listCollections(userId)
+          )
+            .filter((c) => c.scope !== 'session' || c.sessionId === sessionId)
+            .map((c) => c.id);
+        } catch (err) {
+          log.warn(
+            'Collection enumeration failed; continuing without collection retrieval',
+            {
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
+          ragCollectionIds = [];
+        }
+      }
       // Resolve each entry: bare logical names → caller's own physical id; physical
       // ids owned by another user → dropped. Session collection shadows user
       // collection. Reused by both the RAG store injection and semantic search below.
@@ -96,7 +121,7 @@ export function collectionRetrieval(agent: unknown) {
           }
         }
       }
-      const resolvedCollectionIds: string[] =
+      let resolvedCollectionIds: string[] =
         presetsOnly ??
         (ragCollectionIds.length > 0
           ? await (async () => {
@@ -115,6 +140,23 @@ export function collectionRetrieval(agent: unknown) {
               return ids;
             })()
           : []);
+
+      const registry = getCollectionRegistry();
+      const enabledIds: string[] = [];
+      for (const id of resolvedCollectionIds) {
+        const meta = await registry.getCollection(id);
+        const uploads =
+          meta?.scope === 'session' &&
+          meta.sessionId === sessionId &&
+          meta.logicalId === 'uploads' &&
+          requested.includes('uploads');
+        if (
+          meta &&
+          (uploads || collectionEnabled(registry, userId, sessionId, meta))
+        )
+          enabledIds.push(id);
+      }
+      resolvedCollectionIds = enabledIds;
 
       // A named collection that cannot be searched (restored incompatible or
       // unavailable) refuses the turn, before anything streams: 409 / 503 naming
