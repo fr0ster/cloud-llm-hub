@@ -40,6 +40,7 @@ import {
   ensureHistoryStore,
   HISTORY_OPEN_COOL_DOWN_MS,
   HISTORY_STORE,
+  isPlannerMemoryStore,
   PersistentHistoryStore,
   WRITTEN_BY,
 } from '../../srv/lib/collection-persistence';
@@ -54,6 +55,52 @@ import { appendToSession, sweepSessionHistory } from '../../srv/session-store';
 import { type PgliteHandle, startPglite } from './helpers/pglite';
 
 jest.setTimeout(120_000);
+
+test('planner memory has its own catalog store, session identity query and cleanup', async () => {
+  const provider = newProvider();
+  const memory = new PersistentHistoryStore(provider, undefined, {
+    storeName: 'h_planner_memory',
+  });
+  const writer = memory.writer();
+  expect(
+    (
+      await writer.upsertRaw('planner-a', 'planning result', {
+        sessionId: 'planner-session-a',
+      })
+    ).ok,
+  ).toBe(true);
+  expect(
+    (
+      await writer.upsertRaw('planner-b', 'other result', {
+        sessionId: 'planner-session-b',
+      })
+    ).ok,
+  ).toBe(true);
+  const rows = await memory.query(
+    new TextOnlyEmbedding('planning result'),
+    10,
+    { ragFilter: { sessionId: 'planner-session-a' } },
+  );
+  if (!rows.ok) throw rows.error;
+  expect(rows.value).toHaveLength(1);
+  expect(rows.value[0].metadata.sessionId).toBe('planner-session-a');
+  const catalog = await provider.describeCollections();
+  if (!catalog.ok) throw catalog.error;
+  expect(
+    catalog.value.records.some((record) => isPlannerMemoryStore(record)),
+  ).toBe(true);
+  expect(
+    (await memory.deleteWhere({ sessionId: 'planner-session-a' })).ok,
+  ).toBe(true);
+  const remaining = await memory.scan({
+    filter: { sessionId: 'planner-session-b' },
+  });
+  if (!remaining.ok) throw remaining.error;
+  expect(remaining.value.records).toHaveLength(1);
+  const removed = await memory.getById('planner-a');
+  if (!removed.ok) throw removed.error;
+  expect(removed.value).toBeNull();
+});
 
 const DIM = 8;
 

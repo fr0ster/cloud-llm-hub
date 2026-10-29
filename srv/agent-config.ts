@@ -112,6 +112,22 @@ export function parseContextCapture(
   return value;
 }
 
+export function parsePlannerKnowledge(env: NodeJS.ProcessEnv): string[] {
+  const names = [
+    ...new Set(
+      (env.LLM_AGENT_PLANNER_KNOWLEDGE ?? 'planning')
+        .split(',')
+        .map((name) => name.trim())
+        .filter(Boolean),
+    ),
+  ];
+  if (names.length > 10)
+    throw new Error(
+      'LLM_AGENT_PLANNER_KNOWLEDGE supports at most 10 collections',
+    );
+  return names;
+}
+
 export interface AgentConfig {
   /**
    * LLM Configuration
@@ -190,6 +206,7 @@ export interface AgentConfig {
     /** Agent mode: 'smart' (full orchestration), 'pass' (passthrough), 'hard' (tools only) */
     mode: SmartAgentMode;
     chatCoordinator: 'adaptive' | 'fixed' | 'dialogue';
+    plannerKnowledge?: string[];
     dialogue: {
       executors: number;
       executorPool: number;
@@ -612,6 +629,7 @@ export function loadAgentConfig(): AgentConfig {
     },
     agent: {
       mode,
+      plannerKnowledge: parsePlannerKnowledge(process.env),
       chatCoordinator: parseChatCoordinator(
         process.env.LLM_AGENT_CHAT_COORDINATOR,
       ),

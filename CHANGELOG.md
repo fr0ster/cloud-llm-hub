@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Added
 
+- Planner session memory in a separate session RAG store, with session cleanup, and curated planning knowledge from `LLM_AGENT_PLANNER_KNOWLEDGE` (llm-agent / libs 30.18.0); earlier content read only semantically (llm-agent / libs 30.19.0).
+
 - Live tools in context and executed call counts for the main planner and subagents in the WebUI agents line.
 - Request wall clock and planner/subagent execution times in `usage.x_hub`, WebUI TIME display, and executor duration in Agent MCP usage and footer (llm-agent 30.16.0 / libs 30.14.0).
 

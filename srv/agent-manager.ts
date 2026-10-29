@@ -1375,7 +1375,7 @@ export function getSharedHistoryRag(): SessionHistoryRag | undefined {
  * The provider of the `session` class's backend: the collections' provider
  * when both classes are on the same backend, else one of its own.
  */
-function historyProvider(kind: RagBackendKind): IRagProvider {
+export function historyProvider(kind: RagBackendKind): IRagProvider {
   const p = getProviders();
   if (p.stores.backendOf('persistent') === kind && p.collections)
     return p.collections;

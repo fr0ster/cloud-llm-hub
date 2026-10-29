@@ -14,6 +14,7 @@ import type { DialogueState } from '@mcp-abap-adt/llm-agent';
 import { DialogueSession } from '@mcp-abap-adt/llm-agent-libs';
 import {
   createDialogueStateStore,
+  DIALOGUE_BYTE_LIMIT,
   deleteDialogueState,
   getDialogueStoreBackend,
   hasDialogueState,
@@ -34,6 +35,37 @@ const state: DialogueState = {
   savedAt: 1,
 };
 beforeEach(() => initializeDialogueStore(loadSessionConfig({})));
+it('strips legacy archives and closed transcripts while preserving open transcripts', async () => {
+  const store = new MemoryDialogueStore();
+  const closed = { id: 'r1', openedAt: 1, closedAt: 2, text: 'earlier' };
+  const open = {
+    id: 'r2',
+    openedAt: 2,
+    text: 'current',
+    transcript: state.conversation,
+  };
+  const legacy = {
+    ...state,
+    messages: 'ignored legacy archive',
+    requests: [
+      {
+        ...closed,
+        replies: null,
+        closedPlan: 'old',
+        transcriptExpired: true,
+        transcript: state.conversation,
+      },
+      { ...open, replies: ['old'], closedPlan: {}, transcriptExpired: true },
+    ],
+  };
+  await store.save('alice', 'legacy-archives', legacy);
+  const expected = { ...state, requests: [closed, open] };
+  const restored = await store.load('alice', 'legacy-archives');
+  expect(restored).toEqual(expected);
+  if (!restored) throw new Error('missing restored state');
+  await store.save('alice', 'legacy-archives', restored);
+  expect(await store.load('alice', 'legacy-archives')).toEqual(expected);
+});
 it('restores a long 9.0.x legacy plan and persists normalized state and later progress', async () => {
   const id = 'legacy';
   const store = createDialogueStateStore('alice', id);
@@ -236,20 +268,53 @@ it.each([
   { ...state, conversation: Array(201).fill({ role: 'user', content: 'x' }) },
   { ...state, conversation: [{ role: 'user', content: 'x'.repeat(20001) }] },
   { ...state, tasks: Array(51).fill({}) },
-  { ...state, plan: '\u{1f600}'.repeat(600000) },
-  {
-    ...state,
-    plan: {
-      version: 1,
-      status: 'active',
-      steps: [],
-      note: '\u{1f600}'.repeat(600000),
-    },
-  },
 ])('rejects invalid or oversized states without truncating', async (value) => {
   const s = createDialogueStateStore('alice', 'k');
   await s.save('k', value as DialogueState);
   expect(await s.load('k')).toBeUndefined();
+});
+
+it('guards states exceeding the byte limit without replacing the last save', async () => {
+  const store = new MemoryDialogueStore();
+  await store.save('alice', 'bytes', state);
+  await store.save('alice', 'bytes', {
+    ...state,
+    plan: 'x'.repeat(DIALOGUE_BYTE_LIMIT),
+  });
+  expect(await store.load('alice', 'bytes')).toEqual(state);
+});
+
+it('round trips library retention budgets with two-byte text and request ownership', async () => {
+  const store = new MemoryDialogueStore();
+  const messageText = 'я'.repeat(20_000);
+  const value: DialogueState = {
+    ...state,
+    conversation: Array.from({ length: 200 }, () => ({
+      role: 'user',
+      content: messageText,
+    })),
+    requestSeq: 200,
+    taskRequests: { task1: 'r200' },
+    requests: Array.from({ length: 200 }, (_, i) => ({
+      id: `r${i + 1}`,
+      openedAt: i,
+      text: messageText,
+      ...(i < 199 ? { closedAt: i + 1 } : {}),
+      ...(i === 199
+        ? {
+            transcript: Array.from({ length: 4 }, () => ({
+              role: 'user' as const,
+              content: '\u044f'.repeat(100_000),
+            })),
+          }
+        : {}),
+    })),
+  };
+  expect(Buffer.byteLength(JSON.stringify(value))).toBeGreaterThan(
+    2 * 1024 * 1024,
+  );
+  await store.save('alice', 'bounds', value);
+  expect(await store.load('alice', 'bounds')).toEqual(value);
 });
 
 it('persists and restores the configured task boundary of 60', async () => {

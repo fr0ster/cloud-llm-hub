@@ -1,3 +1,4 @@
+import { forgetPlannerMemory } from './lib/planner-memory';
 /**
  * Server-side session history.
  *
@@ -159,6 +160,7 @@ export function clearSession(sessionId: string, userId: string): void {
   // the user believes they deleted. Before startup has built the providers
   // there is no recall store, so nothing to forget there.
   if (!isProvidersReady()) return;
+  void forgetPlannerMemory(turnOwner(userId, sessionId)).catch(() => {});
   void getSharedHistoryRag()
     ?.forgetOwner(turnOwner(userId, sessionId))
     .catch(() => {});

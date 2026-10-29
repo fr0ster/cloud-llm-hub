@@ -120,9 +120,79 @@ it('provider store round-trips a record on PGlite and keeps only the last run', 
   await newStore().delete('session');
   expect(await newStore().load('session')).toBeUndefined();
 });
+it('loads legacy persisted archives and saves only current request fields', async () => {
+  const provider = newProvider();
+  const store = new ProviderDialogueStore(provider, { dimension: DIM });
+  await store.save('alice', 'legacy', record);
+  const catalog = await provider.describeCollections();
+  if (!catalog.ok) throw catalog.error;
+  const entry = catalog.value.records.find((r) => r.storeName === 'h_dialogue');
+  if (!entry) throw new Error('missing dialogue collection');
+  const opened = await provider.openCollection(entry);
+  if (!opened.ok) throw opened.error;
+  const writer = opened.value.rag.writer?.();
+  if (!writer?.upsertPrecomputedRaw) throw new Error('missing writer');
+  const closed = { id: 'r1', openedAt: 1, closedAt: 2, text: 'old' };
+  const open = {
+    id: 'r2',
+    openedAt: 2,
+    text: 'new',
+    transcript: record.conversation,
+  };
+  const written = await writer.upsertPrecomputedRaw(
+    dialogueId('alice', 'legacy'),
+    JSON.stringify({
+      state: {
+        ...record,
+        messages: null,
+        requests: [
+          {
+            ...closed,
+            replies: null,
+            closedPlan: {},
+            transcriptExpired: true,
+            transcript: 'obsolete',
+          },
+          { ...open, replies: [], closedPlan: {}, transcriptExpired: true },
+        ],
+      },
+    }),
+    Array(DIM).fill(0),
+    { userId: 'alice', sessionId: 'legacy', savedAt: Date.now() },
+  );
+  if (!written.ok) throw written.error;
+  const restored = await store.load('alice', 'legacy');
+  expect(restored).toEqual({ ...record, requests: [closed, open] });
+  if (!restored) throw new Error('missing restored state');
+  await store.save('alice', 'legacy', restored);
+  expect(await store.load('alice', 'legacy')).toEqual(restored);
+});
 it('provider load of an unknown session returns undefined', async () => {
   expect(await newStore().load('unknown')).toBeUndefined();
 });
+it('round trips a multibyte conversation larger than the former 2 MiB limit', async () => {
+  const store = new ProviderDialogueStore(newProvider(), { dimension: DIM });
+  const value = {
+    ...record,
+    requestSeq: 1,
+    taskRequests: { task: 'r1' },
+    requests: [
+      {
+        id: 'r1',
+        openedAt: 1,
+        text: 'hello',
+        transcript: record.conversation,
+      },
+    ],
+    conversation: Array.from({ length: 200 }, () => ({
+      role: 'user' as const,
+      content: '\u044f'.repeat(20_000),
+    })),
+  };
+  await store.save('alice', 'large', value);
+  expect(await store.load('alice', 'large')).toEqual(value);
+});
+
 it.each([
   '{bad',
   '{}',
@@ -135,7 +205,6 @@ it.each([
     conversation: Array(201).fill({ role: 'user', content: 'x' }),
   }),
   JSON.stringify({ ...record, tasks: Array(51).fill({}) }),
-  JSON.stringify({ ...record, plan: 'x'.repeat(2 * 1024 * 1024) }),
 ])('malformed or oversized row is ignored with a warning: %#', async (text) => {
   const p = newProvider();
   const store = scopedStore(

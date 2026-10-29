@@ -48,8 +48,12 @@ type Turn = {
 };
 const listTurns = jest.fn(async (_owner: string): Promise<Turn[]> => []);
 const forgetOwner = jest.fn(async () => true);
+const forgetPlannerMemory = jest.fn(async (_sessionId: string) => true);
 const setSessionDestination = jest.fn();
 let providersReady = true;
+jest.mock('../../srv/lib/planner-memory', () => ({
+  forgetPlannerMemory: (sessionId: string) => forgetPlannerMemory(sessionId),
+}));
 jest.mock('../../srv/agent-manager', () => ({
   getCollectionRegistry: () => ({ deleteSessionCollections: async () => {} }),
   isProvidersReady: () => providersReady,
@@ -185,6 +189,7 @@ beforeEach(() => {
   now = 1_000_000;
   jest.spyOn(Date, 'now').mockImplementation(() => now);
   forgetOwner.mockReset().mockResolvedValue(true);
+  forgetPlannerMemory.mockReset().mockResolvedValue(true);
   deleteSession.mockClear();
   dropSessionConnection.mockClear();
   closeDialogue.mockClear();
@@ -239,6 +244,25 @@ describe('open', () => {
 });
 
 describe('close', () => {
+  it('clears planner memory with a history window removed by retention', () => {
+    clearSession('retained-session', 'alice');
+    expect(forgetPlannerMemory).toHaveBeenCalledWith(
+      turnOwner('alice', 'retained-session'),
+    );
+    expect(forgetOwner).toHaveBeenCalledWith(
+      turnOwner('alice', 'retained-session'),
+    );
+  });
+
+  it('keeps the closed record for retry when planner memory deletion fails', async () => {
+    const s = await open('alice');
+    forgetPlannerMemory.mockResolvedValueOnce(false);
+    await expect(
+      longSessions().close('alice', s.key, 'explicit'),
+    ).rejects.toThrow('Planner memory forget failed');
+    expect(records.store.delete).not.toHaveBeenCalled();
+  });
+
   it.each(['explicit', 'ttl', 'shutdown'] as const)(
     'closes dialogue before the request connection on %s',
     async (reason) => {
@@ -258,6 +282,8 @@ describe('close', () => {
     // deleteSession is retention's close: history (memory and store),
     // destination and session collections.
     expect(deleteSession).toHaveBeenCalledWith('alice', s.key);
+    expect(forgetOwner).toHaveBeenCalledWith(turnOwner('alice', s.key));
+    expect(forgetPlannerMemory).toHaveBeenCalledWith(turnOwner('alice', s.key));
     expect(records.store.delete).toHaveBeenCalledWith('alice', s.key);
     expect(records.rows.size).toBe(0);
   });
