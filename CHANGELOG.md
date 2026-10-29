@@ -17,6 +17,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
+- Upgrade llm-agent and llm-agent-libs to 30.20.0: persist separate checker-step verdicts and checked task IDs, normalize legacy checking steps, and include the planner deliver tool. Show checker verdicts in plan details and expose `LLM_AGENT_DIALOGUE_TASK_OUTPUT_CHARS` (library default 60000).
+
 - Dialogue chat skips request-level collection retrieval and its embedding calls. Workers and planning knowledge keep collection access; explicitly attached uploads reach the planner as a temporary preview bounded to 16,000 characters and 100 records. Other coordinators retain request retrieval.
 
 - Collection search toggles are session scoped, persisted with long sessions, and enforced in request retrieval and each planner knowledge search. Collection defaults remain editable with owner/admin permissions.

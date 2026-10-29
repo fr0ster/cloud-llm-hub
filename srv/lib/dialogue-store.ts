@@ -7,10 +7,11 @@ import type {
   IRagScanner,
 } from '@mcp-abap-adt/llm-agent';
 import { isRagScanner } from '@mcp-abap-adt/llm-agent';
+import { TASK_OUTPUT_CHAR_LIMIT } from '@mcp-abap-adt/llm-agent-libs';
 import cds from '@sap/cds';
 import { z } from 'zod';
 import type { RagConfig } from '../agent-config';
-import { dialogueMaxTasks } from '../agent-config';
+import { dialogueMaxTasks, dialogueTaskOutputChars } from '../agent-config';
 import { ensureDialogueStore } from './collection-persistence';
 import type { OutboxEntry } from './dialogue-outbox';
 import { guardedTask } from './guarded-task';
@@ -35,11 +36,24 @@ export type HubDialogueState = DialogueState & {
 
 // JSON worst case is 6 bytes per UTF-16 code unit (escaped controls/surrogates).
 // Open transcript: 400k; conversation: 200 * 20k; request texts: 200 * 20k
-// = 8.4M UTF-16 units * 6 = 50.4 MB. Task outputs add maxTasks * 4k
-// units (plus cut markers). 64 MiB leaves headroom at the default 50 tasks.
+// = 8.4M UTF-16 units, plus maxTasks * (taskOutputChars + 64 units).
+// The library default output budget is 60k; 64 units cover its cut marker,
+// including the omitted-character count. Multiply by 6, then add 8 MiB for metadata.
 // This is a guard, not a target: plans, task goals/errors, pending replies and
 // metadata have no aggregate library bound and can still exceed it.
-export const DIALOGUE_BYTE_LIMIT = 64 * 1024 * 1024;
+export function dialogueByteLimit(): number {
+  return (
+    (8_400_000 +
+      dialogueMaxTasks() *
+        ((dialogueTaskOutputChars() ?? TASK_OUTPUT_CHAR_LIMIT) + 64)) *
+      6 +
+    8 * 1024 * 1024
+  );
+}
+function checkDialogueBytes(text: string): void {
+  if (Buffer.byteLength(text, 'utf8') > dialogueByteLimit())
+    throw new Error('Dialogue state exceeds configured byte limit');
+}
 export interface DialogueStoreBackend {
   storageBytes?(userId: string, sessionId: string): DialogueBytes | undefined;
   load(
@@ -112,33 +126,74 @@ function planSchema<S extends z.ZodType<Plan>>(
 const boundedText = str.max(20000);
 const id = str.max(1000);
 const ids = z.array(id).max(1000);
-const check = z.object({
-  by: z.enum(['planner', 'checker']),
-  goal: boundedText,
-  verdict: z.enum(['pass', 'fail']).optional(),
-  taskId: id.optional(),
-} satisfies Shape<NonNullable<PlanStep['check']>>);
-const planStep = z.object({
-  id,
-  goal: boundedText,
-  items: z.array(boundedText).max(1000).optional(),
-  dependsOn: ids.optional(),
-  worker: id.optional(),
-  state: z.enum([
-    'pending',
-    'running',
-    'checking',
-    'done',
-    'failed',
-    'skipped',
-    'blocked',
-  ]),
-  check: check.optional(),
-  workTaskId: id.optional(),
-  successfulWorkTaskId: id.optional(),
-  taskIds: ids,
-  note: boundedText.optional(),
-} satisfies Shape<PlanStep>);
+const planStep = z.preprocess(
+  (value) => {
+    if (typeof value === 'object' && value !== null) {
+      const step = { ...value };
+      // Mirror llm-agent-libs coordinator/dialogue/structured-plan.ts restoreLegacyStep
+      // (not exported from the package's public entry point).
+      if ('check' in step) {
+        const legacy = z
+          .object({ taskId: str.optional() })
+          .safeParse(step.check);
+        if (!('workTaskId' in step) || !step.workTaskId) {
+          const tasks = z
+            .array(str)
+            .safeParse('taskIds' in step ? step.taskIds : undefined);
+          if (tasks.success)
+            Object.assign(step, {
+              workTaskId: tasks.data
+                .filter(
+                  (id) =>
+                    id !== (legacy.success ? legacy.data.taskId : undefined),
+                )
+                .at(-1),
+            });
+        }
+        delete step.check;
+      }
+      if ('state' in step && step.state === 'checking') {
+        step.state = 'done';
+        Object.assign(step, {
+          note: [
+            'note' in step ? step.note : undefined,
+            'Legacy check was not run; plan a separate check step if needed',
+          ]
+            .filter(Boolean)
+            .join('; '),
+        });
+      }
+      return step;
+    }
+    return value;
+  },
+  z.object({
+    id,
+    goal: boundedText,
+    items: z.array(boundedText).max(1000).optional(),
+    dependsOn: ids.optional(),
+    worker: id.optional(),
+    state: z.enum([
+      'pending',
+      'running',
+      'done',
+      'failed',
+      'skipped',
+      'blocked',
+    ]),
+    verdict: z.enum(['pass', 'fail']).optional(),
+    checkedTaskIds: z
+      .record(id, id)
+      .refine((value) => Object.keys(value).length <= 1000, {
+        message: 'Dialogue checked task limit exceeded',
+      })
+      .optional(),
+    workTaskId: id.optional(),
+    successfulWorkTaskId: id.optional(),
+    taskIds: ids,
+    note: boundedText.optional(),
+  } satisfies Shape<PlanStep>),
+);
 const structuredPlan = planSchema(
   z.object({
     scopeConsent: z.boolean().optional(),
@@ -253,8 +308,7 @@ const schema = z.object({
 } satisfies Shape<DialogueState>);
 function stored(record: HubDialogueState): HubDialogueState {
   const text = JSON.stringify(record);
-  if (Buffer.byteLength(text, 'utf8') > DIALOGUE_BYTE_LIMIT)
-    throw new Error('Dialogue state exceeds 64 MiB');
+  checkDialogueBytes(text);
   const raw = JSON.parse(text);
   const state = schema.parse(raw.state ?? raw);
   const outbox = raw.outbox;
@@ -418,8 +472,7 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
             row.id !== dialogueId(userId, sessionId)
           )
             throw new Error('Malformed metadata');
-          if (Buffer.byteLength(row.text, 'utf8') > DIALOGUE_BYTE_LIMIT)
-            throw new Error('Dialogue state exceeds 64 MiB');
+          checkDialogueBytes(row.text);
           stored(JSON.parse(row.text));
         } catch {
           this.index.delete(row.id);
@@ -548,8 +601,7 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
           return undefined;
         }
         try {
-          if (Buffer.byteLength(row.text, 'utf8') > DIALOGUE_BYTE_LIMIT)
-            throw new Error('Dialogue state exceeds 64 MiB');
+          checkDialogueBytes(row.text);
           const record = stored(JSON.parse(row.text));
           this.index.set(row.id, row.metadata.savedAt);
           if (storageEnabled()) {

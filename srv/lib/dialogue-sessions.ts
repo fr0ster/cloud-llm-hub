@@ -557,6 +557,7 @@ async function open(
         },
         delete: async () => {},
       },
+      taskOutputChars: config.agent.dialogue.taskOutputChars,
       maxCorrections: config.agent.dialogue.maxCorrections,
       waitTickMs: config.agent.dialogue.waitTickMs,
       longTaskMs: config.agent.dialogue.longTaskMs,

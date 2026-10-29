@@ -215,6 +215,7 @@ export interface AgentConfig {
       followMaxMs: number;
       waitTickMs?: number;
       longTaskMs?: number;
+      taskOutputChars?: number;
     };
     planBudget?: {
       maxSteps?: number;
@@ -641,6 +642,7 @@ export function loadAgentConfig(): AgentConfig {
             process.env,
             'LLM_AGENT_DIALOGUE_EXECUTOR_POOL',
           ) ?? 6,
+        taskOutputChars: dialogueTaskOutputChars(),
         maxTasks: dialogueMaxTasks(),
         maxCorrections: dialogueMaxCorrections(),
         waitTickMs: dialogueWaitLimit('LLM_AGENT_DIALOGUE_WAIT_TICK_MS'),
@@ -842,6 +844,14 @@ export function parseChatCoordinator(
   if (value === 'fixed' || value === 'dialogue') return value;
   throw new BuildValidationError(
     `Invalid LLM_AGENT_CHAT_COORDINATOR: ${value}; expected adaptive, fixed or dialogue`,
+  );
+}
+
+/** Shared output budget for dialogue sessions and persisted byte validation. */
+export function dialogueTaskOutputChars(): number | undefined {
+  return readPositiveIntFrom(
+    process.env,
+    'LLM_AGENT_DIALOGUE_TASK_OUTPUT_CHARS',
   );
 }
 

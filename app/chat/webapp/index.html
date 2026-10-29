@@ -657,7 +657,7 @@
                         const state = ready ? 'ready' : step.state;
                         return '<div class="dialogue-task"><span class="badge">' + escapeHtml(String(state)) + '</span> ' + escapeHtml(String(step.id)) + ': ' + escapeHtml(String(step.goal))
                             + (step.workTaskId ? ' \u00b7 work: ' + escapeHtml(String(step.workTaskId)) : '')
-                            + (step.check?.taskId ? ' \u00b7 check: ' + escapeHtml(String(step.check.taskId)) : '') + '</div>';
+                            + (step.verdict ? ' \u00b7 verdict: ' + escapeHtml(String(step.verdict)) : '') + '</div>';
                     }).join('') + (plan.text ? markdownToHtml(plan.text) : '')
                     : markdownToHtml(plan.text);
             }

@@ -144,6 +144,7 @@ describe('dialogue configuration', () => {
       'LLM_AGENT_DIALOGUE_EXECUTORS',
       'LLM_AGENT_DIALOGUE_EXECUTOR_POOL',
       'LLM_AGENT_DIALOGUE_MAX_TASKS',
+      'LLM_AGENT_DIALOGUE_TASK_OUTPUT_CHARS',
       'LLM_AGENT_DIALOGUE_MAX_CORRECTIONS',
     ])
       delete process.env[k];
@@ -176,6 +177,7 @@ describe('dialogue configuration', () => {
       'LLM_AGENT_DIALOGUE_EXECUTORS',
       'LLM_AGENT_DIALOGUE_EXECUTOR_POOL',
       'LLM_AGENT_DIALOGUE_MAX_TASKS',
+      'LLM_AGENT_DIALOGUE_TASK_OUTPUT_CHARS',
     ])
       process.env[name] = '8';
     expect(loadAgentConfig().agent).toHaveProperty('dialogue', {
@@ -186,11 +188,13 @@ describe('dialogue configuration', () => {
       followMaxMs: 1_800_000,
       waitTickMs: undefined,
       longTaskMs: undefined,
+      taskOutputChars: 8,
     });
     for (const name of [
       'LLM_AGENT_DIALOGUE_EXECUTORS',
       'LLM_AGENT_DIALOGUE_EXECUTOR_POOL',
       'LLM_AGENT_DIALOGUE_MAX_TASKS',
+      'LLM_AGENT_DIALOGUE_TASK_OUTPUT_CHARS',
     ]) {
       for (const bad of ['x', '0', '-1', '1.5']) {
         process.env[name] = bad;
