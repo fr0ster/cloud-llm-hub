@@ -730,6 +730,27 @@ destination }`, `execute_step({ session, task, destination? })` runs in it (a
 `session_close({ session })` closes it. Errors come back as tool errors with the
 codes above.
 
+The agent MCP also exposes RAG tools for clients that manage their own LLM
+context. Each takes an optional `session` key from `session_open`; alternatively
+send `x-clh-session`. A session is required, and calls hold its queue and RAG
+lease. Unknown, closed, or other-user sessions return tool errors. Collections
+use the same id/name resolver and ownership checks as the REST API.
+
+| Tool | Arguments and result |
+|---|---|
+| `rag_search` | `{ query, collections?, k? }`; returns `{ hits: [{ collection, id, title?, text, score? }], unavailable?: [{ collection, error }] }`. Searches only collections enabled for the session; `collections` only narrows that set (an empty list searches none). `k` defaults to 8, maximum 20 across collections. Unavailable collections are skipped; bounded failure notes share the 24,000-character JSON output cap with hits, with `[truncated]` on cut text. |
+| `rag_read` | `{ collection, id, offset?, limit? }`; returns `{ id, offset, total, next?, text, attributes }`. Character offsets start at zero; limit defaults to 8,000, maximum 32,000. `next` is absent at the end. |
+| `collections_list` | `{}`; returns `{ collections: [{ id, name, scope, enabled, defaultEnabled, documents }] }`, including effective session enablement. |
+| `collection_set_enabled` | `{ collection, enabled }`; sets a persisted session override, leaving the collection default and other sessions unchanged. |
+| `collection_records` | `{ collection, offset?, limit? }`; returns `{ total, records: [{ id, title?, source?, attributes: { enabled } }] }`. Record offset defaults to zero, limit to 50, maximum 200. |
+| `record_set_enabled` | `{ collection, id?, source?, uploadId?, enabled }`; supply exactly one of `id` or `source`. Source changes apply to all chunks of that upload; `uploadId` defaults to the legacy empty upload id. Requires the same write permission as REST. |
+
+Disabled records never appear in search. Reads of a disabled record or disabled
+collection return only the record id, safe enablement attributes, and a reason;
+record lists omit their titles, sources, and text. All read/list record attributes use the same normalized `{ enabled: boolean }` shape; internal metadata is excluded. Search hit ids can be passed
+directly to `rag_read` and `record_set_enabled`. Invalid paging arguments return
+tool errors.
+
 ### Plain sessions (cookie)
 
 This applies with `LLM_AGENT_PLAIN_API=true`, to requests that carry no

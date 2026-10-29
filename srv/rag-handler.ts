@@ -15,12 +15,12 @@ import {
   sessionCollectionId,
   userCollectionId,
 } from './collection-ids';
+import { collectionAccessError } from './lib/collection-access';
 import { CollectionBackendError } from './lib/collection-persistence';
 import {
   collectionDefault,
   collectionEnabled,
-  persistCollectionOverrides,
-  setCollectionOverride,
+  updateSessionCollection,
 } from './lib/collection-toggle';
 import { leaseSession } from './lib/gatekeeper';
 import {
@@ -366,22 +366,9 @@ export function registerRagRoutes(
     mode: 'read' | 'write',
     res: Response,
   ): boolean => {
-    const userId = getUserId();
-    // 'anonymous' is the getUserId() fallback when no JWT user is in context.
-    // We never grant ownership matches on that fallback — a stray unauthenticated
-    // request must not align with another caller's 'anonymous'-owned collection.
-    const hasIdentity = !!userId && userId !== 'anonymous';
-    if (meta.scope === 'global') {
-      if (mode === 'write' && !isAdmin()) {
-        error(res, 403, 'MCP_Admin role required for global collections');
-        return false;
-      }
-      return true;
-    }
-    if (hasIdentity && meta.owner && meta.owner === userId) return true;
-    if (isAdmin()) return true;
-    // 404 — do NOT leak existence to non-owners
-    error(res, 404, 'Collection not found');
+    const refusal = collectionAccessError(meta, getUserId(), isAdmin(), mode);
+    if (!refusal) return true;
+    error(res, refusal.status, refusal.message);
     return false;
   };
 
@@ -545,8 +532,7 @@ export function registerRagRoutes(
             return;
           }
           try {
-            setCollectionOverride(userId, sid, physId, !!enabled);
-            await persistCollectionOverrides(userId, sid);
+            await updateSessionCollection(userId, sid, physId, !!enabled);
           } finally {
             lease.release();
           }

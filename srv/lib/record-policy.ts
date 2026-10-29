@@ -18,3 +18,14 @@ export function recordPolicy(
     return { visible: false, reason: 'record-disabled' };
   return { visible: true };
 }
+
+/** Safe, normalized attributes shared by all LLM-facing record responses. */
+export interface RecordAttributes {
+  enabled: boolean;
+}
+
+export function recordAttributes(
+  metadata: Readonly<RagMetadata>,
+): RecordAttributes {
+  return { enabled: metadata.enabled !== false };
+}
