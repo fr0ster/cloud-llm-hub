@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Added
 
+- Global record enable/disable flags with owner/admin write permissions, individual and source-file REST toggles, and state controls in the document panel. Disabled records remain readable and editable, while collection retrieval and planner knowledge exclude them without starving eligible results.
+
 - Planner session memory in a separate session RAG store, with session cleanup, and curated planning knowledge from `LLM_AGENT_PLANNER_KNOWLEDGE` (llm-agent / libs 30.18.0); earlier content read only semantically (llm-agent / libs 30.19.0).
 
 - Live tools in context and executed call counts for the main planner and subagents in the WebUI agents line.

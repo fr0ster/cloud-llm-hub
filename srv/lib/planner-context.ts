@@ -7,6 +7,7 @@ import {
   type PlannerRetrievalOptions,
   RagPlannerKnowledge,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { recordPolicy } from './record-policy';
 
 export function plannerMemoryStore(options: {
   kind: string;
@@ -59,7 +60,11 @@ export async function plannerContext(options: {
           name,
           embeddingKey: source.embeddingKey,
           search: async (query, k, callOptions) => {
-            if (options.enabled && !(await options.enabled(name))) return [];
+            const enabled = options.enabled
+              ? await options.enabled(name)
+              : true;
+            if (!recordPolicy({}, enabled).visible) return [];
+            // Record attributes are evaluated by the collection query wrapper.
             return source.search(query, k, callOptions);
           },
         });

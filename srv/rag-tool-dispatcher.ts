@@ -19,6 +19,8 @@ import cds from '@sap/cds';
 import { z } from 'zod';
 import { normalizeLogicalId, resolveByName } from './collection-ids';
 import { CollectionBackendError } from './lib/collection-persistence';
+import { collectionEnabled } from './lib/collection-toggle';
+import { recordPolicy } from './lib/record-policy';
 import type { CollectionRegistry } from './rag-collections';
 import { sessionCollectionTtlMs } from './rag-collections';
 import { getRequestSessionId, getRequestUserId } from './request-session';
@@ -48,7 +50,7 @@ const TOOL_DEFS = [
   {
     name: 'rag_list' as const,
     description:
-      'List record ids, titles, text lengths and tags from a hub RAG collection. Use offset and limit (default 50, maximum 200) to page. Pass id to read one record in full.',
+      'List record ids, titles, text lengths and tags from a hub RAG collection. Use offset and limit (default 50, maximum 200) to page. Pass id to read one record in full. Disabled records or collections expose only id, enabled and a reason.',
     schema: z.object({
       collection: z.string(),
       id: z.string().optional(),
@@ -144,22 +146,35 @@ export async function dispatchRagTool(
           options?.defaultScope,
         );
         if (!physical) return { ok: false, error: 'Collection not found' };
+        const meta = await registry.getCollection(physical);
+        if (!meta) return { ok: false, error: 'Collection not found' };
+        const enabled = collectionEnabled(
+          registry,
+          userId(),
+          sessionId(),
+          meta,
+        );
         if (args.id !== undefined) {
           const doc =
             (await registry.findActiveByCanonicalKey(
               physical,
               args.id as string,
             )) ?? (await registry.getDocument(physical, args.id as string));
-          return doc
-            ? {
-                ok: true,
-                document: {
-                  id: doc.metadata?.canonicalKey ?? doc.id,
-                  text: doc.text,
-                  ...(doc.metadata?.tags ? { tags: doc.metadata.tags } : {}),
-                },
-              }
-            : { ok: false, error: 'Record not found' };
+          if (!doc) return { ok: false, error: 'Record not found' };
+          const visibility = recordPolicy(doc.metadata, enabled);
+          return {
+            ok: true,
+            document: {
+              id: doc.metadata?.canonicalKey ?? doc.id,
+              enabled: doc.metadata.enabled !== false,
+              ...(visibility.visible
+                ? {
+                    text: doc.text,
+                    ...(doc.metadata.tags ? { tags: doc.metadata.tags } : {}),
+                  }
+                : { reason: visibility.reason }),
+            },
+          };
         }
         const result = await registry.listDocuments(physical, {
           offset: args.offset as number | undefined,
@@ -169,12 +184,22 @@ export async function dispatchRagTool(
           ? {
               ok: true,
               total: result.total,
-              documents: result.documents.map((doc) => ({
-                id: doc.metadata?.canonicalKey ?? doc.id,
-                title: doc.text.split(/\r?\n/, 1)[0].trim().slice(0, 120),
-                length: doc.text.length,
-                ...(doc.metadata?.tags ? { tags: doc.metadata.tags } : {}),
-              })),
+              documents: result.documents.map((doc) => {
+                const visibility = recordPolicy(doc.metadata, enabled);
+                if (!visibility.visible)
+                  return {
+                    id: doc.metadata.canonicalKey ?? doc.id,
+                    enabled: doc.metadata.enabled !== false,
+                    reason: visibility.reason,
+                  };
+                return {
+                  id: doc.metadata?.canonicalKey ?? doc.id,
+                  enabled: doc.metadata.enabled !== false,
+                  title: doc.text.split(/\r?\n/, 1)[0].trim().slice(0, 120),
+                  length: doc.text.length,
+                  ...(doc.metadata?.tags ? { tags: doc.metadata.tags } : {}),
+                };
+              }),
             }
           : { ok: false, error: 'Collection not found' };
       }

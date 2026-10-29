@@ -269,6 +269,7 @@ test('rag_list returns compact titles, length and tags; id reads full text; pagi
     documents: [
       {
         id: 'one',
+        enabled: true,
         title: 'a'.repeat(120),
         length: text.length,
         tags: ['analysis'],
@@ -284,7 +285,7 @@ test('rag_list returns compact titles, length and tags; id reads full text; pagi
   ).toEqual({
     ok: true,
     total: 2,
-    documents: [{ id: 'two', title: 'Second', length: 11 }],
+    documents: [{ id: 'two', enabled: true, title: 'Second', length: 11 }],
   });
   expect(
     await dispatchRagTool(reg, 'rag_list', {
@@ -293,7 +294,7 @@ test('rag_list returns compact titles, length and tags; id reads full text; pagi
     }),
   ).toEqual({
     ok: true,
-    document: { id: 'one', text, tags: ['analysis'] },
+    document: { id: 'one', enabled: true, text, tags: ['analysis'] },
   });
   expect(
     await dispatchRagTool(reg, 'rag_list', {

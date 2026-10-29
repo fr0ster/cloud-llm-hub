@@ -2603,6 +2603,14 @@
                 const res = await ragFetch(`/v1/rag/collections/${ragCurrentCollection}/documents?limit=100`);
                 const data = await res.json();
                 const docs = data.documents || [];
+                // Include every chunk when displaying the state of a source file.
+                while (docs.length < data.total) {
+                    const page = await ragFetch(`/v1/rag/collections/${ragCurrentCollection}/documents?limit=200&offset=${docs.length}`);
+                    if (!page.ok) throw new Error('Could not load remaining records');
+                    const next = await page.json();
+                    if (!next.documents?.length) break;
+                    docs.push(...next.documents);
+                }
                 if (docs.length === 0) {
                     list.innerHTML = '<div style="color:#555;padding:10px">No documents. Add one or upload a file.</div>';
                     return;
@@ -2629,12 +2637,14 @@
                                 source: src,
                                 firstChunk: d, // doc with chunkIndex 0 will overwrite below
                                 chunkIds: [],
+                                enabledCount: 0,
                                 createdAt: d.createdAt,
                             };
                             sourceIndex.set(groupKey, row);
                             rows.push(row);
                         }
                         row.chunkIds.push(d.id);
+                        if (d.enabled !== false) row.enabledCount++;
                         // Keep the chunkIndex-0 doc as the preview source if we see it.
                         if (d.metadata.chunkIndex === 0) row.firstChunk = d;
                         // Earliest createdAt across all chunks of the file.
@@ -2651,6 +2661,7 @@
                             <div style="background:#0c0c0c;border:1px solid #222;padding:10px 12px;margin-bottom:4px;border-radius:4px">
                                 <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
                                     <span style="color:#00bfff;font-size:12px;font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis">${escapeHtml(d.id)}</span>
+                                    <button data-id="${escapeHtml(d.id)}" data-enabled="${d.enabled !== false}" onclick="toggleRecord(this)" style="background:#1a1a1a;color:#ffcc00;border:1px solid #554400;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">${d.enabled === false ? 'Disabled / Enable' : 'Enabled / Disable'}</button>
                                     <button onclick="downloadRagDoc(ragCurrentCollection,'${escapeHtml(d.id)}')" style="background:#1a1a1a;color:#00bfff;border:1px solid #003355;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Download as text file">DL</button>
                                     <button onclick="deleteDocument('${escapeHtml(d.id)}')" style="background:none;color:#ff5555;border:1px solid #552222;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">DEL</button>
                                 </div>
@@ -2669,6 +2680,7 @@
                             <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
                                 <span style="color:#00ff88;font-size:12px;font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(row.source)}">${escapeHtml(row.source)}</span>
                                 <span style="color:#555;font-size:11px">${chunkCount} chunk${chunkCount === 1 ? '' : 's'}</span>
+                                <button data-source="${escapeHtml(row.source)}" data-upload="${escapeHtml(first.metadata.uploadId || '')}" data-enabled="${row.enabledCount === chunkCount}" onclick="toggleRecord(this)" style="background:#1a1a1a;color:#ffcc00;border:1px solid #554400;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">${row.enabledCount === 0 ? 'Disabled / Enable' : row.enabledCount === chunkCount ? 'Enabled / Disable' : 'Mixed / Enable all'}</button>
                                 <button onclick="downloadSourceFile(ragCurrentCollection,'${escapeHtml(first.id)}')" style="background:#1a1a1a;color:#00ff88;border:1px solid #00553a;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Reassemble and download the whole source file (zip with body + .meta.json)">SRC</button>
                                 <button data-chunks="${escapeHtml(JSON.stringify(row.chunkIds))}" data-source="${escapeHtml(row.source)}" onclick="deleteSourceFile(this)" style="background:none;color:#ff5555;border:1px solid #552222;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Delete all chunks of this file">DEL</button>
                             </div>
@@ -2679,6 +2691,27 @@
             } catch (err) {
                 list.innerHTML = `<span style="color:#ff5555">Error: ${escapeHtml(err.message)}</span>`;
             }
+        }
+
+        async function toggleRecord(btn) {
+            btn.disabled = true;
+            const source = btn.dataset.source;
+            const path = source !== undefined ? 'enabled' : `${encodeURIComponent(btn.dataset.id)}/enabled`;
+            const body = { enabled: btn.dataset.enabled !== 'true' };
+            if (source !== undefined) {
+                body.source = source;
+                body.uploadId = btn.dataset.upload;
+            }
+            try {
+                const res = await ragFetch(`/v1/rag/collections/${ragCurrentCollection}/documents/${path}`, {
+                    method: 'PATCH', body: JSON.stringify(body),
+                });
+                if (!res.ok) {
+                    const result = await res.json();
+                    throw new Error(result.error?.message || 'Toggle failed');
+                }
+            } catch (err) { alert(err.message); }
+            finally { await loadDocuments(); }
         }
 
         // Source-level delete — fan-out chunk-by-chunk client-side because the
