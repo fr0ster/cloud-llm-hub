@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [9.8.0] - 2026-10-29
+
 ### Added
 
 - Agent MCP RAG search, paged reads, collection and record lists, session collection toggles, and record/source enablement tools. They share REST collection resolution and mutation paths, hold session leases, enforce record visibility, and bound search output.
