@@ -11,9 +11,23 @@ export type TaskView = Pick<
   | 'startedAt'
   | 'finishedAt'
   | 'error'
+  | 'toolsSelected'
+  | 'toolsAvailable'
+  | 'toolCalls'
+  | 'maxToolCalls'
 >;
 export function taskView(task: TaskView): TaskView {
   return {
+    ...(task.toolsSelected === undefined
+      ? {}
+      : { toolsSelected: task.toolsSelected }),
+    ...(task.toolsAvailable === undefined
+      ? {}
+      : { toolsAvailable: task.toolsAvailable }),
+    ...(task.toolCalls === undefined ? {} : { toolCalls: task.toolCalls }),
+    ...(task.maxToolCalls === undefined
+      ? {}
+      : { maxToolCalls: task.maxToolCalls }),
     id: task.id,
     worker: task.worker,
     goal: task.goal,

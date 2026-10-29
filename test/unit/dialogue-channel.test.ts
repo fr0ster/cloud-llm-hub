@@ -6,6 +6,7 @@ import {
 } from '../../srv/lib/dialogue-chat';
 import { DialogueOutbox } from '../../srv/lib/dialogue-outbox';
 import { plannerWithRetrievedContext } from '../../srv/lib/dialogue-planner-content';
+import type { DialogueHandle } from '../../srv/lib/dialogue-sessions';
 import {
   admitPipeline,
   resetGatekeeperForTest,
@@ -76,6 +77,10 @@ let emptyPending = false;
 let outbox: DialogueOutbox;
 const ended = jest.fn();
 const send = jest.fn();
+const plannerCounts = jest.fn<
+  void,
+  [import('../../srv/lib/dialogue-sessions').PlannerCounts]
+>();
 let turnContext: WeakMap<object, string>;
 beforeEach(() => {
   process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS = '4';
@@ -100,6 +105,7 @@ beforeEach(() => {
   });
   jest.spyOn(outbox, 'confirmUpTo').mockImplementation(confirmUpTo);
   send.mockReset();
+  plannerCounts.mockClear();
   turnContext = new WeakMap<object, string>();
   const registry = new LongSessionRegistry(
     { ttlMs: 60000, maxSessions: 10, maxPerUser: 5, queueLength: 2 },
@@ -108,6 +114,7 @@ beforeEach(() => {
   setLongSessionsForTest(registry);
   session = registry.open('alice', {}) as LongSession;
   jest.mocked(dialogueFor).mockResolvedValue({
+    plannerCounts,
     retrievedContexts: turnContext,
     replies: new WeakMap(),
     factory: { refresh },
@@ -125,12 +132,27 @@ beforeEach(() => {
           { id: 'two', text: 'two', createdAt: 2, trigger: 'event' },
         ],
   );
-  send.mockImplementation(async (_text, opts) => {
-    expect(getRequestSessionId()).toBe(session.key);
-    expect(getRequestUserId()).toBe('alice');
-    opts.onPartial?.({ kind: 'content', delta: 'answer' });
-    return { text: 'answer' };
-  });
+  send.mockImplementation(
+    async (
+      _text: string,
+      opts: Parameters<DialogueHandle['session']['send']>[1],
+    ) => {
+      expect(getRequestSessionId()).toBe(session.key);
+      expect(getRequestUserId()).toBe('alice');
+      expect(opts?.onToolCallCount).toEqual(expect.any(Function));
+      expect(opts?.onToolsSelected).toEqual(expect.any(Function));
+      opts?.onToolsSelected?.(7, 12);
+      opts?.onToolCallCount?.(3, 40);
+      expect(plannerCounts).toHaveBeenLastCalledWith({
+        toolsSelected: 7,
+        toolsAvailable: 12,
+        toolCalls: 3,
+        maxToolCalls: 40,
+      });
+      opts?.onPartial?.({ kind: 'content', delta: 'answer' });
+      return { text: 'answer' };
+    },
+  );
 });
 afterEach(() => {
   delete process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS;

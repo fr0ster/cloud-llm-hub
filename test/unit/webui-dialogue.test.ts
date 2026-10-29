@@ -583,6 +583,8 @@ test('subagent time and tools precede the goal without a colon for empty goals',
       goal: 'read <dump>',
       state: 'running',
       startedAt: 79_000,
+      toolsSelected: 18,
+      toolsAvailable: 120,
       toolCalls: 12,
       maxToolCalls: 40,
     },
@@ -607,11 +609,13 @@ test('subagent time and tools precede the goal without a colon for empty goals',
   const goalRow = rows?.[0] ?? '';
   const rowText = goalRow.replace(/<[^>]*>/g, '');
   expect(goalRow).toContain('title="read &lt;dump&gt;"');
-  expect(rowText).toContain('executor · 0:21 · 12/40 tools: read &lt;dump&gt;');
+  expect(rowText).toContain(
+    'executor · 0:21 · 18/120 tools \u00b7 12/40 calls: read &lt;dump&gt;',
+  );
   expect(rowText.indexOf('tools')).toBeLessThan(
     rowText.indexOf('read &lt;dump&gt;'),
   );
-  expect(rows?.[1]).toContain('3 tools</span></div>');
+  expect(rows?.[1]).toContain('3 calls</span></div>');
   expect(rows?.[1]).not.toContain(': </div>');
   subscription.stop();
 });
@@ -1260,8 +1264,8 @@ test('wait updates server elapsed time and tool counts without chat messages and
   );
   expect(ui.active.innerHTML).toContain('</span>: &lt;goal&gt;');
   expect(ui.active.innerHTML).toContain('1:30');
-  expect(ui.active.innerHTML).toContain('12/40 tools');
-  expect(ui.active.innerHTML).toContain('0 tools');
+  expect(ui.active.innerHTML).toContain('12/40 calls');
+  expect(ui.active.innerHTML).toContain('0 calls');
   expect(ui.nodes).toHaveLength(0);
   ui.setNow(102000);
   for (const tick of ui.intervals) tick();
@@ -1393,4 +1397,87 @@ test('duration-only planner appears in TIME but not the token breakdown', async 
   const rendered = ui.nodes[0].innerHTML;
   expect(rendered.split('TIME:')[0]).not.toContain('planner:');
   expect(rendered).toContain('TIME: [planner: 2:51]');
+});
+
+test('planner counts update the running request and clear after completion', async () => {
+  const ui = harness(100000);
+  const events = controlledStream();
+  ui.fetch.mockResolvedValueOnce(events.response);
+  ui.startDialogueEvents('key');
+  await flush();
+  const response = controlledStream();
+  ui.fetch.mockResolvedValueOnce(response.response);
+  ui.userInput.value = 'hello';
+  const sent = ui.sendMessage();
+  await flush();
+  events.push(
+    'event: planner\ndata: {"toolsSelected":7,"toolsAvailable":12,"toolCalls":3}\n\n',
+  );
+  await flush();
+  expect(ui.active.innerHTML).toContain('7/12 tools');
+  expect(ui.active.innerHTML).toContain('3 calls');
+  response.push();
+  await sent;
+  expect(ui.active.innerHTML).toContain('listening');
+  expect(ui.active.innerHTML).not.toContain('tools');
+  expect(ui.active.innerHTML).not.toContain('calls');
+  ui.stopDialogueEvents();
+});
+
+test('planner counts belong to the newest running request and survive older follow completion', async () => {
+  const ui = harness(100000);
+  const events = controlledStream();
+  const a = controlledStream();
+  const b = controlledStream();
+  ui.fetch
+    .mockResolvedValueOnce(events.response)
+    .mockResolvedValueOnce(a.response)
+    .mockResolvedValueOnce(b.response);
+  ui.startDialogueEvents('key');
+  await flush();
+  ui.userInput.value = 'first';
+  const first = ui.sendMessage();
+  await flush();
+  a.push(messageWire('first', 'answer') + ': turn-end\n\n');
+  await flush();
+  expect(ui.locks.size).toBe(0);
+
+  ui.setNow(107000);
+  ui.userInput.value = 'second';
+  const second = ui.sendMessage();
+  await flush();
+  events.push(
+    'event: planner\ndata: {"toolsSelected":7,"toolsAvailable":12,"toolCalls":3,"maxToolCalls":10}\n\n',
+  );
+  await flush();
+  expect(ui.active.innerHTML).toContain('working 0:07');
+  expect(ui.active.innerHTML).toContain('7/12 tools');
+  expect(ui.active.innerHTML).toContain('3/10 calls');
+
+  a.push();
+  await first;
+  expect(ui.active.innerHTML).toContain('working 0:00');
+  expect(ui.active.innerHTML).toContain('7/12 tools');
+  expect(ui.active.innerHTML).toContain('3/10 calls');
+
+  b.push();
+  await second;
+  expect(ui.active.innerHTML).toContain('main \u00b7 listening');
+  expect(ui.active.innerHTML).not.toContain('tools');
+  expect(ui.active.innerHTML).not.toContain('calls');
+  ui.stopDialogueEvents();
+});
+
+test('subagent tools render when call counts are unknown', async () => {
+  const ui = harness(100000);
+  ui.fetch.mockResolvedValue(
+    stream(
+      'event: wait\ndata: {"tasks":[{"id":"t1","worker":"executor","state":"running","toolsSelected":18,"toolsAvailable":120,"elapsedMs":90000}]}\n\n',
+    ),
+  );
+  const subscription = ui.subscribeDialogueEvents('key');
+  await flush();
+  expect(ui.active.innerHTML).toContain('18/120 tools</span>');
+  expect(ui.active.innerHTML).not.toContain('calls');
+  subscription.stop();
 });

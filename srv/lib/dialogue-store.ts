@@ -175,6 +175,8 @@ const schema = z.object({
         ]),
         usage: tokenUsage.optional(),
         budgetExhausted: z.boolean().optional(),
+        toolsSelected: num.optional(),
+        toolsAvailable: num.optional(),
         toolCalls: num.optional(),
         maxToolCalls: num.optional(),
         output: str.optional(),

@@ -393,3 +393,21 @@ test('wait events are live frames with no replay id', async () => {
   );
   res.emit('close');
 });
+
+test('planner counters are sent as transient SSE', async () => {
+  const res = response();
+  await handleDialogueEvents(
+    request({ longSession: { userId: 'alice', key: 'ls-a' } }),
+    res,
+  );
+  listener({
+    kind: 'planner',
+    toolsSelected: 7,
+    toolsAvailable: 12,
+    toolCalls: 3,
+  });
+  expect(res.write).toHaveBeenLastCalledWith(
+    'event: planner\ndata: {"toolsSelected":7,"toolsAvailable":12,"toolCalls":3}\n\n',
+  );
+  res.emit('close');
+});
