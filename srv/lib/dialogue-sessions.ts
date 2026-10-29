@@ -51,6 +51,7 @@ import { admitBackground, type PipelineSession } from './gatekeeper';
 import { longSessionsIfReady } from './long-session';
 import { stripNoMessage } from './no-message';
 import { renderNotice } from './notify-policy';
+import { plannerSessionOptions } from './planner-memory';
 import type { RecordingMcpClient } from './recording-mcp-client';
 import { runWithRequestSystem } from './request-system-context';
 import { getReviewSignals } from './review-scope';
@@ -488,6 +489,7 @@ async function open(
   };
   try {
     session = await DialogueSession.open({
+      ...(await plannerSessionOptions(userId, key)),
       ...(usage ? { usage } : {}),
       id: key,
       signals,

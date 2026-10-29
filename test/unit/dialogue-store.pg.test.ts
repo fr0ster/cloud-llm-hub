@@ -123,6 +123,34 @@ it('provider store round-trips a record on PGlite and keeps only the last run', 
 it('provider load of an unknown session returns undefined', async () => {
   expect(await newStore().load('unknown')).toBeUndefined();
 });
+it('round trips a multibyte archive larger than the former 2 MiB limit', async () => {
+  const store = new ProviderDialogueStore(newProvider(), { dimension: DIM });
+  const value = {
+    ...record,
+    requestSeq: 1,
+    taskRequests: { task: 'r1' },
+    requests: [
+      {
+        id: 'r1',
+        openedAt: 1,
+        text: 'hello',
+        replies: ['m1'],
+        transcript: record.conversation,
+      },
+    ],
+    messages: [
+      {
+        id: 'm1',
+        text: 'я'.repeat(2_000_000),
+        createdAt: 1,
+        trigger: 'user' as const,
+      },
+    ],
+  };
+  await store.save('alice', 'large', value);
+  expect(await store.load('alice', 'large')).toEqual(value);
+});
+
 it.each([
   '{bad',
   '{}',
@@ -135,7 +163,6 @@ it.each([
     conversation: Array(201).fill({ role: 'user', content: 'x' }),
   }),
   JSON.stringify({ ...record, tasks: Array(51).fill({}) }),
-  JSON.stringify({ ...record, plan: 'x'.repeat(2 * 1024 * 1024) }),
 ])('malformed or oversized row is ignored with a warning: %#', async (text) => {
   const p = newProvider();
   const store = scopedStore(

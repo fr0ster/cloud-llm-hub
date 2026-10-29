@@ -156,7 +156,7 @@ function llm(model: string) {
   };
   return { agent, tools, messages };
 }
-test('hard planner sends all six control tools, hub prompt, and follows getSmartAgent model hot-swap', async () => {
+test('hard planner sends all ten control tools, hub prompt, and follows getSmartAgent model hot-swap', async () => {
   const first = llm('first');
   const second = llm('second');
   jest.mocked(makeHubLlm).mockResolvedValue(first.agent);
@@ -165,17 +165,20 @@ test('hard planner sends all six control tools, hub prompt, and follows getSmart
   try {
     const result = await planner.process([{ role: 'user', content: 'hello' }]);
     expect(result.ok && result.value.content).toBe('first');
-    expect(first.tools.flat()).toEqual(
-      expect.arrayContaining([
+    expect(first.tools.flat().sort()).toEqual(
+      [
         'delegate_task',
         'get_task',
         'get_plan',
         'list_tasks',
         'stop_task',
         'update_plan',
-      ]),
+        'get_message',
+        'get_request',
+        'search_knowledge',
+        'new_request',
+      ].sort(),
     );
-    expect(new Set(first.tools.flat()).size).toBe(6);
     expect(first.messages.join('\n')).toContain(HUB_DIALOGUE_PLANNER_SYSTEM);
     // Hub notes are not the user, and the library's fixed default is replaced.
     expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(

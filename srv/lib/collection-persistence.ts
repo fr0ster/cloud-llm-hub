@@ -679,7 +679,8 @@ export function createCollectionPersistence(
           if (
             isSessionRecordStore(rec, prefix) ||
             isRunRecordStore(rec, prefix) ||
-            isDialogueStore(rec, prefix)
+            isDialogueStore(rec, prefix) ||
+            isPlannerMemoryStore(rec, prefix)
           )
             continue;
           const decoded = decodeRecord(rec, prefix);
@@ -713,7 +714,8 @@ export function createCollectionPersistence(
             isHistoryRecord(rec, prefix) ||
             isSessionRecordStore(rec, prefix) ||
             isRunRecordStore(rec, prefix) ||
-            isDialogueStore(rec, prefix)
+            isDialogueStore(rec, prefix) ||
+            isPlannerMemoryStore(rec, prefix)
           )
             continue;
           const decoded = decodeRecord(rec, prefix);
@@ -1026,6 +1028,16 @@ export function ensureRunRecordStore(
   });
 }
 
+export function isPlannerMemoryStore(
+  rec: RagCollectionRecord,
+  prefix?: string,
+): boolean {
+  return isHubStoreRecord(
+    rec,
+    prefix ? `${prefix}_h_planner_memory` : 'h_planner_memory',
+  );
+}
+
 export const DIALOGUE_STORE_NAME = 'h_dialogue';
 export function isDialogueStore(
   rec: RagCollectionRecord,
@@ -1115,6 +1127,7 @@ export class PersistentHistoryStore
   private readonly now: () => number;
   private readonly coolDownMs: number;
   private readonly storePrefix?: string;
+  private readonly storeName?: string;
 
   constructor(
     private readonly provider: IRagProvider,
@@ -1123,11 +1136,13 @@ export class PersistentHistoryStore
       now?: () => number;
       coolDownMs?: number;
       storePrefix?: string;
+      storeName?: string;
     } = {},
   ) {
     this.now = opts.now ?? Date.now;
     this.coolDownMs = opts.coolDownMs ?? HISTORY_OPEN_COOL_DOWN_MS;
     this.storePrefix = opts.storePrefix;
+    this.storeName = opts.storeName;
   }
 
   /**
@@ -1140,21 +1155,35 @@ export class PersistentHistoryStore
     if (this.failed && this.now() - this.failed.at < this.coolDownMs)
       return Promise.resolve(this.failed.result);
     if (!this.opening) {
-      const run = ensureHistoryStore(this.provider, this.storePrefix).then(
-        (r) => {
-          if (r.ok) {
-            this.failed = undefined;
-          } else {
-            this.failed = { at: this.now(), result: r };
-            this.log?.warn('Session history store could not be opened', {
+      const run = (
+        this.storeName
+          ? ensureHubStore(this.provider, {
+              storeName: this.storePrefix
+                ? `${this.storePrefix}_${this.storeName}`
+                : this.storeName,
+              collectionName: this.storeName,
+              source: this.storeName,
+              label: `${this.storeName} store`,
+            })
+          : ensureHistoryStore(this.provider, this.storePrefix)
+      ).then((r) => {
+        if (r.ok) {
+          this.failed = undefined;
+        } else {
+          this.failed = { at: this.now(), result: r };
+          this.log?.warn(
+            this.storeName
+              ? `${this.storeName} store could not be opened`
+              : 'Session history store could not be opened',
+            {
               error: r.error.message,
               retryInMs: this.coolDownMs,
-            });
-            if (this.opening === run) this.opening = undefined;
-          }
-          return r;
-        },
-      );
+            },
+          );
+          if (this.opening === run) this.opening = undefined;
+        }
+        return r;
+      });
       this.opening = run;
     }
     return this.opening;
@@ -1199,6 +1228,13 @@ export class PersistentHistoryStore
 
   writer(): IRagBackendWriter {
     return {
+      upsertPrecomputedRaw: async (id, text, vector, metadata, options) => {
+        const w = await this.innerWriter();
+        if (!w.ok) return w;
+        return w.value.upsertPrecomputedRaw
+          ? w.value.upsertPrecomputedRaw(id, text, vector, metadata, options)
+          : w.value.upsertRaw(id, text, metadata, options);
+      },
       upsertRaw: async (
         id: string,
         text: string,

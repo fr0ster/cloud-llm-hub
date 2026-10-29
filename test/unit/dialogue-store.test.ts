@@ -14,6 +14,7 @@ import type { DialogueState } from '@mcp-abap-adt/llm-agent';
 import { DialogueSession } from '@mcp-abap-adt/llm-agent-libs';
 import {
   createDialogueStateStore,
+  DIALOGUE_BYTE_LIMIT,
   deleteDialogueState,
   getDialogueStoreBackend,
   hasDialogueState,
@@ -236,20 +237,65 @@ it.each([
   { ...state, conversation: Array(201).fill({ role: 'user', content: 'x' }) },
   { ...state, conversation: [{ role: 'user', content: 'x'.repeat(20001) }] },
   { ...state, tasks: Array(51).fill({}) },
-  { ...state, plan: '\u{1f600}'.repeat(600000) },
-  {
-    ...state,
-    plan: {
-      version: 1,
-      status: 'active',
-      steps: [],
-      note: '\u{1f600}'.repeat(600000),
-    },
-  },
 ])('rejects invalid or oversized states without truncating', async (value) => {
   const s = createDialogueStateStore('alice', 'k');
   await s.save('k', value as DialogueState);
   expect(await s.load('k')).toBeUndefined();
+});
+
+it('guards states exceeding the byte limit without replacing the last save', async () => {
+  const store = new MemoryDialogueStore();
+  await store.save('alice', 'bytes', state);
+  await store.save('alice', 'bytes', {
+    ...state,
+    plan: 'x'.repeat(DIALOGUE_BYTE_LIMIT),
+  });
+  expect(await store.load('alice', 'bytes')).toEqual(state);
+});
+
+it('round trips library retention budgets with two-byte text and request ownership', async () => {
+  const store = new MemoryDialogueStore();
+  const messageText = 'я'.repeat(20_000);
+  const value: DialogueState = {
+    ...state,
+    conversation: Array.from({ length: 200 }, () => ({
+      role: 'user',
+      content: messageText,
+    })),
+    requestSeq: 200,
+    taskRequests: { task1: 'r200' },
+    messages: Array.from({ length: 100 }, (_, i) => ({
+      id: `m${i}`,
+      text: messageText,
+      createdAt: i,
+      trigger: 'user',
+    })),
+    requests: Array.from({ length: 200 }, (_, i) => ({
+      id: `r${i + 1}`,
+      openedAt: i,
+      text: messageText,
+      replies: Array.from({ length: 50 }, (_, j) => `m${j}`),
+      ...(i < 199 ? { closedAt: i + 1 } : {}),
+      transcript:
+        i === 199
+          ? Array.from({ length: 4 }, () => ({
+              role: 'user',
+              content: 'я'.repeat(100_000),
+            }))
+          : i === 198
+            ? [{ role: 'user', content: 'я'.repeat(1_999_900) }]
+            : [],
+      ...(i === 198
+        ? { closedPlan: { version: 1, steps: [], status: 'done' } }
+        : {}),
+      ...(i === 0 ? { legacy: true, transcriptExpired: true } : {}),
+    })),
+  };
+  expect(Buffer.byteLength(JSON.stringify(value))).toBeGreaterThan(
+    2 * 1024 * 1024,
+  );
+  await store.save('alice', 'bounds', value);
+  expect(await store.load('alice', 'bounds')).toEqual(value);
 });
 
 it('persists and restores the configured task boundary of 60', async () => {

@@ -248,9 +248,9 @@ test('event drained immediately after a user send has no retrieved context', asy
   });
   try {
     contexts.set(trace, 'knowledge');
-    await session
-      .send('hello', { trace })
-      .finally(() => contexts.delete(trace));
+    // Keep the association alive through the event turn to prove isolation
+    // depends on its absent trace, rather than send() cleanup timing.
+    await session.send('hello', { trace });
     await eventDone.promise;
     expect(calls).toHaveLength(2);
     expect(calls[0].input).toContain('[retrieved context]');
@@ -258,6 +258,7 @@ test('event drained immediately after a user send has no retrieved context', asy
     expect(calls[1].associated).toBe(true);
     expect(calls[1].input).not.toContain('[retrieved context]');
   } finally {
+    contexts.delete(trace);
     await session.close();
   }
 });

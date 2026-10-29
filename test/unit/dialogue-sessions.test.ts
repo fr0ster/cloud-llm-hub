@@ -97,6 +97,8 @@ jest.mock('../../srv/agent-config', () => ({
   }),
 }));
 jest.mock('../../srv/agent-manager', () => ({
+  getProviders: () => ({ embedding: undefined }),
+  forgetPlannerMemory: jest.fn(async () => true),
   releasePlannerAgent: jest.fn(),
   setSessionDestination: jest.fn(),
   buildPlannerAgent: jest.fn(async () => ({
@@ -995,6 +997,7 @@ test('emits the finalized done status from the installed DialogueSession', async
     status: 'active',
   };
   await h.session.send('Yes, skip it');
+  expect(dialoguePlan(h.session.snapshot())?.status).toBe('done');
   await h.session.send('unchanged');
   const plans = events.filter((event) => event.kind === 'plan');
   expect(plans).toHaveLength(1);
@@ -1008,7 +1011,8 @@ test('emits the finalized done status from the installed DialogueSession', async
       ],
     },
   });
-  expect(dialoguePlan(h.session.snapshot())?.status).toBe('done');
+  // A new input after completion starts a fresh request in prepared context mode.
+  expect(dialoguePlan(h.session.snapshot())).toBeUndefined();
 });
 
 test('plan events emit only when text or status changes after planner turns', async () => {

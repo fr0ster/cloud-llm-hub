@@ -44,6 +44,7 @@ import {
   longSessionsIfReady,
   type OpenRefusal,
 } from './long-session';
+import { forgetPlannerMemory } from './planner-memory';
 import { getRunRecordStore, sweepRunRecords } from './run-record-store';
 import { dropSessionConnection } from './session-connection';
 import { type StoredTurn, turnOwner } from './session-history-rag';
@@ -334,10 +335,12 @@ async function cleanupSession(userId: string, key: string): Promise<void> {
     log().warn('Dialogue state deletion failed; TTL sweep will retry');
   }
   if (!isProvidersReady()) return;
+  const memoryForgotten = await forgetPlannerMemory(turnOwner(userId, key));
   const forgotten = await getSharedHistoryRag()?.forgetOwner(
     turnOwner(userId, key),
   );
   if (forgotten === false) throw new Error('Session history forget failed');
+  if (!memoryForgotten) throw new Error('Planner memory forget failed');
 }
 
 /**
