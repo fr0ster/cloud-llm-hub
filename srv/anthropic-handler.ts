@@ -495,35 +495,39 @@ async function serveMessages(
       ),
     );
 
-  const collections = collectionRetrieval(handle.agent);
+  const collections = useDialogue
+    ? undefined
+    : collectionRetrieval(handle.agent);
   try {
-    const retrieval = await collections.retrieve(
-      req,
-      messages,
-      userId,
-      sessionId,
-      log,
-      res.headersSent,
-      agentOpts.usage,
-    );
-    if (retrieval.refusal) {
-      if (early?.opened) {
-        early.error({
-          error: { type: 'api_error', message: retrieval.refusal.message },
+    if (collections) {
+      const retrieval = await collections.retrieve(
+        req,
+        messages,
+        userId,
+        sessionId,
+        log,
+        res.headersSent,
+        agentOpts.usage,
+      );
+      if (retrieval.refusal) {
+        if (early?.opened) {
+          early.error({
+            error: { type: 'api_error', message: retrieval.refusal.message },
+          });
+          return;
+        }
+        out.json(retrieval.refusal.status, {
+          type: 'error',
+          error: {
+            type:
+              retrieval.refusal.kind === 'conflict' ? 'conflict' : 'api_error',
+            message: retrieval.refusal.message,
+          },
         });
         return;
       }
-      out.json(retrieval.refusal.status, {
-        type: 'error',
-        error: {
-          type:
-            retrieval.refusal.kind === 'conflict' ? 'conflict' : 'api_error',
-          message: retrieval.refusal.message,
-        },
-      });
-      return;
+      messages = retrieval.messages;
     }
-    messages = retrieval.messages;
     if (stream && useDialogue && early) {
       return await streamDialogue({
         stream: early,
@@ -759,7 +763,7 @@ async function serveMessages(
       }
     }
   } finally {
-    collections.restore();
+    collections?.restore();
     await pipeline.drain();
     await releaseRequestConnection(requestConnection, s);
     // Free the per-trace telemetry bucket — nobody else calls dropRequest, so

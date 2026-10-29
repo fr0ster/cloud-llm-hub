@@ -11,6 +11,7 @@ import type {
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
 import { setSessionDestination } from '../agent-manager';
+import { dialogueAttachments } from './dialogue-attachments';
 import {
   type FollowItem,
   followDialogue,
@@ -24,7 +25,7 @@ import {
 } from './dialogue-sessions';
 import type { LongSession } from './long-session';
 import { NoMessageFilter, stripNoMessage } from './no-message';
-import { ragContextOf, userTextOf } from './rag-context-marker';
+import { userTextOf } from './rag-context-marker';
 import { extractText } from './session-turns';
 import { responseMeasurement } from './usage/request-records';
 import { type DialogueUsage, sumPlannerUsage } from './usage-wire';
@@ -69,6 +70,7 @@ export function dialogueChat(
   session: LongSession,
   destination: string,
   response: Response,
+  attachmentRequest: Pick<Request, 'headers' | 'body'> = req,
 ): {
   process(
     messages: Message[],
@@ -157,8 +159,12 @@ export function dialogueChat(
           ...opts?.trace,
           traceId: opts?.trace?.traceId ?? randomUUID(),
         };
-        const context = message && ragContextOf(message);
-        if (context) handle.retrievedContexts.set(trace, context);
+        const context = await dialogueAttachments(
+          attachmentRequest,
+          userId,
+          session.key,
+        );
+        if (context) handle.attachments.set(trace, context);
         const replyId = randomUUID();
         const createdAt = Date.now();
         handle.replies.set(trace, { id: replyId, createdAt });
@@ -177,7 +183,7 @@ export function dialogueChat(
             trace,
           })
           .finally(() => {
-            handle.retrievedContexts.delete(trace);
+            handle.attachments.delete(trace);
             handle.replies.delete(trace);
           })
           .finally(() => handle.drainPending());
@@ -256,8 +262,12 @@ export function dialogueChat(
         ...opts?.trace,
         traceId: opts?.trace?.traceId ?? randomUUID(),
       };
-      const context = message && ragContextOf(message);
-      if (context) handle.retrievedContexts.set(trace, context);
+      const context = await dialogueAttachments(
+        attachmentRequest,
+        userId,
+        session.key,
+      );
+      if (context) handle.attachments.set(trace, context);
       handle.replies.set(trace, { id: replyId, createdAt });
       const sending = handle.session
         .send(userText(message), {
@@ -282,7 +292,7 @@ export function dialogueChat(
           },
         })
         .finally(() => {
-          handle.retrievedContexts.delete(trace);
+          handle.attachments.delete(trace);
           handle.replies.delete(trace);
         })
         .then(

@@ -1066,7 +1066,7 @@ test.each([
   ['anthropic', false],
   ['anthropic', true],
 ])(
-  'real dialogue %s (stream=%s) correlates request, retrieval, embedding and LLM records',
+  'real dialogue %s (stream=%s) correlates request and LLM records without retrieval or embedding',
   async (protocol: string | boolean, stream:
     | string
     | boolean): Promise<void> => {
@@ -1164,8 +1164,14 @@ test.each([
               'x.hub.retrieval',
             ].includes(r.kind),
         );
-      expect(embed).toHaveBeenCalledTimes(2);
-      expect(records).toHaveLength(10);
+      expect(embed).not.toHaveBeenCalled();
+      expect(
+        records.filter(
+          (r: UsageRecord): boolean =>
+            r.kind === 'embedding.call' || r.kind === 'x.hub.retrieval',
+        ),
+      ).toHaveLength(0);
+      expect(records).toHaveLength(6);
       const requestIds = new Set(
         records.map(
           (r: UsageRecord): string | undefined => r.context.requestId,
@@ -1177,7 +1183,7 @@ test.each([
         const request = records.filter(
           (r: UsageRecord): boolean => r.context.requestId === requestId,
         );
-        expect(request).toHaveLength(5);
+        expect(request).toHaveLength(3);
         expect(
           request
             .filter(
@@ -1186,9 +1192,7 @@ test.each([
             )
             .map((r: UsageRecord): string | undefined => r.context.component)
             .sort(),
-        ).toEqual(
-          ['collection-retrieval', 'llm-only-guard', 'tool-loop'].sort(),
-        );
+        ).toEqual(['llm-only-guard', 'tool-loop'].sort());
         for (const record of request)
           expect(record.context).toMatchObject({
             userId: 'alice',
@@ -1349,10 +1353,6 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
   });
   if (!embedding) throw new Error('Expected embedding');
   const query = agentQueryEmbedder(embedding, 'collection-retrieval');
-  let releaseRetrieval!: () => void;
-  const retrievalGate = new Promise<void>((resolve: () => void): void => {
-    releaseRetrieval = resolve;
-  });
   let retrievalsStarted = 0;
   mockEmbedder = {
     async embedQuery(
@@ -1360,8 +1360,6 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
       options?: Parameters<typeof query.embedQuery>[1],
     ): Promise<IEmbedResult> {
       retrievalsStarted++;
-      if (retrievalsStarted === 2) releaseRetrieval();
-      await retrievalGate;
       return query.embedQuery(text, options);
     },
   };
@@ -1446,7 +1444,7 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
         if (response.status !== 200) throw new Error(body);
       }),
     );
-    expect(retrievalsStarted).toBe(2);
+    expect(retrievalsStarted).toBe(0);
     await until((): boolean => toolRequests.length === 2);
     const blocked = (await rows()).slice(before);
     expect(
@@ -1490,10 +1488,9 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
       expect(
         own.some(
           (row: UsageRecord): boolean =>
-            row.kind === 'embedding.call' &&
-            row.context.component === 'collection-retrieval',
+            row.kind === 'embedding.call' || row.kind === 'x.hub.retrieval',
         ),
-      ).toBe(true);
+      ).toBe(false);
       expect(
         own.some(
           (row: UsageRecord): boolean =>
@@ -1544,7 +1541,6 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
   } finally {
     release();
     releaseFollowup();
-    releaseRetrieval();
     server.closeAllConnections();
     await new Promise<void>(
       (
