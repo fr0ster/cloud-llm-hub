@@ -1929,3 +1929,25 @@ describe('final review fixes', () => {
     });
   });
 });
+
+test('record enabled metadata survives PGlite restart and excludes disabled records', async () => {
+  const meta = userMeta('record-toggle', 'alice');
+  await reg.createCollection(meta);
+  await reg.addDocument(meta.id, { id: 'a', text: 'knowledge', metadata: {} });
+  await reg.setDocumentEnabled(meta.id, 'a', false);
+  expect((await backendDoc(meta.id, 'a'))?.metadata.enabled).toBe(false);
+  const restored = await restarted();
+  expect(await restored.getDocument(meta.id, 'a')).toMatchObject({
+    enabled: false,
+  });
+  expect((await restored.listDocuments(meta.id))?.documents[0].enabled).toBe(
+    false,
+  );
+  expect(
+    await search(await restored.getRagStore(meta.id), 'knowledge'),
+  ).toEqual([]);
+  await restored.setDocumentEnabled(meta.id, 'a', true);
+  expect(
+    await search(await restored.getRagStore(meta.id), 'knowledge'),
+  ).toEqual(['knowledge']);
+});

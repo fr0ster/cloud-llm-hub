@@ -1,3 +1,4 @@
+import { recordPolicy } from './lib/record-policy';
 /**
  * RAG Collection Registry — manages dynamic RAG collections at runtime.
  *
@@ -21,7 +22,6 @@ import {
   type CallOptions,
   type CircuitBreaker,
   FallbackRag,
-  filterActive,
   InMemoryRag,
   type IQueryEmbedding,
   type IRag,
@@ -29,6 +29,7 @@ import {
   type IRagEditor,
   type IRetrievalEmbedder,
   RagError,
+  type RagResult,
   type Result,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
@@ -186,6 +187,12 @@ export interface RagDocument {
   text: string;
   metadata: Record<string, unknown>;
   createdAt: string;
+}
+
+export type EnabledDocument = RagDocument & { enabled: boolean };
+
+function withEnabled(doc: RagDocument): EnabledDocument {
+  return { ...doc, enabled: doc.metadata.enabled !== false };
 }
 
 interface StoredCollection {
@@ -400,20 +407,29 @@ class RecencyBoostedRag implements IRag, IRagEditor {
     k: number,
     options?: { signal?: AbortSignal; ragFilter?: { namespace?: string } },
   ) {
-    // Fetch more results to allow re-ranking
-    const result = await this.inner.query(
-      embedding,
-      Math.max(k * 2, 20),
-      options,
-    );
+    // Grow the candidate window until enough eligible records are found or the
+    // backend is exhausted. A fixed over-fetch starves heavily disabled stores.
+    let window = Math.max(k * 2, 20);
+    let result = await this.inner.query(embedding, window, options);
     if (!result.ok) return result;
-
-    // Drop superseded/deprecated entries — they stay in the store as audit trail
-    // but must not surface to the LLM, otherwise rag_correct / rag_deprecate
-    // would not be transparent at retrieval time. filterActive only inspects
-    // `tags`; cast the metadata getter return so we don't need to widen
-    // RagResult.metadata to CorrectionMetadata.
-    const active = filterActive(result.value, (r) => r.metadata as never);
+    const eligible = (records: RagResult[]) =>
+      records.filter((record) => {
+        const tags = record.metadata.tags;
+        return (
+          recordPolicy(record.metadata, true).visible &&
+          !(
+            Array.isArray(tags) &&
+            (tags.includes('superseded') || tags.includes('deprecated'))
+          )
+        );
+      });
+    let active = eligible(result.value);
+    while (active.length < k && result.value.length >= window) {
+      window *= 2;
+      result = await this.inner.query(embedding, window, options);
+      if (!result.ok) return result;
+      active = eligible(result.value);
+    }
 
     const now = Date.now();
     result.value = active
@@ -1557,7 +1573,7 @@ export class CollectionRegistry {
   async listDocuments(
     collectionId: string,
     opts?: { offset?: number; limit?: number },
-  ): Promise<{ documents: RagDocument[]; total: number } | null> {
+  ): Promise<{ documents: EnabledDocument[]; total: number } | null> {
     await this.settled(collectionId);
     const stored = this.collections.get(collectionId);
     if (!stored) return null;
@@ -1568,7 +1584,7 @@ export class CollectionRegistry {
     const offset = opts?.offset ?? 0;
     const limit = opts?.limit ?? 50;
     return {
-      documents: all.slice(offset, offset + limit),
+      documents: all.slice(offset, offset + limit).map(withEnabled),
       total: all.length,
     };
   }
@@ -1576,12 +1592,13 @@ export class CollectionRegistry {
   async getDocument(
     collectionId: string,
     docId: string,
-  ): Promise<RagDocument | null> {
+  ): Promise<EnabledDocument | null> {
     await this.settled(collectionId);
     const stored = this.collections.get(collectionId);
     if (!stored) return null;
     this.refuseDegraded(stored, 'get document', 'read');
-    return stored.documents.get(docId) ?? null;
+    const doc = stored.documents.get(docId);
+    return doc ? withEnabled(doc) : null;
   }
 
   /**
@@ -1794,25 +1811,61 @@ export class CollectionRegistry {
       return updated;
     }
 
-    if (update.text) {
-      if (storageEnabled() && stored.usageTextBytes !== undefined)
-        stored.usageTextBytes +=
-          Buffer.byteLength(update.text, 'utf8') -
-          Buffer.byteLength(existing.text, 'utf8');
-      existing.text = update.text;
-    }
-    if (update.metadata)
-      existing.metadata = { ...existing.metadata, ...update.metadata };
-
-    // Re-upsert into RAG (vector updated)
-    await stored.rag.upsert(existing.text, {
+    const text = update.text || existing.text;
+    const metadata = { ...existing.metadata, ...update.metadata };
+    // IRagBackendWriter has no metadata-only operation. Re-upsert unchanged
+    // text for a flag change; publish the local state only after success.
+    const result = await stored.rag.upsert(text, {
+      ...metadata,
       id: `doc:${collectionId}:${docId}`,
       namespace: namespace ?? stored.meta.owner,
-      ...existing.metadata,
     });
+    if (!result.ok) throw result.error;
+    if (storageEnabled() && stored.usageTextBytes !== undefined)
+      stored.usageTextBytes +=
+        Buffer.byteLength(text, 'utf8') -
+        Buffer.byteLength(existing.text, 'utf8');
+    existing.text = text;
+    existing.metadata = metadata;
 
     if (storageEnabled()) this.refreshStorageCache(stored.meta);
     return existing;
+  }
+
+  async setDocumentEnabled(
+    collectionId: string,
+    docId: string,
+    enabled: boolean,
+  ): Promise<EnabledDocument | null> {
+    const doc = await this.updateDocument(collectionId, docId, {
+      metadata: { enabled },
+    });
+    return doc ? withEnabled(doc) : null;
+  }
+
+  /** Match one upload, including legacy uploads without an uploadId. */
+  async setSourceEnabled(
+    collectionId: string,
+    source: string,
+    uploadId: string,
+    enabled: boolean,
+  ): Promise<{ updated: number }> {
+    await this.settled(collectionId, true);
+    const stored = this.collections.get(collectionId);
+    if (!stored) throw new Error('Collection not found');
+    this.refuseDegraded(stored, 'enable source', 'write');
+    const docs = [...stored.documents.values()].filter(
+      (doc) =>
+        doc.metadata.source === source &&
+        (doc.metadata.uploadId ?? '') === uploadId &&
+        Number.isInteger(doc.metadata.chunkIndex),
+    );
+    let updated = 0;
+    for (const doc of docs) {
+      await this.setDocumentEnabled(collectionId, doc.id, enabled);
+      updated++;
+    }
+    return { updated };
   }
 
   async deleteDocument(collectionId: string, docId: string): Promise<boolean> {

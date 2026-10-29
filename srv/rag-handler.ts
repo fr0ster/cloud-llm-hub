@@ -459,7 +459,7 @@ export function registerRagRoutes(
       const isContentWrite =
         req.method !== 'GET' &&
         !req.path.endsWith('/query') &&
-        !req.path.endsWith('/enabled');
+        req.path !== '/enabled';
 
       // Waits for the restore of persistent collections; while it has failed
       // every collection route is a 503 "collections unavailable: <cause>".
@@ -494,7 +494,7 @@ export function registerRagRoutes(
       const mode: 'read' | 'write' =
         req.method === 'GET' ||
         isQuery ||
-        (req.path.endsWith('/enabled') &&
+        (req.path === '/enabled' &&
           honouredSessionId(req) &&
           req.body?.scope !== 'default')
           ? 'read'
@@ -712,6 +712,59 @@ export function registerRagRoutes(
         });
 
         json(res, 200, result);
+      } catch (err) {
+        failure(res, err, 400);
+      }
+    }),
+  );
+
+  router.patch(
+    '/rag/collections/:id/documents/enabled',
+    leased(async (req: Request, res: Response) => {
+      const physId = (req as Request & { _physId?: string })._physId;
+      if (!physId) return error(res, 404, 'Collection not found');
+      const { enabled, source, uploadId = '' } = req.body;
+      if (
+        typeof enabled !== 'boolean' ||
+        typeof source !== 'string' ||
+        !source ||
+        typeof uploadId !== 'string'
+      )
+        return error(
+          res,
+          400,
+          'enabled (boolean), source and optional uploadId are required',
+        );
+      try {
+        const result = await registry.setSourceEnabled(
+          physId,
+          source,
+          uploadId,
+          enabled,
+        );
+        if (!result.updated) return error(res, 404, 'Source file not found');
+        json(res, 200, result);
+      } catch (err) {
+        failure(res, err, 400);
+      }
+    }),
+  );
+
+  router.patch(
+    '/rag/collections/:id/documents/:did/enabled',
+    leased(async (req: Request<{ id: string; did: string }>, res: Response) => {
+      const physId = (req as Request & { _physId?: string })._physId;
+      if (!physId) return error(res, 404, 'Collection not found');
+      if (typeof req.body.enabled !== 'boolean')
+        return error(res, 400, 'enabled must be a boolean');
+      try {
+        const doc = await registry.setDocumentEnabled(
+          physId,
+          req.params.did,
+          req.body.enabled,
+        );
+        if (!doc) return error(res, 404, 'Document not found');
+        json(res, 200, doc);
       } catch (err) {
         failure(res, err, 400);
       }
@@ -975,6 +1028,8 @@ export function registerRagRoutes(
       'PUT /v1/rag/collections/:id',
       'DELETE /v1/rag/collections/:id',
       'GET /v1/rag/collections/:id/documents',
+      'PATCH /v1/rag/collections/:id/documents/:did/enabled',
+      'PATCH /v1/rag/collections/:id/documents/enabled',
       'POST /v1/rag/collections/:id/documents',
       'POST /v1/rag/collections/:id/documents/bulk',
       'POST /v1/rag/collections/:id/upload',

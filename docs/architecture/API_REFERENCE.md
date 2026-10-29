@@ -934,3 +934,44 @@ Reconnects can pass `Last-Event-ID` to skip the rendered prefix.
 Session overrides take precedence over collection defaults. They are deleted with session state. Long sessions persist overrides in their session record (SQLite/HANA/PG as configured) and restore them with the destination and history after restart; plain sessions keep overrides in memory, like their destination state.
 
 Request retrieval uses enabled collections; `rag_collections` and `X-Rag-Collections` only narrow that set, including an explicit empty list. A request explicitly selecting its session `uploads` collection can use attached files for that request. Planner knowledge checks enablement on every search, so the next turn observes a toggle. Tool selection and built-in skills use separate tool/skill stores rather than these user collections. Executor history remains session memory. Explicit RAG tools are unchanged: `rag_list` can read a disabled collection when the caller has read access; add/correct/deprecate retain their existing permissions.
+
+
+### Record enable/disable
+
+A collection record is enabled unless its JSON metadata has `enabled: false`.
+`GET /v1/rag/collections/:id/documents` and `GET /v1/rag/collections/:id/documents/:did`
+include the derived boolean `enabled` on each record, including old records without a flag.
+Disabled records remain listed, readable, downloadable, editable, and re-enableable.
+The flag is global collection content; it is independent of session collection preferences.
+A record is retrieved only when both the collection is enabled for that session and the record is enabled.
+
+- `PATCH /v1/rag/collections/:id/documents/:did/enabled` with `{ "enabled": false }`
+  changes one record and returns it with its enabled state. A missing record returns 404.
+- `PATCH /v1/rag/collections/:id/documents/enabled` with
+  `{ "enabled": false, "source": "manual.txt", "uploadId": "<upload id>" }`
+  changes every chunk of exactly that upload, in one request, and returns `{ "updated": 12 }`.
+  Omit `uploadId` only for legacy uploads without that field. Matching uses the same
+  source + upload ID grouping as the document panel; another upload of the same name
+  is unaffected. No matching chunks returns 404. This operation is sequential, not
+  transactional: if a backend write fails, earlier chunks may already have changed;
+  reload the state and retry the request.
+
+Both endpoints require collection write permission (owner or admin under existing rules);
+read-only access to a collection does not grant permission to change records, even with
+an active session. `enabled` must be a JSON boolean; invalid input returns 400.
+The UI displays enabled, disabled, or mixed source state; a mixed source's Enable all
+control enables all chunks. Source state includes every page of records.
+
+The dedicated metadata boolean round-trips through in-memory, vector, Qdrant, HANA,
+and PostgreSQL stores using their existing metadata payloads. Existing tags are preserved,
+including `deprecated` and `superseded`, which still exclude a record from retrieval.
+The installed `IRagBackendWriter` API exposes no record metadata-only update method on
+these backends, so toggles re-upsert the same text and ID through that API (vector
+backends may re-embed). A failed write does not publish a new flag in the registry.
+
+The shared collection query wrapper excludes disabled records for ordinary agent
+collection retrieval (`getRagStores`), collection query/REST search (`getRagStore`),
+and planner knowledge (`RagPlannerKnowledge` over `getRagStore`). It grows the candidate
+window until it finds up to k eligible records or exhausts the backend results.
+`rag_list` reports `enabled` for summaries and individual reads. `rag_correct` preserves
+the disabled flag while updating text in place. No additional LLM tools are introduced.
