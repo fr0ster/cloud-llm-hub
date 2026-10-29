@@ -205,6 +205,7 @@ when running `npx tsx tools/measure-tool-rag.ts` to measure production tool-quer
 | `LLM_AGENT_DIALOGUE_EXECUTORS` | `3` | Maximum concurrent background tasks (executor and checker) and pooled ABAP connections per dialogue session (positive integer). |
 | `LLM_AGENT_DIALOGUE_EXECUTOR_POOL` | `6` | Hub-wide concurrent dialogue background tasks, including checker tasks (positive integer). |
 | `LLM_AGENT_DIALOGUE_MAX_CORRECTIONS` | `2` | Maximum end-of-turn corrective turns (nonnegative integer); `0` disables corrections. |
+| `LLM_AGENT_DIALOGUE_TASK_OUTPUT_CHARS` | `60000` (library default) | Maximum retained characters per task output; positive safe integer. Unset or blank uses the library default; invalid values reject startup. |
 | `LLM_AGENT_DIALOGUE_MAX_TASKS` | `50` | Maximum task records per dialogue session (positive integer); persistence validates against this configured limit. |
 | `LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS` | `1800000` | Maximum streaming follow duration in milliseconds (30 minutes); positive safe integer. Unset or blank uses the default; malformed values reject startup. |
 | `LLM_AGENT_DIALOGUE_WAIT_TICK_MS` | `30000` (library default) | Non-negative safe integer; 0 disables live wait ticks. Unset or blank uses the library default; invalid values reject startup. |

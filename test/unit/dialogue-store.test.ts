@@ -14,8 +14,8 @@ import type { DialogueState } from '@mcp-abap-adt/llm-agent';
 import { DialogueSession } from '@mcp-abap-adt/llm-agent-libs';
 import {
   createDialogueStateStore,
-  DIALOGUE_BYTE_LIMIT,
   deleteDialogueState,
+  dialogueByteLimit,
   getDialogueStoreBackend,
   hasDialogueState,
   initializeDialogueStore,
@@ -110,6 +110,96 @@ it('restores a long 9.0.x legacy plan and persists normalized state and later pr
   expect(await store.load(id)).toEqual(progressed);
   expect((await DialogueSession.open(options)).snapshot()).toEqual(progressed);
 });
+it.each([undefined, 'Previous note'])(
+  'loads legacy checking steps with note %s as done and drops their embedded checks',
+  async (note) => {
+    const store = createDialogueStateStore('alice', 'legacy-check');
+    const step = {
+      id: 'read',
+      goal: 'Read record',
+      state: 'done' as const,
+      taskIds: ['work-1'],
+      workTaskId: 'work-1',
+      note: [
+        note,
+        'Legacy check was not run; plan a separate check step if needed',
+      ]
+        .filter(Boolean)
+        .join('; '),
+    };
+    const plan = {
+      version: 1 as const,
+      status: 'active' as const,
+      steps: [step],
+    };
+    // Supply the old serialized format through the public persistence boundary.
+    const legacy = {
+      ...state,
+      toJSON: () => ({
+        ...state,
+        plan: {
+          ...plan,
+          steps: [
+            {
+              ...step,
+              state: 'checking',
+              note,
+              check: {
+                by: 'checker',
+                goal: 'Verify record',
+                verdict: 'fail',
+                taskId: 'check-1',
+              },
+            },
+          ],
+        },
+      }),
+    };
+    await store.save('legacy-check', legacy);
+    const normalized = { ...state, plan };
+    expect(await store.load('legacy-check')).toEqual(normalized);
+    const session = await DialogueSession.open({
+      id: 'legacy-check',
+      store,
+      board: { workers: new Map() },
+      planner: {
+        process: async () => ({ ok: true, value: { content: 'Done' } }),
+      },
+    });
+    expect(session.snapshot().plan).toEqual({ ...plan, status: 'done' });
+    await store.save('legacy-check', session.snapshot());
+    expect((await store.load('legacy-check'))?.plan).toEqual({
+      ...plan,
+      status: 'done',
+    });
+  },
+);
+it('backfills legacy workTaskId from the last task excluding the check task', async () => {
+  const store = createDialogueStateStore('alice', 'legacy-work');
+  const step = {
+    id: 'read',
+    goal: 'Read record',
+    state: 'done' as const,
+    taskIds: ['work-1', 'work-2', 'check-1'],
+  };
+  const plan = {
+    version: 1 as const,
+    status: 'active' as const,
+    steps: [step],
+  };
+  const legacy = {
+    ...state,
+    toJSON: () => ({
+      ...state,
+      plan: { ...plan, steps: [{ ...step, check: { taskId: 'check-1' } }] },
+    }),
+  };
+  await store.save('legacy-work', legacy);
+  expect((await store.load('legacy-work'))?.plan).toEqual({
+    ...plan,
+    steps: [{ ...step, workTaskId: 'work-2' }],
+  });
+});
 it('round trips structured plans and retained task ownership without stripping fields', async () => {
   const store = createDialogueStateStore('alice', 'structured');
   const value: DialogueState = {
@@ -127,16 +217,12 @@ it('round trips structured plans and retained task ownership without stripping f
           items: ['A', 'B'],
           dependsOn: ['discover'],
           worker: 'executor',
-          state: 'checking',
+          state: 'done',
           workTaskId: 'work-2',
           successfulWorkTaskId: 'work-2',
           taskIds: ['work-1', 'work-2', 'check-1'],
-          check: {
-            by: 'checker',
-            goal: 'Record matches',
-            verdict: 'fail',
-            taskId: 'check-1',
-          },
+          verdict: 'fail',
+          checkedTaskIds: { discover: 'work-2' },
           note: 'Retry',
         },
       ],
@@ -175,6 +261,23 @@ it('rejects oversized structured fields and ownership maps', async () => {
       ),
     },
     { taskSteps: { task: 'x'.repeat(1001) } },
+    {
+      plan: {
+        version: 1,
+        status: 'active',
+        steps: [
+          {
+            id: 'a',
+            goal: 'Read',
+            state: 'pending',
+            taskIds: [],
+            checkedTaskIds: Object.fromEntries(
+              Array.from({ length: 1001 }, (_, i) => [String(i), 'task']),
+            ),
+          },
+        ],
+      },
+    },
     {
       plan: {
         version: 1,
@@ -279,19 +382,43 @@ it('guards states exceeding the byte limit without replacing the last save', asy
   await store.save('alice', 'bytes', state);
   await store.save('alice', 'bytes', {
     ...state,
-    plan: 'x'.repeat(DIALOGUE_BYTE_LIMIT),
+    plan: 'x'.repeat(dialogueByteLimit()),
   });
   expect(await store.load('alice', 'bytes')).toEqual(state);
 });
 
-it('round trips library retention budgets with two-byte text and request ownership', async () => {
+it('raises the byte limit with each configured retention budget', () => {
+  const config = require('../../srv/agent-config');
+  const baseline = dialogueByteLimit();
+  const tasks = jest.spyOn(config, 'dialogueMaxTasks').mockReturnValue(100);
+  const output = jest.spyOn(config, 'dialogueTaskOutputChars');
+  try {
+    expect(dialogueByteLimit()).toBeGreaterThan(baseline);
+    const moreTasks = dialogueByteLimit();
+    output.mockReturnValue(120_000);
+    expect(dialogueByteLimit()).toBeGreaterThan(moreTasks);
+  } finally {
+    tasks.mockRestore();
+    output.mockRestore();
+  }
+});
+
+it('round trips default retention maxima with six-byte JSON escapes and task outputs', async () => {
   const store = new MemoryDialogueStore();
-  const messageText = 'я'.repeat(20_000);
+  const messageText = '\u0000'.repeat(20_000);
   const value: DialogueState = {
     ...state,
     conversation: Array.from({ length: 200 }, () => ({
       role: 'user',
       content: messageText,
+    })),
+    tasks: Array.from({ length: 50 }, (_, i) => ({
+      id: String(i),
+      worker: 'executor',
+      goal: 'read',
+      state: 'done' as const,
+      createdAt: 1,
+      output: `${'\u0000'.repeat(60_000)}\n[cut: 1 characters omitted]`,
     })),
     requestSeq: 200,
     taskRequests: { task1: 'r200' },
@@ -304,14 +431,15 @@ it('round trips library retention budgets with two-byte text and request ownersh
         ? {
             transcript: Array.from({ length: 4 }, () => ({
               role: 'user' as const,
-              content: '\u044f'.repeat(100_000),
+              content: '\u0000'.repeat(100_000),
             })),
           }
         : {}),
     })),
   };
-  expect(Buffer.byteLength(JSON.stringify(value))).toBeGreaterThan(
-    2 * 1024 * 1024,
+  expect(Buffer.byteLength(JSON.stringify(value))).toBeGreaterThan(68_400_000);
+  expect(Buffer.byteLength(JSON.stringify(value))).toBeLessThan(
+    dialogueByteLimit(),
   );
   await store.save('alice', 'bounds', value);
   expect(await store.load('alice', 'bounds')).toEqual(value);

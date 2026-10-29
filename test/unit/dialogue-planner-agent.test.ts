@@ -30,14 +30,16 @@ import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { runWithSessionId } from '../../srv/request-session';
 
-test('planner supports planner and checker verification', () => {
+test('planner supports separate checker steps', () => {
   for (const rule of HUB_DIALOGUE_STORAGE_RULES.split('\n')) {
     expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(rule);
   }
   expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
     'The checker can read stored hub RAG records with rag_list when a check of stored results is planned.',
   );
-  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain('For check.by planner');
+  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
+    'Verification is planned as separate check steps (worker checker, dependsOn the checked steps).',
+  );
 });
 
 test('planner prepares a complete brief and asks before narrowing scope', () => {
@@ -156,7 +158,7 @@ function llm(model: string) {
   };
   return { agent, tools, messages };
 }
-test('hard planner sends all eight control tools, hub prompt, and follows getSmartAgent model hot-swap', async () => {
+test('hard planner sends all nine control tools, hub prompt, and follows getSmartAgent model hot-swap', async () => {
   const first = llm('first');
   const second = llm('second');
   jest.mocked(makeHubLlm).mockResolvedValue(first.agent);
@@ -168,6 +170,7 @@ test('hard planner sends all eight control tools, hub prompt, and follows getSma
     expect(first.tools.flat().sort()).toEqual(
       [
         'delegate_task',
+        'deliver',
         'get_task',
         'get_plan',
         'list_tasks',
