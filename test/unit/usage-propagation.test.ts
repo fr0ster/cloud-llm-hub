@@ -533,7 +533,7 @@ test('real hub dialogue pipeline retains background context, two successive requ
           toolCalls: {
             id: string;
             name: string;
-            arguments: { worker: string; goal: string; history: string };
+            arguments: { worker: string; goal: string };
           }[];
         } => {
       const last = messages.at(-1);
@@ -552,7 +552,7 @@ test('real hub dialogue pipeline retains background context, two successive requ
           (): {
             id: string;
             name: string;
-            arguments: { worker: string; goal: string; history: string };
+            arguments: { worker: string; goal: string };
           } => {
             delegates++;
             return {
@@ -564,7 +564,6 @@ test('real hub dialogue pipeline retains background context, two successive requ
                     ? 'checker'
                     : 'executor',
                 goal: 'PROMPT_SENTINEL',
-                history: 'all',
               },
             };
           },
@@ -1300,7 +1299,6 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
                   arguments: {
                     worker: 'executor',
                     goal: 'PROMPT_SENTINEL',
-                    history: 'all',
                   },
                 },
               ],

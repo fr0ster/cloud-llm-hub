@@ -35,6 +35,37 @@ const state: DialogueState = {
   savedAt: 1,
 };
 beforeEach(() => initializeDialogueStore(loadSessionConfig({})));
+it('strips legacy archives and closed transcripts while preserving open transcripts', async () => {
+  const store = new MemoryDialogueStore();
+  const closed = { id: 'r1', openedAt: 1, closedAt: 2, text: 'earlier' };
+  const open = {
+    id: 'r2',
+    openedAt: 2,
+    text: 'current',
+    transcript: state.conversation,
+  };
+  const legacy = {
+    ...state,
+    messages: 'ignored legacy archive',
+    requests: [
+      {
+        ...closed,
+        replies: null,
+        closedPlan: 'old',
+        transcriptExpired: true,
+        transcript: state.conversation,
+      },
+      { ...open, replies: ['old'], closedPlan: {}, transcriptExpired: true },
+    ],
+  };
+  await store.save('alice', 'legacy-archives', legacy);
+  const expected = { ...state, requests: [closed, open] };
+  const restored = await store.load('alice', 'legacy-archives');
+  expect(restored).toEqual(expected);
+  if (!restored) throw new Error('missing restored state');
+  await store.save('alice', 'legacy-archives', restored);
+  expect(await store.load('alice', 'legacy-archives')).toEqual(expected);
+});
 it('restores a long 9.0.x legacy plan and persists normalized state and later progress', async () => {
   const id = 'legacy';
   const store = createDialogueStateStore('alice', id);
@@ -264,31 +295,19 @@ it('round trips library retention budgets with two-byte text and request ownersh
     })),
     requestSeq: 200,
     taskRequests: { task1: 'r200' },
-    messages: Array.from({ length: 100 }, (_, i) => ({
-      id: `m${i}`,
-      text: messageText,
-      createdAt: i,
-      trigger: 'user',
-    })),
     requests: Array.from({ length: 200 }, (_, i) => ({
       id: `r${i + 1}`,
       openedAt: i,
       text: messageText,
-      replies: Array.from({ length: 50 }, (_, j) => `m${j}`),
       ...(i < 199 ? { closedAt: i + 1 } : {}),
-      transcript:
-        i === 199
-          ? Array.from({ length: 4 }, () => ({
-              role: 'user',
-              content: 'я'.repeat(100_000),
-            }))
-          : i === 198
-            ? [{ role: 'user', content: 'я'.repeat(1_999_900) }]
-            : [],
-      ...(i === 198
-        ? { closedPlan: { version: 1, steps: [], status: 'done' } }
+      ...(i === 199
+        ? {
+            transcript: Array.from({ length: 4 }, () => ({
+              role: 'user' as const,
+              content: '\u044f'.repeat(100_000),
+            })),
+          }
         : {}),
-      ...(i === 0 ? { legacy: true, transcriptExpired: true } : {}),
     })),
   };
   expect(Buffer.byteLength(JSON.stringify(value))).toBeGreaterThan(

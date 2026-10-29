@@ -156,7 +156,7 @@ function llm(model: string) {
   };
   return { agent, tools, messages };
 }
-test('hard planner sends all ten control tools, hub prompt, and follows getSmartAgent model hot-swap', async () => {
+test('hard planner sends all eight control tools, hub prompt, and follows getSmartAgent model hot-swap', async () => {
   const first = llm('first');
   const second = llm('second');
   jest.mocked(makeHubLlm).mockResolvedValue(first.agent);
@@ -173,8 +173,6 @@ test('hard planner sends all ten control tools, hub prompt, and follows getSmart
         'list_tasks',
         'stop_task',
         'update_plan',
-        'get_message',
-        'get_request',
         'search_knowledge',
         'new_request',
       ].sort(),

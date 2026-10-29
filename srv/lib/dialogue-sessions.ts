@@ -316,9 +316,8 @@ async function open(
     taskStates.set(task.id, task.state);
     emit({ kind: 'task', task: taskView(task) });
   };
-  // TaskBoard's wrapRun callback has no task history argument. Carry the
-  // lease/admission into its run callback; the worker adapter supplies the
-  // task's own history while rebuilding the execute_step ALS stack.
+  // Carry task admission into the worker callback and rebuild its request scope.
+  // Dialogue workers receive only their brief; no request history is injected.
   const scope = new AsyncLocalStorage<{
     lease: ConnectionLease;
     pipeline: PipelineSession;
@@ -398,7 +397,7 @@ async function open(
                 ctx.lease.dumpScope,
                 factory.exposition,
               ),
-            input.history ?? [],
+            undefined,
             userId,
           ),
         );

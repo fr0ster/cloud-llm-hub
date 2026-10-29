@@ -124,7 +124,6 @@ jest.mock('../../srv/agent-manager', () => ({
         await new PlannerToolsClient().callTool('delegate_task', {
           worker: 'executor',
           goal: mockGoal,
-          history: 'all',
         });
       return {
         ok: true,
@@ -466,13 +465,14 @@ test('missing credentials become a task outcome and wake the planner', async () 
   }
   expect(JSON.stringify(h.session.snapshot())).not.toContain('[environment]');
 });
-test('delegated worker has system, session, owner, task history, admission, connection and a unique trace; all holds release', async () => {
+test('delegated worker has system, session, owner, an empty history scope, admission, connection and a unique trace; all holds release', async () => {
   const { h, connection } = await ready();
   mockRun.mockImplementation(async (input) => {
     expect(getRequestSessionId()).toBe('key');
     expect(getRequestUserId()).toBe('alice');
     expect(getRequestContext()?.responsible).toBe('OWNER');
-    expect(getRequestHistory()).toEqual(input.history);
+    expect(getRequestHistory()).toEqual([]);
+    expect(input).not.toHaveProperty('history');
     expect(currentAdmission()).toBe(mockRegister);
     expect(mockRelease).toHaveBeenCalledTimes(mockRun.mock.calls.length - 1);
     expect(input.trace?.traceId).toBeTruthy();

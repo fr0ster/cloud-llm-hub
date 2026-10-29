@@ -34,14 +34,12 @@ export type HubDialogueState = DialogueState & {
 };
 
 // JSON worst case is 6 bytes per UTF-16 code unit (escaped controls/surrogates).
-// Archives: 2M text + 2M serialized closed transcripts/plans; open transcript:
-// 400k; request texts: 200 * 20k; conversation: 200 * 20k = 12.4M units.
-// 12.4M * 6 = 74.4 MB; 128 MiB leaves room for journals, tasks and envelopes.
-// This covers the library's text retention budgets, not arbitrary plans/task
-// goals or metadata: those have no aggregate library bound. HANA uses NCLOB
-// (2 GB LOB limit), PostgreSQL TEXT (1 GB field limit); SQLite configurations
-// use MemoryDialogueStore, not CDS. No DB model change is needed for 128 MiB.
-export const DIALOGUE_BYTE_LIMIT = 128 * 1024 * 1024;
+// Open transcript: 400k; conversation: 200 * 20k; request texts: 200 * 20k
+// = 8.4M UTF-16 units * 6 = 50.4 MB. Task outputs add maxTasks * 4k
+// units (plus cut markers). 64 MiB leaves headroom at the default 50 tasks.
+// This is a guard, not a target: plans, task goals/errors, pending replies and
+// metadata have no aggregate library bound and can still exceed it.
+export const DIALOGUE_BYTE_LIMIT = 64 * 1024 * 1024;
 export interface DialogueStoreBackend {
   storageBytes?(userId: string, sessionId: string): DialogueBytes | undefined;
   load(
@@ -158,36 +156,49 @@ const plannerMessage = z.object({
   createdAt: num,
   trigger: z.enum(['user', 'event']),
   usage: plannerUsage.optional(),
-} satisfies Shape<NonNullable<DialogueState['messages']>[number]>);
-const request = z.object({
-  id,
-  openedAt: num,
-  closedAt: num.optional(),
-  text: boundedText,
-  plan: z
-    .object({
-      status: z.enum(['active', 'waiting_user', 'done']),
-      steps: num,
-      done: num,
-      failed: num,
-      skipped: num,
-    } satisfies Shape<
-      NonNullable<NonNullable<DialogueState['requests']>[number]['plan']>
-    >)
-    .optional(),
-  replies: z.array(id).max(50),
-  lastTurnOk: z.boolean().optional(),
-  closedPlan: structuredPlan.optional(),
-  transcriptExpired: z.literal(true).optional(),
-  // Request transcripts permit 150k per part plus a truncation marker.
-  // Restored legacy plans can be longer; the overall byte guard bounds them.
-  transcript: z.array(message.extend({ content: str.nullable() })),
-  legacy: z.literal(true).optional(),
-} satisfies Shape<NonNullable<DialogueState['requests']>[number]>);
+} satisfies Shape<DialogueState['pending'][number]>);
+const request = z.preprocess(
+  (value) => {
+    if (
+      typeof value === 'object' &&
+      value !== null &&
+      'closedAt' in value &&
+      value.closedAt !== undefined
+    ) {
+      const { transcript: _transcript, ...record } = {
+        ...value,
+        transcript: undefined,
+      };
+      return record;
+    }
+    return value;
+  },
+  z.object({
+    id,
+    openedAt: num,
+    closedAt: num.optional(),
+    text: boundedText,
+    plan: z
+      .object({
+        status: z.enum(['active', 'waiting_user', 'done']),
+        steps: num,
+        done: num,
+        failed: num,
+        skipped: num,
+      } satisfies Shape<
+        NonNullable<NonNullable<DialogueState['requests']>[number]['plan']>
+      >)
+      .optional(),
+    lastTurnOk: z.boolean().optional(),
+    // Request transcripts permit 150k per part plus a truncation marker.
+    // The overall byte guard bounds restored open transcripts.
+    transcript: z.array(message.extend({ content: str.nullable() })).optional(),
+    legacy: z.literal(true).optional(),
+  } satisfies Shape<NonNullable<DialogueState['requests']>[number]>),
+);
 const schema = z.object({
   requests: z.array(request).max(200).optional(),
   requestSeq: num.optional(),
-  messages: z.array(plannerMessage).optional(),
   taskRequests: z.record(id, id).optional(),
   conversation: z.array(message).max(200),
   // Legacy text plans are bounded by the overall state byte limit only.
@@ -243,7 +254,7 @@ const schema = z.object({
 function stored(record: HubDialogueState): HubDialogueState {
   const text = JSON.stringify(record);
   if (Buffer.byteLength(text, 'utf8') > DIALOGUE_BYTE_LIMIT)
-    throw new Error('Dialogue state exceeds 128 MiB');
+    throw new Error('Dialogue state exceeds 64 MiB');
   const raw = JSON.parse(text);
   const state = schema.parse(raw.state ?? raw);
   const outbox = raw.outbox;
@@ -408,7 +419,7 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
           )
             throw new Error('Malformed metadata');
           if (Buffer.byteLength(row.text, 'utf8') > DIALOGUE_BYTE_LIMIT)
-            throw new Error('Dialogue state exceeds 128 MiB');
+            throw new Error('Dialogue state exceeds 64 MiB');
           stored(JSON.parse(row.text));
         } catch {
           this.index.delete(row.id);
@@ -538,7 +549,7 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
         }
         try {
           if (Buffer.byteLength(row.text, 'utf8') > DIALOGUE_BYTE_LIMIT)
-            throw new Error('Dialogue state exceeds 128 MiB');
+            throw new Error('Dialogue state exceeds 64 MiB');
           const record = stored(JSON.parse(row.text));
           this.index.set(row.id, row.metadata.savedAt);
           if (storageEnabled()) {
