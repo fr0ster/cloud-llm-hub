@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Added
 
+- Agent MCP RAG search, paged reads, collection and record lists, session collection toggles, and record/source enablement tools. They share REST collection resolution and mutation paths, hold session leases, enforce record visibility, and bound search output.
+
 - Global record enable/disable flags with owner/admin write permissions, individual and source-file REST toggles, and state controls in the document panel. Disabled records remain readable and editable, while collection retrieval and planner knowledge exclude them without starving eligible results.
 
 - Planner session memory in a separate session RAG store, with session cleanup, and curated planning knowledge from `LLM_AGENT_PLANNER_KNOWLEDGE` (llm-agent / libs 30.18.0); earlier content read only semantically (llm-agent / libs 30.19.0).

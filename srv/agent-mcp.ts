@@ -46,6 +46,11 @@ import {
   runWithRequestConnection,
 } from './agent-manager';
 import {
+  type RagMcpTool,
+  registerRagMcpTools,
+  ragTextResult as textResult,
+} from './agent-mcp-rag';
+import {
   buildConnectionForDestination,
   dumpScopeForConnection,
 } from './lib/background-connection';
@@ -154,14 +159,6 @@ export interface AgentMcpResult {
   cleanup: () => Promise<void>;
 }
 
-/** MCP text result helper. */
-function textResult(text: string, isError = false) {
-  return {
-    content: [{ type: 'text' as const, text }],
-    ...(isError ? { isError: true } : {}),
-  };
-}
-
 export interface StepCaller {
   userId: string;
   exposition: ExpositionLevel[] | undefined;
@@ -207,7 +204,7 @@ function measuredAgentCallback<
 >(
   req: Request,
   userId: string,
-  tool: 'session_open' | 'session_close' | 'list_destinations',
+  tool: 'session_open' | 'session_close' | 'list_destinations' | RagMcpTool,
   run: (args: T) => Promise<ReturnType<typeof textResult>>,
 ): (args: T) => Promise<ReturnType<typeof textResult>> {
   const runtime = usageRuntime();
@@ -233,7 +230,12 @@ function measuredAgentCallback<
 async function measureAgentTool(
   req: Request,
   session: UsageSession,
-  tool: 'execute_step' | 'session_open' | 'session_close' | 'list_destinations',
+  tool:
+    | 'execute_step'
+    | 'session_open'
+    | 'session_close'
+    | 'list_destinations'
+    | RagMcpTool,
   run: () => Promise<ReturnType<typeof textResult>>,
   signal?: AbortSignal,
 ) {
@@ -651,6 +653,10 @@ export async function createAgentMcpServerForRequest(
     name: 'cloud-llm-hub-agent',
     version: '1.0.0',
   });
+
+  registerRagMcpTools(server, req, userId, (name, run) =>
+    measuredAgentCallback(req, userId, name, run),
+  );
 
   // --- list_destinations --------------------------------------------------
   server.registerTool(

@@ -1,4 +1,4 @@
-import { recordPolicy } from '../../srv/lib/record-policy';
+import { recordAttributes, recordPolicy } from '../../srv/lib/record-policy';
 
 test.each([
   [{}, true, { visible: true }],
@@ -16,3 +16,9 @@ test.each([
     expect(recordPolicy(metadata, enabled)).toEqual(expected);
   },
 );
+
+test('safe record attributes normalize enablement and exclude other metadata', () => {
+  expect(recordAttributes({ internal: 'private' })).toEqual({ enabled: true });
+  expect(recordAttributes({ enabled: true })).toEqual({ enabled: true });
+  expect(recordAttributes({ enabled: false })).toEqual({ enabled: false });
+});

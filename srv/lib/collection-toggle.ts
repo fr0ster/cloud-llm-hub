@@ -27,6 +27,17 @@ export function setCollectionOverride(
   const key = slot(userId, sessionId);
   overrides.set(key, { ...overrides.get(key), [id]: enabled });
 }
+
+/** Shared REST/MCP mutation; the caller holds the session lease. */
+export async function updateSessionCollection(
+  userId: string,
+  sessionId: string,
+  id: string,
+  enabled: boolean,
+): Promise<void> {
+  setCollectionOverride(userId, sessionId, id, enabled);
+  await persistCollectionOverrides(userId, sessionId);
+}
 export function deleteCollectionOverrides(
   userId: string,
   sessionId: string,
