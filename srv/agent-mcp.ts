@@ -1,4 +1,5 @@
 import type { TokenUsage } from '@mcp-abap-adt/llm-agent';
+import { requestStart } from './lib/request-start';
 import {
   measureRequest,
   requestMeasurement,
@@ -180,6 +181,7 @@ export function executeStep(
   input: { session?: string; destination?: string; task: string },
   signal?: AbortSignal,
 ) {
+  requestStart(req);
   const runtime = usageRuntime();
   if (!runtime || (!runtime.enabled('request') && !runtime.enabled('session')))
     return executeStepMeasured(req, caller, input, signal);
@@ -316,7 +318,7 @@ async function executeStepRun(
   callerSignal?: AbortSignal,
   longSession?: LongSession,
 ) {
-  const stepStartedAt = Date.now();
+  const stepStartedAt = requestStart(req);
   const measurement = requestMeasurement(req);
   const log = cds.log('agent-mcp');
   const { userId, exposition } = caller;
@@ -446,6 +448,7 @@ async function executeStepRun(
     });
     measurement?.admitted();
     const opts = {
+      requestStartedAt: requestStart(req),
       stream: false,
       externalTools: [],
       sessionId,
@@ -640,6 +643,7 @@ async function executeStepRun(
 export async function createAgentMcpServerForRequest(
   req: Request,
 ): Promise<AgentMcpResult> {
+  requestStart(req);
   const log = cds.log('agent-mcp');
 
   // Captured once (the user/roles are stable for the request); the destination

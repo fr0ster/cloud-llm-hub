@@ -1,6 +1,7 @@
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
+import { requestStart } from './lib/request-start';
 import {
   measureRequest,
   requestMeasurement,
@@ -231,6 +232,7 @@ export function handleChatCompletions(
   req: Request,
   res: Response,
 ): Promise<void> {
+  requestStart(req);
   const runtime = usageRuntime();
   if (!runtime || (!runtime.enabled('request') && !runtime.enabled('session')))
     return handleChatCompletionsMeasured(req, res);
@@ -398,7 +400,7 @@ async function serveChatCompletions(
   const explicitSessionId = honouredSessionId(req);
   const sessionId =
     sessionIdOf(req) ?? (requestMeasurement(req) ? traceId : randomUUID());
-  const t0 = Date.now();
+  const t0 = requestStart(req);
 
   // Two modes of history management:
   // 1. Server-managed session (our browser UI): an explicit session (header/cookie) is present,
@@ -863,6 +865,7 @@ async function serveChatCompletions(
 
     const pipelineLog = cds.log('smart-pipeline');
     const opts = {
+      requestStartedAt: requestStart(req),
       stream: body.stream,
       // External tools (attempt_completion, read_file, etc.) from client — passed to SmartAgent
       // for ClineClientAdapter detection and external tool_call routing.

@@ -352,36 +352,47 @@ test('close without a measurement or cached snapshot emits Unknown storage', asy
 });
 
 test('a stalled query releases the deadline lock for another measurement and discards late results', async (): Promise<void> => {
-  const meter = new StorageMeter(20);
-  meter.retain(session);
-  let finish: (value: Record<string, number | boolean>) => void =
-    (): void => {};
-  const gate = new Promise<Record<string, number | boolean>>(
-    (resolve: (value: Record<string, number | boolean>) => void): void => {
-      finish = resolve;
-    },
-  );
-  const measure = jest
-    .spyOn(measurements, 'measureSession')
-    .mockReturnValueOnce(gate)
-    .mockResolvedValue({ historyBytes: 7 });
-  const first = meter.measure(session);
-  // Allow the pending measurement to advance.
-  for (let i = 0; i < 10; i++) await Promise.resolve();
-  const second = meter.measure(session);
-  const other = meter.measure({ userId: 'bob', sessionId: 'other' });
-  await Promise.all([first, second, other]);
-  expect(measure).toHaveBeenCalledTimes(1);
-  expect(await first).toMatchObject({ historyBytesUnknown: true });
-  expect(await second).toMatchObject({ historyBytesUnknown: true });
-  expect(await other).toMatchObject({ historyBytesUnknown: true });
-  await meter.measure(session);
-  expect(meter.cached(session)).toMatchObject({ historyBytes: 7 });
-  finish({ historyBytes: 123 });
-  for (let i = 0; i < 10; i++) await Promise.resolve();
-  expect(meter.cached(session)).toMatchObject({ historyBytes: 7 });
-  meter.release(session);
-  expect(meter.cached(session)).toBeUndefined();
+  jest.useFakeTimers({ now: 0 });
+  try {
+    const meter = new StorageMeter(20);
+    meter.retain(session);
+    let finish: (value: Record<string, number | boolean>) => void =
+      (): void => {};
+    const gate = new Promise<Record<string, number | boolean>>(
+      (resolve: (value: Record<string, number | boolean>) => void): void => {
+        finish = resolve;
+      },
+    );
+    const measure = jest
+      .spyOn(measurements, 'measureSession')
+      .mockReturnValueOnce(gate)
+      .mockResolvedValue({ historyBytes: 7 });
+    const first = meter.measure(session);
+    // Allow the pending measurement to advance.
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    const second = meter.measure(session);
+    const other = meter.measure({ userId: 'bob', sessionId: 'other' });
+    // All three measurements share a deadline because the clock has not moved.
+    // The stalled query must hold the lock until that deadline.
+    await jest.advanceTimersByTimeAsync(19);
+    expect(measure).toHaveBeenCalledTimes(1);
+    expect(measure.mock.calls[0]?.[2]?.aborted).toBe(false);
+    await jest.advanceTimersByTimeAsync(2);
+    await Promise.all([first, second, other]);
+    expect(measure).toHaveBeenCalledTimes(1);
+    expect(await first).toMatchObject({ historyBytesUnknown: true });
+    expect(await second).toMatchObject({ historyBytesUnknown: true });
+    expect(await other).toMatchObject({ historyBytesUnknown: true });
+    await meter.measure(session);
+    expect(meter.cached(session)).toMatchObject({ historyBytes: 7 });
+    finish({ historyBytes: 123 });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(meter.cached(session)).toMatchObject({ historyBytes: 7 });
+    meter.release(session);
+    expect(meter.cached(session)).toBeUndefined();
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 test('periodic ticks emit one session record per live session and one user record per user', async (): Promise<void> => {

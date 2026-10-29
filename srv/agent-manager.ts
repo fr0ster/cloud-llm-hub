@@ -2625,6 +2625,7 @@ async function configureDestinationAgentBuilder(
   const builder = new SmartAgentBuilder({
     skipModelValidation,
     agent: {
+      timeZone: config.timeZone,
       maxIterations: config.agent.maxIterations,
       mode: config.agent.mode,
       historyRecencyWindow: config.agent.historyRecencyWindow,
@@ -2819,6 +2820,7 @@ export async function buildPlannerAgent(
   const builder = new SmartAgentBuilder({
     skipModelValidation: config.llm.provider !== 'sap-ai-sdk',
     agent: {
+      timeZone: config.timeZone,
       maxIterations: config.agent.maxIterations,
       classificationEnabled: false,
     },
@@ -3110,6 +3112,7 @@ async function buildLlmOnlyAgent(
   const builder = new SmartAgentBuilder({
     skipModelValidation: config.llm.provider !== 'sap-ai-sdk',
     agent: {
+      timeZone: config.timeZone,
       maxIterations: 1,
       mode: config.agent.mode,
       historyRecencyWindow: config.agent.historyRecencyWindow,

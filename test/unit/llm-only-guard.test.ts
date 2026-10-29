@@ -14,7 +14,10 @@ import {
 } from '../../srv/lib/rag-context-marker';
 
 const messages: Message[] = [{ role: 'user', content: 'Do it now' }];
-const opts = { signal: new AbortController().signal };
+const opts = {
+  signal: new AbortController().signal,
+  requestStartedAt: 1793275200000,
+};
 const answer = {
   ok: true as const,
   value: {

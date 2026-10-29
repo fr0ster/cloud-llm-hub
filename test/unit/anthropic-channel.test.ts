@@ -780,3 +780,26 @@ describe('selected collection retrieval', () => {
     },
   );
 });
+
+test.each([false, true])(
+  'passes hub arrival time through delayed admission (stream=%s)',
+  async (stream) => {
+    configure(2);
+    const gate = deferred();
+    harness.agentGate = gate.promise;
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(1793275200000);
+    try {
+      const { done } = call({ ...body(stream), requestStartedAt: 1 });
+      clock.mockReturnValue(1793275260000);
+      gate.resolve();
+      await done;
+      expect(harness.seenOptions.length).toBeGreaterThan(0);
+      for (const options of harness.seenOptions) {
+        expect(options.requestStartedAt).toBe(1793275200000);
+      }
+    } finally {
+      gate.resolve();
+      clock.mockRestore();
+    }
+  },
+);

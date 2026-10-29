@@ -26,6 +26,7 @@ import {
 import type { LongSession } from './long-session';
 import { NoMessageFilter, stripNoMessage } from './no-message';
 import { userTextOf } from './rag-context-marker';
+import { requestStart } from './request-start';
 import { extractText } from './session-turns';
 import { responseMeasurement } from './usage/request-records';
 import { type DialogueUsage, sumPlannerUsage } from './usage-wire';
@@ -88,7 +89,7 @@ export function dialogueChat(
   ): AsyncIterable<FollowItem> | undefined;
   hasFollow(): boolean;
 } {
-  const requestStartedAt = Date.now();
+  const requestStartedAt = requestStart(req);
   let followHandle: Awaited<ReturnType<typeof dialogueFor>> | undefined;
   let delivery: Delivery;
   let since: number;
