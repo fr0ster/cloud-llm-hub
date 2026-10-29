@@ -556,9 +556,15 @@ test('only queued and running subagents show above the input with elapsed time',
   await flush();
   expect(ui.active.hidden).toBe(false);
   expect(ui.active.innerHTML).toContain('main \u00b7 listening');
-  expect(ui.active.innerHTML).toContain('├ T2 executor: read &lt;dump&gt;');
+  expect(ui.active.innerHTML).toContain(
+    '├ T2 executor <span class="agent-time">',
+  );
+  expect(ui.active.innerHTML).toContain('</span>: read &lt;dump&gt;');
   expect(ui.active.innerHTML).toMatch(/1:0[5-9]/);
-  expect(ui.active.innerHTML).toContain('└ T3 checker: check');
+  expect(ui.active.innerHTML).toContain(
+    '└ T3 checker <span class="agent-time">',
+  );
+  expect(ui.active.innerHTML).toContain('</span>: check');
   expect(ui.active.innerHTML).toContain('· queued');
   expect(ui.active.innerHTML).not.toContain('old');
   expect(ui.list.innerHTML).toContain('T1 \u00b7 subagent executor: old');
@@ -568,6 +574,48 @@ test('only queued and running subagents show above the input with elapsed time',
   expect(ui.active.hidden).toBe(true);
   expect(ui.active.innerHTML).toBe('');
 });
+test('subagent time and tools precede the goal without a colon for empty goals', async () => {
+  const ui = harness(100_000);
+  const tasks = [
+    {
+      id: 'T1',
+      worker: 'executor',
+      goal: 'read <dump>',
+      state: 'running',
+      startedAt: 79_000,
+      toolCalls: 12,
+      maxToolCalls: 40,
+    },
+    {
+      id: 'T2',
+      worker: 'checker',
+      goal: '',
+      state: 'running',
+      startedAt: 79_000,
+      toolCalls: 3,
+    },
+  ];
+  ui.fetch.mockResolvedValue(
+    stream(`event: tasks\ndata: ${JSON.stringify(tasks)}\n\n`),
+  );
+  const subscription = ui.subscribeDialogueEvents('key');
+  await flush();
+  const rows = ui.active.innerHTML.match(
+    /<div class="agent-child"[^>]*>.*?<\/div>/g,
+  );
+  expect(rows).toHaveLength(2);
+  const goalRow = rows?.[0] ?? '';
+  const rowText = goalRow.replace(/<[^>]*>/g, '');
+  expect(goalRow).toContain('title="read &lt;dump&gt;"');
+  expect(rowText).toContain('executor · 0:21 · 12/40 tools: read &lt;dump&gt;');
+  expect(rowText.indexOf('tools')).toBeLessThan(
+    rowText.indexOf('read &lt;dump&gt;'),
+  );
+  expect(rows?.[1]).toContain('3 tools</span></div>');
+  expect(rows?.[1]).not.toContain(': </div>');
+  subscription.stop();
+});
+
 test('the main line listens when every subagent finishes', async () => {
   const ui = harness();
   const running = { id: 'T1', worker: 'executor', goal: 'g', state: 'running' };
@@ -1194,5 +1242,64 @@ test.each(['AbortError', 'stream failure'])(
     );
     expect(ui.active.innerHTML).toContain('listening');
     ui.stopDialogueEvents();
+  },
+);
+
+test('wait updates server elapsed time and tool counts without chat messages and keeps ticking', async () => {
+  const ui = harness(100000);
+  ui.fetch.mockResolvedValue(
+    stream(
+      'event: wait\ndata: {"tasks":[{"id":"t1","worker":"executor","goal":"<goal>","state":"running","elapsedMs":90000,"toolCalls":12,"maxToolCalls":40},{"id":"t2","worker":"checker","goal":"check","state":"queued","elapsedMs":0,"toolCalls":0}]}\n\n',
+    ),
+  );
+  const subscription = ui.subscribeDialogueEvents('key');
+  await flush();
+  expect(ui.active.innerHTML).toContain(
+    't1 executor <span class="agent-time">',
+  );
+  expect(ui.active.innerHTML).toContain('</span>: &lt;goal&gt;');
+  expect(ui.active.innerHTML).toContain('1:30');
+  expect(ui.active.innerHTML).toContain('12/40 tools');
+  expect(ui.active.innerHTML).toContain('0 tools');
+  expect(ui.nodes).toHaveLength(0);
+  ui.setNow(102000);
+  for (const tick of ui.intervals) tick();
+  expect(ui.active.innerHTML).toContain('1:32');
+  subscription.stop();
+});
+
+test.each(['task', 'tasks'])(
+  '%s state change resets queued wait elapsed time to startedAt',
+  async (event) => {
+    const ui = harness(100000);
+    const running = {
+      id: 't1',
+      worker: 'executor',
+      goal: 'work',
+      state: 'running',
+      createdAt: 10000,
+      startedAt: 98000,
+    };
+    ui.fetch.mockResolvedValue(
+      stream(
+        'event: wait\ndata: {"tasks":[{"id":"t1","worker":"executor","goal":"work","state":"queued","elapsedMs":90000}]}\n\n',
+      ),
+    );
+    const subscription = ui.subscribeDialogueEvents('key');
+    await flush();
+    expect(ui.active.innerHTML).toContain('1:30');
+    ui.fetch.mockResolvedValue(
+      stream(
+        `event: ${event}\ndata: ${JSON.stringify(event === 'tasks' ? [running] : running)}\n\n`,
+      ),
+    );
+    await ui.timers[0].fn();
+    await flush();
+    expect(ui.active.innerHTML).toContain('0:02');
+    expect(ui.active.innerHTML).not.toContain('1:30');
+    ui.setNow(101000);
+    for (const tick of ui.intervals) tick();
+    expect(ui.active.innerHTML).toContain('0:03');
+    subscription.stop();
   },
 );

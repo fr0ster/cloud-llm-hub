@@ -184,6 +184,8 @@ describe('dialogue configuration', () => {
       maxTasks: 8,
       maxCorrections: 2,
       followMaxMs: 1_800_000,
+      waitTickMs: undefined,
+      longTaskMs: undefined,
     });
     for (const name of [
       'LLM_AGENT_DIALOGUE_EXECUTORS',
@@ -209,4 +211,28 @@ describe('dialogue configuration', () => {
       );
     }
   });
+});
+
+describe.each([
+  ['LLM_AGENT_DIALOGUE_WAIT_TICK_MS', 'waitTickMs'],
+  ['LLM_AGENT_DIALOGUE_LONG_TASK_MS', 'longTaskMs'],
+] as const)('%s', (name, field) => {
+  const saved = { ...process.env };
+  afterEach(() => {
+    process.env = { ...saved };
+  });
+  test.each([undefined, '', ' ', '0', '30000'])('reads %s', (raw) => {
+    if (raw === undefined) delete process.env[name];
+    else process.env[name] = raw;
+    expect(loadAgentConfig().agent.dialogue[field]).toBe(
+      raw?.trim() ? Number(raw) : undefined,
+    );
+  });
+  test.each(['-1', '1.5', '1e3', '0x10', ' 1', 'x', '9007199254740992'])(
+    'rejects %s',
+    (raw) => {
+      process.env[name] = raw;
+      expect(() => loadAgentConfig()).toThrow(name);
+    },
+  );
 });

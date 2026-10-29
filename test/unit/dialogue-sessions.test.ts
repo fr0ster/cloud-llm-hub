@@ -1362,3 +1362,29 @@ test.each([true, false])(
     });
   },
 );
+
+test('wait signals are session scoped, live only and unsubscribe on close', async () => {
+  const { h } = await ready();
+  const events: DialogueEvent[] = [];
+  h.subscribe((event) => events.push(event));
+  const tasks = [
+    {
+      id: 't1',
+      worker: 'executor',
+      goal: 'read',
+      state: 'running' as const,
+      elapsedMs: 90000,
+    },
+  ];
+  dialogueSignals().emit('dialogue.wait', { tasks }, 'other');
+  expect(events).toEqual([]);
+  dialogueSignals().emit('dialogue.wait', { tasks }, 'key');
+  expect(events).toEqual([{ kind: 'wait', tasks }]);
+  const replay: DialogueEvent[] = [];
+  h.subscribe((event) => replay.push(event));
+  expect(replay).toEqual([]);
+  expect(h.outbox.pending()).toEqual([]);
+  await closeDialogue('alice', 'key', 'explicit');
+  dialogueSignals().emit('dialogue.wait', { tasks }, 'key');
+  expect(events).toHaveLength(1);
+});

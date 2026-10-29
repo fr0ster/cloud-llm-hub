@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
 import type {
+  DialogueSignals,
   DialogueState,
   IConcurrencyPool,
   ILlm,
@@ -67,6 +68,7 @@ type Plan = Exclude<DialogueState['plan'], string | undefined>;
 type PlanStep = Plan['steps'][number];
 
 export type DialogueEvent =
+  | ({ kind: 'wait' } & DialogueSignals['dialogue.wait'])
   | { kind: 'settled'; outcome: 'ok' | 'failed'; trigger: 'user' | 'event' }
   | { kind: 'message'; message: PlannerMessage }
   | { kind: 'usage'; id: string; usage: NonNullable<PlannerMessage['usage']> }
@@ -463,7 +465,13 @@ async function open(
     },
     { source: key },
   );
+  const unsubscribeWait = signals.on(
+    'dialogue.wait',
+    ({ payload: { tasks } }) => emit({ kind: 'wait', tasks }),
+    { source: key },
+  );
   const stopLifetime = () => {
+    unsubscribeWait();
     unsubscribeActivity();
     unsubscribeClosed();
     unsubscribeSettled();
@@ -543,6 +551,8 @@ async function open(
         delete: async () => {},
       },
       maxCorrections: config.agent.dialogue.maxCorrections,
+      waitTickMs: config.agent.dialogue.waitTickMs,
+      longTaskMs: config.agent.dialogue.longTaskMs,
       board: {
         workers,
         maxConcurrent: config.agent.dialogue.executors,
