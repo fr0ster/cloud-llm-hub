@@ -400,6 +400,7 @@ it('execute_step returns executor usage and ends with the footer with recording 
     const result = await executeStep(req, caller, { task: 'work' });
     expect(result).toMatchObject({
       structuredContent: {
+        result: 'done',
         usage: {
           prompt_tokens: 7,
           completion_tokens: 4,
@@ -409,7 +410,7 @@ it('execute_step returns executor usage and ends with the footer with recording 
       },
     });
     expect(result.content[0]?.text).toMatch(
-      /\[usage\] prompt=7 completion=4 total=11 time=\d+\.\ds$/,
+      /^done\n\[usage\] prompt=7 completion=4 total=11 time=\d+\.\ds$/,
     );
   } finally {
     if (previous === undefined) delete process.env.LLM_AGENT_USAGE;
@@ -419,7 +420,7 @@ it('execute_step returns executor usage and ends with the footer with recording 
 
 it.each([true, false])(
   'execute_step reports reviewer usage separately for verdict ok=%s',
-  async (ok) => {
+  async (ok: boolean) => {
     const reviewer = await import('../../srv/lib/step-reviewer');
     const usage = { promptTokens: 2, completionTokens: 1, totalTokens: 3 };
     const review = jest.spyOn(reviewer, 'evaluateGated').mockResolvedValue(
@@ -449,6 +450,7 @@ it.each([true, false])(
       const result = await executeStep(req, caller, { task: 'work' });
       expect(result).toMatchObject({
         structuredContent: {
+          result: ok ? 'done' : expect.stringContaining('UNVERIFIED_WRITE'),
           usage: {
             prompt_tokens: 7,
             completion_tokens: 4,
@@ -466,12 +468,58 @@ it.each([true, false])(
         /\[usage\] prompt=7 completion=4 total=11 reviewer=3 time=\d+\.\ds$/,
       );
       expect(review).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({
+        structuredContent: {
+          result: result.content[0]?.text?.split('\n[usage]')[0],
+        },
+      });
     } finally {
       review.mockRestore();
       Reflect.deleteProperty(handle, 'executor');
     }
   },
 );
+
+it.each(['', ' \n\t'])(
+  'execute_step reports empty executor content %j with usage',
+  async (content: string) => {
+    harness.process = async () => ({
+      ok: true,
+      value: {
+        content,
+        iterations: 2,
+        toolCallCount: 0,
+        stopReason: 'stop',
+        usage: { promptTokens: 7, completionTokens: 4, totalTokens: 11 },
+      },
+    });
+    const result = await executeStep(req, caller, { task: 'work' });
+    const text = result.content[0]?.text;
+    expect(result.isError).toBe(true);
+    expect(text).toMatch(/^EMPTY_RESULT on destination "DEST":/);
+    expect(text).toContain('executor finished without a reply');
+    expect(text).toContain(
+      'system state of the step is unknown and must be verified by a separate read step',
+    );
+    expect(text).toContain('iterations=2 toolCallCount=0 stopReason=stop');
+    expect(text).toMatch(
+      /\n\[usage\] prompt=7 completion=4 total=11 time=\d+\.\ds$/,
+    );
+    expect(result).toMatchObject({
+      structuredContent: { result: text?.split('\n[usage]')[0] },
+    });
+  },
+);
+
+it('execute_step reports empty executor content without known usage', async () => {
+  harness.process = async () => ({ ok: true, value: { content: '' } });
+  const result = await executeStep(req, caller, { task: 'work' });
+  expect(result.isError).toBe(true);
+  expect(result.content[0]?.text).toMatch(
+    /^EMPTY_RESULT on destination "DEST":/,
+  );
+  expect(result.content[0]?.text).not.toContain('[usage]');
+});
 
 it('execute_step preserves HTTP arrival time while agent resolution waits', async () => {
   const request = new Proxy(req, {});

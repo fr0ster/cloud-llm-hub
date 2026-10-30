@@ -10,6 +10,12 @@ All notable changes to this project will be documented in this file. The format 
 - Persisted session `agentsCollectionId` selection through REST and MCP, plus WebUI selection and copy controls; agents are excluded from knowledge context toggles.
 - Deployment settings `LLM_AGENT_PROFILES_COLLECTION`, `LLM_AGENT_PLANNER_RECORD`, and `LLM_AGENT_PROFILE_TIMEOUT_MS`.
 
+## [9.8.1] - 2026-10-30
+
+### Fixed
+
+- Agent MCP `execute_step` includes reply text in `structuredContent.result` alongside usage, and reports empty replies as `EMPTY_RESULT` errors requiring a separate read step to verify system state.
+
 ## [9.8.0] - 2026-10-29
 
 ### Added
