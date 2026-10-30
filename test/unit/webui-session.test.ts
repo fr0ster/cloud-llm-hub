@@ -364,3 +364,50 @@ test.each([false, true])(
     }
   },
 );
+
+test('WebUI excludes agents from knowledge context while keeping enabled knowledge', () => {
+  const start = html.indexOf('        function getActiveRagCollections()');
+  const end = html.indexOf(
+    '        // ---------------------------------------------------------------',
+    start,
+  );
+  const active: () => string[] = runInNewContext(
+    `${html.slice(start, end)}; getActiveRagCollections;`,
+    {
+      ragCollectionsCache: [
+        { id: 'agents', collectionKind: 'agents', enabled: true },
+        { id: 'own-copy', collectionKind: 'agents', enabled: true },
+        { id: 'knowledge', collectionKind: 'knowledge', enabled: true },
+        { id: 'disabled-knowledge', enabled: false },
+      ],
+      attachedFiles: [],
+    },
+  );
+  expect(active()).toEqual(['knowledge']);
+});
+
+test('WebUI displays redacted disabled agents without accessing missing prompt text', async () => {
+  const start = html.indexOf('        async function loadDocuments()');
+  const end = html.indexOf('        async function toggleRecord', start);
+  const list = { innerHTML: '' };
+  const load: () => Promise<void> = runInNewContext(
+    `${html.slice(start, end)}; loadDocuments;`,
+    {
+      document: { getElementById: () => list },
+      ragCurrentCollection: 'agents',
+      ragCollectionsCache: [{ id: 'agents', writable: false }],
+      ragFetch: async () => ({
+        json: async () => ({
+          total: 1,
+          documents: [
+            { id: 'disabled', enabled: false, reason: 'record-disabled' },
+          ],
+        }),
+      }),
+      escapeHtml: (value: string) => value,
+    },
+  );
+  await load();
+  expect(list.innerHTML).toContain('Disabled record');
+  expect(list.innerHTML).not.toContain('Error:');
+});

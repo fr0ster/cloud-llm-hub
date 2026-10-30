@@ -20,6 +20,7 @@ import {
   type RagScanRecord,
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
+import { z } from 'zod';
 import type { RagConfig } from '../agent-config';
 import { ensureSessionRecordStore } from './collection-persistence';
 import {
@@ -42,6 +43,7 @@ export interface SessionRecord {
   lastActivity: number;
   ttlMs: number;
   destination?: string;
+  agentsCollectionId?: string;
   collectionOverrides?: Record<string, boolean>;
   closedAt?: number;
 }
@@ -66,6 +68,9 @@ function stored(r: SessionRecord): SessionRecord {
     createdAt: r.createdAt,
     lastActivity: r.lastActivity,
     ttlMs: r.ttlMs,
+    ...(r.agentsCollectionId !== undefined
+      ? { agentsCollectionId: r.agentsCollectionId }
+      : {}),
     ...(r.destination !== undefined ? { destination: r.destination } : {}),
     ...(r.collectionOverrides
       ? { collectionOverrides: { ...r.collectionOverrides } }
@@ -75,33 +80,24 @@ function stored(r: SessionRecord): SessionRecord {
 }
 
 /** A stored record read back; undefined when it is not one. */
+const sessionRecordSchema = z.object({
+  userId: z.string(),
+  key: z.string(),
+  createdAt: z.number(),
+  lastActivity: z.number(),
+  ttlMs: z.number(),
+  destination: z.string().optional(),
+  agentsCollectionId: z.string().optional(),
+  closedAt: z.number().optional(),
+  collectionOverrides: z.record(z.string(), z.boolean()).optional(),
+});
 function decode(text: string): SessionRecord | undefined {
-  let v: unknown;
   try {
-    v = JSON.parse(text);
+    const parsed = sessionRecordSchema.safeParse(JSON.parse(text));
+    return parsed.success ? stored(parsed.data) : undefined;
   } catch {
     return undefined;
   }
-  if (!v || typeof v !== 'object') return undefined;
-  const o = v as Record<string, unknown>;
-  if (
-    typeof o.userId !== 'string' ||
-    typeof o.key !== 'string' ||
-    typeof o.createdAt !== 'number' ||
-    typeof o.lastActivity !== 'number' ||
-    typeof o.ttlMs !== 'number' ||
-    (o.collectionOverrides !== undefined &&
-      (!o.collectionOverrides ||
-        typeof o.collectionOverrides !== 'object' ||
-        Array.isArray(o.collectionOverrides) ||
-        !Object.values(o.collectionOverrides).every(
-          (value) => typeof value === 'boolean',
-        ))) ||
-    (o.destination !== undefined && typeof o.destination !== 'string') ||
-    (o.closedAt !== undefined && typeof o.closedAt !== 'number')
-  )
-    return undefined;
-  return stored(o as unknown as SessionRecord);
 }
 
 /** A key that is already another user's: its record is never replaced. */
@@ -151,7 +147,7 @@ abstract class SerialSessionRecordStore implements SessionRecordStore {
         last !== undefined &&
         this.destinations.get(r.key) === r.destination &&
         this.collectionFlags.get(r.key) ===
-          JSON.stringify(r.collectionOverrides) &&
+          JSON.stringify([r.collectionOverrides, r.agentsCollectionId]) &&
         r.lastActivity - last < TOUCH_INTERVAL_MS
       )
         return;
@@ -176,7 +172,10 @@ abstract class SerialSessionRecordStore implements SessionRecordStore {
     await this.writeRecord(r);
     this.written.set(r.key, r.lastActivity);
     this.destinations.set(r.key, r.destination);
-    this.collectionFlags.set(r.key, JSON.stringify(r.collectionOverrides));
+    this.collectionFlags.set(
+      r.key,
+      JSON.stringify([r.collectionOverrides, r.agentsCollectionId]),
+    );
   }
 
   private serial<T>(key: string, run: () => Promise<T>): Promise<T> {

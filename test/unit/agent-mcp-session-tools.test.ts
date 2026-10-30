@@ -73,10 +73,13 @@ jest.mock('@modelcontextprotocol/sdk/server/streamableHttp.js', () => ({
 }));
 
 import type { Request } from 'express';
+import { z } from 'zod';
+import { getCollectionRegistry } from '../../srv/agent-manager';
 import {
   createAgentMcpServerForRequest,
   executeStep,
 } from '../../srv/agent-mcp';
+import { userCollectionId } from '../../srv/collection-ids';
 import {
   LongSessionRegistry,
   longSessions,
@@ -96,6 +99,15 @@ async function opened() {
 }
 beforeEach(async () => {
   harness.reset();
+  if (!(await getCollectionRegistry().getCollection('agents')))
+    await getCollectionRegistry().createCollection({
+      id: 'agents',
+      logicalId: 'agents',
+      displayName: 'Agents',
+      description: '',
+      scope: 'global',
+      collectionKind: 'agents',
+    });
   setLongSessionsForTest(
     new LongSessionRegistry(
       { ttlMs: 3600000, maxSessions: 10, maxPerUser: 10, queueLength: 3 },
@@ -111,6 +123,7 @@ it('session_open returns an ls- key', async () => {
     session: expect.stringMatching(/^ls-/),
     ttlSeconds: 3600,
     destination: 'DEST',
+    agentsCollectionId: 'agents',
   });
 });
 it('session_close closes it (second close ? SESSION_NOT_FOUND)', async () => {
@@ -476,4 +489,76 @@ it('execute_step preserves HTTP arrival time while agent resolution waits', asyn
     gate.resolve();
     clock.mockRestore();
   }
+});
+
+test('MCP session_open selects own copy, preserves omission, rejects foreign and deleted copies', async () => {
+  const registry = getCollectionRegistry();
+  const own = userCollectionId('mcp-agents', 'alice');
+  const foreign = userCollectionId('mcp-agents', 'bob');
+  for (const [id, owner] of [
+    [own, 'alice'],
+    [foreign, 'bob'],
+  ])
+    await registry.createCollection({
+      id,
+      logicalId: 'mcp-agents',
+      displayName: '',
+      description: '',
+      scope: 'user',
+      owner,
+      collectionKind: 'agents',
+    });
+  const wire = z.object({
+    session: z.string(),
+    agentsCollectionId: z.string(),
+  });
+  const opened = wire.parse(
+    JSON.parse(
+      (await call('session_open', { agentsCollectionId: own })).content[0].text,
+    ),
+  );
+  expect(opened.agentsCollectionId).toBe(own);
+  for (const agentsCollectionId of [foreign, 'missing']) {
+    expect(
+      (
+        await call('session_open', {
+          session: opened.session,
+          agentsCollectionId,
+        })
+      ).isError,
+    ).toBe(true);
+    expect(
+      longSessions().get('alice', opened.session)?.agentsCollectionId,
+    ).toBe(own);
+  }
+  expect(
+    wire.parse(
+      JSON.parse(
+        (await call('session_open', { session: opened.session })).content[0]
+          .text,
+      ),
+    ).agentsCollectionId,
+  ).toBe(own);
+  await registry.deleteCollection(own);
+  expect(
+    (
+      await call('session_open', {
+        session: opened.session,
+        agentsCollectionId: own,
+      })
+    ).isError,
+  ).toBe(true);
+  expect(longSessions().get('alice', opened.session)?.agentsCollectionId).toBe(
+    own,
+  );
+});
+
+test('execute_step ignores agents selection supplied as an extra execution field', async () => {
+  const session = await opened();
+  const input = { session, task: 'work', agentsCollectionId: 'missing' };
+  const result = await executeStep(req, caller, input);
+  expect(result.isError).not.toBe(true);
+  expect(longSessions().get('alice', session)?.agentsCollectionId).toBe(
+    'agents',
+  );
 });

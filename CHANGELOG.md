@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+- Agent profile records and Markdown seeds, persistent missing-only startup seeding, fresh profile sources, isolated runners and composable tool permission guards.
+- REST agent administration with canonical record validation, admin-only global writes, owner-only user copies, atomic copy publication and MCP/LLM write protection.
+- Persisted session `agentsCollectionId` selection through REST and MCP, plus WebUI selection and copy controls; agents are excluded from knowledge context toggles.
+- Deployment settings `LLM_AGENT_PROFILES_COLLECTION`, `LLM_AGENT_PLANNER_RECORD`, and `LLM_AGENT_PROFILE_TIMEOUT_MS`.
+
 ## [9.8.0] - 2026-10-29
 
 ### Added

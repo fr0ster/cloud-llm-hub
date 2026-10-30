@@ -29,6 +29,7 @@ import {
 import cds from '@sap/cds';
 import type { Application, NextFunction, Request, Response } from 'express';
 import express from 'express';
+import { z } from 'zod';
 import { ensureAiCoreCredentials, getAgentConfig } from './agent-config';
 import {
   collectionsRestoreStatus,
@@ -85,6 +86,7 @@ import {
   openSession,
   resolveSession,
   SessionLimitError,
+  setSessionAgentsCollection,
   startSessionSweep,
   sweepSessionCollections,
   takeRevivalNotice,
@@ -414,7 +416,39 @@ export async function handleOpenSession(
     return;
   }
   const userId = cds.context?.user?.id ?? 'anonymous';
-  const s = await openSession(userId, destination?.trim() || undefined);
+  const parsedInput = z
+    .object({ agentsCollectionId: z.string().optional() })
+    .safeParse(req.body ?? {});
+  if (!parsedInput.success) {
+    res
+      .status(400)
+      .json({ error: { message: 'agentsCollectionId must be a string' } });
+    return;
+  }
+  const input = parsedInput.data;
+  let s: Awaited<ReturnType<typeof openSession>>;
+  try {
+    const existing = (req as LongSessionRequest).longSession;
+    if (existing) {
+      await setSessionAgentsCollection(existing, input?.agentsCollectionId);
+      s = existing;
+    } else
+      s = await openSession(
+        userId,
+        destination?.trim() || undefined,
+        input?.agentsCollectionId,
+      );
+  } catch (error) {
+    res.status(400).json({
+      error: {
+        message:
+          error instanceof Error
+            ? error.message
+            : 'Invalid session configuration',
+      },
+    });
+    return;
+  }
   if ('refused' in s) {
     // A new key never exists already: the refusal is the cap.
     const r = openAiSessionRefusal('SESSION_LIMIT');
@@ -426,6 +460,7 @@ export async function handleOpenSession(
     session: s.key,
     ttlSeconds: Math.floor(sessionConfig().ttlMs / 1000),
     destination: s.destination ?? null,
+    agentsCollectionId: s.agentsCollectionId,
   });
 }
 
@@ -962,11 +997,17 @@ cds.on('served', () => {
         );
       return startProviders(getAgentConfig());
     })
-    .then((p) => {
+    .then(async (p) => {
       initProviders(p);
       registerRagRoutes(ragRouter, getCollectionRegistry());
-      // Persistent collections: restored in the background, with retry.
-      void startCollectionRestore();
+      // Restore and validate configuration before initializing agents.
+      await startCollectionRestore();
+      const profiles = getAgentConfig().profiles;
+      if (profiles)
+        await getCollectionRegistry().seedAgentConfiguration(
+          profiles.collectionId,
+          profiles.plannerRecord,
+        );
       log.info('Providers ready');
     })
     .then(

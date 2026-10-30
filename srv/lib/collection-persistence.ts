@@ -81,6 +81,7 @@ export function storePrefixFor(
  * user of a session collection goes in `attributes.hubOwner` (spec §6).
  */
 export function catalogOwner(meta: CollectionMeta): RagCollectionOwner {
+  if (meta.scope === 'global') return { scope: 'global' };
   if (meta.scope === 'session') {
     if (!meta.sessionId)
       throw new Error(`session collection "${meta.id}" has no sessionId`);
@@ -104,6 +105,8 @@ export function encodeAttributes(
     description: meta.description,
     enabled,
     source: meta.scope,
+    ...(meta.collectionKind ? { collectionKind: meta.collectionKind } : {}),
+    ...(meta.agentsCopyPending ? { agentsCopyPending: true } : {}),
     embedder: embedderFp,
     createdAt: meta.createdAt,
     ...(meta.expiresAt !== undefined ? { expiresAt: meta.expiresAt } : {}),
@@ -136,16 +139,17 @@ export function decodeRecord(
   const hubOwner = attrs.hubOwner as Record<string, unknown> | undefined;
   const userId = str(hubOwner?.userId);
   const ownerAgrees =
-    rec.scope === 'user'
-      ? rec.userId === userId
-      : rec.scope === 'session' && rec.sessionId === str(hubOwner?.sessionId);
+    rec.scope === 'global'
+      ? !userId
+      : rec.scope === 'user'
+        ? rec.userId === userId
+        : rec.scope === 'session' && rec.sessionId === str(hubOwner?.sessionId);
   if (
     attrs.writtenBy !== WRITTEN_BY ||
-    rec.scope === 'global' ||
     !ownerAgrees ||
     !collectionId ||
     !logicalId ||
-    !userId ||
+    (rec.scope !== 'global' && !userId) ||
     rec.storeName !== storeNameFor(collectionId, storePrefix)
   ) {
     return { foreign: true };
@@ -159,6 +163,12 @@ export function decodeRecord(
     displayName: str(attrs.displayName) ?? logicalId,
     description: str(attrs.description) ?? '',
     scope: rec.scope,
+    ...(attrs.agentsCopyPending === true ? { agentsCopyPending: true } : {}),
+    ...(attrs.collectionKind === 'agents'
+      ? { collectionKind: 'agents' as const }
+      : attrs.collectionKind === 'knowledge'
+        ? { collectionKind: 'knowledge' as const }
+        : {}),
     owner: userId,
     ...(sessionId ? { sessionId } : {}),
     ...(expiresAt !== undefined ? { expiresAt } : {}),
@@ -234,7 +244,9 @@ export interface CollectionPersistence {
    */
   updateRecord(
     collectionId: string,
-    snapshot: () => { meta: CollectionMeta; enabled: boolean },
+    snapshot: () =>
+      | { meta: CollectionMeta; enabled: boolean }
+      | Promise<{ meta: CollectionMeta; enabled: boolean }>,
     apply: () => void,
   ): Promise<Result<void, RagError>>;
   /**
@@ -249,7 +261,11 @@ export interface CollectionPersistence {
    * fails the whole restore; a failure to open or scan one store restores that
    * collection alone as `unavailable`.
    */
-  restore(): Promise<Result<RestoreOutcome, RagError>>;
+  restore(options?: CallOptions): Promise<Result<RestoreOutcome, RagError>>;
+  readCollection(
+    id: string,
+    options?: CallOptions,
+  ): Promise<Result<RestoredCollection | null, RagError>>;
   /** The store name of a collection id (see storeNameFor). */
   storeName(collectionId: string): string;
 }
@@ -400,6 +416,8 @@ export function canonicalCollectionMeta(m: CollectionMeta): CollectionMeta {
     displayName: m.displayName,
     description: m.description,
     scope: m.scope,
+    ...(m.collectionKind ? { collectionKind: m.collectionKind } : {}),
+    ...(m.agentsCopyPending ? { agentsCopyPending: true } : {}),
     ...(m.preset !== undefined ? { preset: m.preset } : {}),
     ...(m.backend !== undefined ? { backend: m.backend } : {}),
     ...(m.owner !== undefined ? { owner: m.owner } : {}),
@@ -496,23 +514,30 @@ export async function addPersistentDocument(
   doc: Omit<RagDocument, 'createdAt'>,
   namespace?: string,
 ): Promise<RagDocument> {
-  refuseWhileDeleting(entry, 'add document');
-  const createdAt = new Date().toISOString();
-  const p = payload(entry, doc.id, doc.metadata, createdAt, namespace);
-  await backendWrite('add document', () => entry.rag.upsert(doc.text, p));
-  const persisted: RagDocument = {
-    id: doc.id,
-    text: doc.text,
-    metadata: ownMetadata(doc.metadata),
-    createdAt,
-  };
-  if (storageEnabled() && entry.usageTextBytes !== undefined)
-    entry.usageTextBytes +=
-      Buffer.byteLength(persisted.text, 'utf8') -
-      Buffer.byteLength(entry.documents.get(doc.id)?.text ?? '', 'utf8');
-  entry.documents.set(doc.id, persisted);
-  entry.meta.documentCount = entry.documents.size;
-  return persisted;
+  try {
+    refuseWhileDeleting(entry, 'add document');
+    const createdAt = new Date().toISOString();
+    const p = payload(entry, doc.id, doc.metadata, createdAt, namespace);
+    await backendWrite('add document', () => entry.rag.upsert(doc.text, p));
+    const persisted: RagDocument = {
+      id: doc.id,
+      text: doc.text,
+      metadata: ownMetadata(doc.metadata),
+      createdAt,
+    };
+    if (storageEnabled() && entry.usageTextBytes !== undefined)
+      entry.usageTextBytes +=
+        Buffer.byteLength(persisted.text, 'utf8') -
+        Buffer.byteLength(entry.documents.get(doc.id)?.text ?? '', 'utf8');
+    entry.documents.set(doc.id, persisted);
+    entry.meta.documentCount = entry.documents.size;
+    return persisted;
+  } finally {
+    if (entry.meta.collectionKind === 'agents') {
+      entry.documents.delete(doc.id);
+      entry.usageTextBytes = undefined;
+    }
+  }
 }
 
 /** Re-upsert with the new text/metadata; memory changes only on success. */
@@ -522,26 +547,37 @@ export async function updatePersistentDocument(
   update: { text?: string; metadata?: Record<string, unknown> },
   namespace?: string,
 ): Promise<RagDocument> {
-  refuseWhileDeleting(entry, 'update document');
-  const text = update.text || existing.text;
-  const metadata = update.metadata
-    ? { ...existing.metadata, ...update.metadata }
-    : existing.metadata;
-  const p = payload(
-    entry,
-    existing.id,
-    metadata,
-    existing.createdAt,
-    namespace,
-  );
-  await backendWrite('update document', () => entry.rag.upsert(text, p));
-  if (storageEnabled() && entry.usageTextBytes !== undefined)
-    entry.usageTextBytes +=
-      Buffer.byteLength(text, 'utf8') -
-      Buffer.byteLength(existing.text, 'utf8');
-  existing.text = text;
-  existing.metadata = ownMetadata(metadata);
-  return existing;
+  try {
+    refuseWhileDeleting(entry, 'update document');
+    const text = update.text ?? existing.text;
+    const metadata =
+      entry.meta.collectionKind === 'agents' &&
+      update.metadata?.canonicalKey !== undefined
+        ? update.metadata
+        : update.metadata
+          ? { ...existing.metadata, ...update.metadata }
+          : existing.metadata;
+    const p = payload(
+      entry,
+      existing.id,
+      metadata,
+      existing.createdAt,
+      namespace,
+    );
+    await backendWrite('update document', () => entry.rag.upsert(text, p));
+    if (storageEnabled() && entry.usageTextBytes !== undefined)
+      entry.usageTextBytes +=
+        Buffer.byteLength(text, 'utf8') -
+        Buffer.byteLength(existing.text, 'utf8');
+    existing.text = text;
+    existing.metadata = ownMetadata(metadata);
+    return existing;
+  } finally {
+    if (entry.meta.collectionKind === 'agents') {
+      entry.documents.delete(existing.id);
+      entry.usageTextBytes = undefined;
+    }
+  }
 }
 
 /** Delete from the backend; memory forgets the document only on success. */
@@ -549,19 +585,27 @@ export async function deletePersistentDocument(
   entry: PersistentEntry,
   docId: string,
 ): Promise<boolean> {
-  if (!entry.documents.has(docId)) return false;
-  refuseWhileDeleting(entry, 'delete document');
-  await backendWrite('delete document', () =>
-    entry.rag.deleteById(`doc:${entry.meta.id}:${docId}`),
-  );
-  if (storageEnabled() && entry.usageTextBytes !== undefined)
-    entry.usageTextBytes -= Buffer.byteLength(
-      entry.documents.get(docId)?.text ?? '',
-      'utf8',
+  try {
+    if (entry.meta.collectionKind !== 'agents' && !entry.documents.has(docId))
+      return false;
+    refuseWhileDeleting(entry, 'delete document');
+    const deleted = await backendWrite('delete document', () =>
+      entry.rag.deleteById(`doc:${entry.meta.id}:${docId}`),
     );
-  entry.documents.delete(docId);
-  entry.meta.documentCount = entry.documents.size;
-  return true;
+    if (storageEnabled() && entry.usageTextBytes !== undefined)
+      entry.usageTextBytes -= Buffer.byteLength(
+        entry.documents.get(docId)?.text ?? '',
+        'utf8',
+      );
+    entry.documents.delete(docId);
+    entry.meta.documentCount = entry.documents.size;
+    return entry.meta.collectionKind === 'agents' ? deleted : true;
+  } finally {
+    if (entry.meta.collectionKind === 'agents') {
+      entry.documents.delete(docId);
+      entry.usageTextBytes = undefined;
+    }
+  }
 }
 
 function toRagError(err: unknown): RagError {
@@ -648,7 +692,7 @@ export function createCollectionPersistence(
     updateRecord: (collectionId, snapshot, apply) => {
       const prev = recordWrites.get(collectionId) ?? Promise.resolve();
       const run = prev.then(async () => {
-        const { meta, enabled } = snapshot();
+        const { meta, enabled } = await snapshot();
         const r = await update(meta, enabled);
         if (r.ok) apply();
         return r;
@@ -693,7 +737,41 @@ export function createCollectionPersistence(
         }
         return { ok: true, value: expired };
       }),
-    restore: () =>
+    readCollection: (id, options) =>
+      guarded(
+        async (): Promise<Result<RestoredCollection | null, RagError>> => {
+          options?.signal?.throwIfAborted();
+          if (!provider.describeCollections || !provider.openCollection)
+            return {
+              ok: false,
+              error: new RagError(
+                'Provider cannot read collections',
+                'RAG_UNSUPPORTED',
+              ),
+            };
+          const describe = provider.describeCollections.bind(provider);
+          const described = await cancellableRead(describe, options);
+          if (!described.ok) return described;
+          options?.signal?.throwIfAborted();
+          const record = described.value.records.find(
+            (entry) => entry.storeName === storeNameFor(id, prefix),
+          );
+          if (!record) return { ok: true, value: null };
+          const decoded = decodeRecord(record, prefix);
+          if (!('meta' in decoded) || decoded.meta.id !== id)
+            return { ok: true, value: null };
+          const collection = await restoreOne(
+            provider,
+            record,
+            decoded,
+            embedderFp,
+            options,
+          );
+          options?.signal?.throwIfAborted();
+          return { ok: true, value: collection };
+        },
+      ),
+    restore: (options) =>
       guarded(async (): Promise<Result<RestoreOutcome, RagError>> => {
         if (!provider.describeCollections || !provider.openCollection)
           return {
@@ -726,7 +804,7 @@ export function createCollectionPersistence(
           if (decoded.embedderFp !== embedderFp)
             recordFps.set(decoded.meta.id, decoded.embedderFp ?? '');
           collections.push(
-            await restoreOne(provider, rec, decoded, embedderFp),
+            await restoreOne(provider, rec, decoded, embedderFp, options),
           );
         }
         return {
@@ -737,12 +815,33 @@ export function createCollectionPersistence(
   };
 }
 
+/** Provider catalogue APIs have no CallOptions; stop waiting on cancellation. */
+async function cancellableRead<T>(
+  run: () => T | Promise<T>,
+  options?: CallOptions,
+): Promise<T> {
+  const signal = options?.signal;
+  if (!signal) return run();
+  signal.throwIfAborted();
+  let abort: () => void = () => {};
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    abort = () => reject(new Error('Collection read cancelled'));
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    return await Promise.race([Promise.resolve().then(run), cancelled]);
+  } finally {
+    signal.removeEventListener('abort', abort);
+  }
+}
+
 /** Open and scan one record of this hub; a failure makes it `unavailable`. */
 async function restoreOne(
   provider: IRagProvider,
   rec: RagCollectionRecord,
   decoded: { meta: CollectionMeta; enabled: boolean; embedderFp?: string },
   embedderFp: string,
+  options?: CallOptions,
 ): Promise<RestoredCollection> {
   const { meta, enabled } = decoded;
   const unavailable = (cause: unknown): RestoredCollection => ({
@@ -754,7 +853,10 @@ async function restoreOne(
   });
   let rag: IRag;
   try {
-    const opened = await provider.openCollection?.(rec);
+    const opened = await cancellableRead(
+      () => provider.openCollection?.(rec),
+      options,
+    );
     if (!opened) return unavailable('the provider cannot open a collection');
     if (!opened.ok) return unavailable(opened.error);
     rag = opened.value.rag;
@@ -763,13 +865,20 @@ async function restoreOne(
   }
   if (!isRagScanner(rag)) return unavailable('its store cannot be scanned');
   const documents = new Map<string, RagDocument>();
+  const duplicates: RagDocument[] = [];
   try {
     let cursor: string | undefined;
     do {
-      const page = await rag.scan(cursor === undefined ? {} : { cursor });
+      options?.signal?.throwIfAborted();
+      const page = await rag.scan(
+        cursor === undefined ? {} : { cursor },
+        options,
+      );
       if (!page.ok) return unavailable(page.error);
       for (const r of page.value.records) {
         const doc = restoredDocument(meta.id, r);
+        if (meta.collectionKind === 'agents' && documents.has(doc.id))
+          duplicates.push(doc);
         documents.set(doc.id, doc);
       }
       if (page.value.cursor !== undefined && page.value.cursor === cursor)
@@ -783,7 +892,7 @@ async function restoreOne(
     meta,
     enabled,
     rag,
-    documents: [...documents.values()],
+    documents: [...documents.values(), ...duplicates],
   };
   if (decoded.embedderFp !== embedderFp) {
     restored.status = 'incompatible';

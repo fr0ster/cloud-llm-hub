@@ -101,6 +101,26 @@ jest.mock('../../srv/agent-manager', () => ({
   forgetPlannerMemory: jest.fn(async () => true),
   releasePlannerAgent: jest.fn(),
   setSessionDestination: jest.fn(),
+  createAgentProfileSource: () => ({
+    list: async () => ({
+      ok: true,
+      value: [{ name: 'executor', description: '', result: 'report' }],
+    }),
+    get: async () => ({
+      ok: true,
+      value: {
+        name: 'executor',
+        description: '',
+        systemPrompt: '',
+        tools: 'all',
+        result: 'report',
+      },
+    }),
+    getPrompts: async () => ({
+      ok: true,
+      value: { workerBase: '', planner: '' },
+    }),
+  }),
   buildPlannerAgent: jest.fn(async () => ({
     process: async (messages: { content: string }[]) => {
       mockEnvironments.push(
@@ -147,6 +167,27 @@ jest.mock('../../srv/agent-manager', () => ({
     },
   })),
   getSmartAgent: jest.fn(async () => ({
+    profileRunner: {
+      createWorker: async () => ({
+        ok: true,
+        value: {
+          name: 'executor',
+          capabilities: { contextPolicy: 'optional' },
+          run: (input: ISubAgentInput) => mockRun(input),
+        },
+      }),
+      preparePlanner: async () => ({
+        ok: true,
+        value: await jest
+          .requireMock<typeof import('../../srv/agent-manager')>(
+            '../../srv/agent-manager',
+          )
+          .buildPlannerAgent(
+            (await import('../../srv/agent-config')).getAgentConfig(),
+            '',
+          ),
+      }),
+    },
     workers: new Map([
       [
         'executor',
@@ -460,7 +501,7 @@ test('missing credentials become a task outcome and wake the planner', async () 
   for (const environment of mockEnvironments) {
     expect(environment).toContain('Destination: TEST');
     expect(environment).toContain('Concurrency limit: 2');
-    expect(environment).toContain('executor:');
+    expect(environment).not.toContain('Available workers:');
     expect(environment).not.toMatch(/Bearer|password|secret/);
   }
   expect(JSON.stringify(h.session.snapshot())).not.toContain('[environment]');

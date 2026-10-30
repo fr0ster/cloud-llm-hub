@@ -6,6 +6,7 @@ import {
   type ServerResponse,
 } from 'node:http';
 import type {
+  IAgentProfileRunner,
   IEmbedResult,
   IQueryEmbedder,
   IThrottleStrategy,
@@ -85,6 +86,10 @@ import {
   type UsageRuntime,
 } from '../../srv/lib/usage/runtime';
 import { handleChatCompletions } from '../../srv/openai-handler';
+import {
+  fixtureProfileRunner,
+  fixtureProfileSource,
+} from './helpers/agent-profiles';
 import { fakePipelineLlm } from './helpers/usage-pipeline';
 
 jest.mock('@mcp-abap-adt/llm-agent', (): typeof llmAgent => {
@@ -221,6 +226,7 @@ jest.mock('../../srv/lib/ai-core-models', (): object => ({
 }));
 jest.mock('../../srv/env-setup', (): object => ({}));
 jest.mock('../../srv/agent-manager', (): object => ({
+  createAgentProfileSource: () => fixtureProfileSource(() => mockWorkers),
   ...jest
     .requireActual<typeof import('./helpers/channel-harness')>(
       './helpers/channel-harness',
@@ -231,11 +237,16 @@ jest.mock('../../srv/agent-manager', (): object => ({
       | Awaited<ReturnType<SmartAgentBuilder['build']>>['agent']
       | { deps: { ragStores: Record<string, never> } };
     workers: Map<string, ISubAgent>;
+    profileRunner: IAgentProfileRunner;
     recMcp: { getToolRecords: () => never[]; dropRequest(): void };
     criticLlm: Record<string, never>;
   }> => ({
     agent: mockStepAgent ?? { deps: { ragStores: {} } },
     workers: mockWorkers,
+    profileRunner: fixtureProfileRunner(
+      () => mockPlanner,
+      () => mockWorkers,
+    ),
     recMcp: { getToolRecords: (): never[] => [], dropRequest(): void {} },
     criticLlm: {},
   }),
@@ -287,6 +298,9 @@ jest.mock('../../srv/agent-manager', (): object => ({
   }),
 }));
 jest.mock('../../srv/collection-ids', (): object => ({
+  ...jest.requireActual<typeof import('../../srv/collection-ids')>(
+    '../../srv/collection-ids',
+  ),
   resolveRouteId: async (): Promise<string> => 'selected',
 }));
 jest.mock('../../srv/lib/session-connection-pool', (): object => ({

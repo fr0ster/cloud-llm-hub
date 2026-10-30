@@ -86,6 +86,7 @@ import {
   resolveSession,
   SessionLimitError,
   SessionNotReadyError,
+  setSessionAgentsCollection,
   takeRevivalNotice,
 } from './lib/session-lifecycle';
 import { recordTurn } from './lib/session-turns';
@@ -688,7 +689,11 @@ export async function createAgentMcpServerForRequest(
     {
       description:
         'Open a session for multi-step work sharing conversation and ABAP connection.',
-      inputSchema: { destination: z.string().optional() },
+      inputSchema: {
+        destination: z.string().optional(),
+        agentsCollectionId: z.string().optional(),
+        session: z.string().optional(),
+      },
     },
     measuredAgentCallback(
       req,
@@ -696,8 +701,12 @@ export async function createAgentMcpServerForRequest(
       'session_open',
       async ({
         destination,
+        agentsCollectionId,
+        session,
       }: {
         destination?: string;
+        agentsCollectionId?: string;
+        session?: string;
       }): Promise<{
         isError?: boolean | undefined;
         content: { type: 'text'; text: string }[];
@@ -708,7 +717,22 @@ export async function createAgentMcpServerForRequest(
           (typeof headerDestination === 'string'
             ? headerDestination.trim()
             : undefined);
-        const s = await openSession(userId, target);
+        let s: Awaited<ReturnType<typeof openSession>>;
+        try {
+          if (session !== undefined) {
+            const existing = await resolveSession(userId, session);
+            if (!existing) return textResult('SESSION_NOT_FOUND', true);
+            await setSessionAgentsCollection(existing, agentsCollectionId);
+            s = existing;
+          } else s = await openSession(userId, target, agentsCollectionId);
+        } catch (error) {
+          return textResult(
+            error instanceof Error
+              ? error.message
+              : 'Invalid agentsCollectionId',
+            true,
+          );
+        }
         if (!('refused' in s))
           requestMeasurement(req)?.bind(undefined, {
             userId,
@@ -722,6 +746,7 @@ export async function createAgentMcpServerForRequest(
                 session: s.key,
                 ttlSeconds: longSessions().ttlMs / 1000,
                 destination: s.destination,
+                agentsCollectionId: s.agentsCollectionId,
               }),
             );
       },

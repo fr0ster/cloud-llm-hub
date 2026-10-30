@@ -3,22 +3,25 @@ import {
   DIALOGUE_PLANNER_SYSTEM,
   SmartAgentBuilder,
 } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  MCPClientWrapper,
+  McpClientAdapter,
+} from '@mcp-abap-adt/llm-agent-mcp';
 import type { AgentConfig } from '../../srv/agent-config';
 import * as agentConfig from '../../srv/agent-config';
 import {
   buildAgentForDestination,
   buildExecutorWorker,
   buildPlannerAgent,
-  CHECKER_DESCRIPTION,
-  EXECUTOR_DESCRIPTION,
   ExpositionFilteringRag,
+  getCollectionRegistry,
   getCurrentPlannerModel,
   getSmartAgent,
-  HUB_DIALOGUE_PLANNER_SYSTEM,
-  HUB_DIALOGUE_STORAGE_RULES,
   initProviders,
   releasePlannerAgent,
 } from '../../srv/agent-manager';
+import { loadAgentProfileSeeds } from '../../srv/lib/agent-profile-seeds';
+import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
 import {
   DialogueRagMcpClient,
   runWithDialogueRagTools,
@@ -28,70 +31,21 @@ import { startProviders } from '../../srv/lib/providers';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
 import { CollectionRegistry } from '../../srv/rag-collections';
-import { runWithSessionId } from '../../srv/request-session';
+import {
+  runWithProfileTools,
+  runWithSessionId,
+} from '../../srv/request-session';
 
-test('planner supports separate checker steps', () => {
-  for (const rule of HUB_DIALOGUE_STORAGE_RULES.split('\n')) {
-    expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(rule);
-  }
-  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
-    'The checker can read stored hub RAG records with rag_list when a check of stored results is planned.',
-  );
-  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
-    'Verification is planned as separate check steps (worker checker, dependsOn the checked steps).',
-  );
+let plannerText = '';
+beforeAll(async () => {
+  const seeds = await loadAgentProfileSeeds();
+  plannerText = seeds.find((seed) => seed.id === 'planner')?.text ?? '';
 });
-
-test('planner prepares a complete brief and asks before narrowing scope', () => {
-  for (const rule of [
-    'Every delegate_task is a brief: goal says what to achieve in one or two sentences',
-    'what not to touch, where results are stored, priority order, scope',
-    'ids, names, values',
-    'the done criterion, and what to return',
-    'The worker sees only the brief and its own tool results, not the dialogue',
-    'Pass history only when',
-    "Keep each step within one worker run's budget; split a step that does not fit.",
-    'Skip a step, drop items, sample',
-    'update_plan with status waiting_user and a question',
-    'keep waiting until the user answers, never decide it yourself',
-    'When the plan checks stored batch results',
-    'as the requested storage format defines them',
-    'fewer stored records fails the step',
-    'when a check of stored results is planned',
-    'When the request or a skill asks to keep results, store them where it says',
-    'if the target or scope is unclear, ask the user',
-    "without a named target means the hub's RAG collection (rag_add)",
-  ])
-    expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(rule);
-  for (const rule of [
-    'when a step lists many items, split it',
-    'Prefer one item per step',
-    'then one step per item; finally',
-    "When a step's outcome is stored, the check step reads it back",
-    'scratch data may use scope session',
-    "When the user's wording is ambiguous about where or how to store",
-  ])
-    expect(HUB_DIALOGUE_PLANNER_SYSTEM).not.toContain(rule);
-});
-
-test('planner uses the structured board and library delegation contract', () => {
-  for (const rule of [
-    '[plan] is the task board truth',
-    'Always delegate_task with step_id',
-    'Use get_plan(',
-    'Set status waiting_user with a nonempty question',
-    'dependsOn for prerequisites',
-  ])
-    expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(rule);
-  expect(HUB_DIALOGUE_PLANNER_SYSTEM).not.toContain(
-    'Start every turn by calling list_tasks',
-  );
-  expect(CHECKER_DESCRIPTION).toContain('"verdict":"pass"|"fail"');
-});
-
-test('shared worker descriptions do not advertise dialogue RAG tools', () => {
-  expect(EXECUTOR_DESCRIPTION).not.toContain('rag_');
-  expect(CHECKER_DESCRIPTION).not.toContain('rag_');
+test('planner seed retains delegation, briefing and verification guidance without executor storage/retry rules', () => {
+  expect(plannerText).toContain('Every delegate_task is a brief');
+  expect(plannerText).toContain('A [check] note is not user agreement.');
+  expect(plannerText).not.toContain('fails twice');
+  expect(plannerText).not.toContain('Storing, collecting or remembering');
 });
 
 jest.mock('../../srv/lib/llm-factory', () => ({
@@ -163,7 +117,7 @@ test('hard planner sends all nine control tools, hub prompt, and follows getSmar
   const second = llm('second');
   jest.mocked(makeHubLlm).mockResolvedValue(first.agent);
   initProviders(await startProviders(config));
-  const planner = await buildPlannerAgent(config);
+  const planner = await buildPlannerAgent(config, plannerText);
   try {
     const result = await planner.process([{ role: 'user', content: 'hello' }]);
     expect(result.ok && result.value.content).toBe('first');
@@ -180,15 +134,10 @@ test('hard planner sends all nine control tools, hub prompt, and follows getSmar
         'new_request',
       ].sort(),
     );
-    expect(first.messages.join('\n')).toContain(HUB_DIALOGUE_PLANNER_SYSTEM);
+    expect(first.messages.join('\n')).toContain(plannerText);
     // Hub notes are not the user, and the library's fixed default is replaced.
-    expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
-      'notes come from the hub, not from the user',
-    );
-    expect(HUB_DIALOGUE_PLANNER_SYSTEM).not.toContain('(default: 3');
-    expect(first.messages.join('\n')).toContain(
-      'At most 7 tasks may run at the same time in this session; run fewer when steps are not independent.',
-    );
+    expect(plannerText).toContain('notes come from the hub, not from the user');
+    expect(plannerText).not.toContain('(default: 3');
     jest.mocked(makeHubLlm).mockResolvedValue(second.agent);
     await getSmartAgent('second');
     const swapped = await planner.process([{ role: 'user', content: 'again' }]);
@@ -208,6 +157,7 @@ test('dialogue tool-loop offers hub storage to executor and only readback to che
     agent: { ...config.agent, chatCoordinator: 'dialogue', skillRagK: 0 },
   };
   initProviders(await startProviders(dialogueConfig));
+  await getCollectionRegistry().seedAgentConfiguration('agents', 'planner');
   await getSmartAgent('worker');
   const handle = await buildAgentForDestination(
     {
@@ -242,20 +192,22 @@ test('dialogue tool-loop offers hub storage to executor and only readback to che
         : ['rag_list'],
     );
   }
-  expect(model.messages.join('\n')).toContain(HUB_DIALOGUE_STORAGE_RULES);
+  expect(model.messages.join('\n')).toContain(
+    'Storing, collecting or remembering',
+  );
   expect(model.messages.join('\n')).toContain(
     'If a step fails twice the same way, stop and report to the planner instead of retrying.',
   );
 });
 
 test('planner defines independently checkable results and paged enumeration', () => {
-  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
+  expect(plannerText).toContain(
     'A step states the result it must produce, not how to produce it; the worker chooses the tools and the way.',
   );
-  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
+  expect(plannerText).toContain(
     'Make each step a result one worker run can deliver and that can be checked on its own.',
   );
-  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
+  expect(plannerText).toContain(
     'To process all items of a kind that do not fit one worker run: first one step that returns only their identifiers, page by page (for example 20 at a time); then steps per item or per batch that fit a worker run; plan the check the risk needs.',
   );
 });
@@ -264,7 +216,7 @@ test.each(['adaptive', 'dialogue'] as const)(
   '%s tool loop sends capped text to the model',
   async (coordinator) => {
     const seen: string[] = [];
-    const name = coordinator === 'dialogue' ? 'rag_list' : 'GetTable';
+    const name = 'rag_list';
     const modelName = `cap-${coordinator}`;
     const response: ILlm['chat'] = async (messages, tools) => {
       const results = messages.filter((m) => m.role === 'tool');
@@ -310,6 +262,7 @@ test.each(['adaptive', 'dialogue'] as const)(
       },
     };
     initProviders(await startProviders(cappedConfig));
+    await getCollectionRegistry().seedAgentConfiguration('agents', 'planner');
     await getSmartAgent(modelName);
     const registry = new CollectionRegistry();
     const inner = {
@@ -324,14 +277,11 @@ test.each(['adaptive', 'dialogue'] as const)(
         value: { content: 'x'.repeat(1000), isError: false },
       }),
     };
-    const client =
-      coordinator === 'dialogue'
-        ? new RecordingMcpClient(
-            new DialogueRagMcpClient(inner, () => registry),
-            undefined,
-            100,
-          )
-        : inner;
+    const client = new RecordingMcpClient(
+      new DialogueRagMcpClient(inner, () => registry),
+      undefined,
+      100,
+    );
     const worker = await buildExecutorWorker(
       client,
       new ExpositionFilteringRag(new InMemoryRag()),
@@ -341,12 +291,11 @@ test.each(['adaptive', 'dialogue'] as const)(
       'cap-test',
       () =>
         runWithDialogueRagTools(async () => {
-          if (coordinator === 'dialogue')
-            await client.callTool('rag_add', {
-              collection: 'results',
-              id: 'large',
-              text: 'x'.repeat(1000),
-            });
+          await client.callTool('rag_add', {
+            collection: 'results',
+            id: 'large',
+            text: 'x'.repeat(1000),
+          });
           await worker.run({
             task: `Use ${name} to read the result`,
             history: [],
@@ -372,7 +321,7 @@ test.each([undefined, 7])(
     };
     initProviders(await startProviders(budgetConfig));
     const apply = jest.spyOn(SmartAgentBuilder.prototype, 'withMaxToolCalls');
-    const planner = await buildPlannerAgent(budgetConfig);
+    const planner = await buildPlannerAgent(budgetConfig, plannerText);
     try {
       if (maxToolCalls === undefined) expect(apply).not.toHaveBeenCalled();
       else expect(apply).toHaveBeenCalledWith(maxToolCalls);
@@ -384,7 +333,7 @@ test.each([undefined, 7])(
 );
 
 test('planner prompt allows skipping only with user agreement', () => {
-  for (const prompt of [DIALOGUE_PLANNER_SYSTEM, HUB_DIALOGUE_PLANNER_SYSTEM]) {
+  for (const prompt of [DIALOGUE_PLANNER_SYSTEM, plannerText]) {
     expect(prompt).not.toContain('skip them with a reason');
     expect(prompt).not.toContain(
       'Use skipped with a note explaining why instead of silently dropping steps.',
@@ -393,12 +342,10 @@ test('planner prompt allows skipping only with user agreement', () => {
       'Skipping, removing pending steps or reducing declared items requires a user response',
     );
   }
-  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
+  expect(plannerText).toContain(
     "Skip a step, drop items, sample or otherwise narrow the user's scope only after asking the user",
   );
-  expect(HUB_DIALOGUE_PLANNER_SYSTEM).toContain(
-    'A [check] note is not user agreement.',
-  );
+  expect(plannerText).toContain('A [check] note is not user agreement.');
 });
 
 test('independent planner model survives request hot-swap and rebuilds', async () => {
@@ -412,7 +359,7 @@ test('independent planner model survives request hot-swap and rebuilds', async (
     .spyOn(agentConfig, 'getAgentConfig')
     .mockReturnValue(independentConfig);
   jest.mocked(makeHubLlm).mockResolvedValue(plannerModel.agent);
-  const planner = await buildPlannerAgent(independentConfig);
+  const planner = await buildPlannerAgent(independentConfig, plannerText);
   let rebuilt: Awaited<ReturnType<typeof buildPlannerAgent>> | undefined;
   try {
     expect(makeHubLlm).toHaveBeenLastCalledWith(
@@ -446,7 +393,7 @@ test('independent planner model survives request hot-swap and rebuilds', async (
     expect(afterSwap.ok && afterSwap.value.content).toBe('independent-planner');
 
     const calls = jest.mocked(makeHubLlm).mock.calls.length;
-    rebuilt = await buildPlannerAgent(independentConfig);
+    rebuilt = await buildPlannerAgent(independentConfig, plannerText);
     expect(jest.mocked(makeHubLlm).mock.calls).toHaveLength(calls);
     const afterRebuild = await rebuilt.process([
       { role: 'user', content: 'hello' },
@@ -459,4 +406,59 @@ test('independent planner model survives request hot-swap and rebuilds', async (
     if (rebuilt) releasePlannerAgent(rebuilt);
     configSpy.mockRestore();
   }
+});
+
+test('fresh arbitrary worker composes base, profile, then one invariant library suffix', async () => {
+  const model = llm('composition');
+  jest.mocked(makeHubLlm).mockResolvedValue(model.agent);
+  const selectedConfig: AgentConfig = {
+    ...config,
+    agent: { ...config.agent, mode: 'hard', chatCoordinator: 'dialogue' },
+  };
+  initProviders(await startProviders(selectedConfig));
+  await getSmartAgent('composition');
+  const client = new MCPClientWrapper({
+    transport: 'embedded',
+    listToolsHandler: async () => [],
+    callToolHandler: async () => ({ content: [] }),
+  });
+  await client.connect();
+  const handle = await buildAgentForDestination(
+    new McpClientAdapter(client),
+    new ExpositionFilteringRag(new InMemoryRag()),
+    selectedConfig,
+  );
+  const created = await runWithProfileTools(
+    new AgentToolPermissions(['rag_list']),
+    () =>
+      handle.profileRunner.createWorker({
+        workerBase: 'BASE_MARK',
+        profile: {
+          name: 'research_custom',
+          description: 'Research',
+          systemPrompt: 'PROFILE_MARK',
+          result: 'report',
+          tools: { deny: ['rag_add'] },
+        },
+      }),
+  );
+  if (!created.ok) throw new Error(created.error.message);
+  model.messages.length = 0;
+  await created.value.run({
+    task: 'Review evidence',
+    requestStartedAt: Date.UTC(2026, 9, 30),
+  });
+  const text = model.messages.join('\n');
+  expect(text.indexOf('BASE_MARK')).toBeGreaterThanOrEqual(0);
+  expect(text.indexOf('PROFILE_MARK')).toBeGreaterThan(
+    text.indexOf('BASE_MARK'),
+  );
+  expect(text.indexOf('Use available tools')).toBeGreaterThan(
+    text.indexOf('PROFILE_MARK'),
+  );
+  expect(
+    text.match(/The context gives the time the request started/g),
+  ).toHaveLength(1);
+  expect(text).not.toContain('fails twice');
+  expect(text).not.toContain('Storing, collecting or remembering');
 });

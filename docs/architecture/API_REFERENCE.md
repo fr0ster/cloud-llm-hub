@@ -996,3 +996,56 @@ and planner knowledge (`RagPlannerKnowledge` over `getRagStore`). It grows the c
 window until it finds up to k eligible records or exhausts the backend results.
 `rag_list` reports `enabled` for summaries and individual reads. `rag_correct` preserves
 the disabled flag while updating text in place. No additional LLM tools are introduced.
+
+
+### Agent configuration administration and session selection
+
+`POST /v1/rag/collections` accepts `{ "id": "my-agents", "displayName": "My agents", "scope": "user", "copyFrom": "agents" }`.
+`copyFrom` must equal the configured `LLM_AGENT_PROFILES_COLLECTION` identity.
+The response is 201 with the new collection metadata and exact physical `id`.
+The complete current global record set is validated and copied, including disabled
+flags and prompt bodies. A failed copy never publishes a selectable partial set.
+Copies are independent; later global edits and startup seeding do not update them.
+Collection responses include `collectionKind` (`agents` or `knowledge`, with absent
+legacy values treated as knowledge).
+
+Agents record creation uses `POST /v1/rag/collections/:id/documents` with
+`{ id, text, metadata }`. `id`, `metadata.canonicalKey` and `metadata.name` must
+match exactly. An existing canonical id returns 409. Replace a record explicitly
+with `PUT /v1/rag/collections/:id/documents/:did`; text may be empty. Metadata uses
+the strict profile, worker-base or planner schema in the agent profiles design.
+Unknown fields, malformed tool policies, reserved-name violations and mismatched
+ids return 400. Individual record enablement and deletion use the existing record
+routes. Generic chunked uploads, bulk imports, source toggles and collection
+context toggles are rejected for agents collections. Disabled agent reads return
+only id, enabled=false and reason, without body or description.
+
+Global agents writes require `MCP_Admin`. User copies require their authenticated
+owner; administrators cannot write another user's copy. Collection identity,
+owner, scope and kind cannot be changed through metadata edits. All MCP/LLM
+collection writes are denied for agents, including owners and administrators.
+Copy creation and record edits are REST-only.
+
+`POST /v1/session` accepts optional `agentsCollectionId` alongside `destination`.
+Its response includes `{ session, ttlSeconds, destination, agentsCollectionId }`.
+A new session defaults to the configured global identity. With an existing
+session in `x-clh-session` or its cookie, the same route updates its selection;
+omitting the field preserves the stored choice.
+
+MCP `session_open({ destination?, agentsCollectionId?, session? })` returns
+`{ session, ttlSeconds, destination, agentsCollectionId }`. Supply `session` to
+configure an existing owned session; omit it to open one. Selection changes only
+session configuration and grant no collection-write authority.
+
+Execution inputs (`execute_step`, REST chat and messages) ignore
+`agentsCollectionId`. To change the selection, call `session_open` or
+`POST /v1/session` again for the same session.
+
+Only the exact configured global agents identity or the caller's own agents
+copy is eligible. Foreign copies are rejected even for admins. Missing, deleted,
+pending-copy and wrong-kind ids are rejected without changing the existing
+selection. REST returns 400; MCP returns an error result. There is no fallback
+from an explicit invalid choice. The selection persists in the session record
+and restores after restart; legacy sessions default to the configured global.
+New profile reads and queued task starts use the current choice; running workers
+keep their snapshots. Agents collections never participate in knowledge context.

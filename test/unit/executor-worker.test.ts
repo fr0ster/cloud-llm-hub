@@ -44,6 +44,7 @@ function makeChainableBuilder() {
   builder.withRequestLogger = chainable(withRequestLogger);
   builder.withCoordinator = chainable(withCoordinator);
   builder.withDagCoordinator = chainable(withDagCoordinator);
+  builder.withStepperCoordinator = chainable(jest.fn());
   builder.withMcpFailureClassifier = chainable(jest.fn());
   builder.build = buildMock;
   return builder;
@@ -68,8 +69,20 @@ jest.mock('../../srv/lib/llm-factory', () => ({
   makeHubLlm: jest.fn(async () => ({ chat: jest.fn(), streamChat: jest.fn() })),
 }));
 
+import type { IMcpClient, ISmartAgent } from '@mcp-abap-adt/llm-agent';
+import {
+  MCPClientWrapper,
+  McpClientAdapter,
+} from '@mcp-abap-adt/llm-agent-mcp';
 import type { AgentConfig } from '../../srv/agent-config';
-import { buildExecutorWorker, initProviders } from '../../srv/agent-manager';
+import {
+  buildAgentForDestination,
+  buildExecutorWorker,
+  ExpositionFilteringRag,
+  getCollectionRegistry,
+  initProviders,
+} from '../../srv/agent-manager';
+import { AgentProfileSource } from '../../srv/lib/agent-profile-source';
 import { startProviders } from '../../srv/lib/providers';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
 import { runWithSessionId } from '../../srv/request-session';
@@ -116,6 +129,7 @@ const config: AgentConfig = {
 describe('buildExecutorWorker', () => {
   beforeAll(async () => {
     initProviders(await startProviders(config));
+    await getCollectionRegistry().seedAgentConfiguration('agents', 'planner');
   });
 
   beforeEach(() => {
@@ -193,4 +207,183 @@ describe('buildExecutorWorker', () => {
     expect(withCoordinator).not.toHaveBeenCalled();
     expect(withDagCoordinator).not.toHaveBeenCalled();
   });
+});
+
+const cancellationMcp: IMcpClient = {
+  listTools: async () => ({ ok: true, value: [] }),
+  callTool: async () => ({ ok: true, value: { content: '' } }),
+};
+const cancellationRag = new ExpositionFilteringRag({
+  query: async () => ({ ok: true, value: [] }),
+  healthCheck: async () => ({ ok: true, value: undefined }),
+  getById: async () => ({ ok: true, value: null }),
+});
+
+describe('compatibility profile cancellation', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+    jest.useRealTimers();
+  });
+
+  test.each(['worker', 'checker', 'process', 'stream'] as const)(
+    '%s forwards cancellation during profile resolution and rejects before construction',
+    async (mode) => {
+      buildMock.mockResolvedValue({ agent: fakeAgent, ragStores: {} });
+      let direct: ISmartAgent | undefined;
+      const worker = await buildExecutorWorker(
+        cancellationMcp,
+        cancellationRag,
+        config,
+        (agent) => {
+          direct = agent;
+        },
+      );
+      if (!direct) throw new Error('Missing direct executor');
+      const executor = direct;
+      const checkerHandle =
+        mode === 'checker'
+          ? await buildAgentForDestination(
+              new McpClientAdapter(
+                new MCPClientWrapper({ url: 'http://localhost' }),
+              ),
+              cancellationRag,
+              {
+                ...config,
+                profiles: {
+                  collectionId: 'agents',
+                  plannerRecord: 'planner',
+                  timeoutMs: 25,
+                },
+                agent: { ...config.agent, chatCoordinator: 'adaptive' },
+              },
+            )
+          : undefined;
+      const selectedWorker = checkerHandle?.workers.get('checker') ?? worker;
+      const controller = new AbortController();
+      let backendSignal: AbortSignal | undefined;
+      const read = jest
+        .spyOn(AgentProfileSource.prototype, 'resolveWorker')
+        .mockImplementation(async (_name, options) => {
+          backendSignal = options?.signal;
+          return new Promise((resolve) => {
+            options?.signal?.addEventListener(
+              'abort',
+              () =>
+                resolve({
+                  ok: false,
+                  error: { code: 'unavailable', message: 'cancelled' },
+                }),
+              { once: true },
+            );
+          });
+        });
+      const builds = buildMock.mock.calls.length;
+      const pending =
+        mode === 'worker' || mode === 'checker'
+          ? selectedWorker.run({ task: 'task', signal: controller.signal })
+          : mode === 'process'
+            ? executor.process('task', { signal: controller.signal })
+            : executor
+                .streamProcess('task', { signal: controller.signal })
+                [Symbol.asyncIterator]()
+                .next();
+      const rejected = expect(pending).rejects.toThrow();
+      controller.abort();
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(backendSignal?.aborted).toBe(true);
+      await rejected;
+      expect(buildMock).toHaveBeenCalledTimes(builds);
+    },
+  );
+
+  test('an already cancelled worker never resolves a profile', async () => {
+    buildMock.mockResolvedValue({ agent: fakeAgent, ragStores: {} });
+    const worker = await buildExecutorWorker(
+      cancellationMcp,
+      cancellationRag,
+      config,
+    );
+    const read = jest.spyOn(AgentProfileSource.prototype, 'resolveWorker');
+    await expect(
+      worker.run({ task: 'task', signal: AbortSignal.abort() }),
+    ).rejects.toThrow();
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  test.each(['worker', 'checker', 'process', 'stream'] as const)(
+    '%s bounds stalled construction by the configured profile deadline',
+    async (mode) => {
+      buildMock.mockResolvedValue({ agent: fakeAgent, ragStores: {} });
+      let direct: ISmartAgent | undefined;
+      const worker = await buildExecutorWorker(
+        cancellationMcp,
+        cancellationRag,
+        {
+          ...config,
+          profiles: {
+            collectionId: 'agents',
+            plannerRecord: 'planner',
+            timeoutMs: 25,
+          },
+        },
+        (agent) => {
+          direct = agent;
+        },
+      );
+      if (!direct) throw new Error('Missing executor');
+      const executor = direct;
+      const checkerHandle =
+        mode === 'checker'
+          ? await buildAgentForDestination(
+              new McpClientAdapter(
+                new MCPClientWrapper({ url: 'http://localhost' }),
+              ),
+              cancellationRag,
+              {
+                ...config,
+                profiles: {
+                  collectionId: 'agents',
+                  plannerRecord: 'planner',
+                  timeoutMs: 25,
+                },
+                agent: { ...config.agent, chatCoordinator: 'adaptive' },
+              },
+            )
+          : undefined;
+      const selectedWorker = checkerHandle?.workers.get('checker') ?? worker;
+      jest
+        .spyOn(AgentProfileSource.prototype, 'resolveWorker')
+        .mockResolvedValue({
+          ok: true,
+          value: {
+            profile: {
+              name: 'executor',
+              description: '',
+              systemPrompt: '',
+              tools: 'all',
+              result: mode === 'checker' ? 'verdict' : 'report',
+            },
+          },
+        });
+      let started: (() => void) | undefined;
+      const building = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      buildMock.mockImplementation(() => {
+        started?.();
+        return new Promise<never>(() => {});
+      });
+      jest.useFakeTimers();
+      const pending =
+        mode === 'worker' || mode === 'checker'
+          ? selectedWorker.run({ task: 'task' })
+          : mode === 'process'
+            ? executor.process('task')
+            : executor.streamProcess('task')[Symbol.asyncIterator]().next();
+      const rejected = expect(pending).rejects.toThrow();
+      await building;
+      await jest.advanceTimersByTimeAsync(25);
+      await rejected;
+    },
+  );
 });

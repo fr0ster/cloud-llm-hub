@@ -93,13 +93,13 @@ Startup in proposed `srv/lib/agent-profile-seeds.ts`:
 2. Await registry/backend restoration; ensure the exact global collection exists
    with the expected global scope and agents kind. A conflicting collection
    identity is a startup error.
-3. Memory starts empty: insert every seed once. Persistent backends insert only
-   absent ids with atomic create-if-absent, shared across service instances.
-   An existence check followed by an unconditional upsert is insufficient.
-4. An existing record always wins, including disabled or invalid records. Never
-   overwrite, re-enable or repair it from disk. Concurrent insertion conflicts
-   reload the winner. Backend failure fails startup; partial inserts are safe to
-   retry because each insertion is conditional.
+3. At startup list existing ids of the global agents collection and upsert only
+   absent seed records. Memory starts empty and receives all seeds.
+4. Existing records are never overwritten from disk on purpose, including edited
+   or disabled records. A rare race may rewrite a record with its valid seed
+   content, which is acceptable. Never write half a record: each record is one
+   upsert, whose atomicity is the DB provider's responsibility. Backend failure
+   fails startup; partial seeding is safe to retry by listing ids again.
 5. Validate existing configuration records and selected prompt presence before
    readiness; malformed records fail clearly, without repair. Disabled records
    stay disabled and are handled by the source policy at runtime.
@@ -291,6 +291,7 @@ mutations require its authenticated owner via REST; admin status grants no
 cross-owner write access. Preserve collection identity, ownership and schema on
 edits. Restrict generic chunked imports to prevent invalid configuration records.
 REST reads retain record visibility rules; no disabled body leak.
+Never modify agents data from a cached copy: partial updates read the authoritative store. Every write attempt that may reach the store invalidates only the affected record?s cached entry in this process, including failed attempts. Other records? cached entries remain untouched; bulk writes invalidate each written record. Catalog-only updates preserve document entries. Deleting a whole collection removes that collection?s entry.
 
 Extend REST collection creation with an explicit copy operation: create a new
 user-owned agents collection from the current records of the configured global
@@ -317,8 +318,8 @@ the resolved choice; migrate sessions lacking the field to that default. A
 selection is an exact physical identity, never a knowledge collection toggle.
 
 Extend existing REST `POST /v1/session` and MCP `session_open` inputs/responses
-with this optional field; existing session-bound REST/MCP execution inputs may
-set it explicitly through the same validated session configuration operation.
+with this optional field. Execution inputs do not set the selection. To change
+the selection, call `session_open` or `POST /v1/session` again for the same session.
 Omission preserves an existing selection. Only the session owner may set it,
 and only to the configured global collection or their own agents collection.
 MCP selection changes session configuration only; it cannot create/copy or write
@@ -376,7 +377,7 @@ Host tests under `test/unit/` (proposed `agent-profile-source.test.ts`,
 
 - Memory seeding, persistent missing-only insertion, disabled/edited records
   surviving restart, invalid frontmatter, duplicate keys/names, id conflicts,
-  concurrent service startup and backend failure. No overwrite after a race.
+  concurrent service startup and backend failure. A race may rewrite valid seed content; each record uses one upsert.
 - Copy current global records and enabled flags; independent identities, no later
   global propagation, no overlay, no user seeding; schema validation on copy and
   every write, atomic failed copies and runtime `invalid` for malformed records.
@@ -423,6 +424,8 @@ next call/start and disabled workers never run. Persistent seed updates do not
 change existing records; administrators must explicitly update them.
 
 ## Future work (not in this change)
+
+Collections created by another running instance become visible after the registry snapshot is replaced by provider-level reads (separate task); with one instance this does not arise.
 
 - Show the executor's tool trace to verdict workers.
 - Classify context parts (system prompt, agent experience, session info, additional collections), with trust levels for additional collections.

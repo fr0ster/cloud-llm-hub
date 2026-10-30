@@ -6,15 +6,17 @@
  */
 
 import crypto from 'node:crypto';
-
 import cds from '@sap/cds';
 import type { Request, Response, Router } from 'express';
+import { z } from 'zod';
+import { getAgentConfig } from './agent-config';
 import {
   normalizeLogicalId,
   resolveRouteId,
   sessionCollectionId,
   userCollectionId,
 } from './collection-ids';
+import { validateAgentProfileRecord } from './lib/agent-profile-records';
 import { collectionAccessError } from './lib/collection-access';
 import { CollectionBackendError } from './lib/collection-persistence';
 import {
@@ -22,6 +24,7 @@ import {
   collectionEnabled,
   updateSessionCollection,
 } from './lib/collection-toggle';
+import { withCollectionRestScope } from './lib/collection-write-scope';
 import { leaseSession } from './lib/gatekeeper';
 import {
   isRefusal,
@@ -49,6 +52,29 @@ import {
 } from './session-id';
 
 const log = cds.log('rag-handler');
+const agentCopyInput = z
+  .object({
+    id: z.string().min(1),
+    displayName: z.string().min(1),
+    description: z.string().optional(),
+    scope: z.literal('user').optional(),
+    copyFrom: z.string(),
+  })
+  .strict();
+const agentRecordUpdateInput = z
+  .object({
+    id: z.string().optional(),
+    text: z.string(),
+    metadata: z.record(z.string(), z.json()),
+  })
+  .strict();
+const agentRecordInput = z
+  .object({
+    id: z.string(),
+    text: z.string(),
+    metadata: z.record(z.string(), z.json()),
+  })
+  .strict();
 
 function getUserId(): string {
   return cds.context?.user?.id ?? 'anonymous';
@@ -74,7 +100,11 @@ function error(res: Response, status: number, message: string): void {
 function failure(res: Response, err: unknown, fallback: number): void {
   error(
     res,
-    err instanceof CollectionBackendError ? err.httpStatus : fallback,
+    err instanceof CollectionBackendError
+      ? err.httpStatus
+      : err instanceof Error && err.message === 'Agent record already exists'
+        ? 409
+        : fallback,
     (err as Error).message,
   );
 }
@@ -141,6 +171,10 @@ export function registerRagRoutes(
   // Collections
   // -------------------------------------------------------------------
 
+  router.use('/rag', (_req: Request, _res: Response, next) =>
+    withCollectionRestScope(getUserId(), isAdmin(), next),
+  );
+
   // GET /v1/rag/backends — list available backend types
   router.get('/rag/backends', (_req: Request, res: Response) => {
     json(res, 200, { backends: registry.listBackends() });
@@ -170,12 +204,15 @@ export function registerRagRoutes(
     // Filter session-scoped collections to the current session only — prevents
     // stale/parallel sessions from showing in MANAGE and leaking physical ids.
     collections = collections.filter(
-      (c) => c.scope !== 'session' || c.sessionId === sid,
+      (c) =>
+        !c.agentsCopyPending && (c.scope !== 'session' || c.sessionId === sid),
     );
 
     const mapped = collections.map((c) => ({
       id: c.id,
       logicalId: c.logicalId,
+      collectionKind: c.collectionKind,
+      writable: !collectionAccessError(c, getUserId(), isAdmin(), 'write'),
       scope: c.scope,
       displayName: c.displayName,
       description: c.description,
@@ -227,7 +264,37 @@ export function registerRagRoutes(
   router.post('/rag/collections', async (req: Request, res: Response) => {
     let lease: Lease | undefined;
     try {
-      const { id, displayName, description, scope, backend } = req.body;
+      const { id, displayName, description, scope, backend, copyFrom } =
+        req.body;
+      if (copyFrom !== undefined) {
+        const parsedCopy = agentCopyInput.safeParse(req.body);
+        if (
+          !parsedCopy.success ||
+          parsedCopy.data.copyFrom !==
+            (getAgentConfig().profiles?.collectionId ?? 'agents') ||
+          getUserId() === 'anonymous'
+        ) {
+          error(res, 400, 'Invalid agents copy request');
+          return;
+        }
+        const input = parsedCopy.data;
+        const logicalId = normalizeLogicalId(input.id);
+        const copied = await registry.copyAgentCollection(input.copyFrom, {
+          id: userCollectionId(logicalId, getUserId()),
+          logicalId,
+          displayName: input.displayName,
+          description: input.description ?? '',
+          scope: 'user',
+          owner: getUserId(),
+          collectionKind: 'agents',
+        });
+        json(res, 201, copied);
+        return;
+      }
+      if (req.body.collectionKind === 'agents') {
+        error(res, 400, 'Use copyFrom to create an agents collection');
+        return;
+      }
 
       if (!id || !displayName) {
         error(res, 400, 'id and displayName are required');
@@ -362,7 +429,7 @@ export function registerRagRoutes(
   // Returns null if the caller is allowed; otherwise sends a response and
   // returns a sentinel so the caller can early-return.
   const canAccess = (
-    meta: { scope?: string; owner?: string },
+    meta: { scope?: string; owner?: string; collectionKind?: string },
     mode: 'read' | 'write',
     res: Response,
   ): boolean => {
@@ -487,6 +554,20 @@ export function registerRagRoutes(
           ? 'read'
           : 'write';
       if (!canAccess(meta, mode, res)) return;
+      if (
+        meta.collectionKind === 'agents' &&
+        (req.path === '/upload' ||
+          req.path === '/enabled' ||
+          req.path === '/documents/bulk' ||
+          req.path === '/documents/enabled')
+      ) {
+        error(
+          res,
+          400,
+          'Agents configuration requires individual record operations',
+        );
+        return;
+      }
       next();
     },
   );
@@ -606,13 +687,41 @@ export function registerRagRoutes(
       const limit = Math.min(Number(req.query.limit) || 50, 200);
       let result: Awaited<ReturnType<typeof registry.listDocuments>>;
       try {
-        result = await registry.listDocuments(physId, { offset, limit });
+        const meta = await registry.getCollection(physId);
+        if (meta?.collectionKind === 'agents') {
+          const current = await registry.readAgentCollection(physId);
+          result = current
+            ? {
+                documents: current.documents
+                  .slice(offset, offset + limit)
+                  .map((document) => ({
+                    ...document,
+                    enabled: document.metadata.enabled !== false,
+                  })),
+                total: current.documents.length,
+              }
+            : null;
+        } else {
+          result = await registry.listDocuments(physId, { offset, limit });
+        }
       } catch (err) {
         failure(res, err, 500);
         return;
       }
       if (!result) {
         error(res, 404, `Collection "${physId}" not found`);
+        return;
+      }
+      const meta = await registry.getCollection(physId);
+      if (meta?.collectionKind === 'agents') {
+        json(res, 200, {
+          ...result,
+          documents: result.documents.map((document) =>
+            document.metadata.enabled === false
+              ? { id: document.id, enabled: false, reason: 'record-disabled' }
+              : document,
+          ),
+        });
         return;
       }
       json(res, 200, result);
@@ -627,6 +736,16 @@ export function registerRagRoutes(
         const physId = (req as Request & { _physId?: string })._physId;
         if (!physId) {
           error(res, 404, 'Collection not found');
+          return;
+        }
+        if (
+          (await registry.getCollection(physId))?.collectionKind === 'agents'
+        ) {
+          const parsed = agentRecordInput.safeParse(req.body);
+          if (!parsed.success)
+            return error(res, 400, 'Invalid agent record fields');
+          const record = validateAgentProfileRecord(parsed.data);
+          json(res, 201, await registry.createAgentRecord(physId, record));
           return;
         }
         const { id, text, metadata } = req.body;
@@ -750,7 +869,13 @@ export function registerRagRoutes(
           req.body.enabled,
         );
         if (!doc) return error(res, 404, 'Document not found');
-        json(res, 200, doc);
+        json(
+          res,
+          200,
+          doc.metadata.enabled === false
+            ? { id: doc.id, enabled: false, reason: 'record-disabled' }
+            : doc,
+        );
       } catch (err) {
         failure(res, err, 400);
       }
@@ -768,13 +893,33 @@ export function registerRagRoutes(
       }
       let doc: Awaited<ReturnType<typeof registry.getDocument>>;
       try {
-        doc = await registry.getDocument(physId, req.params.did);
+        const meta = await registry.getCollection(physId);
+        if (meta?.collectionKind === 'agents') {
+          const current = await registry.readAgentCollection(physId);
+          const document = current?.documents.find(
+            (entry) => entry.id === req.params.did,
+          );
+          doc = document
+            ? { ...document, enabled: document.metadata.enabled !== false }
+            : null;
+        } else {
+          doc = await registry.getDocument(physId, req.params.did);
+        }
       } catch (err) {
         failure(res, err, 500);
         return;
       }
       if (!doc) {
         error(res, 404, 'Document not found');
+        return;
+      }
+      const meta = await registry.getCollection(physId);
+      if (meta?.collectionKind === 'agents' && doc.metadata.enabled === false) {
+        json(res, 200, {
+          id: doc.id,
+          enabled: false,
+          reason: 'record-disabled',
+        });
         return;
       }
       json(res, 200, doc);
@@ -789,6 +934,28 @@ export function registerRagRoutes(
         const physId = (req as Request & { _physId?: string })._physId;
         if (!physId) {
           error(res, 404, 'Collection not found');
+          return;
+        }
+        if (
+          (await registry.getCollection(physId))?.collectionKind === 'agents'
+        ) {
+          const parsed = agentRecordUpdateInput.safeParse(req.body);
+          if (
+            !parsed.success ||
+            (parsed.data.id !== undefined && parsed.data.id !== req.params.did)
+          )
+            return error(res, 400, 'Invalid agent record fields');
+          const record = validateAgentProfileRecord({
+            ...parsed.data,
+            id: req.params.did,
+          });
+          const updated = await registry.updateDocument(
+            physId,
+            req.params.did,
+            record,
+          );
+          if (!updated) return error(res, 404, 'Document not found');
+          json(res, 200, updated);
           return;
         }
         const doc = await registry.updateDocument(

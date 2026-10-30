@@ -35,6 +35,13 @@ export function normalizeLogicalId(
   return id;
 }
 
+/** Configuration names are exact identities; never silently normalize them. */
+export function validateConfiguredCollectionId(id: string): string {
+  if (!/^[a-z0-9][a-z0-9_-]*$/.test(id) || id.includes('__'))
+    throw new Error('Invalid agents collection id');
+  return id;
+}
+
 export function userCollectionId(logicalId: string, userId: string): string {
   return `${logicalId}__u_${sanitizeUserKey(userId)}`;
 }
@@ -58,8 +65,9 @@ export function isPhysicalId(id: string): boolean {
 type LookedUp = {
   id: string;
   owner?: string;
-  scope?: 'user' | 'session';
+  scope?: 'global' | 'user' | 'session';
   sessionId?: string;
+  collectionKind?: 'knowledge' | 'agents';
 } | null;
 
 /**
@@ -124,6 +132,8 @@ export async function resolveRouteId(
   sessionId: string | undefined,
   forWrite: boolean,
 ): Promise<string | undefined> {
+  const exact = await reg.getCollection(id);
+  if (exact?.scope === 'global' && exact.collectionKind === 'agents') return id;
   if (isPhysicalId(id)) {
     const c = await reg.getCollection(id);
     if (!c || c.owner !== userId) return undefined; // own-only; cross-user → undefined

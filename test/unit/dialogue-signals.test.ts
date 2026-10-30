@@ -7,11 +7,26 @@ import {
 } from '../../srv/lib/dialogue-signals';
 
 jest.mock('../../srv/agent-manager', () => ({
+  createAgentProfileSource: () => ({
+    list: async () => ({ ok: true, value: [] }),
+    getPrompts: async () => ({
+      ok: true,
+      value: { planner: '', workerBase: '' },
+    }),
+  }),
   releasePlannerAgent: jest.fn(),
   buildPlannerAgent: jest.fn(async () => ({
     process: async () => ({ ok: true, value: { content: 'Hello' } }),
   })),
   getSmartAgent: jest.fn(async () => ({
+    profileRunner: {
+      preparePlanner: async () => ({
+        ok: true,
+        value: {
+          process: async () => ({ ok: true, value: { content: 'Hello' } }),
+        },
+      }),
+    },
     workers: new Map(),
     recMcp: { getToolRecords: () => [], dropRequest: jest.fn() },
     criticLlm: {},

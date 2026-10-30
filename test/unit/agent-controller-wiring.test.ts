@@ -138,6 +138,9 @@ const config: AgentConfig = {
 describe('buildAgentForDestination — DAG coordinator wiring', () => {
   beforeAll(async () => {
     agentManager.initProviders(await startProviders(config));
+    await agentManager
+      .getCollectionRegistry()
+      .seedAgentConfiguration('agents', 'planner');
   });
 
   beforeEach(() => {
@@ -147,7 +150,8 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     // second is the top-level controller — matches call order in the wiring.
     buildMock
       .mockResolvedValueOnce({ agent: workerAgent, ragStores: {} })
-      .mockResolvedValueOnce({ agent: controllerAgent, ragStores: {} });
+      .mockResolvedValueOnce({ agent: controllerAgent, ragStores: {} })
+      .mockResolvedValue({ agent: workerAgent, ragStores: {} });
   });
 
   it.each([
@@ -208,50 +212,9 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
         ok: true,
         value: { content: 'done' },
       });
-      for (const [name, worker] of deps.workers) {
-        expect(worker.description).toBe(
-          name === 'executor'
-            ? agentManager.EXECUTOR_DESCRIPTION
-            : agentManager.CHECKER_DESCRIPTION,
-        );
-        // Private identity plus behavior: ALS history must never replace the
-        // context selected by the controller, including an empty history.
-        expect(worker.agent).toBe(workerAgent);
-        workerAgent.process.mockImplementation(async () => {
-          expect(isReadOnlyTools()).toBe(name === 'checker');
-          return { ok: true, value: { content: 'done' } };
-        });
-        await runWithSessionId(
-          'adaptive',
-          () =>
-            worker.run({
-              task: 'selected task',
-              history: [],
-              externalTools: [
-                {
-                  name: 'write_file',
-                  description: 'client tool',
-                  inputSchema: {},
-                } as never,
-              ],
-              externalResults: new Map([['ext:1', 'r']]),
-            }),
-          [{ role: 'user', content: 'must not inject this' }],
-        );
-        const task = workerAgent.process.mock.calls.at(-1)?.[0];
-        // A checker never receives client-executed tools; the executor does.
-        const opts = workerAgent.process.mock.calls.at(-1)?.[1];
-        if (name === 'checker') {
-          expect(opts?.externalTools).toBeUndefined();
-          expect(opts?.externalResults).toBeUndefined();
-        } else {
-          expect(opts?.externalTools).toHaveLength(1);
-        }
-        expect(task).toContain('selected task');
-        if (name === 'checker')
-          expect(task).toContain('You are verifying, not changing');
-        else expect(task).toBe('selected task');
-        expect(isReadOnlyTools()).toBe(false);
+      // Profiles resolve at execution; no shared raw worker is exposed.
+      for (const worker of deps.workers.values()) {
+        expect(worker.capabilities.contextPolicy).toBe('optional');
       }
     },
   );
@@ -407,6 +370,9 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
   it('streams worker deltas through the real coordinator without duplicating the answer', async () => {
     const actual = jest.requireActual('@mcp-abap-adt/llm-agent-libs');
     const deltas = ['Hello', ' from', ' the executor.'];
+    buildMock
+      .mockReset()
+      .mockResolvedValue({ agent: workerAgent, ragStores: {} });
     workerAgent.process.mockImplementationOnce(async (_prompt, options) => {
       for (const delta of deltas) {
         options.onPartial({ kind: 'content', delta });

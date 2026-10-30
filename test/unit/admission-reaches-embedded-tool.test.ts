@@ -144,6 +144,12 @@ async function until(condition: () => boolean, turns = 2000) {
   return condition();
 }
 
+beforeAll(async () => {
+  await manager
+    .getCollectionRegistry()
+    .seedAgentConfiguration('agents', 'planner');
+});
+
 afterAll(async () => {
   mockTool.release();
   await manager.closeSmartAgent();

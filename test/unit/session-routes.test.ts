@@ -7,6 +7,18 @@ import type { AddressInfo } from 'node:net';
 
 const handlers: Record<string, (...args: unknown[]) => unknown> = {};
 const user = { id: 'alice' };
+const mockAgentCollections = new Map<string, CollectionMeta>();
+mockAgentCollections.set('agents', {
+  id: 'agents',
+  logicalId: 'agents',
+  displayName: 'Agents',
+  description: '',
+  scope: 'global',
+  collectionKind: 'agents',
+  createdAt: '',
+  documentCount: 0,
+  sourceCount: 0,
+});
 const pass = (_req: unknown, _res: unknown, next: () => void) => next();
 
 jest.mock(
@@ -48,6 +60,13 @@ jest.mock('../../srv/agent-config', () => ({
 }));
 jest.mock('../../srv/agent-manager', () => ({
   isProvidersReady: () => false,
+  getCollectionRegistry: () => ({
+    getCollection: async (id: string) => mockAgentCollections.get(id) ?? null,
+    readAgentCollection: async (id: string) => {
+      const meta = mockAgentCollections.get(id);
+      return meta ? { meta, documents: [] } : null;
+    },
+  }),
   setSessionDestination: () => {},
   forgetSessionDestination: () => {},
   getSharedHistoryRag: () => undefined,
@@ -73,9 +92,11 @@ jest.mock('../../srv/anthropic-handler', () => ({
 }));
 
 import express from 'express';
+import { z } from 'zod';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { longSessions } from '../../srv/lib/long-session';
 import { clearSessionConfig } from '../../srv/lib/session-config';
+import type { CollectionMeta } from '../../srv/rag-collections';
 import { SESSION_COOKIE, SESSION_HEADER } from '../../srv/session-id';
 
 require('../../srv/server');
@@ -132,6 +153,7 @@ describe('POST /v1/session', () => {
       session: expect.stringMatching(/^ls-/),
       ttlSeconds: 3600,
       destination: 'DEV',
+      agentsCollectionId: 'agents',
     });
     expect(res.headers.get('set-cookie')).toContain(
       `${SESSION_COOKIE}=${body.session}`,
@@ -362,3 +384,99 @@ describe('retention and an open long session', () => {
     expect(gatekeeper.maySweepSession('alice', body.session)).toBe(false);
   });
 });
+
+test('REST selection is owner-only even for admin, rejects invalid choices, and omission preserves', async () => {
+  const meta: CollectionMeta = {
+    id: 'own',
+    logicalId: 'own',
+    displayName: '',
+    description: '',
+    scope: 'user',
+    owner: 'alice',
+    collectionKind: 'agents',
+    createdAt: '',
+    documentCount: 0,
+    sourceCount: 0,
+  };
+  mockAgentCollections.set('own', meta);
+  mockAgentCollections.set('foreign', { ...meta, id: 'foreign', owner: 'bob' });
+  mockAgentCollections.set('knowledge', {
+    ...meta,
+    id: 'knowledge',
+    collectionKind: 'knowledge',
+  });
+  mockAgentCollections.set('agents', {
+    ...meta,
+    id: 'agents',
+    logicalId: 'agents',
+    scope: 'global',
+    owner: undefined,
+  });
+  const wire = z.object({
+    session: z.string(),
+    agentsCollectionId: z.string(),
+  });
+  const opened = await fetch(`${base}/v1/session`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ agentsCollectionId: 'own' }),
+  });
+  expect(opened.status).toBe(201);
+  const session = wire.parse(await opened.json());
+  expect(session.agentsCollectionId).toBe('own');
+  const update = (body: object) =>
+    fetch(`${base}/v1/session`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-clh-session': session.session,
+      },
+      body: JSON.stringify(body),
+    });
+  for (const agentsCollectionId of [
+    'foreign',
+    'missing',
+    'knowledge',
+    '',
+    42,
+  ]) {
+    expect((await update({ agentsCollectionId })).status).toBe(400);
+    expect(
+      longSessions().get('alice', session.session)?.agentsCollectionId,
+    ).toBe('own');
+  }
+  expect(wire.parse(await (await update({})).json()).agentsCollectionId).toBe(
+    'own',
+  );
+  expect(
+    wire.parse(await (await update({ agentsCollectionId: 'agents' })).json())
+      .agentsCollectionId,
+  ).toBe('agents');
+  mockAgentCollections.delete('own');
+  expect((await update({ agentsCollectionId: 'own' })).status).toBe(400);
+  expect(longSessions().get('alice', session.session)?.agentsCollectionId).toBe(
+    'agents',
+  );
+});
+
+test.each(['chat/completions', 'messages'])(
+  'REST %s ignores agents selection in execution inputs',
+  async (path) => {
+    const { body } = await openOne();
+    const response = await fetch(`${base}/v1/${path}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        [SESSION_HEADER]: body.session,
+      },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: 'Hello' }],
+        agentsCollectionId: 'missing',
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(longSessions().get('alice', body.session)?.agentsCollectionId).toBe(
+      'agents',
+    );
+  },
+);

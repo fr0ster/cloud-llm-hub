@@ -14,6 +14,7 @@ import {
   getRequestSessionId,
   getRequestUserId,
   isReadOnlyTools,
+  profileToolAllowed,
 } from '../request-session';
 
 const scope = new AsyncLocalStorage<boolean>();
@@ -23,7 +24,11 @@ export function runWithDialogueRagTools<T>(fn: () => T): T {
 
 function tools(): McpTool[] {
   return buildRagToolSchemas(true)
-    .filter((t) => !isReadOnlyTools() || t.function.name === 'rag_list')
+    .filter(
+      (t) =>
+        profileToolAllowed(t.function.name) &&
+        (!isReadOnlyTools() || t.function.name === 'rag_list'),
+    )
     .map(({ function: f }) => ({
       name: f.name,
       description: f.description,

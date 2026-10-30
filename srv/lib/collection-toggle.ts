@@ -49,6 +49,7 @@ export function collectionDefault(
   userId: string,
   meta: CollectionMeta,
 ): boolean {
+  if (meta.collectionKind === 'agents') return true;
   return registry.getEnabled(userId, meta.id) ?? !meta.preset;
 }
 export function collectionEnabled(
@@ -57,6 +58,7 @@ export function collectionEnabled(
   sessionId: string | undefined,
   meta: CollectionMeta,
 ): boolean {
+  if (meta.collectionKind === 'agents') return true;
   return (
     (sessionId
       ? overrides.get(slot(userId, sessionId))?.[meta.id]
