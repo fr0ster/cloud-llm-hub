@@ -232,7 +232,11 @@ test.each(['create', 'replace', 'partial', 'delete'] as const)(
           ['analyst', { ...profile, text: 'stale', createdAt: '' }],
           ['other', { ...profile, id: 'other', createdAt: '' }],
         ]),
-        rag: { upsert, deleteById },
+        rag: {
+          upsert,
+          deleteById,
+          getById: async () => ({ ok: true, value: null }),
+        },
       };
       const write =
         operation === 'delete'

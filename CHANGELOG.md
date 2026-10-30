@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased]
 
 ### Added
+- External agent MCP text knowledge tools `collection_create`, `collection_delete`, `record_add`, `record_update`, and `record_delete`, sharing REST write operations with authoritative persistent updates, typed results, session admission and internal LLM exclusion.
 - Agent profile records and Markdown seeds, persistent missing-only startup seeding, fresh profile sources, isolated runners and composable tool permission guards.
 - REST agent administration with canonical record validation, admin-only global writes, owner-only user copies, atomic copy publication and MCP/LLM write protection.
 - Persisted session `agentsCollectionId` selection through REST and MCP, plus WebUI selection and copy controls; agents are excluded from knowledge context toggles.

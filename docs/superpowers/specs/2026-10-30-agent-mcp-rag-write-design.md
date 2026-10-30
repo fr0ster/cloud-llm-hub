@@ -56,15 +56,17 @@ are excluded”. Update says “replace the full text”; source says “no URL 
 Descriptions also state the session requirement and request size limit.
 ### Results and errors
 
+Schema violations (missing fields, wrong types, invalid scope, extra fields, or empty required strings) are rejected by the MCP SDK before the callback as text errors with `isError: true`; they are not measured. Semantic errors, including the 10 MiB argument limit and reserved logical names, return structured errors with `structuredContent.result` from the measured callback.
+
 Return `content: [{ type: 'text', text: result }]` and typed `structuredContent`
-with the same human-readable `result` string on success AND error. Example:
+with the same human-readable `result` string on success and semantic error. Example:
 `{ result: 'Record added.', collection: '<physical>', record: '<uuid>', created: true }`.
 Do not echo record text or credentials. Preserve structured fields through
 `measuredAgentCallback`/`measureAgentTool` in `srv/agent-mcp.ts`; follow the v9.8.1
 `structuredContent.result` convention. Use discriminated per-operation result
 interfaces and output schemas, rather than JSON text as the only payload.
 
-Errors set `isError: true` and return
+Semantic errors set `isError: true` and return
 `{ result, error: { code: string, message: string, status: number } }`.
 Preserve backend `RagError.code` and `CollectionBackendError.httpStatus` when
 available. REST generic errors currently expose `{ error: { message } }`, not
@@ -73,7 +75,7 @@ already exist in REST:
 
 | Failure | Code / status |
 | --- | --- |
-| Invalid input, empty text, reserved logical `__` | `INVALID_ARGUMENT` / 400 |
+| Semantic invalid input, reserved logical `__` | `INVALID_ARGUMENT` / 400 |
 | Request over limit | `PAYLOAD_TOO_LARGE` / 413 |
 | Missing authenticated identity | `UNAUTHENTICATED` / 401 |
 | Global write without MCP_Admin | `FORBIDDEN` / 403 |
@@ -145,8 +147,8 @@ replaces the snapshot read in the shared registry update path (today
 `srv/rag-collections.ts` `updateDocument` reads `stored.documents`); the memory backend's
 map is its authoritative store. A missing backend record is `RECORD_NOT_FOUND`
 and is not resurrected. Delete existence checks use the same backend read.
-A write rejected before submission leaves the snapshot unchanged. On an
-uncertain outcome (timeout, connection loss after submission) re-read that one
+Providers do not reliably report whether a failed write reached the store, so
+after any failed write re-read that one
 record from the backend and set its snapshot entry to the result, or remove it
 when the backend has none; if that read fails, report the error and leave a
 log warning. Other records and collections stay intact.
@@ -229,7 +231,7 @@ Keep existing internal rag_add/rag_correct/rag_deprecate behavior unchanged.
   retention refusal, queueing, lease held through backend completion and cleanup.
 - Persistent freshness tests: external edit followed by update preserves current
   metadata; missing backend record is not resurrected. A successful write is
-  immediately visible to rag_read and listings; an uncertain write re-reads only
+  immediately visible to rag_read and listings; a failed write re-reads only
   its record; unrelated snapshot records are untouched.
 - Assert absence from planner/executor/checker definitions, tool-RAG candidates,
   dialogue tools and dispatcher schemas; forged calls fail without forwarding.

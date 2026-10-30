@@ -111,7 +111,10 @@ import type {
   RagConfig,
 } from '../../srv/agent-config';
 import { getCollectionRegistry } from '../../srv/agent-manager';
-import { executeStep } from '../../srv/agent-mcp';
+import {
+  createAgentMcpServerForRequest,
+  executeStep,
+} from '../../srv/agent-mcp';
 import { handleAnthropicMessages } from '../../srv/anthropic-handler';
 import { userCollectionId } from '../../srv/collection-ids';
 import { collectionRetrieval } from '../../srv/lib/collection-retrieval';
@@ -1796,3 +1799,86 @@ test('one shutdown deadline covers a stalled pipeline, session closes and a bloc
     pipeline.admitted.release();
   }
 }, 8000);
+
+test('measured external writes preserve typed results and record one request per success or failure', async (): Promise<void> => {
+  const opened = await openSession('alice', 'DEST');
+  if ('refused' in opened) throw new Error('Open refused');
+  const collection = userCollectionId('measured-writes', 'alice');
+  const run = async (name: string, args: object) =>
+    httpRun(
+      async (req: Request, res: Response): Promise<void> => {
+        req.headers.accept = 'application/json, text/event-stream';
+        const endpoint = await createAgentMcpServerForRequest(req);
+        try {
+          await endpoint.transport.handleRequest(req, res, req.body);
+        } finally {
+          await endpoint.cleanup();
+        }
+      },
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: { session: opened.key, ...args } },
+      },
+      `clh_session=${opened.key}`,
+    );
+  const created = await run('collection_create', {
+    name: 'measured-writes',
+    scope: 'user',
+  });
+  expect(JSON.parse(created.text)).toMatchObject({
+    result: {
+      content: [{ type: 'text', text: 'Collection created.' }],
+      structuredContent: {
+        result: 'Collection created.',
+        collection,
+        created: true,
+      },
+    },
+  });
+  const failed = await run('record_update', {
+    collection,
+    record: 'missing',
+    text: 'TEXT_SENTINEL',
+  });
+  expect(JSON.parse(failed.text)).toMatchObject({
+    result: {
+      isError: true,
+      content: [{ type: 'text', text: 'Document not found' }],
+      structuredContent: {
+        result: 'Document not found',
+        error: { code: 'RECORD_NOT_FOUND', status: 404 },
+      },
+    },
+  });
+  const requests = await rows('x.hub.request');
+  expect(requests).toHaveLength(2);
+  expect(requests).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        context: expect.objectContaining({
+          userId: 'alice',
+          sessionId: opened.key,
+        }),
+        values: expect.objectContaining({
+          protocol: 'mcp-agent',
+          tool: 'collection_create',
+          endReason: 'done',
+        }),
+      }),
+      expect.objectContaining({
+        context: expect.objectContaining({
+          userId: 'alice',
+          sessionId: opened.key,
+        }),
+        values: expect.objectContaining({
+          protocol: 'mcp-agent',
+          tool: 'record_update',
+          endReason: 'error',
+        }),
+      }),
+    ]),
+  );
+  expect(JSON.stringify(await rows())).not.toContain('TEXT_SENTINEL');
+});

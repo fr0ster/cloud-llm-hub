@@ -1,3 +1,4 @@
+import { RAG_WRITE_MAX_BYTES } from './lib/rag-write-operations';
 import {
   beginUsageShutdown,
   closeUsageSessions,
@@ -823,7 +824,7 @@ cds.on('bootstrap', (app: Application) => {
   });
 
   // Parse JSON body for /v1/* routes
-  app.use('/v1', express.json({ limit: '10mb' }));
+  app.use('/v1', express.json({ limit: RAG_WRITE_MAX_BYTES }));
 
   // RAG collection management routes (/v1/rag/*): registered into `ragRouter`
   // once the providers are ready; until then those paths answer 503.

@@ -16,6 +16,7 @@ import {
   isReadOnlyTools,
   profileToolAllowed,
 } from '../request-session';
+import { externalRagWriteNames } from './external-rag-write-names';
 
 const scope = new AsyncLocalStorage<boolean>();
 export function runWithDialogueRagTools<T>(fn: () => T): T {
@@ -52,7 +53,11 @@ export class DialogueRagMcpClient implements IMcpClient {
       ? {
           ok: true,
           value: [
-            ...result.value.filter((t) => !t.name.startsWith('rag_')),
+            ...result.value.filter(
+              (t) =>
+                !t.name.startsWith('rag_') &&
+                !externalRagWriteNames.has(t.name),
+            ),
             ...tools(),
           ],
         }
@@ -63,6 +68,14 @@ export class DialogueRagMcpClient implements IMcpClient {
     args: Record<string, unknown>,
     options?: CallOptions,
   ): Promise<Result<McpToolResult, McpError>> {
+    if (externalRagWriteNames.has(name))
+      return {
+        ok: true,
+        value: {
+          isError: true,
+          content: 'TOOL_FORBIDDEN: external agent write tool',
+        },
+      };
     if (!name.startsWith('rag_'))
       return this.inner.callTool(name, args, options);
     if (
@@ -98,7 +111,15 @@ export function withDialogueRagTools(rag: IRag): IRag {
       if (prop === 'query')
         return async (...args: Parameters<IRag['query']>) => {
           const result = await target.query(...args);
-          if (!scope.getStore() || !result.ok) return result;
+          if (!result.ok) return result;
+          const candidates = result.value.filter(
+            (record) =>
+              !externalRagWriteNames.has(
+                String(record.metadata.id).replace(/^tool:/, ''),
+              ) &&
+              !externalRagWriteNames.has(String(record.metadata.name ?? '')),
+          );
+          if (!scope.getStore()) return { ...result, value: candidates };
           return {
             ok: true,
             value: [
@@ -107,8 +128,13 @@ export function withDialogueRagTools(rag: IRag): IRag {
                 metadata: { id: `tool:${t.name}`, name: t.name },
                 score: 1,
               })),
-              ...result.value.filter(
-                (r) => !String(r.metadata.id).startsWith('tool:rag_'),
+              ...candidates.filter(
+                (r) =>
+                  !String(r.metadata.id).startsWith('tool:rag_') &&
+                  !externalRagWriteNames.has(
+                    String(r.metadata.id).replace(/^tool:/, ''),
+                  ) &&
+                  !externalRagWriteNames.has(String(r.metadata.name ?? '')),
               ),
             ],
           };

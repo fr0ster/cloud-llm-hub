@@ -13,23 +13,72 @@ import {
   updateSessionCollection,
 } from './lib/collection-toggle';
 import { withCollectionToolScope } from './lib/collection-write-scope';
+import { externalRagWriteNames } from './lib/external-rag-write-names';
 import { leaseSession } from './lib/gatekeeper';
 import { longSessions } from './lib/long-session';
 import { readRagDocuments } from './lib/rag-read';
+import {
+  addRagRecord,
+  createAgentKnowledgeCollection,
+  deleteRagCollection,
+  deleteRagRecord,
+  RagWriteError,
+  ragWriteFailure,
+  resolveRagWriteTarget,
+  updateRagRecord,
+  validateRagText,
+  validateRagWriteSize,
+} from './lib/rag-write-operations';
 import { recordAttributes, recordPolicy } from './lib/record-policy';
 import { resolveSession } from './lib/session-lifecycle';
 import { isRefusal } from './lib/session-retention';
 import { requestMeasurement } from './lib/usage/request-records';
 import { usageRuntime } from './lib/usage/runtime';
 import { CollectionSearchRag } from './rag-collections';
-import { isReadOnlyTools, profileToolAllowed } from './request-session';
+import {
+  isReadOnlyTools,
+  profileToolAllowed,
+  runWithSessionId,
+} from './request-session';
 import { resolveSessionKey } from './session-id';
 
 const session = z.string().min(1).optional();
 const collection = z.string().min(1);
 const offset = z.number().int().nonnegative().optional();
 const enabled = z.boolean();
+
+export { externalRagWriteNames };
 export const ragMcpSchemas = {
+  collection_create: z
+    .object({
+      session,
+      name: z.string().min(1),
+      scope: z.enum(['user', 'session']),
+    })
+    .strict(),
+  collection_delete: z.object({ session, collection }).strict(),
+  record_add: z
+    .object({
+      session,
+      collection,
+      text: z.string().min(1),
+      title: z.string().optional(),
+      source: z.string().optional(),
+    })
+    .strict(),
+  record_update: z
+    .object({
+      session,
+      collection,
+      record: z.string().min(1),
+      text: z.string().min(1),
+      title: z.string().optional(),
+      source: z.string().optional(),
+    })
+    .strict(),
+  record_delete: z
+    .object({ session, collection, record: z.string().min(1) })
+    .strict(),
   rag_search: z.object({
     session,
     query: z.string().min(1),
@@ -61,7 +110,75 @@ export const ragMcpSchemas = {
   }),
 };
 export type RagMcpTool = keyof typeof ragMcpSchemas;
+// The SDK rejects schema violations before the measured callback.
+// Direct executor calls retain the shared strict validation above.
+const writeSession = z
+  .string()
+  .min(1)
+  .describe(
+    'Live caller-owned session key; may also come from header or cookie',
+  )
+  .optional();
+const writeCollection = z
+  .string()
+  .min(1)
+  .describe('Existing collection name or physical id');
+const writeRecord = z.string().min(1).describe('Exact document id');
+const writeText = z
+  .string()
+  .min(1)
+  .describe('Full record text, preserved verbatim');
+const writeAttributes = {
+  title: z.string().describe('Record title').optional(),
+  source: z.string().describe('Attribution only; no URL fetch').optional(),
+};
+const ragWriteInputSchemas = {
+  collection_create: z
+    .object({
+      session: writeSession,
+      name: z
+        .string()
+        .min(1)
+        .describe('Logical collection name; reserved __ is rejected'),
+      scope: z
+        .enum(['user', 'session'])
+        .describe('Collection scope: user or session'),
+    })
+    .strict(),
+  collection_delete: z
+    .object({ session: writeSession, collection: writeCollection })
+    .strict(),
+  record_add: z
+    .object({
+      session: writeSession,
+      collection: writeCollection,
+      text: writeText,
+      ...writeAttributes,
+    })
+    .strict(),
+  record_update: z
+    .object({
+      session: writeSession,
+      collection: writeCollection,
+      record: writeRecord,
+      text: writeText,
+      ...writeAttributes,
+    })
+    .strict(),
+  record_delete: z
+    .object({
+      session: writeSession,
+      collection: writeCollection,
+      record: writeRecord,
+    })
+    .strict(),
+};
 const toolNames: RagMcpTool[] = [
+  'collection_create',
+  'collection_delete',
+  'record_add',
+  'record_update',
+  'record_delete',
   'rag_search',
   'rag_read',
   'collections_list',
@@ -70,6 +187,11 @@ const toolNames: RagMcpTool[] = [
   'record_set_enabled',
 ];
 type Args = {
+  name?: string;
+  scope?: string;
+  record?: string;
+  text?: string;
+  title?: string;
   session?: string;
   collection?: string;
   query?: string;
@@ -82,14 +204,133 @@ type Args = {
   offset?: number;
   limit?: number;
 };
+type ValidatedArgs = Args & { scope?: 'user' | 'session' };
 export function ragTextResult(text: string, isError = false) {
   return {
     content: [{ type: 'text' as const, text }],
     ...(isError ? { isError: true } : {}),
   };
 }
-type Result = ReturnType<typeof ragTextResult>;
+interface WriteFields {
+  [key: string]:
+    | string
+    | boolean
+    | { code: string; message: string; status: number };
+}
+export interface RagWriteErrorResult extends WriteFields {
+  result: string;
+  error: { code: string; message: string; status: number };
+}
+export interface CollectionCreateResult extends WriteFields {
+  result: string;
+  collection: string;
+  name: string;
+  scope: 'user' | 'session';
+  created: boolean;
+}
+export interface CollectionDeleteResult extends WriteFields {
+  result: string;
+  collection: string;
+  deleted: true;
+}
+export interface RecordAddResult extends WriteFields {
+  result: string;
+  collection: string;
+  record: string;
+  created: true;
+}
+export interface RecordUpdateResult extends WriteFields {
+  result: string;
+  collection: string;
+  record: string;
+  updated: true;
+}
+export interface RecordDeleteResult extends WriteFields {
+  result: string;
+  collection: string;
+  record: string;
+  deleted: true;
+}
+type WriteResult =
+  | RagWriteErrorResult
+  | CollectionCreateResult
+  | CollectionDeleteResult
+  | RecordAddResult
+  | RecordUpdateResult
+  | RecordDeleteResult;
+type Result = ReturnType<typeof ragTextResult> & {
+  structuredContent?: WriteResult;
+};
+function writeResult(value: WriteResult): Result {
+  return {
+    ...ragTextResult(value.result, 'error' in value),
+    structuredContent: value,
+  };
+}
+function writeError(code: string, status: number, message: string): Result {
+  return writeResult({ result: message, error: { code, status, message } });
+}
+const writeOutputBase = { result: z.string(), collection: z.string() };
+export const ragWriteErrorOutputSchema = z.object({
+  result: z.string(),
+  error: z.object({
+    code: z.string(),
+    message: z.string(),
+    status: z.number(),
+  }),
+});
+// MCP clients validate errors too; keep an object root with both result variants.
+function writeOutputSchema<T extends z.ZodRawShape>(fields: T) {
+  const success = z.object({ ...writeOutputBase, ...fields });
+  const variants = z.union([success, ragWriteErrorOutputSchema]);
+  const resultSchema = success.partial().extend({
+    result: z.string(),
+    error: ragWriteErrorOutputSchema.shape.error.optional(),
+  });
+  return resultSchema.refine(
+    (value: z.infer<typeof resultSchema>) => variants.safeParse(value).success,
+    'Invalid write result',
+  );
+}
+export const ragWriteOutputSchemas = {
+  collection_create: writeOutputSchema({
+    name: z.string(),
+    scope: z.enum(['user', 'session']),
+    created: z.boolean(),
+  }),
+  collection_delete: writeOutputSchema({ deleted: z.literal(true) }),
+  record_add: writeOutputSchema({
+    record: z.string(),
+    created: z.literal(true),
+  }),
+  record_update: writeOutputSchema({
+    record: z.string(),
+    updated: z.literal(true),
+  }),
+  record_delete: writeOutputSchema({
+    record: z.string(),
+    deleted: z.literal(true),
+  }),
+};
+function isWriteTool(
+  name: RagMcpTool,
+): name is keyof typeof ragWriteOutputSchemas {
+  return externalRagWriteNames.has(name);
+}
+const writeConditions =
+  ' Eligible user/session knowledge collections; existing global mutations require MCP_Admin where REST resolves them; agents collections are excluded. Requires a live caller-owned session (argument, x-clh-session, or clh_session cookie). Maximum UTF-8 JSON arguments: 10 MiB.';
 const descriptions: Record<RagMcpTool, string> = {
+  collection_create:
+    'Create a user/session knowledge collection idempotently.' +
+    writeConditions,
+  collection_delete: `Delete a collection.${writeConditions}`,
+  record_add:
+    'Add one unchunked text record; source is attribution only, no URL fetch.' +
+    writeConditions,
+  record_update:
+    'Update one record: replace the full text, retaining omitted title/source; source is attribution only, no URL fetch.' +
+    writeConditions,
+  record_delete: `Delete one record by exact document id.${writeConditions}`,
   rag_search:
     'Search RAG content in collections enabled for this session; collections only narrows the selection.',
   rag_read:
@@ -138,7 +379,12 @@ export function registerRagMcpTools(
       name,
       {
         description: descriptions[name],
-        inputSchema: ragMcpSchemas[name].shape,
+        inputSchema: isWriteTool(name)
+          ? ragWriteInputSchemas[name]
+          : ragMcpSchemas[name],
+        ...(isWriteTool(name)
+          ? { outputSchema: ragWriteOutputSchemas[name] }
+          : {}),
       },
       (args: Args) =>
         run({ ...args, session: args.session ?? resolveSessionKey(req).key }),
@@ -154,6 +400,23 @@ async function executeRagMcpToolImpl(
   input: Args,
   traceId?: string,
 ): Promise<Result> {
+  const fail = (code: string, status: number, message: string): Result =>
+    isWriteTool(name)
+      ? writeError(code, status, message)
+      : ragTextResult(message, true);
+  if (isWriteTool(name)) {
+    try {
+      validateRagWriteSize(input);
+    } catch (error) {
+      return fail(
+        'PAYLOAD_TOO_LARGE',
+        413,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    if (!userId || userId === 'anonymous')
+      return fail('UNAUTHENTICATED', 401, 'Authenticated user required');
+  }
   if (
     !profileToolAllowed(name) ||
     (isReadOnlyTools() &&
@@ -164,10 +427,11 @@ async function executeRagMcpToolImpl(
         'collections_list',
       ].includes(name))
   )
-    return ragTextResult(`TOOL_FORBIDDEN: ${name}`, true);
+    return fail('TOOL_FORBIDDEN', 403, `TOOL_FORBIDDEN: ${name}`);
   const parsed = ragMcpSchemas[name].safeParse(input);
-  if (!parsed.success) return ragTextResult(parsed.error.message, true);
-  const args: Args = parsed.data;
+  if (!parsed.success)
+    return fail('INVALID_ARGUMENT', 400, parsed.error.message);
+  const args: ValidatedArgs = parsed.data;
   if (
     name === 'record_set_enabled' &&
     Boolean(args.id) === Boolean(args.source)
@@ -175,24 +439,44 @@ async function executeRagMcpToolImpl(
     return ragTextResult('Provide exactly one of id or source', true);
   const key = args.session ?? resolveSessionKey(req).key;
   if (!key)
-    return ragTextResult('SESSION_REQUIRED: call session_open first', true);
+    return fail(
+      'SESSION_REQUIRED',
+      400,
+      'SESSION_REQUIRED: call session_open first',
+    );
   try {
     const s = await resolveSession(userId, key);
-    if (!s) return ragTextResult('SESSION_NOT_FOUND', true);
+    if (!s) return fail('SESSION_NOT_FOUND', 404, 'SESSION_NOT_FOUND');
     const result = await longSessions().run(s, async () => {
       const lease = leaseSession(userId, key, 'rag', { presented: true });
       if (isRefusal(lease))
-        return ragTextResult(
+        return fail(
+          lease.refused === 'closed'
+            ? 'session_closed'
+            : 'gatekeeper_retention',
+          lease.refused === 'closed' ? 410 : 503,
           lease.refused === 'closed' ? 'SESSION_CLOSED' : 'SESSION_RETENTION',
-          true,
         );
       try {
-        return await runRagTool(userId, key, name, args, traceId);
+        return await runWithSessionId(
+          key,
+          () => runRagTool(userId, key, name, args, traceId),
+          undefined,
+          userId,
+        );
       } finally {
         lease.release();
       }
     });
-    return 'refused' in result ? ragTextResult(result.refused, true) : result;
+    return 'refused' in result
+      ? fail(
+          result.refused === 'SESSION_CLOSED' && isWriteTool(name)
+            ? 'session_closed'
+            : result.refused,
+          result.refused === 'SESSION_CLOSED' ? 410 : 429,
+          result.refused,
+        )
+      : result;
   } catch (error) {
     if (
       error instanceof Error &&
@@ -200,7 +484,18 @@ async function executeRagMcpToolImpl(
       (error.refused === 'SESSION_LIMIT' ||
         error.refused === 'SESSION_STORE_UNAVAILABLE')
     )
-      return ragTextResult(error.refused, true);
+      return fail(error.refused, 503, error.refused);
+    if (isWriteTool(name)) {
+      const failure = ragWriteFailure(
+        error instanceof Error ? error : new Error(String(error)),
+        name === 'record_add' || name === 'record_update'
+          ? 400
+          : name === 'collection_create'
+            ? 409
+            : 500,
+      );
+      return writeError(failure.code, failure.status, failure.message);
+    }
     return ragTextResult(
       error instanceof Error ? error.message : String(error),
       true,
@@ -212,11 +507,97 @@ async function runRagTool(
   userId: string,
   sid: string,
   name: RagMcpTool,
-  args: Args,
+  args: ValidatedArgs,
   traceId?: string,
 ): Promise<Result> {
   const registry = getCollectionRegistry();
   const admin = cds.context?.user?.is('MCP_Admin') ?? false;
+  if (isWriteTool(name)) {
+    const identity = { userId, sessionId: sid, admin };
+    if (name === 'collection_create') {
+      const created = await createAgentKnowledgeCollection(
+        registry,
+        args.name ?? '',
+        args.scope ?? 'user',
+        identity,
+      );
+      return writeResult({
+        result: created.created
+          ? 'Collection created.'
+          : 'Collection already existed.',
+        collection: created.collection.id,
+        name: created.collection.logicalId ?? '',
+        scope: args.scope ?? 'user',
+        created: created.created,
+      });
+    }
+    const id = await resolveRagWriteTarget(
+      registry,
+      args.collection ?? '',
+      identity,
+    );
+    if (name === 'collection_delete') {
+      await deleteRagCollection(registry, id);
+      return writeResult({
+        result: 'Collection deleted.',
+        collection: id,
+        deleted: true,
+      });
+    }
+    if (name === 'record_delete') {
+      if (!(await deleteRagRecord(registry, id, args.record ?? '')))
+        throw new RagWriteError('RECORD_NOT_FOUND', 404, 'Document not found');
+      return writeResult({
+        result: 'Record deleted.',
+        collection: id,
+        record: args.record ?? '',
+        deleted: true,
+      });
+    }
+    validateRagText(args.text ?? '');
+    const options = {
+      usage: usageRuntime()
+        ?.forSession({ userId, sessionId: sid })
+        .with({
+          ...(traceId ? { requestId: traceId, traceId } : {}),
+          role: 'embedding',
+          component: 'collection-write',
+        }),
+    };
+    const metadata = {
+      ...(args.title !== undefined ? { title: args.title } : {}),
+      ...(args.source !== undefined ? { source: args.source } : {}),
+    };
+    if (name === 'record_add') {
+      const doc = await addRagRecord(
+        registry,
+        id,
+        { text: args.text ?? '', metadata },
+        options,
+      );
+      return writeResult({
+        result: 'Record added.',
+        collection: id,
+        record: doc.id,
+        created: true,
+      });
+    }
+    const doc = await updateRagRecord(
+      registry,
+      id,
+      args.record ?? '',
+      { text: args.text, metadata },
+      options,
+    );
+    if (!doc)
+      throw new RagWriteError('RECORD_NOT_FOUND', 404, 'Document not found');
+    return writeResult({
+      result: 'Record updated.',
+      collection: id,
+      record: doc.id,
+      updated: true,
+    });
+  }
   const respond = (value: object) => ragTextResult(JSON.stringify(value));
   const resolve = async (entry: string) => {
     const id = await resolveRouteId(registry, entry, userId, sid, false);

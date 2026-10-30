@@ -33,6 +33,7 @@ import {
   type RagScanRecord,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
+import cds from '@sap/cds';
 import type { CollectionMeta, RagDocument } from '../rag-collections';
 import { storageEnabled } from './usage/storage-values';
 
@@ -449,12 +450,15 @@ export interface PersistentEntry {
   usageTextBytes?: number;
   meta: CollectionMeta;
   documents: Map<string, RagDocument>;
-  rag: IRagEditor;
+  rag: IRagEditor & Pick<IRag, 'getById'>;
   /** Set while the collection's deletion is out. */
   deleting?: boolean;
 }
 
-function refuseWhileDeleting(entry: PersistentEntry, operation: string): void {
+export function refuseWhileDeleting(
+  entry: PersistentEntry,
+  operation: string,
+): void {
   if (entry.deleting)
     throw new CollectionBackendError(
       operation,
@@ -504,6 +508,60 @@ export function ownMetadata(
   return canonicalMetadata(own);
 }
 
+/** Read one authoritative record without changing the knowledge read snapshot. */
+export async function readPersistentDocument(
+  entry: PersistentEntry,
+  docId: string,
+): Promise<RagDocument | null> {
+  const record = await backendWrite('read document', () =>
+    entry.rag.getById(`doc:${entry.meta.id}:${docId}`),
+  );
+  return record
+    ? restoredDocument(entry.meta.id, {
+        id: `doc:${entry.meta.id}:${docId}`,
+        text: record.text,
+        metadata: record.metadata,
+      })
+    : null;
+}
+
+/** Reconcile just the submitted record after a failed write. */
+async function settledRecordWrite<T>(
+  entry: PersistentEntry,
+  docId: string,
+  operation: string,
+  run: () => Promise<Result<T, RagError>>,
+): Promise<T> {
+  try {
+    return await backendWrite(operation, run);
+  } catch (error) {
+    // Providers do not reliably say whether a failed write reached the store
+    // (e.g. a wrapped `fetch failed`), so every failure re-reads this one
+    // record; a write refused before submission re-reads the same value.
+    if (entry.meta.collectionKind !== 'agents') {
+      try {
+        const current = await readPersistentDocument(entry, docId);
+        if (current) entry.documents.set(docId, current);
+        else entry.documents.delete(docId);
+        entry.meta.documentCount = entry.documents.size;
+        entry.usageTextBytes = undefined;
+      } catch (readError) {
+        cds
+          .log('collection-persistence')
+          .warn('Unable to reconcile uncertain record write', {
+            collection: entry.meta.id,
+            record: docId,
+            error:
+              readError instanceof Error
+                ? readError.message
+                : String(readError),
+          });
+      }
+    }
+    throw error;
+  }
+}
+
 /**
  * Write the document to the backend, and only on success to memory. There is
  * no "keep it unindexed" path here: memory holding a record the backend lacks
@@ -513,12 +571,15 @@ export async function addPersistentDocument(
   entry: PersistentEntry,
   doc: Omit<RagDocument, 'createdAt'>,
   namespace?: string,
+  options?: CallOptions,
 ): Promise<RagDocument> {
   try {
     refuseWhileDeleting(entry, 'add document');
     const createdAt = new Date().toISOString();
     const p = payload(entry, doc.id, doc.metadata, createdAt, namespace);
-    await backendWrite('add document', () => entry.rag.upsert(doc.text, p));
+    await settledRecordWrite(entry, doc.id, 'add document', () =>
+      entry.rag.upsert(doc.text, p, options),
+    );
     const persisted: RagDocument = {
       id: doc.id,
       text: doc.text,
@@ -546,6 +607,7 @@ export async function updatePersistentDocument(
   existing: RagDocument,
   update: { text?: string; metadata?: Record<string, unknown> },
   namespace?: string,
+  options?: CallOptions,
 ): Promise<RagDocument> {
   try {
     refuseWhileDeleting(entry, 'update document');
@@ -564,11 +626,13 @@ export async function updatePersistentDocument(
       existing.createdAt,
       namespace,
     );
-    await backendWrite('update document', () => entry.rag.upsert(text, p));
+    await settledRecordWrite(entry, existing.id, 'update document', () =>
+      entry.rag.upsert(text, p, options),
+    );
     if (storageEnabled() && entry.usageTextBytes !== undefined)
       entry.usageTextBytes +=
         Buffer.byteLength(text, 'utf8') -
-        Buffer.byteLength(existing.text, 'utf8');
+        Buffer.byteLength(entry.documents.get(existing.id)?.text ?? '', 'utf8');
     existing.text = text;
     existing.metadata = ownMetadata(metadata);
     return existing;
@@ -586,11 +650,17 @@ export async function deletePersistentDocument(
   docId: string,
 ): Promise<boolean> {
   try {
-    if (entry.meta.collectionKind !== 'agents' && !entry.documents.has(docId))
-      return false;
     refuseWhileDeleting(entry, 'delete document');
-    const deleted = await backendWrite('delete document', () =>
-      entry.rag.deleteById(`doc:${entry.meta.id}:${docId}`),
+    if (
+      entry.meta.collectionKind !== 'agents' &&
+      !(await readPersistentDocument(entry, docId))
+    )
+      return false;
+    const deleted = await settledRecordWrite(
+      entry,
+      docId,
+      'delete document',
+      () => entry.rag.deleteById(`doc:${entry.meta.id}:${docId}`),
     );
     if (storageEnabled() && entry.usageTextBytes !== undefined)
       entry.usageTextBytes -= Buffer.byteLength(

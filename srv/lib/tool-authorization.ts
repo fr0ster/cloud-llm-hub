@@ -1,4 +1,5 @@
 import { isReadOnlyTools, profileToolAllowed } from '../request-session';
+import { externalRagWriteNames } from './external-rag-write-names';
 /**
  * Execution-time authorization for MCP tools.
  *
@@ -44,6 +45,10 @@ export function assertToolAllowed(
   allowed: readonly ExpositionLevel[] | undefined,
   annotations?: ToolEffectAnnotations,
 ): void {
+  if (externalRagWriteNames.has(toolName))
+    throw new ToolAuthorizationError(
+      'External agent write tools are unavailable to internal LLMs.',
+    );
   if (!profileToolAllowed(toolName)) {
     throw new ToolAuthorizationError(
       `Tool "${toolName}" was not executed: the agent profile forbids it.`,

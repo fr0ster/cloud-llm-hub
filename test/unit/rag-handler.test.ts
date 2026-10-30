@@ -1,3 +1,11 @@
+import {
+  RAG_WRITE_MAX_BYTES,
+  RagWriteError,
+  ragWriteFailure,
+  validateRagText,
+  validateRagWriteSize,
+} from '../../srv/lib/rag-write-operations';
+
 /**
  * Unit tests for rag-handler Task 6 behaviour:
  * - POST /rag/collections: user-scope creates <logical>__u_<key>, idempotent
@@ -793,5 +801,21 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
       // Alice must not be able to see bob's collection — middleware returns 404
       expect(res._status).toBe(404);
     });
+  });
+});
+
+test('shared write validation and REST fallback translation retain operation statuses', () => {
+  expect(() => validateRagText('')).toThrow('text is required');
+  expect(() => validateRagText('  ')).not.toThrow();
+  expect(() =>
+    validateRagWriteSize({ text: 'x'.repeat(RAG_WRITE_MAX_BYTES) }),
+  ).toThrow('10 MiB');
+  expect(
+    ragWriteFailure(new RagWriteError('INVALID_ARGUMENT', 400, 'invalid'), 500),
+  ).toEqual({ code: 'INVALID_ARGUMENT', status: 400, message: 'invalid' });
+  expect(ragWriteFailure(new Error('store failed'), 409)).toEqual({
+    code: 'BACKEND_ERROR',
+    status: 409,
+    message: 'store failed',
   });
 });

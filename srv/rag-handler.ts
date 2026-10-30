@@ -27,6 +27,13 @@ import {
 import { withCollectionRestScope } from './lib/collection-write-scope';
 import { leaseSession } from './lib/gatekeeper';
 import {
+  addRagRecord,
+  createRagCollection,
+  deleteRagCollection,
+  deleteRagRecord,
+  updateRagRecord,
+} from './lib/rag-write-operations';
+import {
   isRefusal,
   type Lease,
   type LeaseRefusal,
@@ -399,8 +406,10 @@ export function registerRagRoutes(
 
       // Idempotent: if the physical collection already exists, return existing
       // meta. Atomic: concurrent requests for one id create it once.
-      const { collection: meta, created } =
-        await registry.getOrCreateCollection(createMeta);
+      const { collection: meta, created } = await createRagCollection(
+        registry,
+        createMeta,
+      );
       if (!created) {
         log.info('Collection already exists (idempotent)', {
           id: physical,
@@ -661,7 +670,7 @@ export function registerRagRoutes(
           error(res, 404, `Collection "${physId}" not found`);
           return;
         }
-        await registry.deleteCollection(physId);
+        await deleteRagCollection(registry, physId);
       } catch (err) {
         failure(res, err, 500);
         return;
@@ -753,13 +762,12 @@ export function registerRagRoutes(
           error(res, 400, 'text is required');
           return;
         }
-        const docId = id || crypto.randomUUID();
-        const namespace = req.body.namespace ?? undefined;
-        const doc = await registry.addDocument(
-          physId,
-          { id: docId, text, metadata: metadata || {} },
-          namespace,
-        );
+        const doc = await addRagRecord(registry, physId, {
+          id,
+          text,
+          metadata,
+          namespace: req.body.namespace ?? undefined,
+        });
         json(res, 201, doc);
       } catch (err) {
         failure(res, err, 400);
@@ -949,7 +957,8 @@ export function registerRagRoutes(
             ...parsed.data,
             id: req.params.did,
           });
-          const updated = await registry.updateDocument(
+          const updated = await updateRagRecord(
+            registry,
             physId,
             req.params.did,
             record,
@@ -958,7 +967,8 @@ export function registerRagRoutes(
           json(res, 200, updated);
           return;
         }
-        const doc = await registry.updateDocument(
+        const doc = await updateRagRecord(
+          registry,
           physId,
           req.params.did,
           req.body,
@@ -985,7 +995,7 @@ export function registerRagRoutes(
       }
       let deleted: boolean;
       try {
-        deleted = await registry.deleteDocument(physId, req.params.did);
+        deleted = await deleteRagRecord(registry, physId, req.params.did);
       } catch (err) {
         failure(res, err, 500);
         return;
