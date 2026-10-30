@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [9.9.0] - 2026-10-30
+
 ### Added
 - External agent MCP text knowledge tools `collection_create`, `collection_delete`, `record_add`, `record_update`, and `record_delete`, sharing REST write operations with authoritative persistent updates, typed results, session admission and internal LLM exclusion.
 - Agent profile records and Markdown seeds, persistent missing-only startup seeding, fresh profile sources, isolated runners and composable tool permission guards.
