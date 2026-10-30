@@ -1,6 +1,6 @@
 {
   "name": "cloud-llm-hub",
-  "version": "9.8.0",
+  "version": "9.8.1",
   "description": "A simple CAP project.",
   "dependencies": {
     "@mcp-abap-adt/adt-clients": "^37.2.0",
