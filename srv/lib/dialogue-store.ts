@@ -5,6 +5,8 @@ import type {
   IRagBackendWriter,
   IRagProvider,
   IRagScanner,
+  ToolTrace,
+  ToolTraceEntry,
 } from '@mcp-abap-adt/llm-agent';
 import { isRagScanner } from '@mcp-abap-adt/llm-agent';
 import { TASK_OUTPUT_CHAR_LIMIT } from '@mcp-abap-adt/llm-agent-libs';
@@ -253,6 +255,23 @@ const request = z.preprocess(
     legacy: z.literal(true).optional(),
   } satisfies Shape<NonNullable<DialogueState['requests']>[number]>),
 );
+// Preserve the published redacted evidence verbatim; legacy tasks omit it.
+const traceFields = {
+  sequence: z.number().int().positive(),
+  toolName: z.string(),
+  arguments: z.string(),
+  resultExcerpt: z.string(),
+};
+const toolTraceEntry = z.discriminatedUnion('outcome', [
+  z.object({ ...traceFields, outcome: z.literal('ok') }),
+  z.object({ ...traceFields, outcome: z.literal('error'), error: z.string() }),
+  z.object({ ...traceFields, outcome: z.literal('unsettled') }),
+]) satisfies z.ZodType<ToolTraceEntry>;
+const toolTrace = z.object({
+  entries: z.array(toolTraceEntry),
+  omittedCount: z.number().int().nonnegative(),
+  complete: z.boolean(),
+} satisfies Shape<ToolTrace>);
 const schema = z.object({
   requests: z.array(request).max(200).optional(),
   requestSeq: num.optional(),
@@ -287,6 +306,7 @@ const schema = z.object({
           'interrupted',
         ]),
         usage: tokenUsage.optional(),
+        toolTrace: toolTrace.optional(),
         budgetExhausted: z.boolean().optional(),
         toolsSelected: num.optional(),
         toolsAvailable: num.optional(),

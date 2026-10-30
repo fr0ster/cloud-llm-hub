@@ -606,3 +606,29 @@ test('stored session agents selection survives state validation and restoration'
     agentsCollectionId: 'own-agents',
   });
 });
+
+it('round-trips empty tool evidence and legacy tasks without evidence', async () => {
+  const store = new MemoryDialogueStore();
+  const legacy: DialogueState['tasks'][number] = {
+    id: 'legacy',
+    worker: 'executor',
+    goal: 'Read',
+    state: 'done',
+    createdAt: 1,
+  };
+  const current: DialogueState = {
+    ...state,
+    tasks: [
+      legacy,
+      {
+        ...legacy,
+        id: 'empty',
+        toolTrace: { entries: [], omittedCount: 0, complete: true },
+      },
+    ],
+  };
+  await store.save('alice', 'trace-compatibility', current);
+  const restored = await store.load('alice', 'trace-compatibility');
+  expect(restored).toEqual(current);
+  expect(restored?.tasks[0]).not.toHaveProperty('toolTrace');
+});

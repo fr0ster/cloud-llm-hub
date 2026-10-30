@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- Upgrade llm-agent to 30.24.0 and llm-agent-libs to 30.23.0; preserve executed tool traces in persisted dialogue tasks and checker context.
+- Checker seed requires tool evidence or independent verification for claimed system changes. Seeding is missing-only: existing `agents` collections keep their old checker text until an admin updates it.
+
 ## [9.9.0] - 2026-10-30
 
 ### Added

@@ -1,10 +1,15 @@
-import type { ISmartAgent } from '@mcp-abap-adt/llm-agent';
+import type {
+  ISmartAgent,
+  ToolTrace,
+  ToolTraceEntry,
+} from '@mcp-abap-adt/llm-agent';
 import {
   DialogueSession,
   PlannerToolsClient,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { AgentProfileRunner } from '../../srv/lib/agent-profile-runner';
 import { AgentProfileSource } from '../../srv/lib/agent-profile-source';
+import { MemoryDialogueStore } from '../../srv/lib/dialogue-store';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { profileToolAllowed } from '../../srv/request-session';
 
@@ -39,6 +44,37 @@ test('dialogue discovers arbitrary names, resolves planner variants and executes
     plannerRecord: 'planner-custom',
     timeoutMs: 3000,
   });
+  const trace: ToolTrace = {
+    entries: [
+      {
+        sequence: 1,
+        toolName: 'Read',
+        arguments: '{}',
+        resultExcerpt: 'Evidence',
+        outcome: 'ok',
+      },
+      {
+        sequence: 3,
+        toolName: 'Read',
+        arguments: '{}',
+        resultExcerpt: '',
+        outcome: 'error',
+        error: 'Unavailable',
+      },
+      {
+        sequence: 4,
+        toolName: 'Read',
+        arguments: '{}',
+        resultExcerpt: '',
+        outcome: 'unsettled',
+      },
+    ],
+    omittedCount: 1,
+    complete: false,
+  };
+  const observed: ToolTraceEntry[] = [];
+  const store = new MemoryDialogueStore();
+  const checkerContexts: string[] = [];
   const built: { name: string; preamble: string }[] = [];
   const plannerTexts: string[] = [];
   let phase = 0;
@@ -112,10 +148,14 @@ test('dialogue discovers arbitrary names, resolves planner variants and executes
         name: profile.name,
         description: profile.description,
         capabilities: { contextPolicy: 'optional' },
-        run: async () => {
+        run: async (input) => {
+          if (profile.result === 'verdict')
+            checkerContexts.push(input.context ?? '');
+          else for (const entry of trace.entries) input.onToolTrace?.(entry);
           expect(profileToolAllowed('Read')).toBe(true);
           expect(profileToolAllowed('Write')).toBe(false);
           return {
+            ...(profile.result === 'report' ? { toolTrace: trace } : {}),
             output:
               profile.result === 'verdict' ? '{"verdict":"pass"}' : 'Evidence',
           };
@@ -129,10 +169,22 @@ test('dialogue discovers arbitrary names, resolves planner variants and executes
   });
   session = await DialogueSession.open({
     id: 'profiles-dialogue',
+    store: {
+      load: (id) => store.load('reader', id),
+      delete: (id) => store.delete('reader', id),
+      save: (id, state) => store.save('reader', id, state),
+    },
     profileSource: source,
     profileRunner: runner,
     profileTimeoutMs: 3000,
-    board: { maxConcurrent: 1 },
+    board: {
+      maxConcurrent: 1,
+      baseInput: () => ({
+        onToolTrace: (entry: ToolTraceEntry) => {
+          observed.push(entry);
+        },
+      }),
+    },
     maxCorrections: 0,
   });
   try {
@@ -153,6 +205,19 @@ test('dialogue discovers arbitrary names, resolves planner variants and executes
       ['research_42', 'report', 'done'],
       ['checker', 'verdict', 'done'],
     ]);
+    expect(session.snapshot().tasks[0].toolTrace).toEqual(trace);
+    expect(observed).toEqual(trace.entries);
+    expect(checkerContexts[0]).toContain('[tools used by task');
+    expect(checkerContexts[0]).toContain('Read');
+    expect(checkerContexts[0]).toContain('Evidence');
+    expect(checkerContexts[0]).toContain(
+      '1 executed calls omitted from storage',
+    );
+    expect(checkerContexts[0]).toContain('outcome unknown (unsettled)');
+    expect(checkerContexts[0]).toContain('Unavailable');
+    await store.save('reader', 'profiles-dialogue', session.snapshot());
+    const restored = await store.load('reader', 'profiles-dialogue');
+    expect(restored?.tasks[0].toolTrace).toEqual(trace);
     expect(built.map((entry) => entry.name)).toEqual([
       'research_42',
       'checker',
