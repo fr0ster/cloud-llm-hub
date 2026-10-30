@@ -1,10 +1,23 @@
 /** REST and MCP share the visibility/write guard after resolving a collection. */
 export function collectionAccessError(
-  meta: { scope?: string; owner?: string },
+  meta: {
+    scope?: string;
+    owner?: string;
+    collectionKind?: string;
+    agentsCopyPending?: boolean;
+  },
   userId: string,
   admin: boolean,
   mode: 'read' | 'write',
 ): { status: number; message: string } | undefined {
+  if (meta.agentsCopyPending)
+    return { status: 404, message: 'Collection not found' };
+  if (
+    meta.collectionKind === 'agents' &&
+    meta.scope === 'user' &&
+    (!userId || userId === 'anonymous' || meta.owner !== userId)
+  )
+    return { status: 404, message: 'Collection not found' };
   if (meta.scope === 'global') {
     return mode === 'write' && !admin
       ? {

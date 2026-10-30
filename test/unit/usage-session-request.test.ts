@@ -301,6 +301,15 @@ async function httpRun(
 }
 beforeEach(async (): Promise<void> => {
   harness.reset();
+  if (!(await getCollectionRegistry().getCollection('agents')))
+    await getCollectionRegistry().createCollection({
+      id: 'agents',
+      logicalId: 'agents',
+      displayName: 'Agents',
+      description: '',
+      scope: 'global',
+      collectionKind: 'agents',
+    });
   resetGatekeeperForTest();
   resetUsageSessionsForTest();
   setStorageSnapshots();

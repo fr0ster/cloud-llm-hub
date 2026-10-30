@@ -75,6 +75,9 @@ goal sizes, states, durations and hashed session keys. They never contain goal t
 | `LLM_AGENT_DESTINATION_SOURCE` | `btp` | `btp` (Destination service) \| `env` (the Cloud SDK `destinations` variable — off-platform, where no Destination service is reachable) |
 | `LLM_AGENT_CLASSIFIER_MODEL` | falls back to `LLM_AGENT_MODEL` | Optional cheaper model for classification |
 | `LLM_AGENT_PLANNER_MODEL` | falls back to the main model (follows the WebUI selector) | Optional independent model for the dialogue planner; when set, the WebUI LLM selector changes only the executors |
+| `LLM_AGENT_PROFILES_COLLECTION` | `agents` | Exact global agents collection id; lowercase letters, digits, underscores and hyphens; no normalization or `__` |
+| `LLM_AGENT_PLANNER_RECORD` | `planner` | Exact planner record name (`planner-<variant>` also accepted) |
+| `LLM_AGENT_PROFILE_TIMEOUT_MS` | `3000` | Positive finite whole-number deadline for profile source reads; runner/library wiring follows in Stage B |
 | `LLM_AGENT_PLANNER_KNOWLEDGE` | `planning` | Comma-separated persistent user collection names for planner guidance, at most 10 distinct names. Empty disables knowledge. Missing or unavailable collections are logged and skipped. Resolved for the session's user each time a dialogue opens, so newly created or replaced collections are picked up by new sessions. |
 | `LLM_AGENT_THROTTLE_MAX_WAIT_MS` | `20000` | The longest LLM-side `429` interval we wait out **when no door is configured**. Anything longer is reported with the number attached. Not applied once `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` is set: behind a door an admitted session waits exactly the interval the server named. A value that is not a whole number of milliseconds is refused at startup |
 | `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` | unset | How many sessions may run a pipeline at once, across `/v1/chat/completions`, `/v1/messages` and `execute_step`. Unset: no door on the chat channels, and `execute_step` keeps its cap of two. Size it against the container's memory |
@@ -294,3 +297,13 @@ Dialogue chat does not run request-level collection retrieval or inject retrieve
 Each agent receives the request time in its context. The hub captures HTTP/MCP arrival time once and reuses it across agent calls and retries. Dialogue planner and workers use the dialogue request's persisted openedAt timestamp; planner content wrappers preserve the single session-provided line.
 
 Set `LLM_AGENT_TIME_ZONE` to an IANA time zone such as `Asia/Tbilisi`. Unset or blank uses the library default `UTC`. Invalid values reject startup. This deployment setting applies to all SmartAgent configurations and dialogue sessions; clients cannot override it.
+
+Agent profile seeds ship in `srv/agent-profiles/*.md`. Startup validates the entire
+seed set and preserves existing records, including disabled records. Memory
+collections support create-only seeding. Persistent startup currently refuses a
+missing seed because the installed backend writer has no atomic create-if-absent
+operation; it never substitutes an unsafe upsert. Persistent seeding needs that
+backend capability before rollout. Agents collections are configuration and are
+excluded from knowledge search. Session selection APIs and profile runner wiring
+are introduced in a later stage. The main model remains the only required model;
+planner and classifier overrides are optional.

@@ -1951,3 +1951,127 @@ test('record enabled metadata survives PGlite restart and excludes disabled reco
     await search(await restored.getRagStore(meta.id), 'knowledge'),
   ).toEqual(['knowledge']);
 });
+
+test('partial agent updates preserve authoritative edits and toggle records created by another instance', async () => {
+  await reg.seedAgentConfiguration('agents', 'planner');
+  const other = newRegistry();
+  await other.restore();
+  await other.updateDocument('agents', 'executor', {
+    text: 'narrowed executor',
+    metadata: { tools: 'read-only', description: 'current description' },
+  });
+  await reg.setDocumentEnabled('agents', 'executor', false);
+  expect(
+    (await reg.readAgentCollection('agents'))?.documents.find(
+      (doc) => doc.id === 'executor',
+    ),
+  ).toMatchObject({
+    text: 'narrowed executor',
+    metadata: {
+      tools: 'read-only',
+      description: 'current description',
+      enabled: false,
+    },
+  });
+  await other.updateDocument('agents', 'executor', { text: 'latest body' });
+  await reg.updateDocument('agents', 'executor', {
+    metadata: { description: 'partial edit' },
+  });
+  expect(
+    (await reg.readAgentCollection('agents'))?.documents.find(
+      (doc) => doc.id === 'executor',
+    ),
+  ).toMatchObject({
+    text: 'latest body',
+    metadata: {
+      tools: 'read-only',
+      enabled: false,
+      description: 'partial edit',
+    },
+  });
+  await other.addDocument('agents', {
+    id: 'new-profile',
+    text: 'new body',
+    metadata: {
+      canonicalKey: 'new-profile',
+      name: 'new-profile',
+      kind: 'profile',
+      description: 'new',
+      tools: 'read-only',
+      result: 'report',
+    },
+  });
+  expect(
+    await reg.setDocumentEnabled('agents', 'new-profile', false),
+  ).toMatchObject({ text: 'new body', enabled: false });
+});
+
+test('persistent agent startup upserts only missing complete records and preserves edited disabled records', async () => {
+  await reg.seedAgentConfiguration('agents', 'planner');
+  expect((await reg.readAgentCollection('agents'))?.documents).toHaveLength(5);
+  await reg.updateDocument('agents', 'executor', {
+    text: 'edited executor',
+    metadata: { enabled: false },
+  });
+  await reg.deleteDocument('agents', 'analyst');
+  const restarted = newRegistry();
+  await restarted.restore();
+  const add = jest.spyOn(restarted, 'addDocument');
+  await restarted.seedAgentConfiguration('agents', 'planner');
+  expect(add).toHaveBeenCalledTimes(1);
+  expect(add).toHaveBeenCalledWith(
+    'agents',
+    expect.objectContaining({
+      id: 'analyst',
+      text: expect.any(String),
+      metadata: expect.objectContaining({
+        kind: 'profile',
+        canonicalKey: 'analyst',
+      }),
+    }),
+  );
+  expect(
+    (await restarted.readAgentCollection('agents'))?.documents.find(
+      (record) => record.id === 'executor',
+    ),
+  ).toMatchObject({ text: 'edited executor', metadata: { enabled: false } });
+  add.mockClear();
+  await restarted.seedAgentConfiguration('agents', 'planner');
+  expect(add).not.toHaveBeenCalled();
+});
+
+test('agent copies and unpublished-copy markers survive provider restoration', async () => {
+  await reg.seedAgentConfiguration('agents', 'planner');
+  await reg.setDocumentEnabled('agents', 'analyst', false);
+  const meta = {
+    ...userMeta('agents-copy', 'alice'),
+    collectionKind: 'agents' as const,
+  };
+  await reg.copyAgentCollection('agents', meta);
+  const restored = newRegistry(newProvider());
+  await restored.ready;
+  expect((await restored.getCollection(meta.id))?.collectionKind).toBe(
+    'agents',
+  );
+  expect(
+    (await restored.getDocument(meta.id, 'analyst'))?.metadata.enabled,
+  ).toBe(false);
+  await restored.updateDocument(meta.id, 'planner', { text: '' });
+  expect(
+    (await newRegistry(newProvider()).getDocument(meta.id, 'planner'))?.text,
+  ).toBe('');
+  const pendingMeta = {
+    ...userMeta('incomplete-agents', 'alice'),
+    collectionKind: 'agents' as const,
+    agentsCopyPending: true,
+  };
+  await restored.createCollection(pendingMeta);
+  const afterFailure = newRegistry(newProvider());
+  await afterFailure.ready;
+  expect(
+    (await afterFailure.getCollection(pendingMeta.id))?.agentsCopyPending,
+  ).toBe(true);
+  expect(await afterFailure.listCollections('alice')).not.toContainEqual(
+    expect.objectContaining({ id: pendingMeta.id }),
+  );
+});

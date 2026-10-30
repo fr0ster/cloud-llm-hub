@@ -2,6 +2,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Message } from '@mcp-abap-adt/llm-agent';
+import type { AgentToolPermissions } from './lib/agent-profile-tools';
 import { runWithReviewSignals } from './lib/review-scope';
 import type { ToolQueryAnalysis } from './lib/tool-query-analyzer';
 
@@ -70,9 +71,55 @@ export function getRequestUserId(): string | undefined {
   return userId && userId !== 'anonymous' ? userId : undefined;
 }
 const readOnlyTools = new AsyncLocalStorage<boolean>();
+const profileTools = new AsyncLocalStorage<
+  Pick<AgentToolPermissions, 'allows'>
+>();
+/** Nested scopes can only narrow the parent's permissions. */
+export function runWithProfileTools<T>(
+  permissions: AgentToolPermissions,
+  fn: () => T,
+): T {
+  const parent = profileTools.getStore();
+  if (!parent) return profileTools.run(permissions, fn);
+  return profileTools.run(
+    {
+      allows: (name: string) => parent.allows(name) && permissions.allows(name),
+    },
+    fn,
+  );
+}
+
+export function profileToolAllowed(name: string): boolean {
+  return (
+    profileTools.getStore()?.allows(name) ?? !requiredProfileTools.getStore()
+  );
+}
+
+/** Capture a parent's immutable ceiling before crossing a deferred worker boundary. */
+export function currentProfileTools():
+  | Pick<AgentToolPermissions, 'allows'>
+  | undefined {
+  return (
+    profileTools.getStore() ??
+    (requiredProfileTools.getStore() ? { allows: () => false } : undefined)
+  );
+}
 export function runWithReadOnlyTools<T>(fn: () => T): T {
   return readOnlyTools.run(true, fn);
 }
 export function isReadOnlyTools(): boolean {
   return readOnlyTools.getStore() === true;
+}
+
+/** Worker entry points mark scope as required; a lost policy fails closed. */
+const requiredProfileTools = new AsyncLocalStorage<boolean>();
+export function runWithRequiredProfileTools<T>(fn: () => T): T {
+  return requiredProfileTools.run(true, fn);
+}
+
+export function hasProfileToolScope(): boolean {
+  return (
+    profileTools.getStore() !== undefined ||
+    requiredProfileTools.getStore() === true
+  );
 }

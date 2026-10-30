@@ -1,3 +1,9 @@
+import { validateAgentProfileRecord } from './lib/agent-profile-records';
+import {
+  loadAgentProfileSeeds,
+  seedAgentProfiles,
+} from './lib/agent-profile-seeds';
+import { assertCollectionWrite } from './lib/collection-write-scope';
 import { recordPolicy } from './lib/record-policy';
 /**
  * RAG Collection Registry — manages dynamic RAG collections at runtime.
@@ -158,7 +164,9 @@ export interface CollectionMeta {
   logicalId: string;
   displayName: string;
   description: string;
-  scope: 'user' | 'session';
+  scope: 'global' | 'user' | 'session';
+  collectionKind?: 'knowledge' | 'agents';
+  agentsCopyPending?: boolean;
   /** Marks a preset collection — enabled defaults to false until the user opts in. */
   preset?: boolean;
   /** RAG backend type for this collection (default: registry's defaultBackend) */
@@ -975,7 +983,23 @@ export class CollectionRegistry {
     await this.settled();
     const result: CollectionMeta[] = [];
     for (const stored of this.collections.values()) {
-      if (stored.meta.owner === userId) {
+      if (
+        !stored.meta.agentsCopyPending &&
+        (stored.meta.owner === userId ||
+          (Boolean(userId) &&
+            userId !== 'anonymous' &&
+            stored.meta.scope === 'global' &&
+            stored.meta.collectionKind === 'agents'))
+      ) {
+        if (stored.persistent && stored.meta.collectionKind === 'agents') {
+          const fresh = await this.readAgentCollection(stored.meta.id);
+          if (fresh && !fresh.meta.agentsCopyPending)
+            result.push({
+              ...fresh.meta,
+              documentCount: fresh.documents.length,
+            });
+          continue;
+        }
         result.push({
           ...stored.meta,
           documentCount: stored.documents.size,
@@ -1049,6 +1073,12 @@ export class CollectionRegistry {
     await this.settled(id);
     const stored = this.collections.get(id);
     if (!stored) return null;
+    if (stored.persistent && stored.meta.collectionKind === 'agents') {
+      const fresh = await this.readAgentCollection(id);
+      return fresh
+        ? { ...fresh.meta, documentCount: fresh.documents.length }
+        : null;
+    }
     return {
       ...stored.meta,
       documentCount: stored.documents.size,
@@ -1101,6 +1131,7 @@ export class CollectionRegistry {
   async createCollection(
     meta: Omit<CollectionMeta, 'createdAt' | 'documentCount' | 'sourceCount'>,
   ): Promise<CollectionMeta> {
+    assertCollectionWrite(meta);
     // A persistent one may already be in the catalog: restore first.
     if (this.persistence && !meta.preset) await this.whenReady();
     if (this.collections.has(meta.id)) {
@@ -1173,37 +1204,60 @@ export class CollectionRegistry {
     return this.getEnabled(stored.meta.owner ?? '', stored.meta.id) ?? true;
   }
 
+  /** Catalog partial writes must also start from authoritative agents metadata. */
+  private async agentCatalogSnapshot(
+    stored: StoredCollection,
+  ): Promise<{ meta: CollectionMeta; enabled: boolean }> {
+    if (stored.meta.collectionKind !== 'agents' || !this.persistence)
+      return { meta: { ...stored.meta }, enabled: this.enabledOf(stored) };
+    const current = unwrap(
+      await this.persistence.readCollection(stored.meta.id),
+      'read agents catalog',
+    );
+    if (!current) throw new Error('Agents collection disappeared');
+    return { meta: current.meta, enabled: current.enabled };
+  }
+
   async updateCollection(
     id: string,
     update: Partial<Pick<CollectionMeta, 'displayName' | 'description'>>,
   ): Promise<CollectionMeta | null> {
     if (this.persistence) await this.settled(id, true);
     const stored = this.collections.get(id);
-    if (!stored) return null;
-    const apply = (m: CollectionMeta) => {
-      if (update.displayName) m.displayName = update.displayName;
-      if (update.description) m.description = update.description;
-    };
-    if (stored.persistent && this.persistence) {
-      // Serialized with the collection's other record writes; see updateRecord.
-      unwrap(
-        await this.persistence.updateRecord(
-          id,
-          () => {
-            const meta = { ...stored.meta };
-            apply(meta);
-            return { meta, enabled: this.enabledOf(stored) };
-          },
-          () => apply(stored.meta),
-        ),
-        'update collection',
-      );
-    } else apply(stored.meta);
-    return {
-      ...stored.meta,
-      documentCount: stored.documents.size,
-      sourceCount: countSources(stored),
-    };
+    try {
+      if (stored) assertCollectionWrite(stored.meta);
+      if (!stored) return null;
+      const apply = (m: CollectionMeta) => {
+        if (update.displayName) m.displayName = update.displayName;
+        if (update.description) m.description = update.description;
+      };
+      if (stored.persistent && this.persistence) {
+        // Serialized with the collection's other record writes; see updateRecord.
+        unwrap(
+          await this.persistence.updateRecord(
+            id,
+            async () => {
+              const snapshot = await this.agentCatalogSnapshot(stored);
+              apply(snapshot.meta);
+              return snapshot;
+            },
+            () => apply(stored.meta),
+          ),
+          'update collection',
+        );
+      } else apply(stored.meta);
+      if (stored.persistent && stored.meta.collectionKind === 'agents')
+        return await this.getCollection(id);
+      return {
+        ...stored.meta,
+        documentCount: stored.documents.size,
+        sourceCount: countSources(stored),
+      };
+    } finally {
+      if (stored?.persistent && stored.meta.collectionKind === 'agents') {
+        stored.usageTextBytes = undefined;
+      }
+    }
   }
 
   /**
@@ -1299,12 +1353,17 @@ export class CollectionRegistry {
   async deleteCollection(id: string): Promise<boolean> {
     if (this.persistence) await this.settled(id, true);
     const stored = this.collections.get(id);
+    if (stored) assertCollectionWrite(stored.meta);
     if (stored?.persistent && this.persistence) {
       stored.deleting = true;
       try {
         unwrap(await this.persistence.remove(stored.meta), 'delete collection');
       } finally {
         stored.deleting = false;
+        if (stored.meta.collectionKind === 'agents') {
+          stored.documents.clear();
+          stored.usageTextBytes = undefined;
+        }
       }
       if (this.collections.get(id) === stored) this.forget(id);
       this.log.info('Collection deleted', { id });
@@ -1335,21 +1394,31 @@ export class CollectionRegistry {
   ): Promise<void> {
     if (this.persistence) await this.settled(physicalId, true);
     const stored = this.collections.get(physicalId);
-    if (stored?.persistent && this.persistence) {
-      unwrap(
-        await this.persistence.updateRecord(
-          physicalId,
-          () => ({ meta: { ...stored.meta }, enabled }),
-          () => {
-            this.putEnabled(stored.meta.owner ?? '', physicalId, enabled);
-            this.putEnabled(userId, physicalId, enabled);
-          },
-        ),
-        'set enabled',
-      );
-      return;
+    try {
+      if (stored) assertCollectionWrite(stored.meta);
+      if (stored?.persistent && this.persistence) {
+        unwrap(
+          await this.persistence.updateRecord(
+            physicalId,
+            async () => ({
+              ...(await this.agentCatalogSnapshot(stored)),
+              enabled,
+            }),
+            () => {
+              this.putEnabled(stored.meta.owner ?? '', physicalId, enabled);
+              this.putEnabled(userId, physicalId, enabled);
+            },
+          ),
+          'set enabled',
+        );
+        return;
+      }
+      this.putEnabled(userId, physicalId, enabled);
+    } finally {
+      if (stored?.persistent && stored.meta.collectionKind === 'agents') {
+        stored.usageTextBytes = undefined;
+      }
     }
-    this.putEnabled(userId, physicalId, enabled);
   }
 
   private putEnabled(userId: string, physicalId: string, enabled: boolean) {
@@ -1570,6 +1639,118 @@ export class CollectionRegistry {
   // Document CRUD
   // -------------------------------------------------------------------------
 
+  async seedAgentConfiguration(
+    collectionId: string,
+    plannerRecord: string,
+  ): Promise<void> {
+    const seeds = await loadAgentProfileSeeds();
+    await seedAgentProfiles(
+      {
+        ensureGlobal: async () => {
+          const { collection } = await this.getOrCreateCollection({
+            id: collectionId,
+            logicalId: collectionId,
+            displayName: 'Agent profiles',
+            description: 'Agent configuration',
+            scope: 'global',
+            collectionKind: 'agents',
+          });
+          if (
+            collection.scope !== 'global' ||
+            collection.logicalId !== collectionId ||
+            collection.collectionKind !== 'agents' ||
+            collection.owner ||
+            collection.sessionId ||
+            collection.expiresAt ||
+            collection.preset
+          )
+            throw new Error('Conflicting global agents collection identity');
+        },
+        read: async () =>
+          (await this.readAgentCollection(collectionId))?.documents ?? [],
+        upsert: (record) => this.addDocument(collectionId, record),
+      },
+      seeds,
+      plannerRecord,
+    );
+  }
+
+  /** Pending catalog entries remain unselectable even if cleanup or the process fails. */
+  async copyAgentCollection(
+    sourceId: string,
+    meta: Omit<CollectionMeta, 'createdAt' | 'documentCount' | 'sourceCount'>,
+  ): Promise<CollectionMeta> {
+    const source = await this.readAgentCollection(sourceId);
+    if (
+      source?.meta.scope !== 'global' ||
+      source.meta.collectionKind !== 'agents' ||
+      meta.scope !== 'user' ||
+      !meta.owner ||
+      meta.owner === 'anonymous' ||
+      meta.collectionKind !== 'agents'
+    )
+      throw new Error('Invalid agents copy');
+    const records = source.documents.map((document) =>
+      validateAgentProfileRecord(document),
+    );
+    if (new Set(records.map((record) => record.id)).size !== records.length)
+      throw new Error('Duplicate agent record');
+    await this.createCollection({ ...meta, agentsCopyPending: true });
+    try {
+      for (const record of records) await this.addDocument(meta.id, record);
+      const stored = this.collections.get(meta.id);
+      if (!stored) throw new Error('Agents copy disappeared');
+      let published = { ...stored.meta, agentsCopyPending: false };
+      if (stored.persistent && this.persistence)
+        unwrap(
+          await this.persistence.updateRecord(
+            meta.id,
+            async () => {
+              const current = await this.agentCatalogSnapshot(stored);
+              published = { ...current.meta, agentsCopyPending: false };
+              return { ...current, meta: published };
+            },
+            () => {
+              stored.meta = published;
+            },
+          ),
+          'publish agents copy',
+        );
+      else stored.meta = published;
+      return { ...published, documentCount: records.length };
+    } catch (error) {
+      try {
+        await this.deleteCollection(meta.id);
+      } catch {
+        /* Pending entries stay ineligible. */
+      }
+      throw error;
+    }
+  }
+
+  /** Authoritative configuration snapshot; never use restored records as a cache. */
+  async readAgentCollection(
+    id: string,
+    options?: CallOptions,
+  ): Promise<{ meta: CollectionMeta; documents: RagDocument[] } | null> {
+    options?.signal?.throwIfAborted();
+    if (this.persistence) {
+      const collection = unwrap(
+        await this.persistence.readCollection(id, options),
+        'read agent collection',
+      );
+      options?.signal?.throwIfAborted();
+      if (!collection) return null;
+      if (collection.status) throw new Error('Agent collection unavailable');
+      return { meta: collection.meta, documents: collection.documents };
+    }
+    await this.ready;
+    const stored = this.collections.get(id);
+    return stored
+      ? { meta: { ...stored.meta }, documents: [...stored.documents.values()] }
+      : null;
+  }
+
   async listDocuments(
     collectionId: string,
     opts?: { offset?: number; limit?: number },
@@ -1578,9 +1759,16 @@ export class CollectionRegistry {
     const stored = this.collections.get(collectionId);
     if (!stored) return null;
     this.refuseDegraded(stored, 'list documents', 'read');
-    const all = stored.persistent
-      ? persistentOrder(stored.documents.values())
-      : Array.from(stored.documents.values());
+    const fresh =
+      stored.meta.collectionKind === 'agents'
+        ? await this.readAgentCollection(collectionId)
+        : undefined;
+    if (fresh === null) return null;
+    const all = fresh
+      ? fresh.documents
+      : stored.persistent
+        ? persistentOrder(stored.documents.values())
+        : Array.from(stored.documents.values());
     const offset = opts?.offset ?? 0;
     const limit = opts?.limit ?? 50;
     return {
@@ -1597,7 +1785,12 @@ export class CollectionRegistry {
     const stored = this.collections.get(collectionId);
     if (!stored) return null;
     this.refuseDegraded(stored, 'get document', 'read');
-    const doc = stored.documents.get(docId);
+    const doc =
+      stored.meta.collectionKind === 'agents'
+        ? (await this.readAgentCollection(collectionId))?.documents.find(
+            (record) => record.id === docId,
+          )
+        : stored.documents.get(docId);
     return doc ? withEnabled(doc) : null;
   }
 
@@ -1616,7 +1809,11 @@ export class CollectionRegistry {
     if (!stored) return null;
     this.refuseDegraded(stored, 'find document', 'read');
     const matches: RagDocument[] = [];
-    for (const doc of stored.documents.values()) {
+    const documents =
+      stored.meta.collectionKind === 'agents'
+        ? ((await this.readAgentCollection(collectionId))?.documents ?? [])
+        : stored.documents.values();
+    for (const doc of documents) {
       if (doc.metadata?.canonicalKey !== canonicalKey) continue;
       const tags = (doc.metadata?.tags as string[] | undefined) ?? [];
       if (tags.includes('superseded') || tags.includes('deprecated')) continue;
@@ -1628,6 +1825,32 @@ export class CollectionRegistry {
       );
     }
     return matches[0] ?? null;
+  }
+
+  private readonly agentCreates = new Map<string, Promise<void>>();
+
+  async createAgentRecord(
+    collectionId: string,
+    document: Omit<RagDocument, 'createdAt'>,
+  ): Promise<RagDocument> {
+    validateAgentProfileRecord(document);
+    const key = JSON.stringify([collectionId, document.id]);
+    const previous = this.agentCreates.get(key) ?? Promise.resolve();
+    let release: () => void = () => {};
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.agentCreates.set(key, pending);
+    await previous;
+    try {
+      const current = await this.readAgentCollection(collectionId);
+      if (current?.documents.some((record) => record.id === document.id))
+        throw new Error('Agent record already exists');
+      return await this.addDocument(collectionId, document);
+    } finally {
+      release();
+      if (this.agentCreates.get(key) === pending) this.agentCreates.delete(key);
+    }
   }
 
   async addDocument(
@@ -1656,6 +1879,9 @@ export class CollectionRegistry {
     const stored = this.collections.get(collectionId);
     if (!stored) throw new Error(`Collection "${collectionId}" not found`);
     this.refuseDegraded(stored, 'add document', 'write');
+    assertCollectionWrite(stored.meta);
+    if (stored.meta.collectionKind === 'agents')
+      validateAgentProfileRecord(doc);
     // Backend first, memory only on success; see addPersistentDocument.
     if (stored.persistent) {
       if (!storageEnabled())
@@ -1733,6 +1959,16 @@ export class CollectionRegistry {
       signal?: AbortSignal;
     },
   ): Promise<{ added: number; errors: string[] }> {
+    const target = await this.getCollection(collectionId);
+    if (target) assertCollectionWrite(target);
+    if (target?.collectionKind === 'agents') {
+      const ids = new Set<string>();
+      for (const doc of docs) {
+        validateAgentProfileRecord(doc);
+        if (ids.has(doc.id)) throw new Error('Duplicate agent record');
+        ids.add(doc.id);
+      }
+    }
     // A collection that cannot take writes refuses the whole call, explicitly,
     // instead of one error per document.
     if (this.persistence) {
@@ -1796,23 +2032,44 @@ export class CollectionRegistry {
     const stored = this.collections.get(collectionId);
     if (!stored) return null;
     this.refuseDegraded(stored, 'update document', 'write');
-    const existing = stored.documents.get(docId);
+    assertCollectionWrite(stored.meta);
+    const existing =
+      stored.meta.collectionKind === 'agents'
+        ? (await this.readAgentCollection(collectionId))?.documents.find(
+            (document) => document.id === docId,
+          )
+        : stored.documents.get(docId);
     if (!existing) return null;
+    if (stored.meta.collectionKind === 'agents')
+      validateAgentProfileRecord({
+        id: docId,
+        text: update.text ?? existing.text,
+        metadata:
+          update.metadata?.canonicalKey !== undefined
+            ? update.metadata
+            : { ...existing.metadata, ...update.metadata },
+      });
     if (stored.persistent) {
-      if (!storageEnabled())
-        return updatePersistentDocument(stored, existing, update, namespace);
       const updated = await updatePersistentDocument(
         stored,
         existing,
         update,
         namespace,
       );
-      this.refreshStorageCache(stored.meta);
+      if (stored.meta.collectionKind !== 'agents') {
+        stored.documents.set(docId, updated);
+        stored.meta.documentCount = stored.documents.size;
+      }
+      if (storageEnabled()) this.refreshStorageCache(stored.meta);
       return updated;
     }
 
-    const text = update.text || existing.text;
-    const metadata = { ...existing.metadata, ...update.metadata };
+    const text = update.text ?? existing.text;
+    const metadata =
+      stored.meta.collectionKind === 'agents' &&
+      update.metadata?.canonicalKey !== undefined
+        ? update.metadata
+        : { ...existing.metadata, ...update.metadata };
     // IRagBackendWriter has no metadata-only operation. Re-upsert unchanged
     // text for a flag change; publish the local state only after success.
     const result = await stored.rag.upsert(text, {
@@ -1854,7 +2111,12 @@ export class CollectionRegistry {
     const stored = this.collections.get(collectionId);
     if (!stored) throw new Error('Collection not found');
     this.refuseDegraded(stored, 'enable source', 'write');
-    const docs = [...stored.documents.values()].filter(
+    assertCollectionWrite(stored.meta);
+    const records =
+      stored.meta.collectionKind === 'agents'
+        ? ((await this.readAgentCollection(collectionId))?.documents ?? [])
+        : [...stored.documents.values()];
+    const docs = records.filter(
       (doc) =>
         doc.metadata.source === source &&
         (doc.metadata.uploadId ?? '') === uploadId &&
@@ -1873,6 +2135,7 @@ export class CollectionRegistry {
     const stored = this.collections.get(collectionId);
     if (!stored) return false;
     this.refuseDegraded(stored, 'delete document', 'write');
+    assertCollectionWrite(stored.meta);
     if (stored.persistent) {
       if (!storageEnabled()) return deletePersistentDocument(stored, docId);
       const deleted = await deletePersistentDocument(stored, docId);
@@ -1915,6 +2178,7 @@ export class CollectionRegistry {
     await this.settled(collectionId);
     const stored = this.collections.get(collectionId);
     if (!stored) return null;
+    if (stored.meta.collectionKind === 'agents') return null;
     this.refuseDegraded(stored, 'search', 'search');
     return stored.rag;
   }
@@ -1955,7 +2219,7 @@ export class CollectionRegistry {
       const stored = this.collections.get(id);
       if (!stored) continue;
       this.refuseDegraded(stored, 'search', 'search');
-      stores[id] = stored.rag;
+      if (stored.meta.collectionKind !== 'agents') stores[id] = stored.rag;
     }
     return stores;
   }

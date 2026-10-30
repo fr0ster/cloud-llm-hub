@@ -12,14 +12,17 @@ import {
   collectionEnabled,
   updateSessionCollection,
 } from './lib/collection-toggle';
+import { withCollectionToolScope } from './lib/collection-write-scope';
 import { leaseSession } from './lib/gatekeeper';
 import { longSessions } from './lib/long-session';
+import { readRagDocuments } from './lib/rag-read';
 import { recordAttributes, recordPolicy } from './lib/record-policy';
 import { resolveSession } from './lib/session-lifecycle';
 import { isRefusal } from './lib/session-retention';
 import { requestMeasurement } from './lib/usage/request-records';
 import { usageRuntime } from './lib/usage/runtime';
 import { CollectionSearchRag } from './rag-collections';
+import { isReadOnlyTools, profileToolAllowed } from './request-session';
 import { resolveSessionKey } from './session-id';
 
 const session = z.string().min(1).optional();
@@ -111,6 +114,17 @@ export function registerRagMcpTools(
   ) => (args: Args) => Promise<Result>,
 ): void {
   for (const name of toolNames) {
+    if (
+      !profileToolAllowed(name) ||
+      (isReadOnlyTools() &&
+        ![
+          'rag_search',
+          'rag_read',
+          'collection_records',
+          'collections_list',
+        ].includes(name))
+    )
+      continue;
     const run = measure(name, (args) =>
       executeRagMcpTool(
         req,
@@ -133,13 +147,24 @@ export function registerRagMcpTools(
 }
 
 /** Validates even direct calls, before acquiring the session queue and lease. */
-export async function executeRagMcpTool(
+async function executeRagMcpToolImpl(
   req: Pick<Request, 'headers'>,
   userId: string,
   name: RagMcpTool,
   input: Args,
   traceId?: string,
 ): Promise<Result> {
+  if (
+    !profileToolAllowed(name) ||
+    (isReadOnlyTools() &&
+      ![
+        'rag_search',
+        'rag_read',
+        'collection_records',
+        'collections_list',
+      ].includes(name))
+  )
+    return ragTextResult(`TOOL_FORBIDDEN: ${name}`, true);
   const parsed = ragMcpSchemas[name].safeParse(input);
   if (!parsed.success) return ragTextResult(parsed.error.message, true);
   const args: Args = parsed.data;
@@ -198,6 +223,11 @@ async function runRagTool(
     if (!id) throw new Error('Collection not found');
     const meta = await registry.getCollection(id);
     if (!meta) throw new Error('Collection not found');
+    if (
+      meta.collectionKind === 'agents' &&
+      (name === 'record_set_enabled' || name === 'collection_set_enabled')
+    )
+      throw new Error('TOOL_FORBIDDEN: agents configuration is REST-only');
     const refusal = collectionAccessError(
       meta,
       userId,
@@ -218,6 +248,7 @@ async function runRagTool(
           id: c.id,
           name: c.displayName,
           scope: c.scope,
+          collectionKind: c.collectionKind,
           enabled: collectionEnabled(registry, userId, sid, c),
           defaultEnabled: collectionDefault(registry, userId, c),
           documents: c.documentCount,
@@ -228,7 +259,11 @@ async function runRagTool(
     const entries =
       args.collections ??
       (await registry.listCollections(userId))
-        .filter((c) => c.scope !== 'session' || c.sessionId === sid)
+        .filter(
+          (c) =>
+            c.collectionKind !== 'agents' &&
+            (c.scope !== 'session' || c.sessionId === sid),
+        )
         .map((c) => c.id);
     const ids = [...new Set(await Promise.all(entries.map(resolve)))];
     const embedder = getQueryEmbedder();
@@ -254,7 +289,12 @@ async function runRagTool(
     for (const id of ids) {
       try {
         const meta = await registry.getCollection(id);
-        if (!meta || !collectionEnabled(registry, userId, sid, meta)) continue;
+        if (
+          !meta ||
+          meta.collectionKind === 'agents' ||
+          !collectionEnabled(registry, userId, sid, meta)
+        )
+          continue;
         const store = await registry.getRagStore(id);
         if (!store) throw new Error('Collection store unavailable');
         const result = await new CollectionSearchRag(store).query(
@@ -352,7 +392,8 @@ async function runRagTool(
     return respond(result);
   }
   if (name === 'rag_read') {
-    const doc = await registry.getDocument(id, args.id ?? '');
+    const doc = (await readRagDocuments(registry, id, { id: args.id ?? '' }))
+      ?.documents[0];
     if (!doc) throw new Error('Document not found');
     const visibility = recordPolicy(doc.metadata, active);
     const attributes = recordAttributes(doc.metadata);
@@ -369,7 +410,7 @@ async function runRagTool(
       attributes,
     });
   }
-  const page = await registry.listDocuments(id, {
+  const page = await readRagDocuments(registry, id, {
     offset: args.offset,
     limit: args.limit ?? 50,
   });
@@ -394,4 +435,10 @@ async function runRagTool(
       };
     }),
   });
+}
+
+export function executeRagMcpTool(
+  ...args: Parameters<typeof executeRagMcpToolImpl>
+): ReturnType<typeof executeRagMcpToolImpl> {
+  return withCollectionToolScope(() => executeRagMcpToolImpl(...args));
 }

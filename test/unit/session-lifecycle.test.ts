@@ -51,11 +51,34 @@ const forgetOwner = jest.fn(async () => true);
 const forgetPlannerMemory = jest.fn(async (_sessionId: string) => true);
 const setSessionDestination = jest.fn();
 let providersReady = true;
+type SelectionCollection = {
+  meta: {
+    id: string;
+    logicalId: string;
+    collectionKind: string;
+    scope: string;
+  };
+  documents: never[];
+};
+const readAgentCollection = jest.fn(
+  async (id: string): Promise<SelectionCollection | null> => ({
+    meta: {
+      id,
+      logicalId: id,
+      collectionKind: 'agents',
+      scope: 'global',
+    },
+    documents: [],
+  }),
+);
 jest.mock('../../srv/lib/planner-memory', () => ({
   forgetPlannerMemory: (sessionId: string) => forgetPlannerMemory(sessionId),
 }));
 jest.mock('../../srv/agent-manager', () => ({
-  getCollectionRegistry: () => ({ deleteSessionCollections: async () => {} }),
+  getCollectionRegistry: () => ({
+    deleteSessionCollections: async () => {},
+    readAgentCollection,
+  }),
   isProvidersReady: () => providersReady,
   getSharedHistoryRag: () => ({ listTurns, forgetOwner }),
   setSessionDestination: (u: string, s: string, d: string) =>
@@ -186,6 +209,7 @@ async function open(userId: string, destination?: string) {
 }
 
 beforeEach(() => {
+  readAgentCollection.mockClear();
   now = 1_000_000;
   jest.spyOn(Date, 'now').mockImplementation(() => now);
   forgetOwner.mockReset().mockResolvedValue(true);
@@ -205,6 +229,15 @@ afterEach(() => {
 });
 
 describe('open', () => {
+  it('rejects a deleted default agents collection before opening or persisting', async () => {
+    const { store } = records;
+    readAgentCollection.mockResolvedValueOnce(null);
+    await expect(openSession('alice')).rejects.toThrow(
+      'Invalid agentsCollectionId',
+    );
+    expect(longSessions().size('alice')).toBe(0);
+    expect(store.put).not.toHaveBeenCalled();
+  });
   it('open writes a record', async () => {
     const s = await open('alice', 'DEV');
     expect(s.key).toMatch(/^ls-/);
@@ -215,6 +248,7 @@ describe('open', () => {
       lastActivity: now,
       ttlMs: TTL,
       destination: 'DEV',
+      agentsCollectionId: 'agents',
     });
     expect(setSessionDestination).toHaveBeenCalledWith('alice', s.key, 'DEV');
   });
@@ -367,6 +401,7 @@ describe('revival', () => {
       lastActivity: now - 10_000,
       ttlMs: TTL,
       destination: 'DEV',
+      agentsCollectionId: 'agents',
       ...over,
     };
     records.rows.set(records.id(r.userId, r.key), r);
@@ -659,4 +694,38 @@ it('provider dialogue delete failure does not skip real close hook teardown', as
     expect.objectContaining({ key: s.key, closedAt: now }),
   );
   expect(await resolveSession('alice', s.key)).toBeUndefined();
+});
+
+test('agents choice is restored independently of dialogue state; legacy records use global', async () => {
+  const s = await open('alice');
+  await records.store.put({
+    userId: 'alice',
+    key: s.key,
+    createdAt: now,
+    lastActivity: now,
+    ttlMs: TTL,
+    agentsCollectionId: 'deleted-copy',
+  });
+  setLongSessionsForTest(
+    new LongSessionRegistry(
+      { ttlMs: TTL, maxSessions: 10, maxPerUser: 2, queueLength: 1 },
+      lifecycleHooks(records.store),
+      () => now,
+    ),
+  );
+  expect((await resolveSession('alice', s.key))?.agentsCollectionId).toBe(
+    'deleted-copy',
+  );
+  expect(await resolveSession('bob', s.key)).toBeUndefined();
+  const key = 'ls-legacy-profile-selection';
+  await records.store.put({
+    userId: 'alice',
+    key,
+    createdAt: now,
+    lastActivity: now,
+    ttlMs: TTL,
+  });
+  expect((await resolveSession('alice', key))?.agentsCollectionId).toBe(
+    'agents',
+  );
 });

@@ -8,7 +8,7 @@ import type {
   ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { parseToolResultMaxChars } from '../agent-config';
-import { isReadOnlyTools } from '../request-session';
+import { isReadOnlyTools, profileToolAllowed } from '../request-session';
 import { isOutageError } from './mcp-outage';
 import { parseToolOutcome, type RecordedToolCall } from './reviewer-core';
 import {
@@ -95,11 +95,13 @@ export class RecordingMcpClient implements IMcpClient {
     const result = await this.inner.listTools(options);
     if (result.ok)
       for (const tool of result.value) this.knownNames.add(tool.name);
-    if (!isReadOnlyTools() || !result.ok) return result;
-    return {
-      ok: true,
-      value: result.value.filter((tool) => this.isReadOnly(tool)),
-    };
+    if (!result.ok) return result;
+    const value = result.value.filter(
+      (tool) =>
+        profileToolAllowed(tool.name) &&
+        (!isReadOnlyTools() || this.isReadOnly(tool)),
+    );
+    return value.length === result.value.length ? result : { ok: true, value };
   }
 
   private isReadOnly(tool: McpTool): boolean {
@@ -114,6 +116,11 @@ export class RecordingMcpClient implements IMcpClient {
     args: Record<string, unknown>,
     options?: CallOptions,
   ): Promise<Result<McpToolResult, McpError>> {
+    if (!profileToolAllowed(name))
+      return {
+        ok: true,
+        value: { isError: true, content: `TOOL_FORBIDDEN: ${name}` },
+      };
     if (isReadOnlyTools()) {
       const tools = await this.inner.listTools(options);
       const allowed =

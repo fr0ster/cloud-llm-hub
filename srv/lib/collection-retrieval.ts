@@ -73,7 +73,11 @@ export function collectionRetrieval(agent: unknown) {
           ragCollectionIds = (
             await getCollectionRegistry().listCollections(userId)
           )
-            .filter((c) => c.scope !== 'session' || c.sessionId === sessionId)
+            .filter(
+              (c) =>
+                c.collectionKind !== 'agents' &&
+                (c.scope !== 'session' || c.sessionId === sessionId),
+            )
             .map((c) => c.id);
         } catch (err) {
           log.warn(
@@ -152,6 +156,7 @@ export function collectionRetrieval(agent: unknown) {
           requested.includes('uploads');
         if (
           meta &&
+          meta.collectionKind !== 'agents' &&
           (uploads || collectionEnabled(registry, userId, sessionId, meta))
         )
           enabledIds.push(id);

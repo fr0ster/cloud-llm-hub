@@ -29,6 +29,8 @@
 import type { IThrottleStrategy } from '@mcp-abap-adt/llm-agent';
 import { WaitAsTold } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
+import { validateConfiguredCollectionId } from './collection-ids';
+import { plannerName } from './lib/agent-profile-records';
 import { BuildValidationError } from './lib/build-validation-error';
 import { readPositiveIntFrom } from './lib/env-int';
 import {
@@ -143,7 +145,30 @@ export function parseTimeZone(
   return value;
 }
 
+export interface AgentProfilesConfig {
+  collectionId: string;
+  plannerRecord: string;
+  timeoutMs: number;
+}
+
+export function parseAgentProfilesConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): AgentProfilesConfig {
+  const planner = plannerName.safeParse(
+    env.LLM_AGENT_PLANNER_RECORD ?? 'planner',
+  );
+  if (!planner.success) throw new Error('Invalid LLM_AGENT_PLANNER_RECORD');
+  return {
+    collectionId: validateConfiguredCollectionId(
+      env.LLM_AGENT_PROFILES_COLLECTION ?? 'agents',
+    ),
+    plannerRecord: planner.data,
+    timeoutMs: readPositiveIntFrom(env, 'LLM_AGENT_PROFILE_TIMEOUT_MS') ?? 3000,
+  };
+}
+
 export interface AgentConfig {
+  profiles?: AgentProfilesConfig;
   timeZone?: string;
   /**
    * LLM Configuration
@@ -626,6 +651,7 @@ export function loadAgentConfig(): AgentConfig {
   );
 
   const config: AgentConfig = {
+    profiles: parseAgentProfilesConfig(),
     timeZone: parseTimeZone(),
     llm: {
       contextCapture: parseContextCapture(),

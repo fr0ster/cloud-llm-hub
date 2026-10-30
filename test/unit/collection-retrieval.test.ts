@@ -35,6 +35,7 @@ const registry = {
       scope: string;
       owner: string;
       sessionId?: string;
+      collectionKind?: 'agents' | 'knowledge';
     }> => ({
       id: 'physical',
       logicalId: 'selected',
@@ -303,4 +304,26 @@ it('allows explicitly attached session uploads for that request', async () => {
     cds.log('test'),
   );
   expect(query).toHaveBeenCalledTimes(1);
+});
+
+it('explicit agents selections never reach knowledge stores or degraded checks', async () => {
+  registry.getCollection.mockResolvedValueOnce({
+    id: 'physical',
+    logicalId: 'agents',
+    scope: 'user',
+    owner: 'alice',
+    collectionKind: 'agents',
+  });
+  const step = collectionRetrieval({ deps: { ragStores: {} } });
+  await step.retrieve(
+    req('agents'),
+    [{ role: 'user', content: 'question' }],
+    'alice',
+    undefined,
+    cds.log('test'),
+  );
+  expect(query).not.toHaveBeenCalled();
+  expect(registry.getRagStore).not.toHaveBeenCalled();
+  expect(registry.getRagStores).not.toHaveBeenCalled();
+  expect(registry.degradedOf).not.toHaveBeenCalled();
 });

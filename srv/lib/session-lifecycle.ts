@@ -18,7 +18,9 @@
  * `resolveSession` and the sweep use: there is one registry per process.
  */
 import cds from '@sap/cds';
+import { getAgentConfig } from '../agent-config';
 import {
+  getCollectionRegistry,
   getSharedHistoryRag,
   isProvidersReady,
   setSessionDestination,
@@ -95,6 +97,7 @@ function recordOf(s: LongSession): SessionRecord {
     lastActivity: s.lastActivity,
     ttlMs: longSessions().ttlMs,
     collectionOverrides: sessionCollectionOverrides(s.userId, s.key),
+    agentsCollectionId: s.agentsCollectionId,
     ...(s.destination !== undefined
       ? { destination: s.destination }
       : undefined),
@@ -212,10 +215,17 @@ export function lifecycleHooks(store?: SessionRecordStore): LongSessionHooks {
 export async function openSession(
   userId: string,
   destination?: string,
+  agentsCollectionId?: string,
 ): Promise<LongSession | OpenRefusal> {
   const registry = longSessions();
   await registry.awaitUserCloses(userId);
-  const s = registry.open(userId, { destination });
+  const selected =
+    agentsCollectionId ?? getAgentConfig().profiles?.collectionId ?? 'agents';
+  await validateAgentsSelection(userId, selected);
+  const s = registry.open(userId, {
+    destination,
+    agentsCollectionId: selected,
+  });
   if ('refused' in s) return s;
   if (destination !== undefined)
     setSessionDestination(userId, s.key, destination);
@@ -386,6 +396,10 @@ async function revive(
     key,
     createdAt: rec.createdAt,
     destination: rec.destination,
+    agentsCollectionId:
+      rec.agentsCollectionId ??
+      getAgentConfig().profiles?.collectionId ??
+      'agents',
     revived: true,
   });
   if ('refused' in opened) {
@@ -495,4 +509,43 @@ export async function sweepSessionCollections(
     (userId, key) =>
       !stored.has(slot(userId, key)) && maySweepSession(userId, key),
   );
+}
+
+/** Selection is exact and owner-bound; admin status does not widen it. */
+export async function validateAgentsSelection(
+  userId: string,
+  id: string,
+): Promise<void> {
+  const collection = await getCollectionRegistry().readAgentCollection(id);
+  const meta = collection?.meta;
+  const globalId = getAgentConfig().profiles?.collectionId ?? 'agents';
+  if (
+    !meta ||
+    meta.agentsCopyPending ||
+    meta.id !== id ||
+    meta.collectionKind !== 'agents' ||
+    !(id === globalId
+      ? meta.scope === 'global' &&
+        meta.logicalId === id &&
+        !meta.owner &&
+        !meta.sessionId &&
+        !meta.expiresAt &&
+        !meta.preset
+      : meta.scope === 'user' &&
+        userId !== 'anonymous' &&
+        Boolean(userId) &&
+        meta.owner === userId)
+  )
+    throw new Error('Invalid agentsCollectionId');
+}
+
+export async function setSessionAgentsCollection(
+  s: LongSession,
+  id?: string,
+): Promise<void> {
+  if (id === undefined) return;
+  await validateAgentsSelection(s.userId, id);
+  const next = { ...s, agentsCollectionId: id };
+  await records?.put(recordOf(next));
+  s.agentsCollectionId = id;
 }

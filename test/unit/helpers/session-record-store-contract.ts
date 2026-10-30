@@ -44,6 +44,22 @@ export function sessionRecordStoreContract(
     expect(await store.get(r.userId, r.key)).toEqual(r);
   });
 
+  it('persists selection and writes changes inside the touch throttle window', async () => {
+    const r = record({ agentsCollectionId: 'agents' });
+    await store.put(r);
+    expect((await store.get(r.userId, r.key))?.agentsCollectionId).toBe(
+      'agents',
+    );
+    await store.touch({
+      ...r,
+      agentsCollectionId: 'own-copy',
+      lastActivity: T0 + 1,
+    });
+    expect((await store.get(r.userId, r.key))?.agentsCollectionId).toBe(
+      'own-copy',
+    );
+  });
+
   it('round-trips a closed marker', async () => {
     const r = { ...record(), closedAt: T0 + 1 };
     await store.put(r);

@@ -1,3 +1,11 @@
+import { z } from 'zod';
+import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
+import { runWithProfileTools } from '../../srv/request-session';
+
+const networkTools = z.object({
+  result: z.object({ tools: z.array(z.object({ name: z.string() })) }),
+});
+
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { establishRequestConnection } from '../../srv/lib/request-connection';
@@ -389,4 +397,72 @@ it('retrieval query label arrays contain no duplicates', () => {
     }
   }
   check(queries);
+});
+
+it('profile embedded definitions and forged SAP/cloud calls share the execution guard', async () => {
+  const adapter = await buildEmbeddedMcpAdapter('BASIC');
+  await runWithProfileTools(
+    new AgentToolPermissions(['GetClass']),
+    async () => {
+      const listed = await adapter.listTools();
+      expect(listed.ok && listed.value.map((tool) => tool.name)).toEqual([
+        'GetClass',
+      ]);
+      for (const name of ['CreateClass', 'GetDumpSection', 'RuntimeRunClass']) {
+        expect(JSON.stringify(await adapter.callTool(name, {}))).toContain(
+          'forbids',
+        );
+      }
+    },
+  );
+  expect(created).toEqual([]);
+});
+
+it('profile network definitions and forged direct calls reject before backend I/O', async () => {
+  const permissions = new AgentToolPermissions(['GetClass']);
+  const bound = await createMCPServerForRequest(request('BASIC', 'ALICE'), {
+    establish: false,
+  });
+  const http = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    await new Promise<void>((resolve) => {
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', resolve);
+    });
+    await runWithProfileTools(permissions, () =>
+      bound.handle(req, res, JSON.parse(Buffer.concat(chunks).toString())),
+    );
+  });
+  await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
+  const address = http.address();
+  if (!address || typeof address === 'string')
+    throw new Error('Missing HTTP address');
+  const post = async (method: string, name?: string): Promise<string> => {
+    const response = await fetch(`http://127.0.0.1:${address.port}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method,
+        ...(name ? { params: { name, arguments: {} } } : {}),
+      }),
+    });
+    return response.text();
+  };
+  try {
+    const listed = networkTools.parse(JSON.parse(await post('tools/list')));
+    expect(listed.result.tools.map((tool) => tool.name)).toEqual(['GetClass']);
+    for (const name of ['CreateClass', 'GetTable', 'RuntimeRunClass']) {
+      expect(await post('tools/call', name)).toContain('forbids');
+    }
+    for (const connection of created)
+      expect(connection.connection.makeAdtRequest).not.toHaveBeenCalled();
+  } finally {
+    await bound.cleanup();
+    await new Promise<void>((resolve) => http.close(() => resolve()));
+  }
 });

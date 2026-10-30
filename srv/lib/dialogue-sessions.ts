@@ -1,29 +1,26 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
 import type {
+  AgentCallOptions,
   DialogueSignals,
   DialogueState,
   IConcurrencyPool,
-  ILlm,
+  ISmartAgent,
   ISubAgent,
   ISubAgentResult,
   IUsageRecorder,
+  Message,
   PlannerMessage,
   TaskRecord,
   TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
 import { addTokenUsage } from '@mcp-abap-adt/llm-agent';
-import {
-  DialogueSession,
-  SemaphorePool,
-  type SmartAgent,
-} from '@mcp-abap-adt/llm-agent-libs';
+import { DialogueSession, SemaphorePool } from '@mcp-abap-adt/llm-agent-libs';
 import cds from '@sap/cds';
 import { getAgentConfig } from '../agent-config';
 import {
-  buildPlannerAgent,
+  createAgentProfileSource,
   getSmartAgent,
-  releasePlannerAgent,
   runWithRequestConnection,
 } from '../agent-manager';
 import {
@@ -52,7 +49,6 @@ import { longSessionsIfReady } from './long-session';
 import { stripNoMessage } from './no-message';
 import { renderNotice } from './notify-policy';
 import { plannerSessionOptions } from './planner-memory';
-import type { RecordingMcpClient } from './recording-mcp-client';
 import { runWithRequestSystem } from './request-system-context';
 import { getReviewSignals } from './review-scope';
 import {
@@ -132,7 +128,6 @@ export interface DialogueHandle {
   subscribe(fn: (e: DialogueEvent) => void, cursor?: string): () => void;
 }
 interface LiveHandle extends DialogueHandle {
-  planner: SmartAgent;
   stop(): void;
 }
 const handles = new Map<string, Promise<LiveHandle>>();
@@ -233,17 +228,15 @@ async function open(
   destination: string,
 ): Promise<LiveHandle> {
   const config = getAgentConfig();
-  const destinationHandle = (await getSmartAgent(
-    undefined,
-    destination,
-  )) as Awaited<ReturnType<typeof getSmartAgent>> & {
-    workers: ReadonlyMap<string, ISubAgent>;
-    recMcp: RecordingMcpClient;
-    criticLlm: ILlm;
-  };
-  if (!destinationHandle.workers)
-    throw new Error('Destination executor workers unavailable');
-  const planner = await buildPlannerAgent(config);
+  const destinationHandle = await getSmartAgent(undefined, destination);
+  if (
+    !destinationHandle.workers ||
+    !destinationHandle.recMcp ||
+    !destinationHandle.criticLlm ||
+    !destinationHandle.profileRunner
+  )
+    throw new Error('Destination profile runner unavailable');
+  const { recMcp, criticLlm, profileRunner } = destinationHandle;
   const usage = usageRuntime()?.forSession({
     sessionId: key,
     userId,
@@ -257,31 +250,28 @@ async function open(
   // the reply so live subscribers see it on first emission.
   const replyUsage = new WeakMap<object, TokenUsage>();
   let turnReplyUsage: TokenUsage | undefined;
-  const turnPlanner = plannerWithEnvironment(
-    plannerWithAttachments(plannerWithParagraphs(planner), attachments),
-    () => {
-      const connection = longSessionsIfReady()?.get(userId, key)?.connection;
-      const identity = connection
-        ? cachedSystemIdentity(connection)
-        : undefined;
-      return [
-        'Environment',
-        `Destination: ${destination}`,
-        ...factory.environment(destination),
-        ...(identity?.masterSystem
-          ? [`SAP system id: ${identity.masterSystem}`]
-          : []),
-        ...(identity?.responsible
-          ? [`SAP login: ${identity.responsible}`]
-          : []),
-        'Available workers:',
-        ...[...destinationHandle.workers].map(
-          ([name, worker]) => `${name}: ${worker.description}`,
-        ),
-        `Concurrency limit: ${config.agent.dialogue.executors} (shared executor pool: ${config.agent.dialogue.executorPool})`,
-      ].join('\n');
-    },
-  );
+  const decoratePlanner = (planner: ISmartAgent) =>
+    plannerWithEnvironment(
+      plannerWithAttachments(plannerWithParagraphs(planner), attachments),
+      () => {
+        const connection = longSessionsIfReady()?.get(userId, key)?.connection;
+        const identity = connection
+          ? cachedSystemIdentity(connection)
+          : undefined;
+        return [
+          'Environment',
+          `Destination: ${destination}`,
+          ...factory.environment(destination),
+          ...(identity?.masterSystem
+            ? [`SAP system id: ${identity.masterSystem}`]
+            : []),
+          ...(identity?.responsible
+            ? [`SAP login: ${identity.responsible}`]
+            : []),
+          `Concurrency limit: ${config.agent.dialogue.executors} (shared executor pool: ${config.agent.dialogue.executorPool})`,
+        ].join('\n');
+      },
+    );
   const pool = new SessionConnectionPool(
     factory,
     config.agent.dialogue.executors,
@@ -322,8 +312,9 @@ async function open(
     taskId: string;
   }>();
   const workers = new Map<string, ISubAgent>();
-  for (const [name, worker] of destinationHandle.workers) {
-    workers.set(name, {
+  const wrapWorker = (worker: ISubAgent): ISubAgent => {
+    const name = worker.name;
+    return {
       name: worker.name,
       description: worker.description,
       capabilities: worker.capabilities,
@@ -374,11 +365,9 @@ async function open(
                   const verdict = await evaluateGated({
                     usage: input.usage,
                     content: result.output,
-                    records: destinationHandle.recMcp.getToolRecords(
-                      ctx.traceId,
-                    ),
+                    records: recMcp.getToolRecords(ctx.traceId),
                     ...getReviewSignals(),
-                    llm: destinationHandle.criticLlm,
+                    llm: criticLlm,
                     request: input.task,
                     task: input.task,
                     history: getRequestHistory(),
@@ -399,15 +388,16 @@ async function open(
           ),
         );
       },
-    });
-  }
+    };
+  };
+  for (const [name, worker] of destinationHandle.workers)
+    workers.set(name, wrapWorker(worker));
   const store = createDialogueStateStore(userId, key);
   const backend = getDialogueStoreBackend();
   let savedState: HubDialogueState | undefined;
   try {
     savedState = await backend.load(userId, key);
   } catch (error) {
-    releasePlannerAgent(planner);
     await pool.closeAll();
     throw error;
   }
@@ -418,7 +408,15 @@ async function open(
   ): Promise<void> => {
     const state = session?.snapshot() ?? savedState;
     if (!state) return Promise.resolve();
-    const row = { ...state, pending: [], outbox: outboxMessages, ackMode };
+    const row = {
+      ...state,
+      ...(savedState?.agentsCollectionId !== undefined
+        ? { agentsCollectionId: savedState.agentsCollectionId }
+        : {}),
+      pending: [],
+      outbox: outboxMessages,
+      ackMode,
+    };
     saving = saving.catch(() => {}).then(() => backend.save(userId, key, row));
     return saving;
   };
@@ -483,40 +481,75 @@ async function open(
     unsubscribeSettled();
     releaseLifetime();
   };
+  const processPlanner = async (
+    planner: ISmartAgent,
+    input: Message[],
+    options: AgentCallOptions,
+  ) => {
+    const reply = options.trace && replies.get(options.trace);
+    turnReply = undefined;
+    turnReplyUsage = undefined;
+    try {
+      const result = await runWithContextCapture(
+        { component: 'planner', sessionKey: key },
+        () => decoratePlanner(planner).process(input, options),
+      );
+      // The library appends this successful result before its final save.
+      if (result.ok) {
+        turnReply = reply;
+        const trace = options.trace;
+        const usage =
+          reply && trace
+            ? addTokenUsage(replyUsage.get(trace), result.value.usage)
+            : undefined;
+        if (trace && usage) replyUsage.set(trace, usage);
+        turnReplyUsage = usage;
+      }
+      return result;
+    } finally {
+      for (const task of session?.snapshot().tasks ?? []) emitTask(task);
+    }
+  };
   try {
     session = await DialogueSession.open({
+      profileSource: createAgentProfileSource(
+        userId,
+        () =>
+          longSessionsIfReady()?.get(userId, key)?.agentsCollectionId ??
+          savedState?.agentsCollectionId ??
+          config.profiles?.collectionId ??
+          'agents',
+      ),
+      profileTimeoutMs: config.profiles?.timeoutMs ?? 3000,
+      profileRunner: {
+        createWorker: async (input, options) => {
+          const result = await profileRunner.createWorker(input, options);
+          return result.ok
+            ? { ok: true, value: wrapWorker(result.value) }
+            : result;
+        },
+        preparePlanner: async (input, options) => {
+          const result = await profileRunner.preparePlanner(input, options);
+          if (!result.ok) return result;
+          const prepared = result.value;
+          return {
+            ok: true,
+            value: new Proxy(prepared, {
+              get(target, property, receiver) {
+                if (property === 'process')
+                  return (input: Message[], options: AgentCallOptions) =>
+                    processPlanner(prepared, input, options);
+                return Reflect.get(target, property, receiver);
+              },
+            }),
+          };
+        },
+      },
       timeZone: config.timeZone,
       ...(await plannerSessionOptions(userId, key)),
       ...(usage ? { usage } : {}),
       id: key,
       signals,
-      planner: {
-        async process(input, options) {
-          const reply = options.trace && replies.get(options.trace);
-          turnReply = undefined;
-          turnReplyUsage = undefined;
-          try {
-            const result = await runWithContextCapture(
-              { component: 'planner', sessionKey: key },
-              () => turnPlanner.process(input, options),
-            );
-            // The library appends this successful result before its final save.
-            if (result.ok) {
-              turnReply = reply;
-              const trace = options.trace;
-              const usage =
-                reply && trace
-                  ? addTokenUsage(replyUsage.get(trace), result.value.usage)
-                  : undefined;
-              if (trace && usage) replyUsage.set(trace, usage);
-              turnReplyUsage = usage;
-            }
-            return result;
-          } finally {
-            for (const task of session?.snapshot().tasks ?? []) emitTask(task);
-          }
-        },
-      },
       // Library close always deletes. The hub owns deletion by close reason:
       // shutdown preserves the last saved state for revival.
       store: {
@@ -527,7 +560,12 @@ async function open(
           return state;
         },
         save: async (_id, state) => {
-          savedState = state;
+          savedState = {
+            ...state,
+            ...(savedState?.agentsCollectionId !== undefined
+              ? { agentsCollectionId: savedState.agentsCollectionId }
+              : {}),
+          };
           // turn() has recomputed plan status before persisting, including
           // turns triggered by background task events.
           emitPlan(state);
@@ -631,7 +669,7 @@ async function open(
                   await lease?.release(healthy);
                 } finally {
                   try {
-                    destinationHandle.recMcp.dropRequest(traceId);
+                    recMcp.dropRequest(traceId);
                   } catch (error) {
                     cds.log('dialogue-sessions').warn('dropRequest failed', {
                       errorType:
@@ -670,7 +708,6 @@ async function open(
   } catch (error) {
     stopLifetime();
     await session?.close();
-    releasePlannerAgent(planner);
     await pool.closeAll();
     throw error;
   }
@@ -710,7 +747,6 @@ async function open(
     hasSubscribers: () => subscribers.size > 0,
     factory,
     pool,
-    planner,
     stop() {
       stopLifetime();
       stopped = true;
@@ -760,11 +796,7 @@ export function closeDialogue(
         try {
           await h.session.close();
         } finally {
-          try {
-            await h.pool.closeAll();
-          } finally {
-            releasePlannerAgent(h.planner);
-          }
+          await h.pool.closeAll();
         }
       }
     } finally {

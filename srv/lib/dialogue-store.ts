@@ -32,6 +32,7 @@ type TaskRecord = DialogueState['tasks'][number];
 export type HubDialogueState = DialogueState & {
   outbox?: OutboxEntry[];
   ackMode?: boolean;
+  agentsCollectionId?: string;
 };
 
 // JSON worst case is 6 bytes per UTF-16 code unit (escaped controls/surrogates).
@@ -173,6 +174,7 @@ const planStep = z.preprocess(
     items: z.array(boundedText).max(1000).optional(),
     dependsOn: ids.optional(),
     worker: id.optional(),
+    result: z.enum(['report', 'verdict']).optional(),
     state: z.enum([
       'pending',
       'running',
@@ -275,6 +277,7 @@ const schema = z.object({
         id: str,
         worker: str,
         goal: str,
+        result: z.enum(['report', 'verdict']).optional(),
         state: z.enum([
           'queued',
           'running',
@@ -316,6 +319,11 @@ function stored(record: HubDialogueState): HubDialogueState {
     .boolean()
     .optional()
     .parse(raw.ackMode ?? raw.state?.ackMode);
+  const agentsCollectionId = z
+    .string()
+    .min(1)
+    .optional()
+    .parse(raw.agentsCollectionId ?? raw.state?.agentsCollectionId);
   const parsed =
     outbox === undefined
       ? undefined
@@ -328,6 +336,7 @@ function stored(record: HubDialogueState): HubDialogueState {
           .parse(outbox);
   return {
     ...state,
+    ...(agentsCollectionId !== undefined ? { agentsCollectionId } : {}),
     ...(parsed?.length ? { outbox: parsed } : {}),
     ...(ackMode !== undefined ? { ackMode } : {}),
   };

@@ -20,10 +20,17 @@ import { z } from 'zod';
 import { normalizeLogicalId, resolveByName } from './collection-ids';
 import { CollectionBackendError } from './lib/collection-persistence';
 import { collectionEnabled } from './lib/collection-toggle';
+import { withCollectionToolScope } from './lib/collection-write-scope';
+import { readRagDocuments } from './lib/rag-read';
 import { recordPolicy } from './lib/record-policy';
 import type { CollectionRegistry } from './rag-collections';
 import { sessionCollectionTtlMs } from './rag-collections';
-import { getRequestSessionId, getRequestUserId } from './request-session';
+import {
+  getRequestSessionId,
+  getRequestUserId,
+  isReadOnlyTools,
+  profileToolAllowed,
+} from './request-session';
 
 const ragAddSchema = z.object({
   collection: z.string(),
@@ -94,19 +101,22 @@ export function buildRagToolSchemas(includeRead = false): Array<{
   function: {
     name: string;
     description: string;
-    parameters: Record<string, unknown>;
+    parameters: z.core.JSONSchema.JSONSchema;
   };
 }> {
-  return TOOL_DEFS.filter((t) => includeRead || t.name !== 'rag_list').map(
-    (t) => ({
-      type: 'function' as const,
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: z.toJSONSchema(t.schema) as Record<string, unknown>,
-      },
-    }),
-  );
+  return TOOL_DEFS.filter(
+    (t) =>
+      profileToolAllowed(t.name) &&
+      (!isReadOnlyTools() || t.name === 'rag_list') &&
+      (includeRead || t.name !== 'rag_list'),
+  ).map((t) => ({
+    type: 'function' as const,
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: z.toJSONSchema(t.schema),
+    },
+  }));
 }
 
 type DispatchResult =
@@ -114,12 +124,14 @@ type DispatchResult =
   /** `status`: set when a persistent backend refused (409 or 502). */
   | { ok: false; error: string; status?: number };
 
-export async function dispatchRagTool(
+async function dispatchRagToolImpl(
   registry: CollectionRegistry,
   name: string,
   rawArgs: unknown,
   options?: { defaultScope: 'user' },
 ): Promise<DispatchResult> {
+  if (!profileToolAllowed(name) || (isReadOnlyTools() && name !== 'rag_list'))
+    return { ok: false, status: 403, error: `TOOL_FORBIDDEN: ${name}` };
   const schema = argSchemaByName[name];
   if (!schema) {
     return { ok: false, error: `Unknown RAG tool: ${name}` };
@@ -135,6 +147,28 @@ export async function dispatchRagTool(
   const sessionId = () => getRequestSessionId();
 
   try {
+    const target =
+      typeof args.collection === 'string' ? args.collection : undefined;
+    if (target && name !== 'rag_list') {
+      const exact = await registry.getCollection(target);
+      const resolved =
+        exact ??
+        (await registry.getCollection(
+          (await resolveByName(
+            registry,
+            target,
+            userId(),
+            sessionId(),
+            false,
+          )) ?? '',
+        ));
+      if (resolved?.collectionKind === 'agents')
+        return {
+          ok: false,
+          status: 403,
+          error: 'TOOL_FORBIDDEN: agents configuration is REST-only',
+        };
+    }
     switch (name as RagToolName) {
       case 'rag_list': {
         const physical = await resolveByName(
@@ -155,11 +189,12 @@ export async function dispatchRagTool(
           meta,
         );
         if (args.id !== undefined) {
-          const doc =
-            (await registry.findActiveByCanonicalKey(
-              physical,
-              args.id as string,
-            )) ?? (await registry.getDocument(physical, args.id as string));
+          const doc = (
+            await readRagDocuments(registry, physical, {
+              id: String(args.id),
+              canonical: true,
+            })
+          )?.documents[0];
           if (!doc) return { ok: false, error: 'Record not found' };
           const visibility = recordPolicy(doc.metadata, enabled);
           return {
@@ -176,7 +211,7 @@ export async function dispatchRagTool(
             },
           };
         }
-        const result = await registry.listDocuments(physical, {
+        const result = await readRagDocuments(registry, physical, {
           offset: args.offset as number | undefined,
           limit: (args.limit as number | undefined) ?? 50,
         });
@@ -225,6 +260,14 @@ export async function dispatchRagTool(
             error: 'Authenticated user required to add to a collection',
           };
         }
+        if (
+          (await registry.getCollection(physical))?.collectionKind === 'agents'
+        )
+          return {
+            ok: false,
+            status: 403,
+            error: 'TOOL_FORBIDDEN: agents configuration is REST-only',
+          };
         // Auto-create the collection if it does not exist yet — atomically,
         // so parallel rag_add calls on a new collection all land in one.
         const isSession = !!sid && physical.includes('__s_');
@@ -284,6 +327,14 @@ export async function dispatchRagTool(
             error: `No active record found in collection "${args.collection as string}"`,
           };
         }
+        if (
+          (await registry.getCollection(physical))?.collectionKind === 'agents'
+        )
+          return {
+            ok: false,
+            status: 403,
+            error: 'TOOL_FORBIDDEN: agents configuration is REST-only',
+          };
         const id = args.id as string;
         const active = await registry.findActiveByCanonicalKey(physical, id);
         if (!active) {
@@ -326,6 +377,14 @@ export async function dispatchRagTool(
             error: `No active record found in collection "${args.collection as string}"`,
           };
         }
+        if (
+          (await registry.getCollection(physical))?.collectionKind === 'agents'
+        )
+          return {
+            ok: false,
+            status: 403,
+            error: 'TOOL_FORBIDDEN: agents configuration is REST-only',
+          };
         const id = args.id as string;
         const active = await registry.findActiveByCanonicalKey(physical, id);
         if (!active) {
@@ -353,4 +412,10 @@ export async function dispatchRagTool(
         : {}),
     };
   }
+}
+
+export function dispatchRagTool(
+  ...args: Parameters<typeof dispatchRagToolImpl>
+): ReturnType<typeof dispatchRagToolImpl> {
+  return withCollectionToolScope(() => dispatchRagToolImpl(...args));
 }

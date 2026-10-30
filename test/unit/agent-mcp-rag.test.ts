@@ -1,3 +1,9 @@
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import express from 'express';
+import { registerRagMcpTools } from '../../srv/agent-mcp-rag';
+import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
+import { runWithProfileTools } from '../../srv/request-session';
+
 jest.mock('@sap/cds', () => ({
   __esModule: true,
   default: { log: () => ({ info() {}, warn() {}, error() {}, debug() {} }) },
@@ -565,4 +571,109 @@ test('search supplies embedding usage with retrieval context and caller attribut
     },
   ]);
   await recorder.close(1000);
+});
+
+test('profile RAG MCP registration omits mutations and forged calls never resolve a session or touch storage', async () => {
+  const server = new McpServer({ name: 'profile-test', version: '1' });
+  const register = jest.spyOn(server, 'registerTool');
+  const collection = jest.spyOn(registry, 'getCollection');
+  jest.mocked(resolveSession).mockClear();
+  await runWithProfileTools(
+    new AgentToolPermissions(['rag_read']),
+    async () => {
+      registerRagMcpTools(
+        server,
+        express.request,
+        'alice',
+        (_name, run) => run,
+      );
+      expect(register.mock.calls.map((args) => args[0])).toEqual(['rag_read']);
+      expect(
+        await call('record_set_enabled', { id: 'visible', enabled: false }),
+      ).toMatchObject({ isError: true });
+      expect(jest.mocked(resolveSession)).not.toHaveBeenCalled();
+      expect(collection).not.toHaveBeenCalled();
+    },
+  );
+  await server.close();
+});
+
+test('MCP enablement never writes an agents copy owned by its caller', async () => {
+  const id = userCollectionId('my-agents', 'alice');
+  await registry.createCollection({
+    id,
+    logicalId: 'my-agents',
+    displayName: '',
+    description: '',
+    scope: 'user',
+    owner: 'alice',
+    collectionKind: 'agents',
+  });
+  await registry.addDocument(id, {
+    id: 'analyst',
+    text: 'prompt',
+    metadata: {
+      canonicalKey: 'analyst',
+      name: 'analyst',
+      kind: 'profile',
+      description: 'analysis',
+      tools: 'read-only',
+      result: 'report',
+    },
+  });
+  for (const name of [
+    'collection_set_enabled',
+    'record_set_enabled',
+  ] as const) {
+    const result = await call(name, {
+      collection: id,
+      id: 'analyst',
+      enabled: false,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('TOOL_FORBIDDEN');
+  }
+  expect((await registry.getDocument(id, 'analyst'))?.enabled).toBe(true);
+});
+
+test('MCP agent reads redact externally disabled current records', async () => {
+  await registry.createCollection({
+    id: 'agents',
+    logicalId: 'agents',
+    displayName: 'Agents',
+    description: '',
+    scope: 'global',
+    collectionKind: 'agents',
+  });
+  await registry.addDocument('agents', {
+    id: 'analyst',
+    text: 'private stale prompt',
+    metadata: {
+      enabled: true,
+      canonicalKey: 'analyst',
+      name: 'analyst',
+      kind: 'profile',
+      description: 'private description',
+      tools: 'all',
+      result: 'report',
+    },
+  });
+  const meta = await registry.getCollection('agents');
+  if (!meta) throw new Error('Missing agents');
+  jest.spyOn(registry, 'readAgentCollection').mockResolvedValue({
+    meta,
+    documents: [
+      {
+        id: 'analyst',
+        text: 'private current prompt',
+        createdAt: '',
+        metadata: { enabled: false },
+      },
+    ],
+  });
+  for (const name of ['rag_read', 'collection_records'] as const) {
+    const result = await call(name, { collection: 'agents', id: 'analyst' });
+    expect(result.content[0].text).toContain('record-disabled');
+    expect(result.content[0].text).not.toContain('private');
+  }
 });

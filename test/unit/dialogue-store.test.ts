@@ -166,10 +166,15 @@ it.each([undefined, 'Previous note'])(
         process: async () => ({ ok: true, value: { content: 'Done' } }),
       },
     });
-    expect(session.snapshot().plan).toEqual({ ...plan, status: 'done' });
+    expect(session.snapshot().plan).toEqual({
+      ...plan,
+      steps: [{ ...step, result: 'report' }],
+      status: 'done',
+    });
     await store.save('legacy-check', session.snapshot());
     expect((await store.load('legacy-check'))?.plan).toEqual({
       ...plan,
+      steps: [{ ...step, result: 'report' }],
       status: 'done',
     });
   },
@@ -589,4 +594,15 @@ it('round trips task, pending and outbox usage and still loads legacy state', as
   expect(await store.load('alice', 'usage')).toEqual(value);
   await store.save('alice', 'legacy-usage', state);
   expect(await store.load('alice', 'legacy-usage')).toEqual(state);
+});
+
+test('stored session agents selection survives state validation and restoration', async () => {
+  const store = new MemoryDialogueStore();
+  await store.save('reader', 'selection', {
+    ...state,
+    agentsCollectionId: 'own-agents',
+  });
+  expect(await store.load('reader', 'selection')).toMatchObject({
+    agentsCollectionId: 'own-agents',
+  });
 });

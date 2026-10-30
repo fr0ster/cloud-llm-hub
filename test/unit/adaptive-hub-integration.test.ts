@@ -4,6 +4,7 @@ import type { AgentConfig } from '../../srv/agent-config';
 import {
   buildAgentForDestination,
   ExpositionFilteringRag,
+  getCollectionRegistry,
   HUB_ADAPTIVE_CONTROLLER_SYSTEM,
   initProviders,
 } from '../../srv/agent-manager';
@@ -11,7 +12,10 @@ import { makeHubLlm } from '../../srv/lib/llm-factory';
 import { startProviders } from '../../srv/lib/providers';
 import { getRunRecordStore } from '../../srv/lib/run-record-store';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
-import { isReadOnlyTools, runWithSessionId } from '../../srv/request-session';
+import {
+  profileToolAllowed,
+  runWithSessionId,
+} from '../../srv/request-session';
 
 jest.mock('../../srv/lib/llm-factory', () => ({
   ...jest.requireActual('../../srv/lib/llm-factory'),
@@ -114,7 +118,7 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
         scenario === 'check-write' &&
         !messages.some((m) => m.role === 'tool')
       ) {
-        checkerScopes.push(isReadOnlyTools());
+        checkerScopes.push(!profileToolAllowed('CreateClass'));
         yield {
           ok: true as const,
           value: {
@@ -145,6 +149,7 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
   beforeAll(async () => {
     jest.mocked(makeHubLlm).mockResolvedValue(llm);
     initProviders(await startProviders(config));
+    await getCollectionRegistry().seedAgentConfiguration('agents', 'planner');
   });
   beforeEach(() => {
     calls.length = 0;
@@ -223,14 +228,49 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
   it('routes a generated executor check to read-only checker and blocks writes before MCP', async () => {
     scenario = 'check-write';
     checkerScopes.length = 0;
-    const result = await run('adaptive-check-write', 'Verify the class');
-    expect(checkerScopes).toEqual([true]);
-    expect(result.callTool).not.toHaveBeenCalled();
-    expect(result.record?.plan.steps[0]).toMatchObject({
-      kind: 'check',
-      worker: 'checker',
+    const registry = getCollectionRegistry();
+    const checker = await registry.getDocument('agents', 'checker');
+    if (!checker) throw new Error('Missing checker');
+    await registry.updateDocument('agents', 'checker', {
+      metadata: { ...checker.metadata, tools: 'all', result: 'verdict' },
     });
-    expect(result.text).toBe('Verified');
+    try {
+      const result = await run('adaptive-check-write', 'Verify the class');
+      expect(checkerScopes).toEqual([true]);
+      expect(result.callTool).not.toHaveBeenCalled();
+      expect(result.record?.plan.steps[0]).toMatchObject({
+        kind: 'check',
+        worker: 'checker',
+      });
+      expect(result.text).toBe('Verified');
+    } finally {
+      await registry.updateDocument('agents', 'checker', {
+        metadata: checker.metadata,
+      });
+    }
+  });
+
+  it('rejects a report checker before running its tool loop', async () => {
+    scenario = 'check-write';
+    checkerScopes.length = 0;
+    const registry = getCollectionRegistry();
+    const checker = await registry.getDocument('agents', 'checker');
+    if (!checker) throw new Error('Missing checker');
+    await registry.updateDocument('agents', 'checker', {
+      metadata: { ...checker.metadata, result: 'report', tools: 'all' },
+    });
+    try {
+      const result = await run('adaptive-report-checker', 'Verify the class');
+      expect(checkerScopes).toEqual([]);
+      expect(result.callTool).not.toHaveBeenCalled();
+      expect(JSON.stringify(result.record)).toContain(
+        'Checker profile must have result: verdict',
+      );
+    } finally {
+      await registry.updateDocument('agents', 'checker', {
+        metadata: checker.metadata,
+      });
+    }
   });
 
   it('dialogue exposes the same raw executor and read-only checker workers', async () => {
@@ -266,7 +306,6 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
               inputSchema: { type: 'object' },
             },
           ],
-          externalResults: new Map([['external', 'untrusted']]),
         }),
       [],
       'alice',

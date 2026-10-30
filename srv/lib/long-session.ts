@@ -31,6 +31,7 @@ export interface LongSession {
   readonly createdAt: number;
   lastActivity: number;
   destination?: string;
+  agentsCollectionId?: string;
   /** True when rebuilt from the store after a restart. */
   revived: boolean;
   connection?: IAbapConnection;
@@ -86,6 +87,7 @@ export class LongSessionRegistry {
     userId: string,
     init: {
       destination?: string;
+      agentsCollectionId?: string;
       key?: string;
       createdAt?: number;
       revived?: boolean;
@@ -108,6 +110,7 @@ export class LongSessionRegistry {
       createdAt: init.createdAt ?? now,
       lastActivity: now,
       destination: init.destination,
+      agentsCollectionId: init.agentsCollectionId,
       revived: init.revived ?? false,
     };
     this.entries.set(slot(userId, session.key), {

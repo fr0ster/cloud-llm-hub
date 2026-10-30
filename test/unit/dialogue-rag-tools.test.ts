@@ -3,6 +3,7 @@ import {
   sessionCollectionId,
   userCollectionId,
 } from '../../srv/collection-ids';
+import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
 import {
   DialogueRagMcpClient,
   runWithDialogueRagTools,
@@ -14,6 +15,7 @@ import * as dispatcher from '../../srv/rag-tool-dispatcher';
 import {
   getRequestSessionId,
   getRequestUserId,
+  runWithProfileTools,
   runWithReadOnlyTools,
   runWithSessionId,
 } from '../../srv/request-session';
@@ -36,6 +38,27 @@ const inWorker = <T>(fn: () => T) =>
     [],
     'alice',
   );
+
+test('profile RAG definitions and forged direct calls share the same policy before storage effects', async () => {
+  const { client, registry } = setup();
+  const create = jest.spyOn(registry, 'getOrCreateCollection');
+  await inWorker(() =>
+    runWithProfileTools(new AgentToolPermissions(['rag_list']), async () => {
+      const listed = await client.listTools();
+      expect(listed.ok && listed.value.map((tool) => tool.name)).toEqual([
+        'rag_list',
+      ]);
+      expect(
+        await client.callTool('rag_add', {
+          collection: 'results',
+          text: 'forged',
+        }),
+      ).toMatchObject({ ok: true, value: { isError: true } });
+      expect(create).not.toHaveBeenCalled();
+      expect(await client.callTool('rag_list', {})).toMatchObject({ ok: true });
+    }),
+  );
+});
 
 test('worker collections persist across sessions, isolate users and allow explicit scratch scope', async () => {
   const { client, registry } = setup();

@@ -1,7 +1,11 @@
 import { toolSearchText } from '@mcp-abap-adt/lib/tool-search';
+import { AgentProfileRunner } from './lib/agent-profile-runner';
+import { AgentProfileSource } from './lib/agent-profile-source';
 import { watchDestinations } from './lib/destination-watch';
 import { guardLlmOnlyAgent } from './lib/llm-only-guard';
+import { longSessionsIfReady } from './lib/long-session';
 import { withToolResultCap } from './lib/tool-result-cap';
+import { getRagToolNames } from './rag-tool-dispatcher';
 /**
  * Agent Manager - SmartAgent lifecycle management
  *
@@ -53,7 +57,6 @@ import {
   ADAPTIVE_CONTROLLER_SYSTEM,
   AdaptiveCoordinatorHandler,
   DagPlanInterpreter,
-  DIALOGUE_PLANNER_SYSTEM,
   InMemoryMetrics,
   LlmAdaptiveController,
   PlannerToolsClient,
@@ -129,10 +132,11 @@ import { trackedLlm } from './lib/tracked-llm';
 import {
   getRequestHistory,
   getRequestSessionId,
+  getRequestUserId,
   isReadOnlyTools,
   isToolGateBypassed,
+  profileToolAllowed,
   requestToolGateDecision,
-  runWithReadOnlyTools,
 } from './request-session';
 
 /** Keep generated verification steps inside the hub's checker tool scope. */
@@ -626,6 +630,8 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
         return true;
       }
       return (
+        typeof id === 'string' &&
+        profileToolAllowed(id.replace(/^tool:/, '')) &&
         !!r.metadata.exposition &&
         allowed.has(r.metadata.exposition as string) &&
         (!isReadOnlyTools() ||
@@ -874,7 +880,15 @@ function toJsonSchema(inputSchema: unknown): Record<string, unknown> {
 // CustomRagUpsertHandler) and StructuredPipelineDefinition removed in 6.0.0.
 // llm-agent now uses DefaultPipeline with consumer-defined RAG stores only.
 
-const agentHandles = new Map<string, SmartAgentHandle>();
+export type DestinationAgentHandle = SmartAgentHandle & {
+  executor: SmartAgent;
+  recMcp: RecordingMcpClient;
+  criticLlm: ILlm;
+  workers: ReadonlyMap<string, ISubAgent>;
+  profileRunner: AgentProfileRunner;
+};
+export type HubAgentHandle = SmartAgentHandle & Partial<DestinationAgentHandle>;
+const agentHandles = new Map<string, HubAgentHandle>();
 
 /** Set to true after initSmartAgents() completes, regardless of destination success */
 let initializationDone = false;
@@ -2553,7 +2567,23 @@ export async function buildEmbeddedMcpAdapter(
   // connect() populates internal tools list from listToolsHandler
   await mcpClient.connect();
 
-  return new McpClientAdapter(mcpClient);
+  const adapter = new McpClientAdapter(mcpClient);
+  const listTools = adapter.listTools.bind(adapter);
+  adapter.listTools = async (options) => {
+    const result = await listTools(options);
+    return result.ok
+      ? {
+          ok: true,
+          value: result.value.filter(
+            (tool) =>
+              profileToolAllowed(tool.name) &&
+              (!isReadOnlyTools() ||
+                isReadOnlyTool(tool.name, getToolAnnotations().get(tool.name))),
+          ),
+        }
+      : result;
+  };
+  return adapter;
 }
 
 /** Create shared LLM instances (called once, reused across all agents) */
@@ -2612,7 +2642,11 @@ async function configureDestinationAgentBuilder(
   mcpAdapter: IMcpClient,
   toolsRag: ExpositionFilteringRag,
   config: AgentConfig,
-  opts?: { skipSkills?: boolean; skipRetrieval?: boolean },
+  opts?: {
+    skipSkills?: boolean;
+    skipRetrieval?: boolean;
+    systemPrompt?: string;
+  },
 ): Promise<SmartAgentBuilder> {
   const { mainLlm: mainLlmPromise, classifierLlm: classifierLlmPromise } =
     getOrCreateSharedLlms(config);
@@ -2637,17 +2671,7 @@ async function configureDestinationAgentBuilder(
       ragTranslateEnabled: false,
     },
     prompts: {
-      system: [
-        'Use MCP tools when they can accomplish the task. Answer or fulfill requests when possible.',
-        ...(config.agent.chatCoordinator === 'dialogue'
-          ? [
-              HUB_DIALOGUE_STORAGE_RULES,
-              'If a step fails twice the same way, stop and report to the planner instead of retrying.',
-            ]
-          : []),
-        'When an action is impossible with available tools — say so and do not attempt it.',
-        "Respond in the user's language. Code and object names always in English.",
-      ].join('\n'),
+      system: opts?.systemPrompt ?? '',
       classifier: [
         'You are a Semantic Intent Analyzer. Decompose the user message into logical tasks.',
         'For each task, identify:',
@@ -2758,36 +2782,10 @@ export const HUB_ADAPTIVE_CONTROLLER_SYSTEM =
   ADAPTIVE_CONTROLLER_SYSTEM +
   '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.';
 
-export const HUB_DIALOGUE_STORAGE_RULES = [
-  "Storing, collecting or remembering results without a named target means the hub's RAG collection (rag_add); write results into SAP objects only when the request names that target.",
-  'When the request or a skill asks to keep results, store them where it says; if it names no collection or scope, use a persistent user collection (rag_add scope user); if the target or scope is unclear, ask the user.',
-  'Do not create, change, activate or run objects in the SAP system unless the user asked for that change. Reading and analysis tasks only read.',
-  'When the plan checks stored results, the checker reads them back (records exist and match), not just that a tool exists.',
-].join('\n');
-
-export const HUB_DIALOGUE_PLANNER_SYSTEM =
-  DIALOGUE_PLANNER_SYSTEM.replace(
-    'Respect the configured concurrency limit (default: 3 running tasks per session).',
-    '',
-  ) +
-  '\n' +
-  HUB_DIALOGUE_STORAGE_RULES +
-  '\nA step states the result it must produce, not how to produce it; the worker chooses the tools and the way.' +
-  '\nMake each step a result one worker run can deliver and that can be checked on its own.' +
-  '\nTo process all items of a kind that do not fit one worker run: first one step that returns only their identifiers, page by page (for example 20 at a time); then steps per item or per batch that fit a worker run; plan the check the risk needs.' +
-  "\nEvery delegate_task is a brief: goal says what to achieve in one or two sentences; context carries the constraints from the user's overall request that apply to this step (what not to touch, where results are stored, priority order, scope), the facts needed from earlier results (ids, names, values), the done criterion, and what to return." +
-  "\nThe worker sees only the brief and its own tool results, not the dialogue; put everything it needs into the brief. Pass history only when the user's exact wording matters to the step." +
-  "\nKeep each step within one worker run's budget; split a step that does not fit." +
-  "\nSkip a step, drop items, sample or otherwise narrow the user's scope only after asking the user via update_plan with status waiting_user and a question; keep waiting until the user answers, never decide it yourself." +
-  '\nA [check] note is not user agreement.' +
-  '\nWhen the plan checks stored batch results, the check reads them back from where they were stored (rag_list for hub RAG) and verifies the expected records, as the requested storage format defines them, and their count; fewer stored records fails the step.' +
-  '\nThe checker can read stored hub RAG records with rag_list when a check of stored results is planned.' +
-  '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.' +
-  '\n[task events] and [restart] notes come from the hub, not from the user: never thank them or address them as the user. Tell the user what the outcome means for their request, or reply NO_MESSAGE.';
-
 const plannerAgents = new Map<SmartAgent, { current: ILlm }>();
 export async function buildPlannerAgent(
   config: AgentConfig,
+  systemPrompt: string,
 ): Promise<SmartAgent> {
   if (config.llm.plannerModel && !sharedPlannerLlm) {
     sharedPlannerLlm = makeHubLlm(
@@ -2825,9 +2823,7 @@ export async function buildPlannerAgent(
       classificationEnabled: false,
     },
     prompts: {
-      system:
-        HUB_DIALOGUE_PLANNER_SYSTEM +
-        `\nAt most ${config.agent.dialogue.executors} tasks may run at the same time in this session; run fewer when steps are not independent.`,
+      system: systemPrompt,
     },
   })
     .withMainLlm(forwardingLlm)
@@ -2849,40 +2845,141 @@ export function releasePlannerAgent(agent: SmartAgent): void {
   plannerAgents.delete(agent);
 }
 
-function destinationWorkers(
-  executor: ISubAgent,
-  rawExecutor: SmartAgent,
-): Map<string, ISubAgent> {
-  // Both workers use the same tool loop and RecordingMcpClient.
-  const checker = new SmartAgentSubAgent('checker', rawExecutor, {
-    description: CHECKER_DESCRIPTION,
-  });
-  const checkerRun = checker.run.bind(checker);
-  // Client-executed (external) tools bypass both MCP guards: the tool loop
-  // hands such calls straight to the client. A checker gets none of them.
-  checker.run = ({
-    externalTools: _tools,
-    externalResults: _results,
-    ...input
-  }) =>
-    runWithReadOnlyTools(() =>
-      checkerRun({
-        ...input,
-        task:
-          'You are verifying, not changing: use only read/check tools; do not create, change, activate or delete objects; return only a JSON object {"verdict":"pass"|"fail","note"?:"reason"}.\n' +
-          input.task,
+export function createAgentProfileSource(
+  userId: string,
+  selectedCollectionId?: () => string | Promise<string>,
+): AgentProfileSource {
+  const profiles = getAgentConfig().profiles ?? {
+    collectionId: 'agents',
+    plannerRecord: 'planner',
+    timeoutMs: 3000,
+  };
+  const sessionId = getRequestSessionId();
+  return new AgentProfileSource(getCollectionRegistry(), {
+    userId,
+    globalCollectionId: profiles.collectionId,
+    selectedCollectionId:
+      selectedCollectionId ??
+      (() => {
+        return (
+          (sessionId
+            ? longSessionsIfReady()?.get(userId, sessionId)?.agentsCollectionId
+            : undefined) ?? profiles.collectionId
+        );
       }),
-    );
-  return new Map([
-    ['executor', executor],
-    ['checker', checker],
-  ]);
+    plannerRecord: profiles.plannerRecord,
+    timeoutMs: profiles.timeoutMs,
+  });
 }
 
-export const EXECUTOR_DESCRIPTION =
-  "ABAP executor with the SAP system's tools: reads, searches, creates, changes and activates ABAP objects; returns what it did and found.";
-export const CHECKER_DESCRIPTION =
-  'Verifies an earlier step\'s result against the SAP system with the same tools (reads objects back, syntax check, activation status, test runs) and returns only a JSON object {"verdict":"pass"|"fail","note"?:"reason"}; it does not change objects.';
+/** Bound compatibility preparation without retaining a deadline during execution. */
+async function prepareCompatibilityWorker<T>(
+  config: AgentConfig,
+  options: CallOptions | undefined,
+  prepare: (options: CallOptions) => Promise<T>,
+): Promise<T> {
+  options?.signal?.throwIfAborted();
+  const controller = new AbortController();
+  const abort = (): void => controller.abort();
+  options?.signal?.addEventListener('abort', abort, { once: true });
+  const timer = setTimeout(abort, config.profiles?.timeoutMs ?? 3000);
+  let rejectAbort: (() => void) | undefined;
+  try {
+    const stopped = new Promise<never>((_resolve, reject) => {
+      rejectAbort = () =>
+        reject(new Error('Agent profile preparation cancelled or timed out'));
+      controller.signal.addEventListener('abort', rejectAbort, { once: true });
+    });
+    const value = await Promise.race([
+      prepare({ ...options, signal: controller.signal }),
+      stopped,
+    ]);
+    controller.signal.throwIfAborted();
+    return value;
+  } finally {
+    clearTimeout(timer);
+    options?.signal?.removeEventListener('abort', abort);
+    if (rejectAbort)
+      controller.signal.removeEventListener('abort', rejectAbort);
+  }
+}
+
+function destinationProfileRunner(
+  mcpAdapter: IMcpClient,
+  toolsRag: ExpositionFilteringRag,
+  config: AgentConfig,
+  injectHistory = false,
+): AgentProfileRunner {
+  const catalogue = () => [
+    ...[...getToolExpositionMap().keys()].map((name) => ({
+      name,
+      effect: isReadOnlyTool(name, getToolAnnotations().get(name))
+        ? ('read' as const)
+        : ('write' as const),
+    })),
+    ...getRagToolNames().map((name) => ({
+      name,
+      effect: name === 'rag_list' ? ('read' as const) : ('write' as const),
+    })),
+  ];
+  return new AgentProfileRunner({
+    catalogue,
+    grants: () =>
+      new Set(
+        catalogue()
+          .filter((tool) => {
+            if (tool.name.startsWith('rag_'))
+              return Boolean(getRequestUserId());
+            const allowed = connectionALS.getStore()?.exposition;
+            return (
+              allowed?.some(
+                (level) => level === getToolExpositionMap().get(tool.name),
+              ) &&
+              (!allowed.every((level) => level !== 'high') ||
+                tool.effect === 'read')
+            );
+          })
+          .map((tool) => tool.name),
+      ),
+    buildWorker: async (profile, systemPrompt, options) => {
+      options?.signal?.throwIfAborted();
+      const builder = await configureDestinationAgentBuilder(
+        mcpAdapter,
+        toolsRag,
+        config,
+        { systemPrompt },
+      );
+      options?.signal?.throwIfAborted();
+      const handle = await builder.build();
+      options?.signal?.throwIfAborted();
+      return new SmartAgentSubAgent(
+        profile.name,
+        injectHistory ? withConversationHistory(handle.agent) : handle.agent,
+        { description: profile.description },
+      );
+    },
+    buildPlanner: async (systemPrompt, options) => {
+      const planner = await buildPlannerAgent(config, systemPrompt);
+      const release = (): void => {
+        releasePlannerAgent(planner);
+        options?.signal?.removeEventListener('abort', release);
+      };
+      options?.signal?.addEventListener('abort', release, { once: true });
+      if (options?.signal?.aborted) {
+        release();
+        options.signal.throwIfAborted();
+      }
+      return new Proxy(planner, {
+        get(target, property, receiver) {
+          if (property === 'process')
+            return (...args: Parameters<SmartAgent['process']>) =>
+              target.process(...args).finally(release);
+          return Reflect.get(target, property, receiver);
+        },
+      });
+    },
+  });
+}
 
 /**
  * Build a SmartAgent for a specific destination.
@@ -2892,9 +2989,7 @@ export async function buildAgentForDestination(
   mcpAdapter: McpClientAdapter,
   toolsRag: ExpositionFilteringRag,
   config: AgentConfig,
-): Promise<SmartAgentHandle> {
-  const log = cds.log('agent-manager');
-
+): Promise<DestinationAgentHandle> {
   // Transparent decorator around the destination's MCP adapter that captures
   // every tool call WITH its RESULT (ground truth for the honesty reviewer),
   // keyed by traceId. Passed to the executor worker AS the mcp client so the
@@ -2942,7 +3037,43 @@ export async function buildAgentForDestination(
   );
 
   if (!rawExecutor) throw new Error('Executor agent was not built');
-  const workers = destinationWorkers(executorWorker, rawExecutor);
+  const profileRunner = destinationProfileRunner(recMcp, toolsRag, config);
+  const workers = new Map<string, ISubAgent>([
+    ['executor', executorWorker],
+    [
+      'checker',
+      {
+        name: 'checker',
+        description: '',
+        capabilities: { contextPolicy: 'optional' },
+        run: async (input) => {
+          const worker = await prepareCompatibilityWorker(
+            config,
+            input,
+            async (options) => {
+              options.signal?.throwIfAborted();
+              const source = createAgentProfileSource(
+                getRequestUserId() ?? 'anonymous',
+              );
+              const resolved = await source.resolveWorker('checker', options);
+              if (!resolved.ok) throw new Error('Checker profile unavailable');
+              if (resolved.value.profile.result !== 'verdict')
+                throw new Error('Checker profile must have result: verdict');
+              options.signal?.throwIfAborted();
+              const worker = await profileRunner.createWorker(
+                resolved.value,
+                options,
+              );
+              if (!worker.ok) throw new Error(worker.error.message);
+              return worker.value;
+            },
+          );
+          input.signal?.throwIfAborted();
+          return worker.run(input);
+        },
+      },
+    ],
+  ]);
   if (config.agent.chatCoordinator !== 'fixed') {
     const budget = Object.fromEntries(
       Object.entries(config.agent.planBudget ?? {}).filter(
@@ -2989,30 +3120,17 @@ export async function buildAgentForDestination(
   // Expose recMcp on the handle so channel handlers can call
   // `recMcp.dropRequest(traceId)` in their `finally` block — nobody else
   // drops it, so the per-trace bucket would otherwise leak.
-  if (!rawExecutor) throw new Error('Executor agent was not built');
-  Object.assign(handle, {
+  if (!rawExecutor || !executor)
+    throw new Error('Executor agent was not built');
+  const destinationHandle = Object.assign(handle, {
     recMcp,
     executor,
     criticLlm,
     workers,
+    profileRunner,
   });
 
-  // Diagnostic: confirm structured pipeline is active
-  // biome-ignore lint/suspicious/noExplicitAny: diagnostic access to private fields
-  const agentObj = handle.agent as any;
-  log.info('SmartAgent pipeline diagnostic', {
-    hasPipelineExecutor: !!agentObj.pipelineExecutor,
-    hasPipelineStages: !!agentObj.pipelineStages,
-    stageCount: agentObj.pipelineStages?.length ?? 0,
-    stageIds: agentObj.pipelineStages?.map((s: { id: string }) => s.id) ?? [],
-    ragStoreKeys: Object.keys(handle.ragStores),
-    refreshToolsPerIteration: agentObj.config?.refreshToolsPerIteration,
-    toolReselectPerIteration: agentObj.config?.toolReselectPerIteration,
-    ragQueryK: agentObj.config?.ragQueryK,
-    chatCoordinator: config.agent.chatCoordinator,
-  });
-
-  return handle;
+  return destinationHandle;
 }
 
 /**
@@ -3041,20 +3159,116 @@ export async function buildExecutorWorker(
   exposeExecutor?: (agent: SmartAgent, rawAgent: SmartAgent) => void,
   options: { injectHistory: boolean } = { injectHistory: true },
 ): Promise<ISubAgent> {
+  const runner = destinationProfileRunner(
+    mcpAdapter,
+    toolsRag,
+    config,
+    options.injectHistory,
+  );
+  const resolve = async (options: CallOptions) => {
+    options.signal?.throwIfAborted();
+    const source = createAgentProfileSource(getRequestUserId() ?? 'anonymous');
+    const resolved = await source.resolveWorker('executor', options);
+    if (!resolved.ok) throw new Error('Executor profile unavailable');
+    return resolved.value;
+  };
   const builder = await configureDestinationAgentBuilder(
     mcpAdapter,
     toolsRag,
     config,
   );
-
   const handle = await builder.build();
-  const executor = withConversationHistory(handle.agent);
+  const prepareDirect = (options?: CallOptions) =>
+    prepareCompatibilityWorker(config, options, async (callOptions) => {
+      const resolved = await resolve(callOptions);
+      callOptions?.signal?.throwIfAborted();
+      const freshBuilder = await configureDestinationAgentBuilder(
+        mcpAdapter,
+        toolsRag,
+        config,
+        {
+          systemPrompt: [
+            resolved.workerBase ?? '',
+            resolved.profile.systemPrompt,
+          ].join('\n'),
+        },
+      );
+      callOptions.signal?.throwIfAborted();
+      const fresh = await freshBuilder.build();
+      callOptions?.signal?.throwIfAborted();
+      return {
+        agent: withConversationHistory(fresh.agent),
+        scope: runner.bind(resolved.profile),
+      };
+    });
+  const executor = new Proxy(handle.agent, {
+    get(target, property, receiver) {
+      if (property === 'process')
+        return async (...args: Parameters<SmartAgent['process']>) => {
+          if (args[1]?.externalResults?.size)
+            throw new Error('TOOL_FORBIDDEN: external result replay');
+          const prepared = await prepareDirect(args[1]);
+          const result = await prepared.scope(() =>
+            prepared.agent.process(args[0], {
+              ...args[1],
+              externalTools: [],
+              externalResults: undefined,
+            }),
+          );
+          if (result.ok && result.value.toolCalls?.length)
+            throw new Error('TOOL_FORBIDDEN: external execution');
+          return result;
+        };
+      if (property === 'streamProcess')
+        return async function* (
+          ...args: Parameters<SmartAgent['streamProcess']>
+        ) {
+          if (args[1]?.externalResults?.size)
+            throw new Error('TOOL_FORBIDDEN: external result replay');
+          const prepared = await prepareDirect(args[1]);
+          const iterator = prepared.agent
+            .streamProcess(args[0], {
+              ...args[1],
+              externalTools: [],
+              externalResults: undefined,
+            })
+            [Symbol.asyncIterator]();
+          try {
+            while (true) {
+              const next = await prepared.scope(() => iterator.next());
+              if (next.done) return;
+              if (next.value.ok && next.value.value.toolCalls?.length)
+                throw new Error('TOOL_FORBIDDEN: external execution');
+              yield next.value;
+            }
+          } finally {
+            await prepared.scope(() => iterator.return?.());
+          }
+        };
+      return Reflect.get(target, property, receiver);
+    },
+  });
   exposeExecutor?.(executor, handle.agent);
-  return new SmartAgentSubAgent(
-    'executor',
-    options.injectHistory ? executor : handle.agent,
-    options.injectHistory ? undefined : { description: EXECUTOR_DESCRIPTION },
-  );
+  return {
+    name: 'executor',
+    description: '',
+    capabilities: { contextPolicy: 'optional' },
+    run: async (input) => {
+      const worker = await prepareCompatibilityWorker(
+        config,
+        input,
+        async (options) => {
+          const resolved = await resolve(options);
+          options.signal?.throwIfAborted();
+          const worker = await runner.createWorker(resolved, options);
+          if (!worker.ok) throw new Error(worker.error.message);
+          return worker.value;
+        },
+      );
+      input.signal?.throwIfAborted();
+      return worker.run(input);
+    },
+  };
 }
 
 /**
@@ -3187,7 +3401,7 @@ export function getDestinationInitWaitMs(
 export async function getSmartAgent(
   requestedModel?: string,
   requestedDestination?: string,
-): Promise<SmartAgentHandle> {
+): Promise<HubAgentHandle> {
   const log = cds.log('agent-manager');
   const config = getAgentConfig();
 
