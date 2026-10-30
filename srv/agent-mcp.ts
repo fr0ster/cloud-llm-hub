@@ -152,7 +152,7 @@ const EXECUTE_STEP_DESCRIPTION = [
   '',
   'For multi-step work call `session_open` first, pass its key as `session` in every call, and call `session_close` when done. With `session`, execute_step continues the conversation and ABAP connection (debugger, locks). Calls of one session run one after another. Without `session`, each call is independent as before.',
   '',
-  'Every result with known usage ends with [usage] prompt=<n> completion=<n> total=<n> time=<seconds>s (one decimal) and includes structuredContent.usage. When a reviewer runs, its tokens are separate in structuredContent.usage_reviewer and reviewer=<n> in the footer. Use it to track and budget what the executor spends across your plan.',
+  'Every result with known usage ends with [usage] prompt=<n> completion=<n> total=<n> time=<seconds>s (one decimal) and includes structuredContent.usage. structuredContent.result holds the reply text. EMPTY_RESULT means the executor replied nothing. When a reviewer runs, its tokens are separate in structuredContent.usage_reviewer and reviewer=<n> in the footer. Use it to track and budget what the executor spends across your plan.',
 ].join('\n');
 
 export interface AgentMcpResult {
@@ -579,17 +579,22 @@ async function executeStepRun(
       ? { ...tokens, duration_ms: durationMs }
       : undefined;
     const wireReviewerUsage = tokenUsageToWire(reviewerUsage);
-    const content = notice ? `${notice}\n${rawContent}` : rawContent;
+    const emptyResult = !/\S/.test(rawContent);
+    const reply = emptyResult
+      ? `EMPTY_RESULT on destination "${targetDestination}": The executor finished without a reply. The system state of the step is unknown and must be verified by a separate read step.${r.value.iterations !== undefined ? ` iterations=${r.value.iterations}` : ''}${r.value.toolCallCount !== undefined ? ` toolCallCount=${r.value.toolCallCount}` : ''}${r.value.stopReason !== undefined ? ` stopReason=${r.value.stopReason}` : ''}`
+      : rawContent;
+    const content = notice ? `${notice}\n${reply}` : reply;
     return {
       ...textResult(
         wireUsage || wireReviewerUsage
           ? `${content}\n[usage]${wireUsage ? ` prompt=${wireUsage.prompt_tokens} completion=${wireUsage.completion_tokens} total=${wireUsage.total_tokens}` : ''}${wireReviewerUsage ? ` reviewer=${wireReviewerUsage.total_tokens}` : ''} time=${(durationMs / 1000).toFixed(1)}s`
           : content,
-        false,
+        emptyResult,
       ),
       ...(wireUsage || wireReviewerUsage
         ? {
             structuredContent: {
+              result: content,
               ...(wireUsage ? { usage: wireUsage } : {}),
               ...(wireReviewerUsage
                 ? { usage_reviewer: wireReviewerUsage }

@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- Agent MCP `execute_step` includes reply text in `structuredContent.result` alongside usage, and reports empty replies as `EMPTY_RESULT` errors requiring a separate read step to verify system state.
+
 ## [9.8.0] - 2026-10-29
 
 ### Added
