@@ -33,7 +33,10 @@ jest.mock('../../srv/request-session', () => ({
 
 import { sanitizeUserKey, sessionCollectionId } from '../../srv/collection-ids';
 import { CollectionRegistry } from '../../srv/rag-collections';
-import { dispatchRagTool } from '../../srv/rag-tool-dispatcher';
+import {
+  buildRagToolSchemas,
+  dispatchRagTool,
+} from '../../srv/rag-tool-dispatcher';
 
 // Helper: set the authenticated caller for the current test.
 function asUser(id: string) {
@@ -308,4 +311,25 @@ test('rag_list returns compact titles, length and tags; id reads full text; pagi
       limit: 201,
     }),
   ).toMatchObject({ ok: false });
+});
+
+test('external write tools never enter dispatcher schemas or dispatch', async () => {
+  const names = [
+    'collection_create',
+    'collection_delete',
+    'record_add',
+    'record_update',
+    'record_delete',
+  ];
+  const registry = new CollectionRegistry();
+  const create = jest.spyOn(registry, 'getOrCreateCollection');
+  for (const name of names) {
+    expect(
+      buildRagToolSchemas(true).some((tool) => tool.function.name === name),
+    ).toBe(false);
+    expect(await dispatchRagTool(registry, name, {})).toMatchObject({
+      ok: false,
+    });
+  }
+  expect(create).not.toHaveBeenCalled();
 });

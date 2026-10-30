@@ -730,6 +730,68 @@ destination }`, `execute_step({ session, task, destination? })` runs in it (a
 `session_close({ session })` closes it. Errors come back as tool errors with the
 codes above.
 
+The external agent endpoint additionally supports text knowledge writes. These five
+strict-object tools accept an optional nonempty `session` argument. A live,
+caller-owned session is required even for user collections. Key precedence is
+`session`, `x-clh-session`, then the `clh_session` cookie; obtain the key with
+`session_open`. Transport `mcp-session-id` and legacy `x-session-id` are not keys.
+UTF-8 JSON-serialized arguments, including attributes and session, must fit in
+10 MiB (10,485,760 bytes). No file upload, chunking, or URL fetching occurs.
+
+| Tool | Required arguments | Optional attributes | Success fields besides `result` |
+|---|---|---|---|
+| `collection_create` | `name: string`, `scope: "user" \| "session"` | `session` | `collection`, normalized `name`, `scope`, `created: boolean` |
+| `collection_delete` | `collection: string` | `session` | `collection`, `deleted: true` |
+| `record_add` | `collection: string`, `text: string` | `title: string`, `source: string`, `session` | `collection`, `record`, `created: true` |
+| `record_update` | `collection: string`, `record: string`, `text: string` | `title: string`, `source: string`, `session` | `collection`, `record`, `updated: true` |
+| `record_delete` | `collection: string`, `record: string` | `session` | `collection`, `record`, `deleted: true` |
+
+Required strings are nonempty; text is preserved verbatim. Empty optional title
+and source strings are allowed. Source is attribution only (no URL fetch).
+Create normalizes the name as REST does and returns a physical collection ID.
+Repeated create returns `created: false` and the existing knowledge collection.
+Add generates a UUID. Update replaces the full text, retains omitted title/source
+and all other stored metadata and creation time, and reads the authoritative
+backend record first. Delete removes exactly one document, including one old
+upload chunk. No record write implicitly creates a collection.
+
+All five reject visible agents collections with `TOOL_FORBIDDEN`, including
+normalized-name collisions on create. Foreign user and other-session targets
+remain 404, including for admins. Existing global mutations require `MCP_Admin`
+only where the existing REST resolver exposes them; global creation and new
+global knowledge lookup are unavailable. These tools are excluded from internal
+planner, executor, checker, dispatcher and dialogue tool catalogues and retrieval;
+forged internal calls fail before forwarding.
+
+Schema violations (missing fields, wrong types, invalid scope, extra fields, or empty required strings) are rejected by the MCP SDK before the callback as text errors with `isError: true`; they are not measured. Semantic errors, including the 10 MiB argument limit and reserved logical names, return structured errors with `structuredContent.result` from the measured callback.
+
+Every write success or semantic error has matching text and `structuredContent.result`:
+
+```json
+{
+  "content": [{ "type": "text", "text": "Record added." }],
+  "structuredContent": {
+    "result": "Record added.",
+    "collection": "notes__u_<owner-key>",
+    "record": "<generated-uuid>",
+    "created": true
+  }
+}
+```
+
+For example, call `collection_create({ name: "notes", scope: "user", session })`,
+then `record_add({ collection: <returned collection>, text: "A useful fact", session })`.
+Use the returned exact `record` ID for replacement or deletion.
+Semantic errors set `isError: true` and carry
+`structuredContent: { result, error: { code, message, status } }` without echoing
+record text. Codes include `INVALID_ARGUMENT` (400), `PAYLOAD_TOO_LARGE` (413),
+`UNAUTHENTICATED` (401), `FORBIDDEN`/`TOOL_FORBIDDEN` (403),
+`COLLECTION_NOT_FOUND`/`RECORD_NOT_FOUND` (404), `EMBEDDING_FAILED` and
+`BACKEND_ERROR` (operation fallback). Backend RAG codes and backend statuses
+(409/502/503) are preserved. Session failures retain `SESSION_REQUIRED`,
+`SESSION_NOT_FOUND`, `SESSION_LIMIT`, `SESSION_STORE_UNAVAILABLE`,
+`session_closed` (410) and `gatekeeper_retention` (503).
+
 The agent MCP also exposes RAG tools for clients that manage their own LLM
 context. Each takes an optional `session` key from `session_open`; alternatively
 send `x-clh-session`. A session is required, and calls hold its queue and RAG

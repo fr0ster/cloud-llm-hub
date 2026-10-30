@@ -1,12 +1,18 @@
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import express from 'express';
-import { registerRagMcpTools } from '../../srv/agent-mcp-rag';
+import { ragMcpSchemas, registerRagMcpTools } from '../../srv/agent-mcp-rag';
 import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
 import { runWithProfileTools } from '../../srv/request-session';
 
+const mockWriteIdentity = { admin: false };
 jest.mock('@sap/cds', () => ({
   __esModule: true,
-  default: { log: () => ({ info() {}, warn() {}, error() {}, debug() {} }) },
+  default: {
+    log: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
+    context: { user: { is: () => mockWriteIdentity.admin } },
+  },
 }));
 jest.mock('../../srv/agent-manager', () => ({
   getCollectionRegistry: jest.fn(),
@@ -70,7 +76,16 @@ let sid: string;
 let other: string;
 const cid = userCollectionId('notes', 'alice');
 const second = userCollectionId('second', 'alice');
-const inputs = {
+const inputs: Record<RagMcpTool, Parameters<typeof executeRagMcpTool>[3]> = {
+  collection_create: { name: 'new-notes', scope: 'user' },
+  collection_delete: { collection: 'notes' },
+  record_add: { collection: 'notes', text: 'new record' },
+  record_update: {
+    collection: 'notes',
+    record: 'visible',
+    text: 'replacement',
+  },
+  record_delete: { collection: 'notes', record: 'visible' },
   rag_search: { query: 'needle' },
   rag_read: { collection: 'notes', id: 'visible' },
   collections_list: {},
@@ -131,6 +146,7 @@ function open(user = 'alice') {
   return s.key;
 }
 beforeEach(async () => {
+  mockWriteIdentity.admin = false;
   jest.mocked(getQueryEmbedder).mockReturnValue(undefined);
   mockForSession.mockReset();
   registry = new CollectionRegistry();
@@ -676,4 +692,629 @@ test('MCP agent reads redact externally disabled current records', async () => {
     expect(result.content[0].text).toContain('record-disabled');
     expect(result.content[0].text).not.toContain('private');
   }
+});
+
+const writeNames = [
+  'collection_create',
+  'collection_delete',
+  'record_add',
+  'record_update',
+  'record_delete',
+] satisfies RagMcpTool[];
+const writePayload = z.object({
+  result: z.string(),
+  collection: z.string().optional(),
+  record: z.string().optional(),
+  error: z
+    .object({ code: z.string(), status: z.number(), message: z.string() })
+    .optional(),
+});
+
+function assertWriteResult(result: Awaited<ReturnType<typeof call>>) {
+  const value = writePayload.parse(result.structuredContent);
+  expect(result.content).toEqual([{ type: 'text', text: value.result }]);
+  expect(result.isError === true).toBe(value.error !== undefined);
+  return value;
+}
+
+test.each(writeNames)(
+  '%s returns matching typed content and physical ids',
+  async (name: RagMcpTool) => {
+    const result = await call(name);
+    const value = assertWriteResult(result);
+    expect(result.isError).toBeUndefined();
+    expect(value.collection).toContain('__u_');
+  },
+);
+
+test('create normalizes identities and duplicate creation is idempotent', async () => {
+  expect(
+    (await call('collection_create', { name: ' Notes ' })).structuredContent,
+  ).toMatchObject({
+    collection: cid,
+    name: 'notes',
+    scope: 'user',
+    created: false,
+  });
+  const result = await call('collection_create', { scope: 'session' });
+  expect(result.structuredContent).toMatchObject({
+    collection: sessionCollectionId('new-notes', 'alice', sid),
+    created: true,
+  });
+  expect(
+    await registry.getCollection(
+      sessionCollectionId('new-notes', 'alice', sid),
+    ),
+  ).toMatchObject({
+    owner: 'alice',
+    sessionId: sid,
+    expiresAt: expect.any(Number),
+  });
+});
+
+test('text writes preserve whitespace, optional empty attributes, and unrelated metadata', async () => {
+  const add = assertWriteResult(
+    await call('record_add', {
+      text: '  body\n ',
+      title: '',
+      source: 'https://example.org/reference',
+    }),
+  );
+  if (!add.record) throw new Error('Missing record id');
+  expect(add.record).toMatch(/^[a-f0-9-]{36}$/);
+  expect(await registry.getDocument(cid, add.record)).toMatchObject({
+    text: '  body\n ',
+    metadata: { title: '', source: 'https://example.org/reference' },
+  });
+  await registry.updateDocument(cid, add.record, {
+    metadata: { enabled: false, uploadId: 'old', chunkIndex: 2 },
+  });
+  const before = await registry.getDocument(cid, add.record);
+  await call('record_update', {
+    record: add.record,
+    text: 'replacement',
+    title: 'New',
+  });
+  expect(await registry.getDocument(cid, add.record)).toMatchObject({
+    text: 'replacement',
+    createdAt: before?.createdAt,
+    metadata: {
+      title: 'New',
+      source: 'https://example.org/reference',
+      enabled: false,
+      uploadId: 'old',
+      chunkIndex: 2,
+    },
+  });
+  await call('record_delete', { record: add.record });
+  expect(await registry.getDocument(cid, add.record)).toBeNull();
+});
+
+test('settled writes are immediately visible in read and record listing', async () => {
+  const added = assertWriteResult(
+    await call('record_add', { text: 'visible now' }),
+  );
+  expect(await body(call('rag_read', { id: added.record }))).toMatchObject({
+    text: 'visible now',
+  });
+  await call('record_update', { record: added.record, text: 'updated now' });
+  expect(await body(call('rag_read', { id: added.record }))).toMatchObject({
+    text: 'updated now',
+  });
+  expect(
+    (await body(call('collection_records'))).records.map(
+      (record: { id: string }) => record.id,
+    ),
+  ).toContain(added.record);
+});
+
+test.each(writeNames)(
+  '%s rejects visible agents and hides foreign agents',
+  async (name: RagMcpTool) => {
+    const target = userCollectionId('agents-copy', 'alice');
+    await registry.createCollection({
+      id: target,
+      logicalId: 'agents-copy',
+      displayName: 'Agents',
+      description: '',
+      scope: 'user',
+      owner: 'alice',
+      collectionKind: 'agents',
+    });
+    const result = assertWriteResult(
+      await call(
+        name,
+        name === 'collection_create'
+          ? { name: ' Agents-copy ' }
+          : { collection: target },
+      ),
+    );
+    expect(result.error).toMatchObject({ code: 'TOOL_FORBIDDEN', status: 403 });
+    if (name !== 'collection_create')
+      expect(
+        assertWriteResult(
+          await call(name, { collection: target, session: open('bob') }, 'bob'),
+        ).error,
+      ).toMatchObject({ code: 'COLLECTION_NOT_FOUND', status: 404 });
+  },
+);
+
+test.each(writeNames)(
+  '%s refuses unauthenticated, missing and closed sessions before writing',
+  async (name: RagMcpTool) => {
+    const mutate = jest.spyOn(registry, 'getOrCreateCollection');
+    expect(
+      assertWriteResult(await call(name, {}, 'anonymous')).error?.code,
+    ).toBe('UNAUTHENTICATED');
+    expect(
+      assertWriteResult(await call(name, { session: undefined })).error?.code,
+    ).toBe('SESSION_REQUIRED');
+    await longSessions().close('alice', sid, 'explicit');
+    expect(assertWriteResult(await call(name)).error?.code).toBe(
+      'SESSION_NOT_FOUND',
+    );
+    expect(mutate).not.toHaveBeenCalled();
+  },
+);
+
+test.each(['record_update', 'record_delete'] satisfies RagMcpTool[])(
+  '%s reports missing record',
+  async (name: RagMcpTool) => {
+    expect(
+      assertWriteResult(await call(name, { record: 'absent' })).error,
+    ).toMatchObject({ code: 'RECORD_NOT_FOUND', status: 404 });
+  },
+);
+
+test.each([
+  'collection_delete',
+  'record_add',
+  'record_update',
+  'record_delete',
+] satisfies RagMcpTool[])(
+  '%s requires collection existence and isolates sessions',
+  async (name: RagMcpTool) => {
+    expect(
+      assertWriteResult(await call(name, { collection: 'absent' })).error,
+    ).toMatchObject({ code: 'COLLECTION_NOT_FOUND', status: 404 });
+    const created = assertWriteResult(
+      await call('collection_create', { scope: 'session' }),
+    );
+    expect(
+      assertWriteResult(
+        await call(name, { collection: created.collection, session: other }),
+      ).error?.status,
+    ).toBe(404);
+  },
+);
+
+test.each(writeNames)(
+  '%s rejects additional fields before session or storage access',
+  async (name: RagMcpTool) => {
+    const resolve = jest.mocked(resolveSession).mockClear();
+    const result = await executeRagMcpTool({ headers: {} }, 'alice', name, {
+      ...inputs[name],
+      session: sid,
+      ...{ owner: 'forged' },
+    });
+    expect(assertWriteResult(result).error?.code).toBe('INVALID_ARGUMENT');
+    expect(resolve).not.toHaveBeenCalled();
+  },
+);
+
+test('write argument limit counts UTF-8 and JSON escaping at the exact boundary', async () => {
+  const max = 10 * 1024 * 1024;
+  const input = { collection: cid, session: sid, text: '' };
+  const overhead = Buffer.byteLength(JSON.stringify(input));
+  const text = '\u00e9'.repeat(Math.floor((max - overhead) / 2));
+  const write = jest.spyOn(registry, 'addDocument');
+  expect(
+    (
+      await executeRagMcpTool({ headers: {} }, 'alice', 'record_add', {
+        ...input,
+        text,
+      })
+    ).isError,
+  ).toBeUndefined();
+  const count = write.mock.calls.length;
+  expect(
+    assertWriteResult(
+      await executeRagMcpTool({ headers: {} }, 'alice', 'record_add', {
+        ...input,
+        text: `${text}xx`,
+      }),
+    ).error?.code,
+  ).toBe('PAYLOAD_TOO_LARGE');
+  expect(
+    assertWriteResult(await call('record_add', { text: '\n'.repeat(max / 2) }))
+      .error?.code,
+  ).toBe('PAYLOAD_TOO_LARGE');
+  expect(write).toHaveBeenCalledTimes(count);
+});
+
+test('write errors preserve backend codes and separate embedding and storage failures', async () => {
+  const write = jest.spyOn(registry, 'addDocument');
+  write.mockRejectedValueOnce(
+    new RagError('backend rejected', 'CUSTOM_STORE_ERROR'),
+  );
+  expect(assertWriteResult(await call('record_add')).error).toMatchObject({
+    code: 'CUSTOM_STORE_ERROR',
+    status: 400,
+  });
+  write.mockRejectedValueOnce(new Error('embedding failed'));
+  expect(assertWriteResult(await call('record_add')).error?.code).toBe(
+    'EMBEDDING_FAILED',
+  );
+  write.mockRejectedValueOnce(new Error('storage failed'));
+  expect(assertWriteResult(await call('record_add')).error?.code).toBe(
+    'BACKEND_ERROR',
+  );
+});
+
+test('all writes register with output schemas and preserve structured results through callback wrappers', async () => {
+  const server = new McpServer({ name: 'writes', version: '1' });
+  const register = jest.spyOn(server, 'registerTool');
+  const measured: string[] = [];
+  registerRagMcpTools(
+    server,
+    express.request,
+    'alice',
+    (name: RagMcpTool, run) => async (args) => {
+      measured.push(name);
+      return run(args);
+    },
+  );
+  for (const name of writeNames)
+    expect(
+      register.mock.calls.find((args) => args[0] === name)?.[1],
+    ).toHaveProperty('outputSchema');
+  expect(register.mock.calls.map((args) => args[0])).toEqual(
+    expect.arrayContaining(writeNames),
+  );
+  expect(measured).toEqual([]);
+  await server.close();
+});
+
+test('SDK rejects schema violations before measurement and measures semantic errors', async () => {
+  const server = new McpServer({ name: 'invalid-writes-sdk', version: '1' });
+  const client = new Client({ name: 'test', version: '1' });
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  type ToolArgs = Parameters<typeof executeRagMcpTool>[3];
+  type ToolResult = Awaited<ReturnType<typeof executeRagMcpTool>>;
+  const measured: RagMcpTool[] = [];
+  registerRagMcpTools(
+    server,
+    express.request,
+    'alice',
+    (name: RagMcpTool, run: (args: ToolArgs) => Promise<ToolResult>) =>
+      async (args: ToolArgs): Promise<ToolResult> => {
+        const result = await run(args);
+        measured.push(name);
+        return result;
+      },
+  );
+  await Promise.all([
+    server.connect(serverTransport),
+    client.connect(clientTransport),
+  ]);
+  try {
+    const writes = [
+      jest.spyOn(registry, 'getOrCreateCollection'),
+      jest.spyOn(registry, 'deleteCollection'),
+      jest.spyOn(registry, 'addDocument'),
+      jest.spyOn(registry, 'updateDocument'),
+      jest.spyOn(registry, 'deleteDocument'),
+    ];
+    const schemaCases: {
+      name: RagMcpTool;
+      arguments: Record<string, string | number>;
+    }[] = [
+      { name: 'record_add', arguments: { collection: cid } },
+      { name: 'record_add', arguments: { collection: cid, text: 42 } },
+      { name: 'record_add', arguments: { collection: cid, text: '' } },
+      {
+        name: 'record_update',
+        arguments: { collection: cid, record: 'visible', text: '' },
+      },
+      {
+        name: 'collection_delete',
+        arguments: { collection: cid, extra: 'rejected' },
+      },
+      {
+        name: 'record_delete',
+        arguments: { collection: cid, record: 'visible', extra: 'rejected' },
+      },
+      {
+        name: 'collection_create',
+        arguments: { name: 'notes', scope: 'global' },
+      },
+    ];
+    for (const entry of schemaCases) {
+      const result = await client.callTool({
+        name: entry.name,
+        arguments: { session: sid, ...entry.arguments },
+      });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toBeUndefined();
+      expect(result.content).toEqual([
+        {
+          type: 'text',
+          text: expect.stringContaining('Input validation error'),
+        },
+      ]);
+      expect(measured).toEqual([]);
+      for (const write of writes) expect(write).not.toHaveBeenCalled();
+    }
+    const cases = [
+      {
+        name: 'record_add' as const,
+        arguments: { collection: cid, text: 'x'.repeat(10 * 1024 * 1024) },
+        code: 'PAYLOAD_TOO_LARGE',
+        status: 413,
+      },
+      {
+        name: 'collection_create' as const,
+        arguments: { name: 'reserved__name', scope: 'user' },
+        code: 'INVALID_ARGUMENT',
+        status: 400,
+      },
+    ];
+    for (const entry of cases) {
+      const count = measured.length;
+      const result = await client.callTool({
+        name: entry.name,
+        arguments: { session: sid, ...entry.arguments },
+      });
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: {
+          result: expect.any(String),
+          error: { code: entry.code, status: entry.status },
+        },
+      });
+      const payload = writePayload.parse(result.structuredContent);
+      expect(payload.result.length).toBeGreaterThan(0);
+      expect(result.content).toEqual([{ type: 'text', text: payload.result }]);
+      expect(measured.slice(count)).toEqual([entry.name]);
+      for (const write of writes) expect(write).not.toHaveBeenCalled();
+    }
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('SDK lists object output schemas and round-trips success and backend errors', async () => {
+  const server = new McpServer({ name: 'writes-sdk', version: '1' });
+  const client = new Client({ name: 'test', version: '1' });
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  registerRagMcpTools(
+    server,
+    express.request,
+    'alice',
+    (_name: RagMcpTool, run) => run,
+  );
+  await Promise.all([
+    server.connect(serverTransport),
+    client.connect(clientTransport),
+  ]);
+  try {
+    const listed = await client.listTools();
+    for (const name of writeNames) {
+      const tool = listed.tools.find((tool) => tool.name === name);
+      expect(tool?.inputSchema).toMatchObject({
+        type: 'object',
+        additionalProperties: false,
+      });
+      expect(tool?.inputSchema.properties?.session).toMatchObject({
+        type: 'string',
+        minLength: 1,
+      });
+      for (const field of tool?.inputSchema.required ?? [])
+        if (field !== 'scope')
+          expect(tool?.inputSchema.properties?.[field]).toMatchObject({
+            type: 'string',
+            minLength: 1,
+          });
+      expect(tool?.outputSchema).toMatchObject({
+        type: 'object',
+        required: expect.arrayContaining(['result']),
+      });
+    }
+    expect(
+      listed.tools.find((tool) => tool.name === 'collection_create')
+        ?.inputSchema.properties?.scope,
+    ).toMatchObject({ enum: ['user', 'session'] });
+    const result = await client.callTool({
+      name: 'record_add',
+      arguments: { session: sid, collection: cid, text: 'SDK text' },
+    });
+    const parsed = writePayload.parse(result.structuredContent);
+    expect(parsed.collection).toBe(cid);
+    expect(result.content).toEqual([{ type: 'text', text: parsed.result }]);
+    jest
+      .spyOn(registry, 'addDocument')
+      .mockRejectedValueOnce(new Error('store rejected'));
+    const failed = await client.callTool({
+      name: 'record_add',
+      arguments: { session: sid, collection: cid, text: 'SDK text' },
+    });
+    expect(failed).toMatchObject({
+      isError: true,
+      structuredContent: {
+        result: 'store rejected',
+        error: { code: 'BACKEND_ERROR' },
+      },
+    });
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test.each([false, true])(
+  'all writes reject visible global agents regardless of admin=%s',
+  async (admin: boolean) => {
+    mockWriteIdentity.admin = admin;
+    await registry.createCollection({
+      id: 'agents-global',
+      logicalId: 'agents-global',
+      displayName: 'Agents',
+      description: '',
+      scope: 'global',
+      collectionKind: 'agents',
+    });
+    for (const name of writeNames.filter(
+      (tool: RagMcpTool) => tool !== 'collection_create',
+    )) {
+      expect(
+        assertWriteResult(await call(name, { collection: 'agents-global' }))
+          .error,
+      ).toMatchObject({ code: 'TOOL_FORBIDDEN', status: 403 });
+    }
+  },
+);
+
+test('writes use explicit session, header, then cookie precedence', async () => {
+  const input = { name: 'precedence', scope: 'session' as const };
+  const execute = (
+    headers: { 'x-clh-session'?: string; cookie?: string },
+    explicit?: string,
+  ) =>
+    executeRagMcpTool({ headers }, 'alice', 'collection_create', {
+      ...input,
+      session: explicit,
+    });
+  expect(
+    (
+      await execute(
+        { 'x-clh-session': other, cookie: `clh_session=${other}` },
+        sid,
+      )
+    ).structuredContent,
+  ).toMatchObject({
+    collection: sessionCollectionId('precedence', 'alice', sid),
+  });
+  expect(
+    (await execute({ 'x-clh-session': other, cookie: `clh_session=${sid}` }))
+      .structuredContent,
+  ).toMatchObject({
+    collection: sessionCollectionId('precedence', 'alice', other),
+  });
+  expect(
+    (await execute({ cookie: `clh_session=${sid}` })).structuredContent,
+  ).toMatchObject({
+    collection: sessionCollectionId('precedence', 'alice', sid),
+  });
+});
+
+test('a queued write holds its lease until the backend settles', async () => {
+  let finish = () => {};
+  let started = () => {};
+  const entered = new Promise<void>((resolve: () => void) => {
+    started = resolve;
+  });
+  const gate = new Promise<void>((resolve: () => void) => {
+    finish = resolve;
+  });
+  const original = registry.addDocument.bind(registry);
+  const write = jest
+    .spyOn(registry, 'addDocument')
+    .mockImplementationOnce(
+      async (...args: Parameters<CollectionRegistry['addDocument']>) => {
+        started();
+        await gate;
+        return original(...args);
+      },
+    );
+  const first = call('record_add');
+  await entered;
+  const secondWrite = call('record_add');
+  await Promise.resolve();
+  expect(write).toHaveBeenCalledTimes(1);
+  let closed = false;
+  const close = longSessions()
+    .close('alice', sid, 'explicit')
+    .then(() => {
+      closed = true;
+    });
+  await Promise.resolve();
+  expect(closed).toBe(false);
+  finish();
+  expect((await first).isError).toBeUndefined();
+  expect((await secondWrite).isError).toBe(true);
+  await close;
+});
+
+test('write embeddings receive caller, session and request trace without a second request measurement', async () => {
+  const sink = memorySink({ limit: 20 });
+  const recorder = createUsageRecorder({ transport: directTransport(sink) });
+  mockForSession.mockImplementation(
+    (identity: { userId: string; sessionId: string }) =>
+      recorder.with(identity),
+  );
+  const original = registry.addDocument.bind(registry);
+  jest
+    .spyOn(registry, 'addDocument')
+    .mockImplementation(
+      async (...args: Parameters<CollectionRegistry['addDocument']>) => {
+        args[3]?.usage?.record({
+          kind: 'x.test.embedding',
+          context: {},
+          outcome: 'ok',
+          values: { tokens: 7 },
+        });
+        return original(...args);
+      },
+    );
+  await executeRagMcpTool(
+    { headers: {} },
+    'alice',
+    'record_add',
+    { session: sid, collection: cid, text: 'text' },
+    'write-trace',
+  );
+  await recorder.flush(1000);
+  const records = [];
+  for await (const record of sink.read({
+    from: 0,
+    to: Number.MAX_SAFE_INTEGER,
+  }))
+    records.push(record);
+  expect(records).toMatchObject([
+    {
+      context: {
+        role: 'embedding',
+        component: 'collection-write',
+        userId: 'alice',
+        sessionId: sid,
+        requestId: 'write-trace',
+        traceId: 'write-trace',
+      },
+    },
+  ]);
+  await recorder.close(1000);
+});
+
+test('reserved names, unsupported scopes and missing text never touch storage', async () => {
+  const create = jest.spyOn(registry, 'getOrCreateCollection');
+  const write = jest.spyOn(registry, 'addDocument');
+  expect(
+    assertWriteResult(
+      await call('collection_create', { name: 'reserved__name' }),
+    ).error?.code,
+  ).toBe('INVALID_ARGUMENT');
+  expect(
+    ragMcpSchemas.collection_create.safeParse({
+      name: 'notes',
+      scope: 'global',
+    }).success,
+  ).toBe(false);
+  expect(
+    assertWriteResult(await call('record_add', { text: '' })).error?.code,
+  ).toBe('INVALID_ARGUMENT');
+  expect(create).not.toHaveBeenCalled();
+  expect(write).not.toHaveBeenCalled();
 });

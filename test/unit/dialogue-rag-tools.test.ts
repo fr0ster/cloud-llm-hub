@@ -1,4 +1,5 @@
 import type { IMcpClient, IRag } from '@mcp-abap-adt/llm-agent';
+import { TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
 import {
   sessionCollectionId,
   userCollectionId,
@@ -267,4 +268,65 @@ test('dialogue local rag_list full read is capped and reviewer records the visib
       truncation: { truncated: true, keptLength: 100 },
     });
   });
+});
+
+const externalWrites = [
+  'collection_create',
+  'collection_delete',
+  'record_add',
+  'record_update',
+  'record_delete',
+];
+
+test.each(externalWrites)(
+  'external %s is filtered and forged calls never forward, even with all tools allowed',
+  async (name: string) => {
+    const { client, inner } = setup();
+    jest.mocked(inner.listTools).mockResolvedValue({
+      ok: true,
+      value: externalWrites.map((tool: string) => ({
+        name: tool,
+        description: '',
+        inputSchema: { type: 'object' },
+      })),
+    });
+    await inWorker(async () => {
+      const listed = await client.listTools();
+      expect(
+        listed.ok &&
+          listed.value.some((tool) => externalWrites.includes(tool.name)),
+      ).toBe(false);
+      expect(await client.callTool(name, {})).toMatchObject({
+        ok: true,
+        value: { isError: true },
+      });
+    });
+    await inWorker(() => runWithReadOnlyTools(() => client.callTool(name, {})));
+    expect(inner.callTool).not.toHaveBeenCalled();
+  },
+);
+
+test('external write catalogue hits are excluded from dialogue retrieval', async () => {
+  const rag: IRag = {
+    query: async () => ({
+      ok: true,
+      value: externalWrites.map((name: string) => ({
+        text: name,
+        metadata: { id: `tool:${name}`, name },
+        score: 1,
+      })),
+    }),
+    getById: async () => ({ ok: true, value: null }),
+    healthCheck: async () => ({ ok: true, value: undefined }),
+  };
+  const wrapped = withDialogueRagTools(rag);
+  const result = await inWorker(() =>
+    wrapped.query(new TextOnlyEmbedding('write'), 20),
+  );
+  expect(
+    result.ok &&
+      result.value.some((hit) =>
+        externalWrites.includes(String(hit.metadata.name)),
+      ),
+  ).toBe(false);
 });

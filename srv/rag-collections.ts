@@ -57,6 +57,8 @@ import {
   deletePersistentDocument,
   type RestoreOutcome,
   type RestoreStatus,
+  readPersistentDocument,
+  refuseWhileDeleting,
   unwrap,
   updatePersistentDocument,
 } from './lib/collection-persistence';
@@ -1867,6 +1869,7 @@ export class CollectionRegistry {
        * contract so a 4xx response means nothing was created.
        */
       persistOnFail?: boolean;
+      usage?: CallOptions['usage'];
       /**
        * Preset seeding (ensurePresets): writes to what is held now, without
        * waiting for the restore. Seeding is no change a caller is told about;
@@ -1885,19 +1888,26 @@ export class CollectionRegistry {
     // Backend first, memory only on success; see addPersistentDocument.
     if (stored.persistent) {
       if (!storageEnabled())
-        return addPersistentDocument(stored, doc, namespace);
-      const persisted = await addPersistentDocument(stored, doc, namespace);
-      this.refreshStorageCache(stored.meta);
-      return persisted;
+        return addPersistentDocument(stored, doc, namespace, options);
+      // A failed write may still have been reconciled into the snapshot.
+      try {
+        return await addPersistentDocument(stored, doc, namespace, options);
+      } finally {
+        this.refreshStorageCache(stored.meta);
+      }
     }
 
     // Upsert into RAG store. IRagEditor.upsert returns Result<T, RagError>;
     // a backend rejection comes back as { ok: false }, NOT a thrown error.
-    const result = await stored.rag.upsert(doc.text, {
-      id: `doc:${collectionId}:${doc.id}`,
-      namespace: namespace ?? stored.meta.owner,
-      ...doc.metadata,
-    });
+    const result = await stored.rag.upsert(
+      doc.text,
+      {
+        id: `doc:${collectionId}:${doc.id}`,
+        namespace: namespace ?? stored.meta.owner,
+        ...doc.metadata,
+      },
+      options,
+    );
 
     if (!result.ok && !options?.persistOnFail) {
       // Single-document API contract: failure leaves nothing behind, so a
@@ -2027,18 +2037,22 @@ export class CollectionRegistry {
     docId: string,
     update: { text?: string; metadata?: Record<string, unknown> },
     namespace?: string,
+    options?: CallOptions,
   ): Promise<RagDocument | null> {
     if (this.persistence) await this.settled(collectionId, true);
     const stored = this.collections.get(collectionId);
     if (!stored) return null;
     this.refuseDegraded(stored, 'update document', 'write');
     assertCollectionWrite(stored.meta);
+    if (stored.persistent) refuseWhileDeleting(stored, 'update document');
     const existing =
       stored.meta.collectionKind === 'agents'
         ? (await this.readAgentCollection(collectionId))?.documents.find(
             (document) => document.id === docId,
           )
-        : stored.documents.get(docId);
+        : stored.persistent
+          ? await readPersistentDocument(stored, docId)
+          : stored.documents.get(docId);
     if (!existing) return null;
     if (stored.meta.collectionKind === 'agents')
       validateAgentProfileRecord({
@@ -2050,18 +2064,22 @@ export class CollectionRegistry {
             : { ...existing.metadata, ...update.metadata },
       });
     if (stored.persistent) {
-      const updated = await updatePersistentDocument(
-        stored,
-        existing,
-        update,
-        namespace,
-      );
-      if (stored.meta.collectionKind !== 'agents') {
-        stored.documents.set(docId, updated);
-        stored.meta.documentCount = stored.documents.size;
+      try {
+        const updated = await updatePersistentDocument(
+          stored,
+          existing,
+          update,
+          namespace,
+          options,
+        );
+        if (stored.meta.collectionKind !== 'agents') {
+          stored.documents.set(docId, updated);
+          stored.meta.documentCount = stored.documents.size;
+        }
+        return updated;
+      } finally {
+        if (storageEnabled()) this.refreshStorageCache(stored.meta);
       }
-      if (storageEnabled()) this.refreshStorageCache(stored.meta);
-      return updated;
     }
 
     const text = update.text ?? existing.text;
@@ -2072,11 +2090,15 @@ export class CollectionRegistry {
         : { ...existing.metadata, ...update.metadata };
     // IRagBackendWriter has no metadata-only operation. Re-upsert unchanged
     // text for a flag change; publish the local state only after success.
-    const result = await stored.rag.upsert(text, {
-      ...metadata,
-      id: `doc:${collectionId}:${docId}`,
-      namespace: namespace ?? stored.meta.owner,
-    });
+    const result = await stored.rag.upsert(
+      text,
+      {
+        ...metadata,
+        id: `doc:${collectionId}:${docId}`,
+        namespace: namespace ?? stored.meta.owner,
+      },
+      options,
+    );
     if (!result.ok) throw result.error;
     if (storageEnabled() && stored.usageTextBytes !== undefined)
       stored.usageTextBytes +=
@@ -2138,9 +2160,11 @@ export class CollectionRegistry {
     assertCollectionWrite(stored.meta);
     if (stored.persistent) {
       if (!storageEnabled()) return deletePersistentDocument(stored, docId);
-      const deleted = await deletePersistentDocument(stored, docId);
-      this.refreshStorageCache(stored.meta);
-      return deleted;
+      try {
+        return await deletePersistentDocument(stored, docId);
+      } finally {
+        this.refreshStorageCache(stored.meta);
+      }
     }
     if (storageEnabled() && stored.usageTextBytes !== undefined)
       stored.usageTextBytes -= Buffer.byteLength(

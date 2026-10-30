@@ -293,3 +293,32 @@ test('RAG definitions expose typed JSON schema keywords', () => {
     expect(tool.function.parameters.properties).toHaveProperty('collection');
   }
 });
+
+test.each(['all', 'read-only'] as const)(
+  'external writes are excluded from %s worker policies and forged authorization',
+  (policy: 'all' | 'read-only') => {
+    const names = [
+      'collection_create',
+      'collection_delete',
+      'record_add',
+      'record_update',
+      'record_delete',
+    ];
+    const entries: RegisteredProfileTool[] = names.map((name: string) => ({
+      name,
+      effect: 'write',
+    }));
+    const permissions = effectiveProfileTools({
+      catalogue: entries,
+      grants: new Set(names),
+      result: 'report',
+      policy,
+    });
+    for (const name of names) {
+      expect(permissions.allows(name)).toBe(false);
+      expect(() => assertToolAllowed(name, 'high', ['high'])).toThrow(
+        'External agent write tools',
+      );
+    }
+  },
+);

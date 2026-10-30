@@ -204,33 +204,26 @@ export function executeStep(
 
 function measuredAgentCallback<
   T extends { session?: string; destination?: string },
+  R extends ReturnType<typeof textResult>,
 >(
   req: Request,
   userId: string,
   tool: 'session_open' | 'session_close' | 'list_destinations' | RagMcpTool,
-  run: (args: T) => Promise<ReturnType<typeof textResult>>,
-): (args: T) => Promise<ReturnType<typeof textResult>> {
+  run: (args: T) => Promise<R>,
+): (args: T) => Promise<R> {
   const runtime = usageRuntime();
   if (!runtime || (!runtime.enabled('request') && !runtime.enabled('session')))
     return run;
-  return (
-    args: T,
-  ): Promise<{
-    isError?: boolean | undefined;
-    content: { type: 'text'; text: string }[];
-  }> =>
+  return (args: T): Promise<R> =>
     measureAgentTool(
       req,
       { userId, sessionId: args.session ?? '', destination: args.destination },
       tool,
-      (): Promise<{
-        isError?: boolean | undefined;
-        content: { type: 'text'; text: string }[];
-      }> => run(args),
+      (): Promise<R> => run(args),
     );
 }
 
-async function measureAgentTool(
+async function measureAgentTool<R extends ReturnType<typeof textResult>>(
   req: Request,
   session: UsageSession,
   tool:
@@ -239,7 +232,7 @@ async function measureAgentTool(
     | 'session_close'
     | 'list_destinations'
     | RagMcpTool,
-  run: () => Promise<ReturnType<typeof textResult>>,
+  run: () => Promise<R>,
   signal?: AbortSignal,
 ) {
   const measurement = measureRequest(

@@ -307,3 +307,36 @@ backend capability before rollout. Agents collections are configuration and are
 excluded from knowledge search. Session selection APIs and profile runner wiring
 are introduced in a later stage. The main model remains the only required model;
 planner and classifier overrides are optional.
+
+### External agent MCP knowledge writes
+
+Connect an authenticated external client to `/mcp/agent/stream/http` and call
+`session_open` to obtain a live session key. Pass it as `session` to each tool,
+or send `x-clh-session` or the `clh_session` cookie (in that precedence order).
+Transport session IDs are not application session keys. User collections also
+require this session for admission and accounting; their data outlives closure.
+
+1. Call `collection_create({ name: "notes", scope: "user", session })`, or use
+   `scope: "session"` for temporary knowledge. Keep the returned physical
+   `collection` ID. Repeating create returns `created: false`.
+2. Call `record_add({ collection, text: "A useful fact", title: "Note", session })`.
+   Keep the returned UUID in `record`.
+3. Read with `rag_read({ collection, id: record, session })`; replace the full
+   text with `record_update({ collection, record, text: "Revised fact", session })`.
+   Omitted title/source retain their authoritative stored values.
+4. Call `record_delete({ collection, record, session })` or
+   `collection_delete({ collection, session })` when the knowledge is no longer needed.
+
+Inputs are strict objects limited to 10 MiB of UTF-8 JSON, including session and
+attributes. Text is stored verbatim in one document. Optional source is attribution
+only, with no URL fetch. There is no upload or chunking through these tools.
+Success and error responses include matching text and `structuredContent.result`;
+errors also include `{ code, message, status }` and set `isError: true`.
+
+Agents collections are excluded from all five tools. Foreign owners and parallel
+sessions stay hidden even for admins; existing global mutations follow REST
+resolution and require `MCP_Admin` where reachable. These external write names
+never enter internal planner, executor, checker, dialogue or tool-RAG lists;
+forged internal calls are rejected even under an all-tools profile. Existing
+internal `rag_add`, `rag_correct`, and `rag_deprecate` remain available according
+to their current policies. No new environment settings are required.

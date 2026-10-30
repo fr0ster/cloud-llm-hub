@@ -2,6 +2,7 @@ import { toolSearchText } from '@mcp-abap-adt/lib/tool-search';
 import { AgentProfileRunner } from './lib/agent-profile-runner';
 import { AgentProfileSource } from './lib/agent-profile-source';
 import { watchDestinations } from './lib/destination-watch';
+import { externalRagWriteNames } from './lib/external-rag-write-names';
 import { guardLlmOnlyAgent } from './lib/llm-only-guard';
 import { longSessionsIfReady } from './lib/long-session';
 import { withToolResultCap } from './lib/tool-result-cap';
@@ -631,6 +632,8 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       }
       return (
         typeof id === 'string' &&
+        !externalRagWriteNames.has(id.replace(/^tool:/, '')) &&
+        !externalRagWriteNames.has(String(r.metadata.name ?? '')) &&
         profileToolAllowed(id.replace(/^tool:/, '')) &&
         !!r.metadata.exposition &&
         allowed.has(r.metadata.exposition as string) &&
@@ -2536,17 +2539,19 @@ export async function buildEmbeddedMcpAdapter(
   const mcpClient = new MCPClientWrapper({
     transport: 'embedded',
     listToolsHandler: async () => {
-      const list = entries.map((e) => ({
-        name: e.toolDefinition.name,
-        annotations: (
-          e.toolDefinition as { annotations?: ToolEffectAnnotations }
-        ).annotations,
-        description: agentToolDescription(e.toolDefinition.description),
-        inputSchema: agentToolSchema(
-          e.toolDefinition.name,
-          toJsonSchema(e.toolDefinition.inputSchema),
-        ),
-      }));
+      const list = entries
+        .filter((e) => !externalRagWriteNames.has(e.toolDefinition.name))
+        .map((e) => ({
+          name: e.toolDefinition.name,
+          annotations: (
+            e.toolDefinition as { annotations?: ToolEffectAnnotations }
+          ).annotations,
+          description: agentToolDescription(e.toolDefinition.description),
+          inputSchema: agentToolSchema(
+            e.toolDefinition.name,
+            toJsonSchema(e.toolDefinition.inputSchema),
+          ),
+        }));
       // Append cloud-local GetDumpSection unless a core tool already claims the
       // name (same dedupe policy as the corpus). Its inputSchema is already a
       // JSON schema, so it is NOT run through toJsonSchema.
@@ -2576,6 +2581,7 @@ export async function buildEmbeddedMcpAdapter(
           ok: true,
           value: result.value.filter(
             (tool) =>
+              !externalRagWriteNames.has(tool.name) &&
               profileToolAllowed(tool.name) &&
               (!isReadOnlyTools() ||
                 isReadOnlyTool(tool.name, getToolAnnotations().get(tool.name))),
@@ -2911,12 +2917,14 @@ function destinationProfileRunner(
   injectHistory = false,
 ): AgentProfileRunner {
   const catalogue = () => [
-    ...[...getToolExpositionMap().keys()].map((name) => ({
-      name,
-      effect: isReadOnlyTool(name, getToolAnnotations().get(name))
-        ? ('read' as const)
-        : ('write' as const),
-    })),
+    ...[...getToolExpositionMap().keys()]
+      .filter((name: string) => !externalRagWriteNames.has(name))
+      .map((name) => ({
+        name,
+        effect: isReadOnlyTool(name, getToolAnnotations().get(name))
+          ? ('read' as const)
+          : ('write' as const),
+      })),
     ...getRagToolNames().map((name) => ({
       name,
       effect: name === 'rag_list' ? ('read' as const) : ('write' as const),
@@ -2928,6 +2936,7 @@ function destinationProfileRunner(
       new Set(
         catalogue()
           .filter((tool) => {
+            if (externalRagWriteNames.has(tool.name)) return false;
             if (tool.name.startsWith('rag_'))
               return Boolean(getRequestUserId());
             const allowed = connectionALS.getStore()?.exposition;
