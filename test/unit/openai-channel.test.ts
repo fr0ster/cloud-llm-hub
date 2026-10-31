@@ -718,11 +718,27 @@ describe('host RAG tool contract', () => {
   });
 
   test.each(['rag_list', 'rag_add', 'rag_correct', 'rag_deprecate'])(
-    'rejects removed %s definitions and forced choices',
+    'rejects removed %s definitions, forced choices and assistant history',
     async (name: string) => {
       for (const extra of [
         { tools: [{ type: 'function', function: { name, parameters: {} } }] },
         { tool_choice: { type: 'function', function: { name } } },
+        {
+          messages: [
+            { role: 'user', content: 'hello' },
+            {
+              role: 'assistant',
+              content: null,
+              tool_calls: [
+                {
+                  id: 'legacy',
+                  type: 'function',
+                  function: { name, arguments: '{}' },
+                },
+              ],
+            },
+          ],
+        },
       ]) {
         const { res, done } = call({ ...body(), ...extra });
         await done;

@@ -806,11 +806,20 @@ test.each([false, true])(
 );
 
 test.each(['rag_list', 'rag_add', 'rag_correct', 'rag_deprecate'])(
-  'Anthropic rejects removed %s definitions and forced choices',
+  'Anthropic rejects removed %s definitions, forced choices and assistant history',
   async (name: string) => {
     for (const extra of [
       { tools: [{ name, input_schema: { type: 'object' } }] },
       { tool_choice: { type: 'tool', name } },
+      {
+        messages: [
+          { role: 'user', content: 'hello' },
+          {
+            role: 'assistant',
+            content: [{ type: 'tool_use', id: 'legacy', name, input: {} }],
+          },
+        ],
+      },
     ]) {
       const { res, done } = call({ ...body(), ...extra });
       await done;

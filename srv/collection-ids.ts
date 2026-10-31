@@ -142,16 +142,3 @@ export async function resolveRouteId(
   }
   return resolveByName(reg, id, userId, sessionId, forWrite);
 }
-
-/** Tools accept existing globals by name after the caller's private namespace. */
-export async function resolveToolCollectionId(
-  reg: CollectionLookup,
-  id: string,
-  userId: string,
-  sessionId: string | undefined,
-): Promise<string | undefined> {
-  const privateId = await resolveRouteId(reg, id, userId, sessionId, false);
-  if (privateId || isPhysicalId(id)) return privateId;
-  const global = await reg.getCollection(id);
-  return global?.scope === 'global' ? id : undefined;
-}

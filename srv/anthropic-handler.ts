@@ -221,6 +221,12 @@ async function handleAnthropicMessagesMeasured(
   const hostIds = new Set<string>();
   for (const message of normalized.messages) {
     for (const call of message.tool_calls ?? []) {
+      if (message.role === 'assistant' && removed.has(call.function.name)) {
+        reject(
+          `${call.function.name} was removed. ${removed.get(call.function.name)}`,
+        );
+        return;
+      }
       if (isRagTool(call.function.name) || removed.has(call.function.name))
         hostIds.add(call.id);
     }

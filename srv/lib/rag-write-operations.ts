@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { type CallOptions, RagError } from '@mcp-abap-adt/llm-agent';
 import {
   normalizeLogicalId,
-  resolveToolCollectionId,
+  resolveRouteId,
   sessionCollectionId,
   userCollectionId,
 } from '../collection-ids';
@@ -41,11 +41,12 @@ export async function resolveRagWriteTarget(
   target: string,
   identity: RagWriteIdentity,
 ): Promise<string> {
-  const id = await resolveToolCollectionId(
+  const id = await resolveRouteId(
     registry,
     target,
     identity.userId,
     identity.sessionId,
+    false,
   );
   const meta = id ? await registry.getCollection(id) : null;
   if (!id || !meta)

@@ -1524,12 +1524,13 @@ test('reused handle captures caller privileges and channel for each queued turn'
     scope: 'global',
   });
   const channels: string[] = [];
-  const allowed: boolean[] = [];
+  const admins: boolean[] = [];
   mockPlannerHook = async (text: string) => {
     if (text.startsWith('[task events]')) return;
     const identity = getRagCallerIdentity();
     channels.push(identity.channel);
-    const result = await executeRagTool(
+    admins.push(identity.admin);
+    await executeRagTool(
       {
         registry,
         userId: getRequestUserId() ?? '',
@@ -1545,7 +1546,6 @@ test('reused handle captures caller privileges and channel for each queued turn'
       'record_add',
       { collection: 'global-notes', text: 'test' },
     );
-    allowed.push(!result.isError);
   };
   const reused = await dialogueFor('alice', 'key', 'TEST');
   expect(reused).toBe(h);
@@ -1565,7 +1565,7 @@ test('reused handle captures caller privileges and channel for each queued turn'
     { admin: false, channel: 'openai' },
   );
   await Promise.all([first, second]);
-  expect(allowed).toEqual([true, false]);
+  expect(admins).toEqual([true, false]);
   expect(channels).toEqual(['anthropic', 'openai']);
   await recorder.flush(1000);
   const recordedChannels: string[] = [];

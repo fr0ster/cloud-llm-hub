@@ -7,7 +7,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import cds from '@sap/cds';
 import type { Request } from 'express';
 import { z } from 'zod';
-import { resolveToolCollectionId } from './collection-ids';
+import { resolveRouteId } from './collection-ids';
 import { collectionAccessError } from './lib/collection-access';
 import { restoredDocument } from './lib/collection-persistence';
 import {
@@ -474,7 +474,7 @@ async function runRagTool(
   }
   const respond = (value: object) => ragTextResult(JSON.stringify(value));
   const resolve = async (entry: string) => {
-    const id = await resolveToolCollectionId(registry, entry, userId, sid);
+    const id = await resolveRouteId(registry, entry, userId, sid, false);
     if (!id) throw new Error('Collection not found');
     const meta = await registry.getCollection(id);
     if (!meta) throw new Error('Collection not found');

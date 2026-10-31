@@ -760,7 +760,10 @@ All five reject visible agents collections with `TOOL_FORBIDDEN`, including
 normalized-name collisions on create. Foreign user and other-session targets
 remain 404, including for admins. Existing global mutations require `MCP_Admin`
 only where the existing REST resolver exposes them; global creation and new
-global knowledge lookup are unavailable. Internal planner, executor, dialogue and
+global knowledge lookup are unavailable. Tool collection arguments use the REST
+resolver: bare knowledge names resolve only within the caller's private namespace,
+and a global knowledge name alone returns 404 even for admins. Search retains
+exact registry-id lookup. Internal planner, executor, dialogue and
 all coordinators use the same catalogue and executor. Checker/verdict and read-only
 profiles receive only `rag_search`, `rag_read`, `collections_list`, and `collection_records`;
 profile allow/deny and parent ceilings apply to every listing and execution.

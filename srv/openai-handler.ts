@@ -402,6 +402,12 @@ async function handleChatCompletionsMeasured(
   const hostIds = new Set<string>();
   for (const message of body.messages) {
     for (const call of message.tool_calls ?? []) {
+      if (message.role === 'assistant' && migrations.has(call.function.name)) {
+        rejectTool(
+          `${call.function.name} was removed. ${migrations.get(call.function.name)}`,
+        );
+        return;
+      }
       if (isRagTool(call.function.name) || migrations.has(call.function.name))
         hostIds.add(call.id);
     }

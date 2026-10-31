@@ -1597,7 +1597,7 @@ test.each([false, true])(
   },
 );
 
-test('non-admin can toggle a readable global collection only with write-effect permission', async () => {
+test('global knowledge names cannot be toggled through collection arguments', async () => {
   await registry.createCollection({
     id: 'global-notes',
     logicalId: 'global-notes',
@@ -1608,33 +1608,10 @@ test('non-admin can toggle a readable global collection only with write-effect p
   expect(
     (await call('collection_set_enabled', { collection: 'global-notes' }))
       .isError,
-  ).toBeUndefined();
-  expect(sessionCollectionOverrides('alice', sid)?.['global-notes']).toBe(
-    false,
-  );
+  ).toBe(true);
   expect(
-    sessionCollectionOverrides('alice', other)?.['global-notes'],
+    sessionCollectionOverrides('alice', sid)?.['global-notes'],
   ).toBeUndefined();
-  await runWithReadOnlyTools(async () => {
-    expect(
-      (
-        await call('collection_set_enabled', {
-          collection: 'global-notes',
-          enabled: true,
-        })
-      ).isError,
-    ).toBe(true);
-  });
-  await runWithProfileTools(new AgentToolPermissions('read-only'), async () => {
-    expect(
-      (
-        await call('collection_set_enabled', {
-          collection: 'global-notes',
-          enabled: true,
-        })
-      ).isError,
-    ).toBe(true);
-  });
 });
 
 test('REST add with an explicit id waits for the tool create-only write', async () => {
@@ -1796,9 +1773,27 @@ test.each([false, true])(
       );
       expect(result._status).toBe(404);
     }
-    expect((await body(call('rag_read'))).text).toBe('global content');
-    expect((await call('record_update')).isError).toBe(
-      admin ? undefined : true,
+    for (const name of [
+      'rag_read',
+      'collection_records',
+      'collection_set_enabled',
+      'record_set_enabled',
+    ] as const) {
+      expect((await call(name)).isError).toBe(true);
+    }
+    for (const name of [
+      'collection_delete',
+      'record_add',
+      'record_update',
+      'record_delete',
+    ] as const) {
+      expect(assertWriteResult(await call(name)).error).toMatchObject({
+        code: 'COLLECTION_NOT_FOUND',
+        status: 404,
+      });
+    }
+    expect((await registry.getDocument('notes', 'visible'))?.text).toBe(
+      'global content',
     );
   },
 );
