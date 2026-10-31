@@ -26,6 +26,7 @@ import type {
   ISubAgentInput,
   ISubAgentResult,
   TokenUsage,
+  ToolTrace,
 } from '@mcp-abap-adt/llm-agent';
 import {
   PlannerToolsClient,
@@ -1440,4 +1441,35 @@ test('wait signals are session scoped, live only and unsubscribe on close', asyn
   await closeDialogue('alice', 'key', 'explicit');
   dialogueSignals().emit('dialogue.wait', { tasks }, 'key');
   expect(events).toHaveLength(1);
+});
+
+test('dialogue worker and background pipeline preserve trace evidence in persisted tasks', async () => {
+  const toolTrace: ToolTrace = {
+    entries: [
+      {
+        sequence: 1,
+        toolName: 'Read',
+        arguments: '{}',
+        resultExcerpt: 'read done',
+        outcome: 'ok',
+      },
+    ],
+    omittedCount: 0,
+    complete: true,
+  };
+  mockRun.mockImplementation(
+    async (input: ISubAgentInput): Promise<ISubAgentResult> => {
+      expect(input.onToolTrace).toBeDefined();
+      input.onToolTrace?.(toolTrace.entries[0]);
+      return { output: 'read done', toolTrace };
+    },
+  );
+  const { h } = await ready();
+  await h.session.send('go');
+  await until(() => h.session.snapshot().tasks[0]?.state === 'done');
+  expect(h.session.snapshot().tasks[0].toolTrace).toEqual(toolTrace);
+  await closeDialogue('alice', 'key', 'shutdown');
+  expect(
+    (await getDialogueStoreBackend().load('alice', 'key'))?.tasks[0].toolTrace,
+  ).toEqual(toolTrace);
 });

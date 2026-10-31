@@ -33,6 +33,16 @@ function store() {
 }
 test('shipped seeds validate and executor alone owns storage/retry rules', async () => {
   const seeds = await loadAgentProfileSeeds();
+  const checker = seeds.find((record) => record.id === 'checker');
+  expect(checker?.text).toContain(
+    'The tool trace is evidence of what was actually done',
+  );
+  expect(checker?.text).toContain(
+    'without a matching successful call fails unless verified independently',
+  );
+  expect(checker?.text).toContain(
+    'Unavailable or omitted evidence is not proof that no tools ran',
+  );
   expect(seeds.map((record) => record.id).sort()).toEqual([
     '_worker-base',
     'analyst',
