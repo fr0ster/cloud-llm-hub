@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.0.0] - 2026-10-31
+
 ### Breaking changes
 
 - RAG now uses one canonical catalogue on MCP, chat, planner and workers. WebUI executes RAG server-side and displays server tool results; remove browser dispatch to prevent duplicate writes. Removed names have no aliases: chat definitions, forced choices and calls return 400; REST tool dispatch returns 404.
