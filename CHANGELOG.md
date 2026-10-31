@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [9.10.0] - 2026-10-31
+
 ### Changed
 
 - Upgrade llm-agent to 30.24.0 and llm-agent-libs to 30.23.0; preserve executed tool traces in persisted dialogue tasks and checker context.
