@@ -1,3 +1,4 @@
+import { InMemoryRag, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
   createUsageRecorder,
   directTransport,
@@ -8,6 +9,7 @@ import { executeRagTool } from '../../srv/agent-mcp-rag';
 import { chatStream, streamDialogue } from '../../srv/lib/chat-stream';
 import { dialogueChat } from '../../srv/lib/dialogue-chat';
 import { followDialogue } from '../../srv/lib/dialogue-follow';
+import * as plannerMemory from '../../srv/lib/planner-memory';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { sumPlannerUsage } from '../../srv/lib/usage-wire';
 import { CollectionRegistry } from '../../srv/rag-collections';
@@ -80,6 +82,7 @@ const mockRelease = jest.fn();
 const mockDrain = jest.fn(async () => {});
 const mockDrop = jest.fn();
 const mockPlannerTurns: string[] = [];
+const mockAuthorTurns: string[] = [];
 const mockEnvironments: string[] = [];
 let mockGoal = 'read';
 let mockPlannerHook: ((text: string) => Promise<void>) | undefined;
@@ -185,6 +188,24 @@ jest.mock('../../srv/agent-manager', () => ({
   })),
   getSmartAgent: jest.fn(async () => ({
     profileRunner: {
+      preparePlanAuthor: async () => ({
+        ok: true,
+        value: {
+          process: async (input: string) => {
+            mockAuthorTurns.push(input);
+            return {
+              ok: true,
+              value: {
+                content: '{"steps":[],"status":"done"}',
+                iterations: 1,
+                toolCallCount: 0,
+                stopReason: 'stop',
+              },
+            };
+          },
+          streamProcess: async function* () {},
+        },
+      }),
       createWorker: async () => ({
         ok: true,
         value: {
@@ -2020,3 +2041,96 @@ test.each(['queued', 'running'] as const)(
     }
   },
 );
+
+test('dialogue opens with a stateless profile plan author and environment notes', async () => {
+  const open = jest.spyOn(DialogueSession, 'open');
+  try {
+    const retrieval = jest.spyOn(plannerMemory, 'planAuthorContextNotes');
+    const h = await dialogueFor('alice', 'author-wiring', 'TEST');
+    const options = open.mock.calls.at(-1)?.[0];
+    expect(options?.planAuthor).toBeDefined();
+    expect(options?.profileSource).toBeDefined();
+    expect(options?.profileRunner).toBeDefined();
+    const result = await options?.planAuthor?.create({
+      goal: 'Read the requested objects',
+    });
+    expect(result?.ok).toBe(true);
+    expect(mockAuthorTurns.at(-1)).toContain('Environment');
+    expect(mockAuthorTurns.at(-1)).toContain('Destination: TEST');
+    expect(mockAuthorTurns.at(-1)).toContain('[worker profiles]');
+    expect(mockAuthorTurns.at(-1)).toContain('executor');
+    await h.session.callTool('plan_create', {
+      goal: 'External coordinator request',
+    });
+    expect(retrieval).not.toHaveBeenCalled();
+    retrieval.mockRestore();
+  } finally {
+    open.mockRestore();
+  }
+});
+
+test('author gets planning knowledge and memory for the current open request', async () => {
+  const search = jest.fn(async () => [
+    { collection: 'planning', id: 'rule', text: 'Use the planning rule' },
+  ]);
+  const rag = new InMemoryRag();
+  const memoryQuery = jest.spyOn(rag, 'query').mockResolvedValue({
+    ok: true,
+    value: [
+      {
+        text: 'Remember the previous decision',
+        score: 1,
+        metadata: {
+          id: 'memory',
+          sessionId: 'author-context',
+          requestId: 'previous',
+          sourceId: 'source',
+          offset: 0,
+          kind: 'planner-reply',
+        },
+      },
+    ],
+  });
+  const embedding = symmetricEmbedder({
+    embed: async () => ({ vector: [1, 0] }),
+  });
+  const setup = jest
+    .spyOn(plannerMemory, 'plannerSessionOptions')
+    .mockResolvedValue({
+      plannerMemory: {
+        rag,
+        queryEmbedder: embedding,
+        documentEmbedder: embedding,
+      },
+      plannerKnowledge: [{ name: 'planning', search }],
+    });
+  const retrieve = jest.spyOn(plannerMemory, 'planAuthorContextNotes');
+  const open = jest.spyOn(DialogueSession, 'open');
+  try {
+    const h = await dialogueFor('alice', 'author-context', 'TEST');
+    const author = open.mock.calls.at(-1)?.[0].planAuthor;
+    mockPlannerHook = async () => {
+      const result = await author?.create({ goal: 'A different author goal' });
+      expect(result?.ok).toBe(true);
+    };
+    await h.session.send('Find objects for my request');
+    await until(
+      () =>
+        retrieve.mock.calls.length > 0 &&
+        mockAuthorTurns.some((text) => text.includes('Use the planning rule')),
+    );
+    expect(retrieve.mock.calls[0][2].text).toBe('Find objects for my request');
+    expect(search).toHaveBeenCalledWith(
+      { text: 'Find objects for my request' },
+      4,
+      expect.anything(),
+    );
+    expect(mockAuthorTurns.at(-1)).toContain('[planning knowledge]');
+    expect(mockAuthorTurns.at(-1)).toContain('Remember the previous decision');
+    expect(memoryQuery).toHaveBeenCalled();
+  } finally {
+    setup.mockRestore();
+    retrieve.mockRestore();
+    open.mockRestore();
+  }
+});

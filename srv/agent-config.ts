@@ -187,9 +187,11 @@ export interface AgentConfig {
      */
     classifierModel: string;
 
-    /** Optional independent dialogue planner model: LLM_AGENT_PLANNER_MODEL.
+    /** Optional plan author and default coordinator model: LLM_AGENT_PLANNER_MODEL.
      * Unset follows the main model, including per-request model selection. */
     plannerModel?: string;
+    /** Optional coordinator override; defaults to the planner model. */
+    coordinatorModel?: string;
 
     /** Temperature (0.0 - 2.0) */
     temperature: number;
@@ -659,6 +661,8 @@ export function loadAgentConfig(): AgentConfig {
       model,
       classifierModel: process.env.LLM_AGENT_CLASSIFIER_MODEL || model,
       plannerModel: process.env.LLM_AGENT_PLANNER_MODEL?.trim() || undefined,
+      coordinatorModel:
+        process.env.LLM_AGENT_COORDINATOR_MODEL?.trim() || undefined,
       temperature,
       maxTokens,
       apiKey: apiKey || undefined,

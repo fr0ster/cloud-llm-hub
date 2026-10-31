@@ -26,6 +26,10 @@ export interface AgentProfileRunnerHost {
     preamble: string,
     options?: CallOptions,
   ): Promise<ISubAgent>;
+  buildPlanAuthor?(
+    systemPrompt: string,
+    options?: CallOptions,
+  ): Promise<ISmartAgent>;
   buildPlanner(
     systemPrompt: string,
     options?: CallOptions,
@@ -102,6 +106,81 @@ export class AgentProfileRunner implements IAgentProfileRunner {
       return {
         ok: false,
         error: { code: 'unavailable', message: 'Agent worker unavailable' },
+      };
+    }
+  }
+
+  async preparePlanAuthor(
+    input: { systemPrompt: string; mode: 'create' | 'revise' },
+    options?: CallOptions,
+  ): Promise<Result<ISmartAgent, AgentProfileError>> {
+    try {
+      options?.signal?.throwIfAborted();
+      if (!this.host.buildPlanAuthor)
+        throw new Error('Plan author unavailable');
+      const scope = this.bind({
+        name: 'planner-author',
+        description: '',
+        systemPrompt: input.systemPrompt,
+        result: 'report',
+        tools: {
+          allow: [
+            'rag_search',
+            'rag_read',
+            'collection_records',
+            'collections_list',
+          ],
+        },
+      });
+      const build = this.host.buildPlanAuthor;
+      const agent = await scope(() => build(input.systemPrompt, options));
+      options?.signal?.throwIfAborted();
+      return {
+        ok: true,
+        value: {
+          streamProcess: async function* (message, callOptions) {
+            const stream = scope(() =>
+              agent.streamProcess(message, {
+                ...callOptions,
+                ...(callOptions?.usage
+                  ? {
+                      usage: callOptions.usage.with({
+                        component: 'planner-author',
+                      }),
+                    }
+                  : {}),
+              }),
+            );
+            const iterator = stream[Symbol.asyncIterator]();
+            try {
+              while (true) {
+                const next = await scope(() => iterator.next());
+                if (next.done) return;
+                yield next.value;
+              }
+            } finally {
+              await scope(() => iterator.return?.());
+            }
+          },
+          process: (message, callOptions) =>
+            scope(() =>
+              agent.process(message, {
+                ...callOptions,
+                ...(callOptions?.usage
+                  ? {
+                      usage: callOptions.usage.with({
+                        component: 'planner-author',
+                      }),
+                    }
+                  : {}),
+              }),
+            ),
+        },
+      };
+    } catch {
+      return {
+        ok: false,
+        error: { code: 'unavailable', message: 'Plan author unavailable' },
       };
     }
   }

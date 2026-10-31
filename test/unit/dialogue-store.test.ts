@@ -640,6 +640,7 @@ it.each(['rag_list', 'rag_add', 'rag_correct', 'rag_deprecate'])(
   async (name: string) => {
     const legacy = {
       ...state,
+      toolContractVersion: 0,
       conversation: [
         {
           role: 'assistant' as const,
@@ -731,4 +732,58 @@ it('persists the tool contract marker without changing completed evidence', asyn
   await store.save('alice', 'contract', migrated);
   expect(await store.load('alice', 'contract')).toEqual(migrated);
   expect(migrated.conversation).toEqual(state.conversation);
+});
+
+test('v1 migration preserves plan and tasks and translates historical planning calls', () => {
+  const legacy = {
+    ...state,
+    toolContractVersion: 1,
+    conversation: [
+      {
+        role: 'assistant' as const,
+        content: null,
+        tool_calls: [
+          {
+            id: 'read',
+            type: 'function' as const,
+            function: { name: 'get_plan', arguments: '{}' },
+          },
+          {
+            id: 'write',
+            type: 'function' as const,
+            function: { name: 'update_plan', arguments: '{"steps":[]}' },
+          },
+        ],
+      },
+    ],
+    tasks: [
+      {
+        id: 'running',
+        worker: 'executor',
+        goal: 'Read',
+        state: 'running' as const,
+        createdAt: 1,
+      },
+    ],
+    plan: {
+      version: 1 as const,
+      status: 'active' as const,
+      steps: [
+        {
+          id: 'step',
+          goal: 'Read',
+          state: 'running' as const,
+          taskIds: ['running'],
+        },
+      ],
+    },
+  };
+  const migrated = migrateDialogueToolContract(legacy);
+  expect(migrated.toolContractVersion).toBe(2);
+  expect(migrated.plan).toEqual(legacy.plan);
+  expect(migrated.tasks).toEqual(legacy.tasks);
+  expect(
+    migrated.conversation[0].tool_calls?.map((call) => call.function.name),
+  ).toEqual(['plan_get', 'plan_update']);
+  expect(legacy.conversation[0].tool_calls[0].function.name).toBe('get_plan');
 });

@@ -16,7 +16,11 @@ import type {
   ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { addTokenUsage } from '@mcp-abap-adt/llm-agent';
-import { DialogueSession, SemaphorePool } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  DialogueSession,
+  ProfilePlanAuthor,
+  SemaphorePool,
+} from '@mcp-abap-adt/llm-agent-libs';
 import cds from '@sap/cds';
 import { getAgentConfig } from '../agent-config';
 import {
@@ -54,7 +58,10 @@ import { admitBackground, type PipelineSession } from './gatekeeper';
 import { longSessionsIfReady } from './long-session';
 import { stripNoMessage } from './no-message';
 import { renderNotice } from './notify-policy';
-import { plannerSessionOptions } from './planner-memory';
+import {
+  planAuthorContextNotes,
+  plannerSessionOptions,
+} from './planner-memory';
 import { runWithRequestSystem } from './request-system-context';
 import { getReviewSignals } from './review-scope';
 import {
@@ -267,27 +274,24 @@ async function open(
   // the reply so live subscribers see it on first emission.
   const replyUsage = new WeakMap<object, TokenUsage>();
   let turnReplyUsage: TokenUsage | undefined;
+  const environment = () => {
+    const connection = longSessionsIfReady()?.get(userId, key)?.connection;
+    const identity = connection ? cachedSystemIdentity(connection) : undefined;
+    return [
+      'Environment',
+      `Destination: ${destination}`,
+      ...factory.environment(destination),
+      ...(identity?.masterSystem
+        ? [`SAP system id: ${identity.masterSystem}`]
+        : []),
+      ...(identity?.responsible ? [`SAP login: ${identity.responsible}`] : []),
+      `Concurrency limit: ${config.agent.dialogue.executors} (shared executor pool: ${config.agent.dialogue.executorPool})`,
+    ].join('\n');
+  };
   const decoratePlanner = (planner: ISmartAgent) =>
     plannerWithEnvironment(
       plannerWithAttachments(plannerWithParagraphs(planner), attachments),
-      () => {
-        const connection = longSessionsIfReady()?.get(userId, key)?.connection;
-        const identity = connection
-          ? cachedSystemIdentity(connection)
-          : undefined;
-        return [
-          'Environment',
-          `Destination: ${destination}`,
-          ...factory.environment(destination),
-          ...(identity?.masterSystem
-            ? [`SAP system id: ${identity.masterSystem}`]
-            : []),
-          ...(identity?.responsible
-            ? [`SAP login: ${identity.responsible}`]
-            : []),
-          `Concurrency limit: ${config.agent.dialogue.executors} (shared executor pool: ${config.agent.dialogue.executorPool})`,
-        ].join('\n');
-      },
+      environment,
     );
   const pool = new SessionConnectionPool(
     factory,
@@ -611,16 +615,37 @@ async function open(
       for (const task of session?.snapshot().tasks ?? []) emitTask(task);
     }
   };
+  const source = createAgentProfileSource(
+    userId,
+    () =>
+      longSessionsIfReady()?.get(userId, key)?.agentsCollectionId ??
+      savedState?.agentsCollectionId ??
+      config.profiles?.collectionId ??
+      'agents',
+  );
   try {
+    const retrieval = await plannerSessionOptions(userId, key);
     session = await DialogueSession.open({
-      profileSource: createAgentProfileSource(
-        userId,
-        () =>
-          longSessionsIfReady()?.get(userId, key)?.agentsCollectionId ??
-          savedState?.agentsCollectionId ??
-          config.profiles?.collectionId ??
-          'agents',
-      ),
+      profileSource: source,
+      planAuthor: new ProfilePlanAuthor({
+        source,
+        runner: profileRunner,
+        notes: async (options) => {
+          const workers = await source.list(options);
+          if (!workers.ok) throw new Error(workers.error.message);
+          const request = session
+            ?.snapshot()
+            .requests?.find((record) => record.closedAt === undefined);
+          const context = request
+            ? await planAuthorContextNotes(retrieval, key, request, options)
+            : [];
+          return [
+            ...context,
+            environment(),
+            `[worker profiles] ${JSON.stringify(workers.value)}`,
+          ];
+        },
+      }),
       profileTimeoutMs: config.profiles?.timeoutMs ?? 3000,
       profileRunner: {
         createWorker: async (input, options) => {
@@ -647,7 +672,9 @@ async function open(
         },
       },
       timeZone: config.timeZone,
-      ...(await plannerSessionOptions(userId, key)),
+      // The coordinator still needs this context for conversational turns that
+      // do not invoke plan_create or plan_revise.
+      ...retrieval,
       ...(usage ? { usage } : {}),
       id: key,
       signals,

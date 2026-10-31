@@ -2791,9 +2791,19 @@ const plannerAgents = new Map<SmartAgent, { current: ILlm }>();
 export async function buildPlannerAgent(
   config: AgentConfig,
   systemPrompt: string,
+  authorClient?: IMcpClient,
 ): Promise<SmartAgent> {
-  if (config.llm.plannerModel && !sharedPlannerLlm) {
-    sharedPlannerLlm = makeHubLlm(
+  if (!authorClient && config.llm.coordinatorModel) {
+    config = {
+      ...config,
+      llm: { ...config.llm, plannerModel: config.llm.coordinatorModel },
+    };
+  }
+  const independentCoordinator =
+    !authorClient && Boolean(config.llm.coordinatorModel);
+  let plannerLlm = independentCoordinator ? null : sharedPlannerLlm;
+  if (config.llm.plannerModel && !plannerLlm) {
+    plannerLlm = makeHubLlm(
       {
         contextCapture: config.llm.contextCapture,
         provider: config.llm.provider,
@@ -2808,8 +2818,9 @@ export async function buildPlannerAgent(
       config.llm.temperature,
     ).then(trackedLlm);
   }
-  const llm = await (config.llm.plannerModel && sharedPlannerLlm
-    ? sharedPlannerLlm
+  if (!independentCoordinator) sharedPlannerLlm = plannerLlm;
+  const llm = await (config.llm.plannerModel && plannerLlm
+    ? plannerLlm
     : getOrCreateSharedLlms(config).mainLlm);
   // Pipeline stages retain the LLM supplied at build time. A stable forwarding
   // client makes the existing getSmartAgent hot-swap reach those stages too.
@@ -2834,7 +2845,7 @@ export async function buildPlannerAgent(
     .withMainLlm(forwardingLlm)
     .withMcpClients([
       new RecordingMcpClient(
-        new DialogueRagMcpClient(new PlannerToolsClient()),
+        authorClient ?? new DialogueRagMcpClient(new PlannerToolsClient()),
         undefined,
         config.agent.toolResultMaxChars,
         false,
@@ -2976,6 +2987,68 @@ function destinationProfileRunner(
         injectHistory ? withConversationHistory(handle.agent) : handle.agent,
         { description: profile.description },
       );
+    },
+    buildPlanAuthor: async (systemPrompt, options) => {
+      options?.signal?.throwIfAborted();
+      const client = new DialogueRagMcpClient(
+        {
+          listTools: async () => ({ ok: true, value: [] }),
+          callTool: async () => ({
+            ok: true,
+            value: { isError: true, content: 'Tool unavailable' },
+          }),
+        },
+        () => {
+          const registry = getCollectionRegistry();
+          return new Proxy(registry, {
+            get(target, property) {
+              if (property === 'getCollection')
+                return async (id: string) => {
+                  const meta = await target.getCollection(id);
+                  return meta?.collectionKind === 'agents' ? null : meta;
+                };
+              if (property === 'listCollections')
+                return async (
+                  ...args: Parameters<typeof registry.listCollections>
+                ) =>
+                  (await target.listCollections(...args)).filter(
+                    (meta) => meta.collectionKind !== 'agents',
+                  );
+              const value = Reflect.get(target, property);
+              return typeof value === 'function' ? value.bind(target) : value;
+            },
+          });
+        },
+      );
+      const allowed = new Set([
+        'rag_search',
+        'rag_read',
+        'collection_records',
+        'collections_list',
+      ]);
+      const filtered: IMcpClient = {
+        listTools: async (callOptions) => {
+          const result = await client.listTools(callOptions);
+          return result.ok
+            ? {
+                ok: true,
+                value: result.value.filter(
+                  (tool) =>
+                    allowed.has(tool.name) && profileToolAllowed(tool.name),
+                ),
+              }
+            : result;
+        },
+        callTool: async (name, args, callOptions) => {
+          if (!profileToolAllowed(name))
+            throw new Error('Plan author profile forbids tool');
+          if (!allowed.has(name)) throw new Error('Plan author tool forbidden');
+          return client.callTool(name, args, callOptions);
+        },
+      };
+      const agent = await buildPlannerAgent(config, systemPrompt, filtered);
+      releasePlannerAgent(agent);
+      return agent;
     },
     buildPlanner: async (systemPrompt, options) => {
       const planner = await buildPlannerAgent(config, systemPrompt);
@@ -3450,7 +3523,7 @@ export async function getSmartAgent(
       // biome-ignore lint/suspicious/noExplicitAny: accessing internal deps for model hot-swap
       (handle.agent as any).deps.mainLlm = newLlm;
     }
-    if (!config.llm.plannerModel) {
+    if (!config.llm.plannerModel && !config.llm.coordinatorModel) {
       for (const model of plannerAgents.values()) model.current = newLlm;
     }
     sharedMainLlm = newLlmPromise;

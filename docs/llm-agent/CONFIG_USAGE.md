@@ -74,7 +74,8 @@ goal sizes, states, durations and hashed session keys. They never contain goal t
 | `LLM_AGENT_PG_SCHEMA` | the library default | Schema holding the shared tables for `pg-vector` |
 | `LLM_AGENT_DESTINATION_SOURCE` | `btp` | `btp` (Destination service) \| `env` (the Cloud SDK `destinations` variable — off-platform, where no Destination service is reachable) |
 | `LLM_AGENT_CLASSIFIER_MODEL` | falls back to `LLM_AGENT_MODEL` | Optional cheaper model for classification |
-| `LLM_AGENT_PLANNER_MODEL` | falls back to the main model (follows the WebUI selector) | Optional independent model for the dialogue planner; when set, the WebUI LLM selector changes only the executors |
+| `LLM_AGENT_COORDINATOR_MODEL` | unset; falls back to the planner model | Optional independent coordinator model; leaves the plan author on the planner model |
+| `LLM_AGENT_PLANNER_MODEL` | falls back to the main model (follows the WebUI selector) | Optional model for the plan author and, by default, the coordinator; when set, the WebUI LLM selector changes only the executors |
 | `LLM_AGENT_PROFILES_COLLECTION` | `agents` | Exact global agents collection id; lowercase letters, digits, underscores and hyphens; no normalization or `__` |
 | `LLM_AGENT_PLANNER_RECORD` | `coordinator` | Exact coordinator record name (`coordinator-<variant>` also accepted); planner authors use `planner-create` and `planner-revise` |
 | `LLM_AGENT_PROFILE_TIMEOUT_MS` | `3000` | Positive finite whole-number deadline for profile source reads; runner/library wiring follows in Stage B |
