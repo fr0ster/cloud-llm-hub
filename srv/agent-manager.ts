@@ -2833,9 +2833,11 @@ export async function buildPlannerAgent(
   })
     .withMainLlm(forwardingLlm)
     .withMcpClients([
-      withToolResultCap(
+      new RecordingMcpClient(
         new DialogueRagMcpClient(new PlannerToolsClient()),
+        undefined,
         config.agent.toolResultMaxChars,
+        false,
       ),
     ])
     .withClassification(false)

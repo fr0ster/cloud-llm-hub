@@ -13,6 +13,7 @@ import type {
   PlannerMessage,
   TaskRecord,
   TokenUsage,
+  ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { addTokenUsage } from '@mcp-abap-adt/llm-agent';
 import { DialogueSession, SemaphorePool } from '@mcp-abap-adt/llm-agent-libs';
@@ -83,6 +84,7 @@ export type DialogueEvent =
   | ({ kind: 'wait' } & DialogueSignals['dialogue.wait'])
   | { kind: 'settled'; outcome: 'ok' | 'failed'; trigger: 'user' | 'event' }
   | { kind: 'message'; message: PlannerMessage }
+  | { kind: 'tool-result'; record: ToolCallRecord; written?: () => void }
   | { kind: 'usage'; id: string; usage: NonNullable<PlannerMessage['usage']> }
   | { kind: 'plan'; plan: DialoguePlan }
   | {
@@ -132,7 +134,12 @@ export interface DialogueHandle {
   drainPending(): Promise<void>;
   factory: SessionConnectionFactory;
   pool: SessionConnectionPool;
-  subscribe(fn: (e: DialogueEvent) => void, cursor?: string): () => void;
+  /** Tool-result consumers replay pending results and acknowledge live writes. */
+  subscribe(
+    fn: (e: DialogueEvent) => void,
+    cursor?: string,
+    consumesToolResults?: boolean,
+  ): () => void;
 }
 interface LiveHandle extends DialogueHandle {
   stop(): void;
@@ -284,13 +291,23 @@ async function open(
     factory,
     config.agent.dialogue.executors,
   );
-  const subscribers = new Set<(e: DialogueEvent) => void>();
+  const subscribers = new Map<(e: DialogueEvent) => void, boolean>();
+  const pendingToolResults: Extract<DialogueEvent, { kind: 'tool-result' }>[] =
+    [];
   const lifetime = new AbortController();
   let stopped = false;
   let session: DialogueSession | undefined;
   const emit = (event: DialogueEvent) => {
     if (stopped) return;
-    for (const fn of subscribers) {
+    if (event.kind === 'tool-result') {
+      pendingToolResults.push(event);
+      if (pendingToolResults.length > 50) pendingToolResults.shift();
+      event.written = () => {
+        const index = pendingToolResults.indexOf(event);
+        if (index >= 0) pendingToolResults.splice(index, 1);
+      };
+    }
+    for (const fn of subscribers.keys()) {
       try {
         fn(event);
       } catch {
@@ -440,6 +457,14 @@ async function open(
     await outbox.add(session?.takePending() ?? []);
   };
   const signals = dialogueSignals();
+  const dialogueIdentity = (): RagCallerIdentity => {
+    const { admin, channel } = getRagCallerIdentity();
+    return {
+      admin,
+      channel,
+      onToolResult: (record) => emit({ kind: 'tool-result', record }),
+    };
+  };
   const taskCallers = new Map<string, TurnCaller>();
   const pendingEventCallers: TurnCaller[] = [];
   let eventCaller: TurnCaller | undefined;
@@ -449,7 +474,7 @@ async function open(
       if (task.state === 'queued' && previous === undefined)
         taskCallers.set(task.id, {
           userId: getRequestUserId() ?? userId,
-          identity: { ...getRagCallerIdentity() },
+          identity: dialogueIdentity(),
         });
       if (
         task.state === 'done' ||
@@ -531,6 +556,7 @@ async function open(
     { source: key },
   );
   const stopLifetime = () => {
+    pendingToolResults.length = 0;
     unsubscribeTaskCaller();
     unsubscribeTurnCaller();
     unsubscribeWait();
@@ -683,7 +709,7 @@ async function open(
           // async context survives pool waits and later user turns.
           const caller = {
             userId: getRequestUserId() ?? userId,
-            identity: { ...getRagCallerIdentity() },
+            identity: dialogueIdentity(),
           };
           const startedAt = Date.now();
           // No free text from goals or errors reaches the logs: a goal may carry
@@ -802,7 +828,7 @@ async function open(
     if (reply) replies.set(trace, reply);
     turnCallers.set(trace, {
       userId: getRequestUserId() ?? userId,
-      identity: { ...getRagCallerIdentity() },
+      identity: dialogueIdentity(),
     });
     return send(text, { ...options, trace }).finally(drainPending);
   };
@@ -845,9 +871,16 @@ async function open(
       lifetime.abort();
       subscribers.clear();
     },
-    subscribe(fn, cursor) {
+    subscribe(fn, cursor, consumesToolResults = false) {
       if (stopped) return () => {};
-      subscribers.add(fn);
+      subscribers.set(fn, consumesToolResults);
+      for (const event of consumesToolResults ? [...pendingToolResults] : []) {
+        try {
+          fn(event);
+        } catch {
+          /* Observers cannot break work. */
+        }
+      }
       const unsubscribeMessages = outbox.subscribe(
         (message) => fn({ kind: 'message', message }),
         cursor,

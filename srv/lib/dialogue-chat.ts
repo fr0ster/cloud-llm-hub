@@ -7,6 +7,7 @@ import type {
   PlannerMessageUsage,
   Result,
   SmartAgentResponse,
+  ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
@@ -55,6 +56,8 @@ export type DialogueStreamChunk = LlmStreamChunk & {
   clhMessageId?: string;
   clhMessageEnd?: string;
   clhTurnEnd?: true;
+  clhToolResult?: ToolCallRecord;
+  clhToolResultWritten?: () => void;
 };
 
 const failedResponses = new WeakSet<Response>();
@@ -97,8 +100,10 @@ export function dialogueChat(
   const responseEnded = new Promise<void>((resolve) => {
     resolveResponseEnded = resolve;
   });
+  let stopToolResults = () => {};
   let disconnected = response.destroyed && !response.writableFinished;
   response.on('close', () => {
+    stopToolResults();
     if (!response.writableFinished) disconnected = true;
     resolveResponseEnded();
   });
@@ -248,13 +253,13 @@ export function dialogueChat(
       let text = '';
       let replyStarted = false;
       // Callback deltas must reach the socket while send is still running.
-      const queue: Array<Result<{ content: string }, OrchestratorError>> = [];
+      const queue: Array<Result<DialogueStreamChunk, OrchestratorError>> = [];
       let wake: (() => void) | undefined;
       let finished = false;
       let receivedPartial = false;
       const filter = new NoMessageFilter();
       let failure: OrchestratorError | undefined;
-      const push = (chunk: Result<{ content: string }, OrchestratorError>) => {
+      const push = (chunk: Result<DialogueStreamChunk, OrchestratorError>) => {
         queue.push(chunk);
         wake?.();
       };
@@ -270,6 +275,23 @@ export function dialogueChat(
       );
       if (context) handle.attachments.set(trace, context);
       handle.replies.set(trace, { id: replyId, createdAt });
+      const unsubscribe = handle.subscribe(
+        (event) => {
+          if (event.kind === 'tool-result')
+            push({
+              ok: true,
+              value: {
+                content: '',
+                clhToolResult: event.record,
+                clhToolResultWritten: event.written,
+              },
+            });
+        },
+        undefined,
+        true,
+      );
+      stopToolResults = unsubscribe;
+      if (disconnected || response.writableFinished) unsubscribe();
       const sending = handle.session
         .send(userText(message), {
           ...plannerObservers(handle),
@@ -309,6 +331,8 @@ export function dialogueChat(
           },
         )
         .finally(() => {
+          unsubscribe();
+          stopToolResults = () => {};
           finished = true;
           wake?.();
         });

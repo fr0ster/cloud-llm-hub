@@ -966,22 +966,6 @@
         const fileArtifacts = {};
         let artifactCounter = 0;
 
-        // Lazy-loaded RAG external tool definitions (rag_add / rag_correct / rag_deprecate).
-        // Schemas come from the server so they stay in sync with llm-agent — UI just opts in
-        // by including them in body.tools.
-        let ragToolsCache = null;
-        let ragToolsPromise = null;
-        async function getRagTools() {
-            if (ragToolsCache) return ragToolsCache;
-            if (!ragToolsPromise) {
-                ragToolsPromise = ragFetch('/v1/rag/tools')
-                    .then((r) => (r.ok ? r.json() : { tools: [] }))
-                    .then((d) => { ragToolsCache = Array.isArray(d.tools) ? d.tools : []; return ragToolsCache; })
-                    .catch(() => { ragToolsCache = []; return ragToolsCache; });
-            }
-            return ragToolsPromise;
-        }
-
         function getFileExt(path) {
             const dot = path.lastIndexOf('.');
             return dot >= 0 ? path.slice(dot + 1).toLowerCase() : 'txt';
@@ -1983,7 +1967,6 @@
 
             try {
                 const messageAttachments = attachedFiles.slice();
-                const ragTools = await getRagTools();
                 const reqBody = {
                     messages: [{ role: 'user', content: text }],
                     stream: true,
@@ -2005,8 +1988,7 @@
                                     required: ['path', 'content']
                                 }
                             }
-                        },
-                        ...ragTools
+                        }
                     ]
                 };
                 const selectedModel = getSelectedModel();
@@ -2126,6 +2108,30 @@
                                     const el = document.getElementById(thinkingId);
                                     if (el) el.innerHTML = renderStepTrail(stepStates) + '<span class="agent"><b>> AGENT:</b> ' + fileParser.render().html + '</span>';
                                 }
+                                if (trimmed.startsWith(': tool-result ')) {
+                                    try {
+                                        const record = JSON.parse(trimmed.slice(14));
+                                        const result = record.result;
+                                        let response = result.structuredContent;
+                                        if (!response) {
+                                            try { response = JSON.parse(result.content); }
+                                            catch (e) { response = { result: String(result.content) }; }
+                                        }
+                                        const op = { name: record.call.name, args: record.call.arguments, ok: !result.isError, response };
+                                        const node = document.createElement('div');
+                                        node.className = 'message';
+                                        node.textContent = 'RAG OP: ' + op.name + ' ' + (op.ok ? 'OK' : 'ERR') + ' ' + JSON.stringify({ collection: op.args?.collection, record: op.args?.record || op.args?.id, ...response });
+                                        if (op.ok && response.collection && response.record && (op.name === 'record_add' || op.name === 'record_update')) {
+                                            const button = document.createElement('button');
+                                            button.textContent = 'DL';
+                                            button.onclick = () => downloadRagDoc(response.collection, response.record);
+                                            node.appendChild(button);
+                                        }
+                                        chatWindow.appendChild(node);
+                                        toolCalls.push({ name: op.name, arguments: '' });
+                                        toolCallNames.add(op.name);
+                                    } catch (e) { /* malformed event */ }
+                                }
                                 if (!trimmed || trimmed.charAt(0) === ':') continue;
                                 if (trimmed === 'data: [DONE]') {
                                     turnComplete = true;
@@ -2195,7 +2201,6 @@
 
                 // Process GenerateFile tool calls from external tool calls
                 const generateFileCalls = [];
-                const ragOpResults = [];
                 for (const tc of externalToolCalls) {
                     if (tc.name === 'GenerateFile') {
                         try {
@@ -2211,23 +2216,6 @@
                                 generateFileCalls.push({ cardId, attrs: args, content: args.content });
                             }
                         } catch (e) { /* ignore malformed args */ }
-                    } else if (tc.name === 'rag_add' || tc.name === 'rag_correct' || tc.name === 'rag_deprecate') {
-                        let args = null;
-                        try { args = JSON.parse(tc.arguments); } catch (e) { /* malformed */ }
-                        if (args) {
-                            try {
-                                const resp = await ragFetch('/v1/rag/tool/' + encodeURIComponent(tc.name), {
-                                    method: 'POST',
-                                    body: JSON.stringify(args)
-                                });
-                                const body = await resp.json().catch(() => ({}));
-                                ragOpResults.push({ name: tc.name, args, ok: !!body.ok, response: body });
-                            } catch (err) {
-                                ragOpResults.push({ name: tc.name, args, ok: false, response: { error: String(err && err.message || err) } });
-                            }
-                        } else {
-                            ragOpResults.push({ name: tc.name, args: tc.arguments, ok: false, response: { error: 'malformed arguments' } });
-                        }
                     }
                 }
 
@@ -2286,27 +2274,9 @@
                         }
                     }
 
-                    // Build RAG operation cards
-                    let ragOpsHtml = '';
-                    for (const op of ragOpResults) {
-                        const status = op.ok ? '<span style="color:#0c0">OK</span>' : '<span style="color:#f55">ERR</span>';
-                        const args = op.args && typeof op.args === 'object' ? op.args : {};
-                        const collection = escapeHtml(String(args.collection || ''));
-                        const reason = args.reason ? `<div style="font-size:11px;color:#888">reason: ${escapeHtml(String(args.reason))}</div>` : '';
-                        const docId = op.ok ? String(op.response.id || op.response.newId || '') : '';
-                        const canDownload = op.ok && docId && op.name !== 'rag_deprecate' && args.collection;
-                        const dlBtn = canDownload
-                            ? ` <button onclick="downloadRagDoc('${escapeHtml(String(args.collection))}','${escapeHtml(docId)}')" style="margin-left:8px;font-size:10px;padding:1px 6px;background:#1a1a1a;color:#00bfff;border:1px solid #003355;cursor:pointer;border-radius:3px" title="Download record as text file">DL</button>`
-                            : '';
-                        const detail = op.ok
-                            ? `<div style="font-size:11px;color:#888">id: ${escapeHtml(docId)}${dlBtn}</div>`
-                            : `<div style="font-size:11px;color:#f88">${escapeHtml(String(op.response.error || ''))}</div>`;
-                        ragOpsHtml += `<div class="trace-container"><div class="trace-header">RAG OP: ${escapeHtml(op.name)} ${status}</div><div class="trace-step">collection: ${collection}</div>${reason}${detail}</div>`;
-                    }
-
                     placeholder.innerHTML = `
                         ${renderStepTrail(stepStates)}<span class="agent"><b>> AGENT:</b> ${finalHtml || '<em style="color:#888">No response</em>'}</span>
-                        ${fileCardsHtml}${ragOpsHtml}${toolsHtml}${usageHtml}
+                        ${fileCardsHtml}${toolsHtml}${usageHtml}
                     `;
                     placeholder.className = 'message';
                     const allMermaidIds = [...mermaidIds, ...fileMermaidIds];

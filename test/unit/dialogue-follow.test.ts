@@ -44,6 +44,9 @@ function fixture(priorFailure = false) {
       maxMs: 1000,
     })[Symbol.asyncIterator]();
   return {
+    emit: (event: DialogueEvent) => {
+      for (const fn of listeners) fn(event);
+    },
     handle,
     state,
     outbox,
@@ -302,4 +305,30 @@ test('supersede bounds waiting for a stuck response at five seconds', async () =
   await superseding;
   expect(resolved).toBe(true);
   await iterator.return?.();
+});
+
+test('queued tool results drain before the failure terminal', async () => {
+  const f = fixture();
+  const iterator = f.start();
+  const next = iterator.next();
+  await Promise.resolve();
+  const records = [1, 2].map((id) => ({
+    call: { id: String(id), name: 'record_get', arguments: {} },
+    result: { content: `result-${id}` },
+  }));
+  for (const record of records) f.emit({ kind: 'tool-result', record });
+  f.settled('failed');
+  expect((await next).value).toEqual({
+    kind: 'tool-result',
+    record: records[0],
+  });
+  expect((await iterator.next()).value).toEqual({
+    kind: 'tool-result',
+    record: records[1],
+  });
+  expect((await iterator.next()).value).toEqual({
+    kind: 'end',
+    reason: 'error',
+  });
+  expect((await iterator.next()).done).toBe(true);
 });

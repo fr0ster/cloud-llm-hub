@@ -1,8 +1,9 @@
-import type { PlannerMessage } from '@mcp-abap-adt/llm-agent';
+import type { PlannerMessage, ToolCallRecord } from '@mcp-abap-adt/llm-agent';
 import type { Delivery } from './dialogue-outbox';
 import type { DialogueHandle } from './dialogue-sessions';
 
 export type FollowItem =
+  | { kind: 'tool-result'; record: ToolCallRecord; written?: () => void }
   | { kind: 'message'; message: PlannerMessage; written(): void }
   | {
       kind: 'end';
@@ -77,12 +78,14 @@ export function followDialogue(
   };
   const abort = () => {
     forced = { kind: 'end', reason: 'disconnected' };
+    unsubscribe();
     if (!started) cleanup();
     wake();
   };
   const current = {
     stop() {
       forced ??= superseded;
+      unsubscribe();
       if (!started) cleanup();
       wake();
     },
@@ -108,12 +111,18 @@ export function followDialogue(
         yield forced;
         return;
       }
-      unsubscribe = handle.subscribe((event) => {
-        if (event.kind === 'settled') {
-          evaluate = true;
-        }
-        wake();
-      });
+      const toolResults: Extract<FollowItem, { kind: 'tool-result' }>[] = [];
+      unsubscribe = handle.subscribe(
+        (event) => {
+          if (event.kind === 'tool-result') toolResults.push(event);
+          if (event.kind === 'settled') {
+            evaluate = true;
+          }
+          wake();
+        },
+        undefined,
+        true,
+      );
       timer = setTimeout(
         () => {
           const { done, total } = handle.state();
@@ -137,10 +146,15 @@ export function followDialogue(
         const state = handle.state();
         if (state.lastFailedSeq > opts.since)
           forced ??= { kind: 'end', reason: 'error' };
-        if (forced) {
+        if (forced && (forced.reason !== 'error' || toolResults.length === 0)) {
           cleanup();
           yield forced;
           return;
+        }
+        const record = toolResults.shift();
+        if (record) {
+          yield record;
+          continue;
         }
         const message = handle.outbox
           .pending()

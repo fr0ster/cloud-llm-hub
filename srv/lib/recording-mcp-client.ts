@@ -8,8 +8,13 @@ import type {
   ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { parseToolResultMaxChars } from '../agent-config';
-import { isReadOnlyTools, profileToolAllowed } from '../request-session';
+import {
+  getRagCallerIdentity,
+  isReadOnlyTools,
+  profileToolAllowed,
+} from '../request-session';
 import { isOutageError } from './mcp-outage';
+import { isRagTool } from './rag-tool-catalogue';
 import { parseToolOutcome, type RecordedToolCall } from './reviewer-core';
 import {
   isReadOnlyTool,
@@ -84,6 +89,8 @@ export class RecordingMcpClient implements IMcpClient {
     private readonly inner: IMcpClient,
     _expositionFor?: (name: string) => string | undefined,
     private readonly maxChars = parseToolResultMaxChars(),
+    // Planner clients emit capped results without retaining reviewer deltas.
+    private readonly retainRecords = true,
   ) {
     if (inner.healthCheck) {
       this.healthCheck = (options?: CallOptions) =>
@@ -163,7 +170,7 @@ export class RecordingMcpClient implements IMcpClient {
       result: { content: 'no answer yet', isError: true },
       answered: false,
     };
-    if (traceId) this.deltaFor(traceId).push(record);
+    if (traceId && this.retainRecords) this.deltaFor(traceId).push(record);
 
     let res = await this.inner.callTool(name, args, options);
     if (res.ok) {
@@ -194,6 +201,7 @@ export class RecordingMcpClient implements IMcpClient {
       ? res.value
       : { content: res.error?.message ?? String(res.error), isError: true };
     record.answered = res.ok || !isTransportFailure(res.error);
+    if (isRagTool(name)) getRagCallerIdentity().onToolResult?.(record);
     return res;
   }
 

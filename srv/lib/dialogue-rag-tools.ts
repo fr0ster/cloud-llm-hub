@@ -104,7 +104,15 @@ export class LocalRagMcpClient implements IMcpClient {
       name,
       args,
     );
-    return { ok: true, value };
+    return {
+      ok: true,
+      value: {
+        ...value,
+        content: value.structuredContent
+          ? JSON.stringify(value.structuredContent)
+          : value.content.map((part) => part.text).join('\n'),
+      },
+    };
   }
 }
 export { LocalRagMcpClient as DialogueRagMcpClient };

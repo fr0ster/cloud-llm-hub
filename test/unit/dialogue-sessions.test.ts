@@ -5,7 +5,10 @@ import {
 } from '@mcp-abap-adt/llm-usage';
 import express from 'express';
 import { executeRagTool } from '../../srv/agent-mcp-rag';
+import { chatStream, streamDialogue } from '../../srv/lib/chat-stream';
 import { dialogueChat } from '../../srv/lib/dialogue-chat';
+import { followDialogue } from '../../srv/lib/dialogue-follow';
+import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { sumPlannerUsage } from '../../srv/lib/usage-wire';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { liveSession } from './helpers/canonical-rag';
@@ -1578,7 +1581,8 @@ test('queued background tasks keep their scheduling turn identity across later c
   const release = await sharedExecutorPool().acquire();
   const identities: { admin: boolean; channel: string }[] = [];
   mockRun.mockImplementation(async () => {
-    identities.push({ ...getRagCallerIdentity() });
+    const { admin, channel } = getRagCallerIdentity();
+    identities.push({ admin, channel });
     return { output: 'done' };
   });
   try {
@@ -1606,7 +1610,8 @@ test('event planner uses the originating task identity when an earlier caller ow
   const eventIdentities: { admin: boolean; channel: string }[] = [];
   mockPlannerHook = async (text: string) => {
     if (text.startsWith('[task events]')) {
-      eventIdentities.push({ ...getRagCallerIdentity() });
+      const { admin, channel } = getRagCallerIdentity();
+      eventIdentities.push({ admin, channel });
     } else {
       mockPlan = text.includes('first') ? { status: 'done' } : undefined;
     }
@@ -1635,3 +1640,260 @@ test('event planner uses the originating task identity when an earlier caller ow
   await until(() => eventIdentities.length > 0);
   expect(eventIdentities).toEqual([{ admin: false, channel: 'openai' }]);
 });
+
+test.each([
+  { reconnect: false, isError: false },
+  { reconnect: true, isError: false },
+  { reconnect: false, isError: true },
+  { reconnect: true, isError: true },
+  { reconnect: true, isError: false, initial: true },
+])(
+  'worker RAG result reaches the active stream once (reconnect: $reconnect, error: $isError)',
+  async ({ reconnect, isError, initial }) => {
+    let finishTool!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      finishTool = resolve;
+    });
+    const toolResult = {
+      isError,
+      content: JSON.stringify({
+        result: 'Record added.',
+        record: 'saved-id',
+        collection: 'notes',
+      }),
+    };
+    const client = new RecordingMcpClient({
+      listTools: async () => ({ ok: true, value: [] }),
+      callTool: async () => {
+        await blocked;
+        return { ok: true, value: toolResult };
+      },
+    });
+    let toolFinished = false;
+    mockRun.mockImplementation(async () => {
+      if (!initial)
+        await client.callTool('record_add', {
+          collection: 'notes',
+          text: 'saved',
+        });
+      toolFinished = true;
+      return { output: 'saved' };
+    });
+    mockPlannerHook = async () => {
+      await new PlannerToolsClient().callTool('update_plan', {
+        plan: 'Save record',
+        status: 'active',
+      });
+      if (initial) {
+        await client.callTool('record_add', {
+          collection: 'notes',
+          text: 'saved',
+        });
+        toolFinished = true;
+      }
+    };
+    const { h } = await ready();
+    const originalSink = jest.fn();
+    const app = express();
+    let followers = 0;
+    const subscribe = h.subscribe.bind(h);
+    jest
+      .spyOn(h, 'subscribe')
+      .mockImplementation((fn, cursor, consumesToolResults) => {
+        followers++;
+        return subscribe(fn, cursor, consumesToolResults);
+      });
+    app.get('/', async (req, res) => {
+      const stream = chatStream(res, 'openai');
+      stream.ensureStream();
+      const agent = dialogueChat(
+        req,
+        'alice',
+        {
+          userId: 'alice',
+          key: 'key',
+          createdAt: 0,
+          lastActivity: 0,
+          revived: false,
+        },
+        'TEST',
+        res,
+      );
+      const continuation = await streamDialogue({
+        stream,
+        protocol: 'openai',
+        model: 'test',
+        agent,
+        source: agent.streamProcess([{ role: 'user', content: 'go' }]),
+        run: (fn) =>
+          runWithSessionId('key', fn, [], 'alice', {
+            admin: false,
+            channel: 'openai',
+            onToolResult: originalSink,
+          }),
+        maxMs: 10000,
+        onError: (error) => ({ error: String(error) }),
+      });
+      await continuation();
+    });
+    const server = app.listen(0);
+    const controller = new AbortController();
+    try {
+      await new Promise<void>((resolve) => server.once('listening', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('No port');
+      const url = `http://127.0.0.1:${address.port}/`;
+      const first = await fetch(url, { signal: controller.signal });
+      await until(() =>
+        initial ? followers >= 1 : mockRun.mock.calls.length === 1,
+      );
+      await until(() => followers >= (initial ? 1 : 2));
+      let response = first;
+      if (reconnect) {
+        controller.abort();
+        await until(() => !h.hasSubscribers());
+        mockPlan = { status: 'active' };
+        finishTool();
+        await until(() => toolFinished);
+        if (initial) mockPlannerHook = undefined;
+        response = await fetch(url);
+        await until(() => followers >= (initial ? 3 : 4));
+      }
+      // Settle the plan after the delayed tool result reaches the follower.
+      mockPlannerHook = undefined;
+      mockPlan = { status: 'done' };
+      finishTool();
+      const body = await response.text();
+      expect(body.match(/: tool-result /g)).toHaveLength(1);
+      expect(body).toContain('saved-id');
+      expect(body).toContain('record_add');
+      expect(body).toContain(JSON.stringify(toolResult));
+      expect(body).toContain('[DONE]');
+      expect(originalSink).not.toHaveBeenCalled();
+    } finally {
+      finishTool();
+      controller.abort();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+);
+
+test('retains worker results across the subscriber handoff once, with a bounded queue and close cleanup', async () => {
+  let report: ReturnType<typeof getRagCallerIdentity>['onToolResult'];
+  let finish!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  mockRun.mockImplementation(async () => {
+    report = getRagCallerIdentity().onToolResult;
+    await blocked;
+    return { output: 'done' };
+  });
+  const { h } = await ready();
+  const first: DialogueEvent[] = [];
+  const unsubscribe = h.subscribe((event) => first.push(event));
+  await h.session.send('go');
+  await until(() => report !== undefined);
+  // The WebUI session-events observer stays attached between chat followers.
+  h.subscribe(() => {});
+  unsubscribe();
+  const record = (id: number) => ({
+    call: { id: String(id), name: 'record_get', arguments: {} },
+    result: { content: `download-${id}`, isError: id === 54 },
+  });
+  try {
+    for (let id = 0; id < 55; id++) report?.(record(id));
+    const received: DialogueEvent[] = [];
+    const off = h.subscribe(
+      (event) => {
+        received.push(event);
+        if (event.kind === 'tool-result') event.written?.();
+      },
+      undefined,
+      true,
+    );
+    expect(received.filter((event) => event.kind === 'tool-result')).toEqual(
+      Array.from({ length: 50 }, (_, index) => ({
+        kind: 'tool-result',
+        record: record(index + 5),
+        written: expect.any(Function),
+      })),
+    );
+    off();
+    const replay: DialogueEvent[] = [];
+    h.subscribe((event) => replay.push(event), undefined, true)();
+    expect(replay.filter((event) => event.kind === 'tool-result')).toEqual([]);
+    expect(first.filter((event) => event.kind === 'tool-result')).toEqual([]);
+    report?.(record(55));
+    finish();
+    await closeDialogue('alice', 'key', 'ttl');
+    const closed: DialogueEvent[] = [];
+    h.subscribe((event) => closed.push(event));
+    expect(closed).toEqual([]);
+    const reopened = await dialogueFor('alice', 'key', 'TEST');
+    const restored: DialogueEvent[] = [];
+    reopened.subscribe((event) => restored.push(event));
+    expect(restored.filter((event) => event.kind === 'tool-result')).toEqual(
+      [],
+    );
+  } finally {
+    finish();
+  }
+});
+
+test.each([false, true])(
+  'retains worker results with session-events attached after follow timeout: %s',
+  async (timeout) => {
+    let report: ReturnType<typeof getRagCallerIdentity>['onToolResult'];
+    let finish!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    mockRun.mockImplementation(async () => {
+      report = getRagCallerIdentity().onToolResult;
+      await blocked;
+      return { output: 'done' };
+    });
+    const { h } = await ready();
+    const detach = h.subscribe(() => {});
+    const follow = (maxMs: number) =>
+      followDialogue(h, {
+        delivery: h.outbox.beginDelivery(),
+        since: 0,
+        signal: new AbortController().signal,
+        maxMs,
+      });
+    try {
+      await h.session.send('go');
+      await until(() => report !== undefined);
+      if (timeout) {
+        const items = [];
+        for await (const item of follow(1)) {
+          items.push(item);
+          if (item.kind === 'tool-result') item.written?.();
+        }
+        expect(items.at(-1)).toMatchObject({ kind: 'end', reason: 'limit' });
+      }
+      const record = {
+        call: { id: 'retained', name: 'record_get', arguments: {} },
+        result: { content: 'saved' },
+      };
+      report?.(record);
+      const items = [];
+      for await (const item of follow(1)) {
+        items.push(item);
+        if (item.kind === 'tool-result') item.written?.();
+      }
+      expect(items.filter((item) => item.kind === 'tool-result')).toEqual([
+        { kind: 'tool-result', record, written: expect.any(Function) },
+      ]);
+      const replay = [];
+      for await (const item of follow(1)) replay.push(item);
+      expect(replay.filter((item) => item.kind === 'tool-result')).toEqual([]);
+    } finally {
+      detach();
+      finish();
+    }
+  },
+);

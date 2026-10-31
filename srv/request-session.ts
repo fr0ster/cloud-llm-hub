@@ -26,6 +26,9 @@ const als = new AsyncLocalStorage<{
 }>();
 
 export interface RagCallerIdentity {
+  readonly onToolResult?: (
+    record: import('@mcp-abap-adt/llm-agent').ToolCallRecord,
+  ) => void;
   readonly admin: boolean;
   readonly channel: 'openai' | 'anthropic' | 'mcp-agent';
 }

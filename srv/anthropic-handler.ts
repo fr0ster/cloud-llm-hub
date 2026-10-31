@@ -1,6 +1,9 @@
+import { isDeepStrictEqual } from 'node:util';
+import { z } from 'zod';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
+import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
 import {
   measureRequest,
@@ -155,8 +158,90 @@ async function handleAnthropicMessagesMeasured(
     throw err;
   }
 
+  const removed = new Map([
+    [
+      'rag_list',
+      'Use collections_list, collection_records or rag_read with an exact id.',
+    ],
+    ['rag_add', 'Use collection_create when needed, then record_add.'],
+    [
+      'rag_correct',
+      'Use record_update with record and text (formerly newText).',
+    ],
+    [
+      'rag_deprecate',
+      'Use record_set_enabled with enabled: false for retirement, or record_delete for permanent removal.',
+    ],
+  ]);
+  const reject = (message: string): void => {
+    res.status(400).json({
+      type: 'error',
+      error: { type: 'invalid_request_error', message },
+    });
+  };
+  normalized.options ??= {};
+  const consumerTools: NonNullable<typeof normalized.options.externalTools> =
+    [];
+  for (const entry of normalized.options.externalTools ?? []) {
+    const parsed = z.object({ name: z.string() }).safeParse(entry);
+    const name = parsed.success ? parsed.data.name : '';
+    if (removed.has(name)) {
+      reject(`${name} was removed. ${removed.get(name)}`);
+      return;
+    }
+    if (isRagTool(name)) {
+      const tool = buildRagToolSchemas().find(
+        (candidate) => candidate.function.name === name,
+      )?.function;
+      if (
+        !tool ||
+        !isDeepStrictEqual(entry, {
+          name,
+          description: tool.description,
+          input_schema: tool.parameters,
+        })
+      ) {
+        reject(
+          `Conflicting definition for host RAG tool ${name}. Use the canonical definition or omit it.`,
+        );
+        return;
+      }
+    } else consumerTools.push(entry);
+  }
+  normalized.options.externalTools = consumerTools;
+  const choice = z
+    .object({ tool_choice: z.object({ name: z.string() }) })
+    .safeParse(req.body);
+  if (choice.success && removed.has(choice.data.tool_choice.name)) {
+    reject(
+      `${choice.data.tool_choice.name} was removed. ${removed.get(choice.data.tool_choice.name)}`,
+    );
+    return;
+  }
+  const hostIds = new Set<string>();
+  for (const message of normalized.messages) {
+    for (const call of message.tool_calls ?? []) {
+      if (isRagTool(call.function.name) || removed.has(call.function.name))
+        hostIds.add(call.id);
+    }
+  }
+  if (
+    normalized.messages.some(
+      (message) =>
+        message.role === 'tool' && hostIds.has(message.tool_call_id ?? ''),
+    )
+  ) {
+    reject('External results cannot claim host RAG tool call identities.');
+    return;
+  }
+
   // A long session serves its requests one at a time, through the connection
   // it holds; without one the request stands alone, as it always has.
+  const authenticatedCaller = {
+    userId: cds.context?.user?.id ?? 'anonymous',
+    admin: cds.context?.user?.is?.('MCP_Admin') ?? false,
+    caller: describeCaller(cds.context?.user),
+  };
   const s = (req as LongSessionRequest).longSession;
   const measurement = requestMeasurement(req);
   measurement?.setStream(normalized.stream);
@@ -176,10 +261,18 @@ async function handleAnthropicMessagesMeasured(
     const continuation = s
       ? await longSessions().run(
           s,
-          () => serveMessages(req, res, normalized, s, early),
+          () =>
+            serveMessages(req, res, normalized, authenticatedCaller, s, early),
           () => early?.ensureStream(),
         )
-      : await serveMessages(req, res, normalized, undefined, early);
+      : await serveMessages(
+          req,
+          res,
+          normalized,
+          authenticatedCaller,
+          undefined,
+          early,
+        );
     if (typeof continuation === 'function') await continuation();
     else if (continuation) {
       const refusal = anthropicSessionRunRefusal(continuation.refused);
@@ -206,6 +299,11 @@ async function serveMessages(
   req: Request,
   res: Response,
   normalized: NormalizedRequest,
+  authenticatedCaller: {
+    userId: string;
+    admin: boolean;
+    caller: ReturnType<typeof describeCaller>;
+  },
   s?: LongSession,
   early?: ChatStream,
 ): Promise<(() => Promise<void>) | void> {
@@ -229,7 +327,11 @@ async function serveMessages(
     | string
     | undefined;
   const sessionId = sessionIdOf(req);
-  const userId = cds.context?.user?.id ?? 'anonymous';
+  const userId = authenticatedCaller.userId;
+  const ragIdentity = {
+    admin: authenticatedCaller.admin,
+    channel: 'anthropic' as const,
+  };
   const destination =
     requestedDestination ||
     s?.destination ||
@@ -393,7 +495,7 @@ async function serveMessages(
   // The caller's permissions. This channel previously resolved none at all —
   // no role filtering on which tools were offered, and nothing to authorize a
   // tool call against. Both are fixed here from one value, so they agree.
-  const caller = describeCaller(cds.context?.user);
+  const caller = authenticatedCaller.caller;
   log.info('MCP caller', caller);
   const callerExposition = caller.exposition;
 
@@ -495,10 +597,7 @@ async function serveMessages(
         },
         priorTurns,
         userId,
-        {
-          admin: cds.context?.user?.is('MCP_Admin') ?? false,
-          channel: 'anthropic',
-        },
+        ragIdentity,
       ),
     );
 

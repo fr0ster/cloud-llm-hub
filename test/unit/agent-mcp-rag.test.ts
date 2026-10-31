@@ -1,10 +1,15 @@
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import express from 'express';
 import { ragMcpSchemas, registerRagMcpTools } from '../../srv/agent-mcp-rag';
 import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
-import { localRagTools } from '../../srv/lib/dialogue-rag-tools';
+import {
+  LocalRagMcpClient,
+  localRagTools,
+} from '../../srv/lib/dialogue-rag-tools';
 import {
   buildRagToolSchemas,
   ragToolEffect,
@@ -1337,7 +1342,7 @@ test('reserved names, unsupported scopes and missing text never touch storage', 
 });
 
 test.each(['all', 'checker', 'allow-deny'] as const)(
-  '%s catalogue parity across MCP registration, REST and local planner/worker/coordinator adapters',
+  '%s catalogue parity across MCP, REST, OpenAI host tools, WebUI and local adapters',
   async (ceiling) => {
     const permissions = new AgentToolPermissions(
       names.filter(
@@ -1404,6 +1409,40 @@ test.each(['all', 'checker', 'allow-deny'] as const)(
           ),
           effect: readOnly ? 'read' : 'write',
         });
+        for (const path of [
+          'app/chat/webapp/index.html',
+          'app/router/chat/webapp/index.html',
+        ]) {
+          const html = readFileSync(path, 'utf8');
+          const start = html.indexOf('                const reqBody = {');
+          const end = html.indexOf(
+            '                const selectedModel',
+            start,
+          );
+          const request = z
+            .object({
+              tools: z.array(
+                z.object({ function: z.object({ name: z.string() }) }),
+              ),
+            })
+            .parse(
+              runInNewContext(`${html.slice(start, end)}; reqBody;`, {
+                text: 'hello',
+              }),
+            );
+          expect(request.tools.map((tool) => tool.function.name)).toEqual([
+            'GenerateFile',
+          ]);
+          expect(html).not.toContain('/v1/rag/tool');
+        }
+        const chatHost = new LocalRagMcpClient({
+          listTools: async () => ({ ok: true, value: [] }),
+          callTool: async () => {
+            throw new Error('Unexpected external dispatch');
+          },
+        });
+        const chatTools = await chatHost.listTools();
+        expect(chatTools.ok).toBe(true);
         const openai = buildRagToolSchemas();
         const canonical = openai.map(({ function: tool }) =>
           normalize(
@@ -1413,6 +1452,21 @@ test.each(['all', 'checker', 'allow-deny'] as const)(
             ragToolEffect(tool.name) === 'read',
           ),
         );
+        expect(
+          chatTools.ok &&
+            chatTools.value.map((tool) =>
+              normalize(
+                tool.name,
+                tool.description ?? '',
+                tool.inputSchema,
+                z
+                  .object({
+                    annotations: z.object({ readOnlyHint: z.boolean() }),
+                  })
+                  .parse(tool).annotations.readOnlyHint,
+              ),
+            ),
+        ).toEqual(canonical);
         expect(
           rest.tools.map(({ function: tool }) =>
             normalize(
@@ -1435,7 +1489,11 @@ test.each(['all', 'checker', 'allow-deny'] as const)(
               tool.name,
               tool.description ?? '',
               tool.inputSchema,
-              tool.annotations?.readOnlyHint === true,
+              z
+                .object({
+                  annotations: z.object({ readOnlyHint: z.boolean() }),
+                })
+                .parse(tool).annotations.readOnlyHint,
             ),
           ),
         ).toEqual(canonical);
