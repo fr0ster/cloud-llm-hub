@@ -28,6 +28,7 @@ import {
 } from '../../srv/lib/dialogue-rag-tools';
 import { makeHubLlm } from '../../srv/lib/llm-factory';
 import { startProviders } from '../../srv/lib/providers';
+import { ragToolEffect, ragToolNames } from '../../srv/lib/rag-tool-catalogue';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
 import { CollectionRegistry } from '../../srv/rag-collections';
@@ -35,6 +36,7 @@ import {
   runWithProfileTools,
   runWithSessionId,
 } from '../../srv/request-session';
+import { liveSession } from './helpers/canonical-rag';
 
 let plannerText = '';
 beforeAll(async () => {
@@ -123,6 +125,7 @@ test('hard planner sends all nine control tools, hub prompt, and follows getSmar
     expect(result.ok && result.value.content).toBe('first');
     expect(first.tools.flat().sort()).toEqual(
       [
+        ...ragToolNames,
         'delegate_task',
         'deliver',
         'get_task',
@@ -188,8 +191,8 @@ test('dialogue tool-loop offers hub storage to executor and only readback to che
     );
     expect([...new Set(model.tools.flat())].sort()).toEqual(
       name === 'executor'
-        ? ['rag_add', 'rag_correct', 'rag_deprecate', 'rag_list']
-        : ['rag_list'],
+        ? [...ragToolNames].sort()
+        : ragToolNames.filter((tool) => ragToolEffect(tool) === 'read').sort(),
     );
   }
   expect(model.messages.join('\n')).toContain(
@@ -216,7 +219,7 @@ test.each(['adaptive', 'dialogue'] as const)(
   '%s tool loop sends capped text to the model',
   async (coordinator) => {
     const seen: string[] = [];
-    const name = 'rag_list';
+    const name = 'rag_read';
     const modelName = `cap-${coordinator}`;
     const response: ILlm['chat'] = async (messages, tools) => {
       const results = messages.filter((m) => m.role === 'tool');
@@ -288,12 +291,16 @@ test.each(['adaptive', 'dialogue'] as const)(
       cappedConfig,
     );
     await runWithSessionId(
-      'cap-test',
+      liveSession('alice', 'cap-test'),
       () =>
         runWithDialogueRagTools(async () => {
-          await client.callTool('rag_add', {
+          await client.callTool('collection_create', {
+            name: 'results',
+            scope: 'user',
+          });
+          await client.callTool('record_add', {
             collection: 'results',
-            id: 'large',
+            record: 'large',
             text: 'x'.repeat(1000),
           });
           await worker.run({
@@ -429,7 +436,7 @@ test('fresh arbitrary worker composes base, profile, then one invariant library 
     selectedConfig,
   );
   const created = await runWithProfileTools(
-    new AgentToolPermissions(['rag_list']),
+    new AgentToolPermissions(['collection_records']),
     () =>
       handle.profileRunner.createWorker({
         workerBase: 'BASE_MARK',
@@ -438,7 +445,7 @@ test('fresh arbitrary worker composes base, profile, then one invariant library 
           description: 'Research',
           systemPrompt: 'PROFILE_MARK',
           result: 'report',
-          tools: { deny: ['rag_add'] },
+          tools: { deny: ['record_add'] },
         },
       }),
   );

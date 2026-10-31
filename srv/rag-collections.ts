@@ -4,6 +4,7 @@ import {
   seedAgentProfiles,
 } from './lib/agent-profile-seeds';
 import { assertCollectionWrite } from './lib/collection-write-scope';
+import { RagWriteError } from './lib/rag-write-error';
 import { recordPolicy } from './lib/record-policy';
 /**
  * RAG Collection Registry — manages dynamic RAG collections at runtime.
@@ -1855,11 +1856,59 @@ export class CollectionRegistry {
     }
   }
 
-  async addDocument(
+  /** Existence for add is authoritative even when another writer changed storage. */
+  async hasDocument(collectionId: string, docId: string): Promise<boolean> {
+    if (this.persistence) await this.settled(collectionId, true);
+    const stored = this.collections.get(collectionId);
+    if (!stored) return false;
+    this.refuseDegraded(stored, 'add document', 'write');
+    if (stored.persistent) refuseWhileDeleting(stored, 'add document');
+    return stored.persistent
+      ? (await readPersistentDocument(stored, docId)) !== null
+      : stored.documents.has(docId);
+  }
+
+  // Providers expose upsert only: create-only is atomic within this process,
+  // but cannot be atomic across instances without a provider conditional insert.
+  private static readonly recordWrites = new Map<string, Promise<void>>();
+
+  private async serializeRecord<T>(
+    collection: string,
+    record: string,
+    write: () => Promise<T>,
+  ): Promise<T> {
+    const key = JSON.stringify([collection, record]);
+    const pending = CollectionRegistry.recordWrites;
+    const previous = pending.get(key) ?? Promise.resolve();
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve: () => void) => {
+      release = resolve;
+    });
+    pending.set(key, held);
+    await previous;
+    try {
+      return await write();
+    } finally {
+      release();
+      if (pending.get(key) === held) pending.delete(key);
+    }
+  }
+
+  addDocument(
+    ...args: Parameters<CollectionRegistry['addDocumentUnlocked']>
+  ): Promise<RagDocument> {
+    return this.serializeRecord(args[0], args[1].id, () =>
+      this.addDocumentUnlocked(...args),
+    );
+  }
+
+  private async addDocumentUnlocked(
     collectionId: string,
     doc: Omit<RagDocument, 'createdAt'>,
     namespace?: string,
     options?: {
+      /** Refuse an existing id while holding the shared per-record write lock. */
+      createOnly?: boolean;
       /**
        * When true, keep the document in the registry even if the RAG upsert
        * fails (stamping `metadata.unindexed = true`). Used by bulk/file
@@ -1878,6 +1927,8 @@ export class CollectionRegistry {
       seed?: boolean;
     },
   ): Promise<RagDocument> {
+    if (options?.createOnly && (await this.hasDocument(collectionId, doc.id)))
+      throw new RagWriteError('RECORD_EXISTS', 409, 'Document already exists');
     if (this.persistence) await this.settled(collectionId, !options?.seed);
     const stored = this.collections.get(collectionId);
     if (!stored) throw new Error(`Collection "${collectionId}" not found`);
@@ -2032,7 +2083,15 @@ export class CollectionRegistry {
     return { added, errors };
   }
 
-  async updateDocument(
+  updateDocument(
+    ...args: Parameters<CollectionRegistry['updateDocumentUnlocked']>
+  ): Promise<RagDocument | null> {
+    return this.serializeRecord(args[0], args[1], () =>
+      this.updateDocumentUnlocked(...args),
+    );
+  }
+
+  private async updateDocumentUnlocked(
     collectionId: string,
     docId: string,
     update: { text?: string; metadata?: Record<string, unknown> },
@@ -2152,7 +2211,18 @@ export class CollectionRegistry {
     return { updated };
   }
 
-  async deleteDocument(collectionId: string, docId: string): Promise<boolean> {
+  deleteDocument(
+    ...args: Parameters<CollectionRegistry['deleteDocumentUnlocked']>
+  ): Promise<boolean> {
+    return this.serializeRecord(args[0], args[1], () =>
+      this.deleteDocumentUnlocked(...args),
+    );
+  }
+
+  private async deleteDocumentUnlocked(
+    collectionId: string,
+    docId: string,
+  ): Promise<boolean> {
     if (this.persistence) await this.settled(collectionId, true);
     const stored = this.collections.get(collectionId);
     if (!stored) return false;

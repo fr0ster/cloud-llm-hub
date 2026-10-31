@@ -5,7 +5,6 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { hasProfileToolScope } from '../request-session';
 import { profileToolPolicy } from './agent-profile-records';
-import { externalRagWriteNames } from './external-rag-write-names';
 import { ToolAuthorizationError } from './tool-authorization';
 
 export interface RegisteredProfileTool {
@@ -53,7 +52,6 @@ export function effectiveProfileTools(input: {
     input.catalogue
       .filter(
         (tool) =>
-          !externalRagWriteNames.has(tool.name) &&
           input.grants.has(tool.name) &&
           (!input.parent || input.parent.allows(tool.name)) &&
           (input.result !== 'verdict' || tool.effect === 'read') &&

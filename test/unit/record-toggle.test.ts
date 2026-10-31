@@ -29,8 +29,8 @@ import { plannerContext } from '../../srv/lib/planner-context';
 import * as policy from '../../srv/lib/record-policy';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { registerRagRoutes } from '../../srv/rag-handler';
-import { dispatchRagTool } from '../../srv/rag-tool-dispatcher';
 import { runWithSessionId } from '../../srv/request-session';
+import { callRag, ragBody } from './helpers/canonical-rag';
 import { makeMockRouter, makeReq, runIdRoute } from './helpers/rag-routes';
 
 const embedder = symmetricEmbedder({ embed: async () => ({ vector: [1, 0] }) });
@@ -225,7 +225,7 @@ test('REST lists state, validates toggles, and changes all chunks of only one up
   expect((await registry.getDocument(id, 'a'))?.enabled).toBe(true);
 });
 
-test('rag_list reports disabled state and rag_correct preserves it', async () => {
+test('canonical read hides disabled text and record_update preserves enabled metadata', async () => {
   const registry = await setup();
   await registry.addDocument(id, {
     id: 'a',
@@ -233,31 +233,25 @@ test('rag_list reports disabled state and rag_correct preserves it', async () =>
     metadata: { canonicalKey: 'key', enabled: false },
   });
   expect(
-    await dispatchRagTool(registry, 'rag_list', { collection: 'records' }),
-  ).toEqual({
-    ok: true,
+    await ragBody(
+      callRag(registry, 'collection_records', { collection: 'records' }),
+    ),
+  ).toMatchObject({
     total: 1,
-    documents: [{ id: 'key', enabled: false, reason: 'record-disabled' }],
+    records: [{ id: 'a', reason: 'record-disabled' }],
   });
-  for (const recordId of ['key', 'a']) {
-    expect(
-      await dispatchRagTool(registry, 'rag_list', {
-        collection: 'records',
-        id: recordId,
-      }),
-    ).toEqual({
-      ok: true,
-      document: { id: 'key', enabled: false, reason: 'record-disabled' },
-    });
-  }
   expect(
-    await dispatchRagTool(registry, 'rag_correct', {
+    await ragBody(
+      callRag(registry, 'rag_read', { collection: 'records', id: 'a' }),
+    ),
+  ).toMatchObject({ id: 'a', reason: 'record-disabled' });
+  expect(
+    await callRag(registry, 'record_update', {
       collection: 'records',
-      id: 'key',
-      newText: 'corrected',
-      reason: 'fix',
+      record: 'a',
+      text: 'corrected',
     }),
-  ).toEqual({ ok: true, id: 'key' });
+  ).toMatchObject({ structuredContent: { updated: true } });
   expect(await registry.getDocument(id, 'a')).toMatchObject({
     text: 'corrected',
     enabled: false,
@@ -319,7 +313,7 @@ test('all-disabled retrieval terminates, tags stay inactive, and legacy source t
   expect(active.ok && active.value).toHaveLength(23);
 });
 
-test('rag_list hides content in both modes for a disabled collection and respects session overrides', async () => {
+test('canonical reads respect disabled collections and session overrides', async () => {
   const registry = await setup();
   await registry.addDocument(id, {
     id: 'a',
@@ -327,51 +321,34 @@ test('rag_list hides content in both modes for a disabled collection and respect
     metadata: { canonicalKey: 'key', tags: ['private-tag'] },
   });
   await registry.setEnabled('alice', id, false);
-  const hidden = { id: 'key', enabled: true, reason: 'collection-disabled' };
+  const read = () =>
+    ragBody(callRag(registry, 'rag_read', { collection: 'records', id: 'a' }));
+  expect(await read()).toMatchObject({
+    id: 'a',
+    reason: 'collection-disabled',
+  });
   expect(
-    await dispatchRagTool(registry, 'rag_list', { collection: 'records' }),
-  ).toEqual({ ok: true, total: 1, documents: [hidden] });
-  expect(
-    await dispatchRagTool(registry, 'rag_list', {
-      collection: 'records',
-      id: 'key',
-    }),
-  ).toEqual({ ok: true, document: hidden });
+    await ragBody(
+      callRag(registry, 'collection_records', { collection: 'records' }),
+    ),
+  ).toMatchObject({ records: [{ id: 'a', reason: 'collection-disabled' }] });
   setCollectionOverride('alice', 'policy-session', id, true);
   try {
-    const visible = await runWithSessionId('policy-session', () =>
-      dispatchRagTool(registry, 'rag_list', {
-        collection: 'records',
-        id: 'key',
-      }),
-    );
-    expect(visible).toMatchObject({
-      ok: true,
-      document: { text: 'Private title\nPrivate body' },
+    expect(await runWithSessionId('policy-session', read)).toMatchObject({
+      text: 'Private title\nPrivate body',
     });
     await registry.setEnabled('alice', id, true);
     setCollectionOverride('alice', 'policy-session', id, false);
-    expect(
-      await runWithSessionId('policy-session', () =>
-        dispatchRagTool(registry, 'rag_list', { collection: 'records' }),
-      ),
-    ).toEqual({ ok: true, total: 1, documents: [hidden] });
-    expect(
-      await runWithSessionId('policy-session', () =>
-        dispatchRagTool(registry, 'rag_list', {
-          collection: 'records',
-          id: 'a',
-        }),
-      ),
-    ).toEqual({ ok: true, document: hidden });
+    expect(await runWithSessionId('policy-session', read)).toMatchObject({
+      reason: 'collection-disabled',
+    });
   } finally {
     deleteCollectionOverrides('alice', 'policy-session');
   }
   expect(
-    await dispatchRagTool(registry, 'rag_deprecate', {
+    await callRag(registry, 'record_delete', {
       collection: 'records',
-      id: 'key',
-      reason: 'retire',
+      record: 'a',
     }),
-  ).toEqual({ ok: true, id: 'key', reason: 'retire' });
+  ).toMatchObject({ structuredContent: { deleted: true } });
 });

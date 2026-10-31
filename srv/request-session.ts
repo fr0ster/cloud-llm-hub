@@ -2,6 +2,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Message } from '@mcp-abap-adt/llm-agent';
+import cds from '@sap/cds';
 import type { AgentToolPermissions } from './lib/agent-profile-tools';
 import { runWithReviewSignals } from './lib/review-scope';
 import type { ToolQueryAnalysis } from './lib/tool-query-analyzer';
@@ -9,6 +10,7 @@ import type { ToolQueryAnalysis } from './lib/tool-query-analyzer';
 const als = new AsyncLocalStorage<{
   sessionId?: string;
   userId?: string;
+  ragIdentity?: RagCallerIdentity;
   toolGateDecision?: Promise<ToolQueryAnalysis>;
   /**
    * The conversation BEFORE this request's new user message.
@@ -23,13 +25,26 @@ const als = new AsyncLocalStorage<{
   history?: Message[];
 }>();
 
+export interface RagCallerIdentity {
+  readonly admin: boolean;
+  readonly channel: 'openai' | 'anthropic' | 'mcp-agent';
+}
+export function getRagCallerIdentity(): RagCallerIdentity {
+  return (
+    als.getStore()?.ragIdentity ?? {
+      admin: cds.context?.user?.is?.('MCP_Admin') ?? false,
+      channel: 'openai',
+    }
+  );
+}
 export function runWithSessionId<T>(
   sessionId: string | undefined,
   fn: () => T,
   history?: Message[],
   userId?: string,
+  ragIdentity: RagCallerIdentity = getRagCallerIdentity(),
 ): T {
-  return als.run({ sessionId, history, userId }, () =>
+  return als.run({ sessionId, history, userId, ragIdentity }, () =>
     runWithReviewSignals(fn),
   );
 }

@@ -24,7 +24,10 @@ import {
   runWithRequestConnection,
 } from '../agent-manager';
 import {
+  getRagCallerIdentity,
   getRequestHistory,
+  getRequestUserId,
+  type RagCallerIdentity,
   runWithSessionId,
   runWithToolGateBypass,
 } from '../request-session';
@@ -63,6 +66,10 @@ import { usageRuntime } from './usage/runtime';
 
 type Plan = Exclude<DialogueState['plan'], string | undefined>;
 type PlanStep = Plan['steps'][number];
+interface TurnCaller {
+  userId: string;
+  identity: RagCallerIdentity;
+}
 
 export interface PlannerCounts {
   toolsSelected?: number;
@@ -227,6 +234,7 @@ async function open(
   key: string,
   destination: string,
 ): Promise<LiveHandle> {
+  const turnCallers = new WeakMap<object, TurnCaller>();
   const config = getAgentConfig();
   const destinationHandle = await getSmartAgent(undefined, destination);
   if (
@@ -310,6 +318,8 @@ async function open(
     pipeline: PipelineSession;
     traceId: string;
     taskId: string;
+    userId: string;
+    identity: RagCallerIdentity;
   }>();
   const workers = new Map<string, ISubAgent>();
   const wrapWorker = (worker: ISubAgent): ISubAgent => {
@@ -384,7 +394,8 @@ async function open(
                 factory.exposition,
               ),
             undefined,
-            userId,
+            ctx.userId,
+            ctx.identity,
           ),
         );
       },
@@ -429,6 +440,51 @@ async function open(
     await outbox.add(session?.takePending() ?? []);
   };
   const signals = dialogueSignals();
+  const taskCallers = new Map<string, TurnCaller>();
+  const pendingEventCallers: TurnCaller[] = [];
+  let eventCaller: TurnCaller | undefined;
+  const unsubscribeTaskCaller = signals.on(
+    'dialogue.task.state',
+    ({ payload: { task, previous } }) => {
+      if (task.state === 'queued' && previous === undefined)
+        taskCallers.set(task.id, {
+          userId: getRequestUserId() ?? userId,
+          identity: { ...getRagCallerIdentity() },
+        });
+      if (
+        task.state === 'done' ||
+        task.state === 'failed' ||
+        task.state === 'stopped'
+      ) {
+        const caller = taskCallers.get(task.id);
+        if (caller) pendingEventCallers.push(caller);
+        taskCallers.delete(task.id);
+      }
+    },
+    { source: key },
+  );
+  const unsubscribeTurnCaller = signals.on(
+    'dialogue.turn.started',
+    ({ payload: { trigger } }) => {
+      eventCaller = undefined;
+      if (trigger !== 'event') return;
+      const callers = pendingEventCallers.splice(0);
+      const origin = callers[0];
+      if (origin)
+        eventCaller = {
+          ...origin,
+          // A batched event turn must not gain privileges from another task.
+          identity: {
+            ...origin.identity,
+            admin: callers.every(
+              (caller) =>
+                caller.identity.admin && caller.userId === origin.userId,
+            ),
+          },
+        };
+    },
+    { source: key },
+  );
   const registry = longSessionsIfReady();
   const longSession = registry?.get(userId, key);
   let releaseHold: (() => void) | undefined;
@@ -475,6 +531,8 @@ async function open(
     { source: key },
   );
   const stopLifetime = () => {
+    unsubscribeTaskCaller();
+    unsubscribeTurnCaller();
     unsubscribeWait();
     unsubscribeActivity();
     unsubscribeClosed();
@@ -486,13 +544,26 @@ async function open(
     input: Message[],
     options: AgentCallOptions,
   ) => {
+    const caller = (options.trace && turnCallers.get(options.trace)) ??
+      eventCaller ?? {
+        userId,
+        // Restored tasks and timer events have no authenticated originating turn.
+        identity: { admin: false, channel: 'openai' as const },
+      };
     const reply = options.trace && replies.get(options.trace);
     turnReply = undefined;
     turnReplyUsage = undefined;
     try {
       const result = await runWithContextCapture(
         { component: 'planner', sessionKey: key },
-        () => decoratePlanner(planner).process(input, options),
+        () =>
+          runWithSessionId(
+            key,
+            () => decoratePlanner(planner).process(input, options),
+            undefined,
+            caller.userId,
+            caller.identity,
+          ),
       );
       // The library appends this successful result before its final save.
       if (result.ok) {
@@ -608,6 +679,12 @@ async function open(
         pool: sharedExecutorPool(),
         baseInput: () => ({ sessionId: key }),
         async wrapRun(task, run) {
+          // TaskBoard starts execution in the scheduling planner scope; its
+          // async context survives pool waits and later user turns.
+          const caller = {
+            userId: getRequestUserId() ?? userId,
+            identity: { ...getRagCallerIdentity() },
+          };
           const startedAt = Date.now();
           // No free text from goals or errors reaches the logs: a goal may carry
           // whatever the user typed, credentials included. Ids correlate with
@@ -643,6 +720,7 @@ async function open(
                   pipeline: admission.admitted,
                   traceId,
                   taskId: task.id,
+                  ...caller,
                 },
                 () =>
                   runWithContextCapture(
@@ -713,7 +791,21 @@ async function open(
   }
   lastPlan = dialoguePlan(session.snapshot());
   const send = session.send.bind(session);
-  session.send = (...args) => send(...args).finally(drainPending);
+  session.send = (text, options = {}) => {
+    // Each queued input owns its snapshot even if callers reuse a trace object.
+    const trace = options.trace
+      ? { ...options.trace }
+      : { traceId: randomUUID() };
+    const attachment = options.trace && attachments.get(options.trace);
+    if (attachment !== undefined) attachments.set(trace, attachment);
+    const reply = options.trace && replies.get(options.trace);
+    if (reply) replies.set(trace, reply);
+    turnCallers.set(trace, {
+      userId: getRequestUserId() ?? userId,
+      identity: { ...getRagCallerIdentity() },
+    });
+    return send(text, { ...options, trace }).finally(drainPending);
+  };
   return {
     destination,
     session,

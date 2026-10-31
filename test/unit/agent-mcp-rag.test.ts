@@ -4,14 +4,30 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import express from 'express';
 import { ragMcpSchemas, registerRagMcpTools } from '../../srv/agent-mcp-rag';
 import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
-import { runWithProfileTools } from '../../srv/request-session';
+import { localRagTools } from '../../srv/lib/dialogue-rag-tools';
+import {
+  buildRagToolSchemas,
+  ragToolEffect,
+} from '../../srv/lib/rag-tool-catalogue';
+import { registerRagRoutes } from '../../srv/rag-handler';
+import {
+  runWithProfileTools,
+  runWithReadOnlyTools,
+} from '../../srv/request-session';
+import {
+  findRoute,
+  makeMockRouter,
+  makeReq,
+  makeRes,
+  runIdRoute,
+} from './helpers/rag-routes';
 
 const mockWriteIdentity = { admin: false };
 jest.mock('@sap/cds', () => ({
   __esModule: true,
   default: {
     log: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
-    context: { user: { is: () => mockWriteIdentity.admin } },
+    context: { user: { id: 'alice', is: () => mockWriteIdentity.admin } },
   },
 }));
 jest.mock('../../srv/agent-manager', () => ({
@@ -54,6 +70,7 @@ import {
 import {
   configureCollectionOverridePersistence,
   deleteCollectionOverrides,
+  sessionCollectionOverrides,
 } from '../../srv/lib/collection-toggle';
 import { theRetention } from '../../srv/lib/gatekeeper';
 import {
@@ -1318,3 +1335,412 @@ test('reserved names, unsupported scopes and missing text never touch storage', 
   expect(create).not.toHaveBeenCalled();
   expect(write).not.toHaveBeenCalled();
 });
+
+test.each(['all', 'checker', 'allow-deny'] as const)(
+  '%s catalogue parity across MCP registration, REST and local planner/worker/coordinator adapters',
+  async (ceiling) => {
+    const permissions = new AgentToolPermissions(
+      names.filter(
+        (name) =>
+          ceiling === 'all' ||
+          (ceiling === 'checker'
+            ? ragToolEffect(name) === 'read'
+            : ['rag_read', 'record_add'].includes(name)),
+      ),
+    );
+    await runWithProfileTools(permissions, async () => {
+      const server = new McpServer({ name: 'parity', version: '1' });
+      const client = new Client({ name: 'parity-test', version: '1' });
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      registerRagMcpTools(
+        server,
+        express.request,
+        'alice',
+        (_name, run) => run,
+      );
+      await Promise.all([
+        server.connect(serverTransport),
+        client.connect(clientTransport),
+      ]);
+      try {
+        const mcp = await client.listTools();
+        const { router, routes } = makeMockRouter();
+        registerRagRoutes(router, registry);
+        const response = makeRes();
+        await findRoute(routes, 'GET', '/rag/tools').handler(
+          makeReq({}),
+          response.res,
+        );
+        const rest = z
+          .object({
+            tools: z.array(
+              z.object({
+                function: z.object({
+                  name: z.string(),
+                  description: z.string(),
+                  parameters: z.record(z.string(), z.json()),
+                }),
+              }),
+            ),
+          })
+          .parse(response._body);
+        const normalize = (
+          name: string,
+          description: string,
+          schema: object,
+          readOnly: boolean,
+        ) => ({
+          name,
+          description,
+          schema: JSON.parse(
+            JSON.stringify(
+              schema,
+              (
+                key: string,
+                value: z.core.JSONSchema.JSONSchema | string | boolean,
+              ) => (key === '$schema' ? undefined : value),
+            ),
+          ),
+          effect: readOnly ? 'read' : 'write',
+        });
+        const openai = buildRagToolSchemas();
+        const canonical = openai.map(({ function: tool }) =>
+          normalize(
+            tool.name,
+            tool.description,
+            tool.parameters,
+            ragToolEffect(tool.name) === 'read',
+          ),
+        );
+        expect(
+          rest.tools.map(({ function: tool }) =>
+            normalize(
+              tool.name,
+              tool.description,
+              tool.parameters,
+              permissions.allows(tool.name) &&
+                [
+                  'rag_search',
+                  'rag_read',
+                  'collections_list',
+                  'collection_records',
+                ].includes(tool.name),
+            ),
+          ),
+        ).toEqual(canonical);
+        expect(
+          mcp.tools.map((tool) =>
+            normalize(
+              tool.name,
+              tool.description ?? '',
+              tool.inputSchema,
+              tool.annotations?.readOnlyHint === true,
+            ),
+          ),
+        ).toEqual(canonical);
+        expect(
+          localRagTools().map((tool) =>
+            normalize(
+              tool.name,
+              tool.description,
+              tool.inputSchema,
+              [
+                'rag_search',
+                'rag_read',
+                'collections_list',
+                'collection_records',
+              ].includes(tool.name),
+            ),
+          ),
+        ).toEqual(canonical);
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    });
+  },
+);
+
+test('caller-chosen record id is not an upsert, including concurrent additions', async () => {
+  const results = await Promise.all([
+    call('record_add', { record: 'tech-spec', text: 'first' }),
+    call('record_add', { record: 'tech-spec', text: 'second', session: other }),
+  ]);
+  expect(results.filter((result) => !result.isError)).toHaveLength(1);
+  expect(results.find((result) => result.isError)).toMatchObject({
+    structuredContent: { error: { code: 'RECORD_EXISTS', status: 409 } },
+  });
+  expect((await registry.getDocument(cid, 'tech-spec'))?.text).toBe('first');
+});
+
+test.each(['rag_list', 'rag_add', 'rag_correct', 'rag_deprecate', 'unknown'])(
+  'REST rejects removed/unknown %s with a migration hint',
+  async (name) => {
+    const { router, routes } = makeMockRouter();
+    registerRagRoutes(router, registry);
+    const response = makeRes();
+    await findRoute(routes, 'POST', '/rag/tool/:name').handler(
+      makeReq({ params: { name } }),
+      response.res,
+    );
+    expect(response._status).toBe(404);
+    expect(JSON.stringify(response._body)).toContain('canonical');
+  },
+);
+
+test.each([false, true])(
+  'all seven mutations exclude caller-owned agents for admin=%s',
+  async (admin) => {
+    mockWriteIdentity.admin = admin;
+    const id = userCollectionId('agents-copy', 'alice');
+    await registry.createCollection({
+      id,
+      logicalId: 'agents-copy',
+      scope: 'user',
+      owner: 'alice',
+      collectionKind: 'agents',
+      displayName: 'Agents',
+      description: '',
+    });
+    const calls: {
+      name: RagMcpTool;
+      args: Parameters<typeof executeRagMcpTool>[3];
+    }[] = [
+      {
+        name: 'collection_create',
+        args: { name: 'agents-copy', scope: 'user' },
+      },
+      { name: 'collection_delete', args: { collection: id } },
+      { name: 'record_add', args: { collection: id, text: 'forged' } },
+      {
+        name: 'record_update',
+        args: { collection: id, record: 'executor', text: 'forged' },
+      },
+      { name: 'record_delete', args: { collection: id, record: 'executor' } },
+      {
+        name: 'collection_set_enabled',
+        args: { collection: id, enabled: false },
+      },
+      {
+        name: 'record_set_enabled',
+        args: { collection: id, id: 'executor', enabled: false },
+      },
+    ];
+    for (const entry of calls) {
+      const result = await call(entry.name, entry.args);
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result)).toMatch(
+        /TOOL_FORBIDDEN|Agents collections are excluded/,
+      );
+    }
+    expect(await registry.getCollection(id)).toBeDefined();
+    expect((await registry.listDocuments(id))?.total).toBe(0);
+  },
+);
+
+test('non-admin can toggle a readable global collection only with write-effect permission', async () => {
+  await registry.createCollection({
+    id: 'global-notes',
+    logicalId: 'global-notes',
+    displayName: 'notes',
+    description: '',
+    scope: 'global',
+  });
+  expect(
+    (await call('collection_set_enabled', { collection: 'global-notes' }))
+      .isError,
+  ).toBeUndefined();
+  expect(sessionCollectionOverrides('alice', sid)?.['global-notes']).toBe(
+    false,
+  );
+  expect(
+    sessionCollectionOverrides('alice', other)?.['global-notes'],
+  ).toBeUndefined();
+  await runWithReadOnlyTools(async () => {
+    expect(
+      (
+        await call('collection_set_enabled', {
+          collection: 'global-notes',
+          enabled: true,
+        })
+      ).isError,
+    ).toBe(true);
+  });
+  await runWithProfileTools(new AgentToolPermissions('read-only'), async () => {
+    expect(
+      (
+        await call('collection_set_enabled', {
+          collection: 'global-notes',
+          enabled: true,
+        })
+      ).isError,
+    ).toBe(true);
+  });
+});
+
+test('REST add with an explicit id waits for the tool create-only write', async () => {
+  const { router, routes } = makeMockRouter();
+  registerRagRoutes(router, registry);
+  let checked: () => void = () => {};
+  const checking = new Promise<void>((resolve: () => void) => {
+    checked = resolve;
+  });
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve: () => void) => {
+    release = resolve;
+  });
+  const original = registry.hasDocument.bind(registry);
+  jest
+    .spyOn(registry, 'hasDocument')
+    .mockImplementation(async (collection: string, record: string) => {
+      const exists = await original(collection, record);
+      if (record === 'competing') {
+        checked();
+        await held;
+      }
+      return exists;
+    });
+  const tool = call('record_add', { record: 'competing', text: 'tool' });
+  await checking;
+  const response = makeRes();
+  const request = Object.assign(
+    makeReq({ params: { id: cid }, body: { id: 'competing', text: 'REST' } }),
+    { _physId: cid },
+  );
+  const rest = findRoute(
+    routes,
+    'POST',
+    '/rag/collections/:id/documents',
+  ).handler(request, response.res);
+  await Promise.resolve();
+  expect(await registry.getDocument(cid, 'competing')).toBeNull();
+  release();
+  expect((await tool).isError).toBeUndefined();
+  await rest;
+  expect(response._status).toBe(201);
+  expect((await registry.getDocument(cid, 'competing'))?.text).toBe('REST');
+});
+
+test.each([false, true])(
+  'name collisions preserve private targets, admin=%s',
+  async (admin) => {
+    mockWriteIdentity.admin = admin;
+    await registry.createCollection({
+      id: 'notes',
+      logicalId: 'notes',
+      scope: 'global',
+      displayName: 'notes',
+      description: '',
+    });
+    await registry.addDocument('notes', {
+      id: 'visible',
+      text: 'global content',
+      metadata: {},
+    });
+    const { router, routes } = makeMockRouter();
+    registerRagRoutes(router, registry);
+    for (const scope of ['user', 'session'] as const) {
+      const target =
+        scope === 'user' ? cid : sessionCollectionId('notes', 'alice', sid);
+      if (scope === 'session') {
+        await registry.createCollection({
+          id: target,
+          logicalId: 'notes',
+          scope,
+          owner: 'alice',
+          sessionId: sid,
+          displayName: 'notes',
+          description: '',
+        });
+        await registry.addDocument(target, {
+          id: 'visible',
+          text: 'session content',
+          metadata: {},
+        });
+      }
+      const read = await runIdRoute(
+        routes,
+        'GET',
+        '/rag/collections/:id/documents',
+        makeReq({
+          params: { id: 'notes' },
+          sessionId: sid,
+          path: '/documents',
+        }),
+      );
+      expect(read._status).toBe(200);
+      expect(read._body).toMatchObject({
+        documents: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'visible',
+            text:
+              scope === 'user'
+                ? 'needle visible title\nneedle visible body'
+                : 'session content',
+          }),
+        ]),
+      });
+      const write = await runIdRoute(
+        routes,
+        'POST',
+        '/rag/collections/:id/documents',
+        makeReq({
+          params: { id: 'notes' },
+          method: 'POST',
+          path: '/documents',
+          sessionId: sid,
+          body: { id: 'rest', text: 'REST private' },
+        }),
+      );
+      expect(write._status).toBe(201);
+      expect((await registry.getDocument(target, 'rest'))?.text).toBe(
+        'REST private',
+      );
+      expect((await body(call('rag_read'))).text).toBe(
+        scope === 'user'
+          ? 'needle visible title\nneedle visible body'
+          : 'session content',
+      );
+      expect((await call('collection_set_enabled')).isError).toBeUndefined();
+      expect(sessionCollectionOverrides('alice', sid)?.[target]).toBe(false);
+      expect(sessionCollectionOverrides('alice', sid)?.notes).toBeUndefined();
+      expect((await call('record_set_enabled')).isError).toBeUndefined();
+      expect((await registry.getDocument(target, 'visible'))?.enabled).toBe(
+        false,
+      );
+      expect((await call('record_update')).isError).toBeUndefined();
+      expect((await registry.getDocument(target, 'visible'))?.text).toBe(
+        'replacement',
+      );
+      expect((await call('record_add')).isError).toBeUndefined();
+      expect((await call('record_delete')).isError).toBeUndefined();
+      expect(await registry.getDocument(target, 'visible')).toBeNull();
+      expect((await call('collection_delete')).isError).toBeUndefined();
+      expect(await registry.getCollection(target)).toBeNull();
+      expect((await registry.getDocument('notes', 'visible'))?.text).toBe(
+        'global content',
+      );
+    }
+    // Main REST does not fall back to the global name, even for admin writes.
+    for (const method of ['GET', 'POST']) {
+      const result = await runIdRoute(
+        routes,
+        method,
+        '/rag/collections/:id/documents',
+        makeReq({
+          params: { id: 'notes' },
+          method,
+          path: '/documents',
+          sessionId: sid,
+          body: { text: 'must not reach global' },
+        }),
+      );
+      expect(result._status).toBe(404);
+    }
+    expect((await body(call('rag_read'))).text).toBe('global content');
+    expect((await call('record_update')).isError).toBe(
+      admin ? undefined : true,
+    );
+  },
+);

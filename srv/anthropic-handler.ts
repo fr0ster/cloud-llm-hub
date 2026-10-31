@@ -495,6 +495,10 @@ async function serveMessages(
         },
         priorTurns,
         userId,
+        {
+          admin: cds.context?.user?.is('MCP_Admin') ?? false,
+          channel: 'anthropic',
+        },
       ),
     );
 

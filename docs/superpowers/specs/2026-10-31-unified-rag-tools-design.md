@@ -212,6 +212,8 @@ chat session requirements change without aliases.
 
 ## Decisions (maintainer, 2026-10-31)
 
+Record writes share in-process serialization by collection/document id, including REST add/upload and tool add/update/delete. Cross-instance create-only is not atomic: the installed provider interfaces expose only upsert, with no conditional insert.
+
 - Stable record IDs: `record_add` gets an optional `record` input (caller-chosen
   document id, same validation as REST document ids). When given and a record with
   that id exists in the collection, the call fails with `RECORD_EXISTS` / 409 and

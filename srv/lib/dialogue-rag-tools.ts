@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
 import type {
   CallOptions,
   IMcpClient,
@@ -8,103 +7,109 @@ import type {
   McpToolResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { executeRagTool } from '../agent-mcp-rag';
 import type { CollectionRegistry } from '../rag-collections';
-import { buildRagToolSchemas, dispatchRagTool } from '../rag-tool-dispatcher';
 import {
+  currentProfileTools,
+  getRagCallerIdentity,
   getRequestSessionId,
   getRequestUserId,
   isReadOnlyTools,
-  profileToolAllowed,
 } from '../request-session';
-import { externalRagWriteNames } from './external-rag-write-names';
+import { currentAdmission } from './admission-scope';
+import { currentContextTaskId } from './context-capture';
+import {
+  buildRagToolSchemas,
+  isRagTool,
+  ragToolEffect,
+} from './rag-tool-catalogue';
+import { usageRuntime } from './usage/runtime';
 
-const scope = new AsyncLocalStorage<boolean>();
 export function runWithDialogueRagTools<T>(fn: () => T): T {
-  return scope.run(true, fn);
+  return fn();
 }
 
-function tools(): McpTool[] {
-  return buildRagToolSchemas(true)
-    .filter(
-      (t) =>
-        profileToolAllowed(t.function.name) &&
-        (!isReadOnlyTools() || t.function.name === 'rag_list'),
-    )
-    .map(({ function: f }) => ({
-      name: f.name,
-      description: f.description,
-      inputSchema: f.parameters,
-      annotations: { readOnlyHint: f.name === 'rag_list' },
-    }));
+const removedNames = new Set([
+  'rag_list',
+  'rag_add',
+  'rag_correct',
+  'rag_deprecate',
+]);
+export function localRagTools(): McpTool[] {
+  return buildRagToolSchemas().map(({ function: tool }) => ({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.parameters,
+    annotations: { readOnlyHint: ragToolEffect(tool.name) === 'read' },
+  }));
 }
 
-/** Inside RecordingMcpClient: local calls and their results are recorded too. */
-export class DialogueRagMcpClient implements IMcpClient {
+/** Inside recording and result caps so local calls retain the same evidence. */
+export class LocalRagMcpClient implements IMcpClient {
   readonly healthCheck?: IMcpClient['healthCheck'];
   constructor(
     private readonly inner: IMcpClient,
-    private readonly registry: () => CollectionRegistry,
+    private readonly registry?: () => CollectionRegistry,
   ) {
     this.healthCheck = inner.healthCheck?.bind(inner);
   }
   async listTools(options?: CallOptions): Promise<Result<McpTool[], McpError>> {
     const result = await this.inner.listTools(options);
-    return result.ok
-      ? {
-          ok: true,
-          value: [
-            ...result.value.filter(
-              (t) =>
-                !t.name.startsWith('rag_') &&
-                !externalRagWriteNames.has(t.name),
-            ),
-            ...tools(),
-          ],
-        }
-      : result;
+    if (!result.ok) return result;
+    const imported = new Map(
+      result.value
+        .filter((tool) => !isRagTool(tool.name) && !removedNames.has(tool.name))
+        .map((tool) => [tool.name, tool]),
+    );
+    return { ok: true, value: [...imported.values(), ...localRagTools()] };
   }
   async callTool(
     name: string,
-    args: Record<string, unknown>,
+    args: Parameters<IMcpClient['callTool']>[1],
     options?: CallOptions,
   ): Promise<Result<McpToolResult, McpError>> {
-    if (externalRagWriteNames.has(name))
-      return {
-        ok: true,
-        value: {
-          isError: true,
-          content: 'TOOL_FORBIDDEN: external agent write tool',
-        },
-      };
-    if (!name.startsWith('rag_'))
-      return this.inner.callTool(name, args, options);
-    if (
-      !scope.getStore() ||
-      !getRequestSessionId() ||
-      !getRequestUserId() ||
-      !tools().some((t) => t.name === name)
-    ) {
+    if (removedNames.has(name))
       return {
         ok: true,
         value: {
           isError: true,
           content:
-            'RAG tool unavailable in this worker scope (checker tools are read-only).',
+            'Unknown RAG tool. Use the canonical RAG catalogue; legacy names have been removed.',
         },
       };
-    }
-    // The background task already holds session admission and binds session/user ALS.
-    const result = await dispatchRagTool(this.registry(), name, args, {
-      defaultScope: 'user',
-    });
-    return {
-      ok: true,
-      value: { content: JSON.stringify(result), isError: !result.ok },
-    };
+    if (!isRagTool(name)) return this.inner.callTool(name, args, options);
+    const identity = getRagCallerIdentity();
+    const userId = getRequestUserId() ?? '';
+    const sessionKey = getRequestSessionId();
+    const permissions = currentProfileTools() ?? { allows: () => true };
+    const value = await executeRagTool(
+      {
+        registry: this.registry?.(),
+        userId,
+        admin: identity.admin,
+        sessionKey,
+        internal: true,
+        trustedAdmission: currentAdmission() !== undefined,
+        permissions,
+        readOnly: isReadOnlyTools(),
+        traceId: options?.trace?.traceId,
+        channel: identity.channel,
+        taskId: currentContextTaskId(),
+        measurement:
+          options?.usage ??
+          usageRuntime()
+            ?.forSession({ userId, sessionId: sessionKey ?? '' })
+            .with({ traceId: options?.trace?.traceId }),
+      },
+      name,
+      args,
+    );
+    return { ok: true, value };
   }
 }
+export { LocalRagMcpClient as DialogueRagMcpClient };
 
-/** Hub storage is independent of SAP exposition and the SAP tool gate. */
+/** Local candidates are reserved independently of SAP exposition. */
 export function withDialogueRagTools(rag: IRag): IRag {
   return new Proxy(rag, {
     get(target, prop) {
@@ -112,30 +117,38 @@ export function withDialogueRagTools(rag: IRag): IRag {
         return async (...args: Parameters<IRag['query']>) => {
           const result = await target.query(...args);
           if (!result.ok) return result;
-          const candidates = result.value.filter(
-            (record) =>
-              !externalRagWriteNames.has(
-                String(record.metadata.id).replace(/^tool:/, ''),
-              ) &&
-              !externalRagWriteNames.has(String(record.metadata.name ?? '')),
+          const candidates = new Map(
+            result.value
+              .filter((record) => {
+                const name = String(
+                  record.metadata.name ??
+                    String(record.metadata.id).replace(/^tool:/, ''),
+                );
+                const id = String(record.metadata.id).replace(/^tool:/, '');
+                return (
+                  !isRagTool(name) &&
+                  !removedNames.has(name) &&
+                  !isRagTool(id) &&
+                  !removedNames.has(id)
+                );
+              })
+              .map((record) => [
+                String(
+                  record.metadata.name ??
+                    String(record.metadata.id).replace(/^tool:/, ''),
+                ),
+                record,
+              ]),
           );
-          if (!scope.getStore()) return { ...result, value: candidates };
           return {
-            ok: true,
+            ok: true as const,
             value: [
-              ...tools().map((t) => ({
-                text: `Tool: ${t.name}\nDescription: ${t.description}`,
-                metadata: { id: `tool:${t.name}`, name: t.name },
+              ...localRagTools().map((tool) => ({
+                text: `Tool: ${tool.name}\nDescription: ${tool.description}`,
+                metadata: { id: `tool:${tool.name}`, name: tool.name },
                 score: 1,
               })),
-              ...candidates.filter(
-                (r) =>
-                  !String(r.metadata.id).startsWith('tool:rag_') &&
-                  !externalRagWriteNames.has(
-                    String(r.metadata.id).replace(/^tool:/, ''),
-                  ) &&
-                  !externalRagWriteNames.has(String(r.metadata.name ?? '')),
-              ),
+              ...candidates.values(),
             ],
           };
         };

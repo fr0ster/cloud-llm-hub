@@ -3,36 +3,29 @@ import { InMemoryRag, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
 import type { z } from 'zod';
 import { ExpositionFilteringRag } from '../../srv/agent-manager';
 import {
-  sessionCollectionId,
-  userCollectionId,
-} from '../../srv/collection-ids';
-import {
   AgentToolPermissions,
   effectiveProfileTools,
   guardProfileWorker,
   type RegisteredProfileTool,
 } from '../../srv/lib/agent-profile-tools';
+import { buildRagToolSchemas } from '../../srv/lib/rag-tool-catalogue';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { assertToolAllowed } from '../../srv/lib/tool-authorization';
 import { CollectionRegistry } from '../../srv/rag-collections';
-import {
-  buildRagToolSchemas,
-  dispatchRagTool,
-} from '../../srv/rag-tool-dispatcher';
 import {
   profileToolAllowed,
   runWithProfileTools,
   runWithReadOnlyTools,
   runWithRequiredProfileTools,
-  runWithSessionId,
 } from '../../srv/request-session';
+import { callRag } from './helpers/canonical-rag';
 
 const catalogue: RegisteredProfileTool[] = [
   { name: 'GetTable', effect: 'read' },
   { name: 'CreateTable', effect: 'write' },
   { name: 'GetDumpSection', effect: 'read' },
-  { name: 'rag_list', effect: 'read' },
-  { name: 'rag_add', effect: 'write' },
+  { name: 'collection_records', effect: 'read' },
+  { name: 'record_add', effect: 'write' },
 ];
 const grants = new Set(catalogue.map((tool) => tool.name));
 test('ceilings, caller grants, deny and inherited permissions intersect', () => {
@@ -146,26 +139,32 @@ test('direct RAG calls are guarded before any registry operation, including lega
   const registry = new CollectionRegistry();
   const create = jest.spyOn(registry, 'getOrCreateCollection');
   await runWithProfileTools(
-    new AgentToolPermissions(['rag_list']),
+    new AgentToolPermissions(['collection_records']),
     async () => {
+      expect(buildRagToolSchemas().map((tool) => tool.function.name)).toEqual([
+        'collection_records',
+      ]);
       expect(
-        buildRagToolSchemas(true).map((tool) => tool.function.name),
-      ).toEqual(['rag_list']);
-      expect(
-        await dispatchRagTool(registry, 'rag_add', {
+        await callRag(registry, 'record_add', {
           collection: 'notes',
           text: 'x',
         }),
-      ).toMatchObject({ ok: false, status: 403 });
+      ).toMatchObject({
+        isError: true,
+        structuredContent: { error: { status: 403 } },
+      });
     },
   );
   await runWithReadOnlyTools(async () =>
     expect(
-      await dispatchRagTool(registry, 'rag_add', {
+      await callRag(registry, 'record_add', {
         collection: 'notes',
         text: 'x',
       }),
-    ).toMatchObject({ ok: false, status: 403 }),
+    ).toMatchObject({
+      isError: true,
+      structuredContent: { error: { status: 403 } },
+    }),
   );
   expect(create).not.toHaveBeenCalled();
 });
@@ -209,58 +208,6 @@ test('profile workers omit untrusted client definitions and reject external resu
   );
 });
 
-test('RAG writes guard the final user target even when a knowledge session collection shadows it', async () => {
-  const registry = new CollectionRegistry();
-  const id = userCollectionId('profiles', 'reader');
-  await registry.createCollection({
-    id,
-    logicalId: 'profiles',
-    scope: 'user',
-    owner: 'reader',
-    collectionKind: 'agents',
-    displayName: '',
-    description: '',
-  });
-  await registry.createCollection({
-    id: sessionCollectionId('profiles', 'reader', 'session'),
-    logicalId: 'profiles',
-    scope: 'session',
-    owner: 'reader',
-    sessionId: 'session',
-    displayName: '',
-    description: '',
-  });
-  const add = jest.spyOn(registry, 'addDocument');
-  const update = jest.spyOn(registry, 'updateDocument');
-  const remove = jest.spyOn(registry, 'deleteDocument');
-  await runWithSessionId(
-    'session',
-    async () => {
-      for (const name of ['rag_add', 'rag_correct', 'rag_deprecate']) {
-        expect(
-          await dispatchRagTool(
-            registry,
-            name,
-            {
-              collection: 'profiles',
-              id: 'x',
-              text: 'body',
-              newText: 'body',
-              reason: 'test',
-            },
-            { defaultScope: 'user' },
-          ),
-        ).toMatchObject({ ok: false, status: 403 });
-      }
-    },
-    undefined,
-    'reader',
-  );
-  expect(add).not.toHaveBeenCalled();
-  expect(update).not.toHaveBeenCalled();
-  expect(remove).not.toHaveBeenCalled();
-});
-
 test('tool RAG candidates are filtered after retrieval by the profile snapshot', async () => {
   const inner = new InMemoryRag();
   await inner.upsert('Read data', {
@@ -286,16 +233,16 @@ test('tool RAG candidates are filtered after retrieval by the profile snapshot',
 });
 
 test('RAG definitions expose typed JSON schema keywords', () => {
-  for (const tool of buildRagToolSchemas(true)) {
+  for (const tool of buildRagToolSchemas()) {
     const schemaType: z.core.JSONSchema.JSONSchema['type'] =
       tool.function.parameters.type;
     expect(schemaType).toBe('object');
-    expect(tool.function.parameters.properties).toHaveProperty('collection');
+    expect(tool.function.parameters.properties).toHaveProperty('session');
   }
 });
 
 test.each(['all', 'read-only'] as const)(
-  'external writes are excluded from %s worker policies and forged authorization',
+  'canonical mutations follow %s worker policies and local authorization',
   (policy: 'all' | 'read-only') => {
     const names = [
       'collection_create',
@@ -315,10 +262,8 @@ test.each(['all', 'read-only'] as const)(
       policy,
     });
     for (const name of names) {
-      expect(permissions.allows(name)).toBe(false);
-      expect(() => assertToolAllowed(name, 'high', ['high'])).toThrow(
-        'External agent write tools',
-      );
+      expect(permissions.allows(name)).toBe(policy === 'all');
+      expect(() => assertToolAllowed(name, undefined, undefined)).not.toThrow();
     }
   },
 );

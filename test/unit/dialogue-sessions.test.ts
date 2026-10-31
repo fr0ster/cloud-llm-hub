@@ -1,6 +1,14 @@
+import {
+  createUsageRecorder,
+  directTransport,
+  memorySink,
+} from '@mcp-abap-adt/llm-usage';
 import express from 'express';
+import { executeRagTool } from '../../srv/agent-mcp-rag';
 import { dialogueChat } from '../../srv/lib/dialogue-chat';
 import { sumPlannerUsage } from '../../srv/lib/usage-wire';
+import { CollectionRegistry } from '../../srv/rag-collections';
+import { liveSession } from './helpers/canonical-rag';
 
 jest.mock('../../srv/connections/destinationResolver', () => ({
   resolveDestinationSapConfig: jest.fn(async () => ({
@@ -54,9 +62,11 @@ import {
 } from '../../srv/lib/dialogue-store';
 import { evaluateGated } from '../../srv/lib/step-reviewer';
 import {
+  getRagCallerIdentity,
   getRequestHistory,
   getRequestSessionId,
   getRequestUserId,
+  runWithSessionId,
 } from '../../srv/request-session';
 
 const mockRun = jest.fn<Promise<ISubAgentResult>, [ISubAgentInput]>();
@@ -208,6 +218,7 @@ jest.mock('../../srv/agent-manager', () => ({
   runWithRequestConnection: jest.fn((_c: unknown, fn: () => unknown) => fn()),
 }));
 jest.mock('../../srv/lib/gatekeeper', () => ({
+  leaseSession: () => ({ release() {} }),
   admitBackground: jest.fn(async () => ({
     admitted: {
       run: (fn: () => unknown) => runWithAdmission(mockRegister, fn),
@@ -508,10 +519,20 @@ test('missing credentials become a task outcome and wake the planner', async () 
   expect(JSON.stringify(h.session.snapshot())).not.toContain('[environment]');
 });
 test('delegated worker has system, session, owner, an empty history scope, admission, connection and a unique trace; all holds release', async () => {
-  const { h, connection } = await ready();
+  const { h, connection } = await runWithSessionId(
+    'key',
+    () => ready(),
+    [],
+    'alice',
+    { admin: true, channel: 'anthropic' },
+  );
   mockRun.mockImplementation(async (input) => {
     expect(getRequestSessionId()).toBe('key');
-    expect(getRequestUserId()).toBe('alice');
+    expect(getRequestUserId()).toBe('bob');
+    expect(getRagCallerIdentity()).toEqual({
+      admin: false,
+      channel: 'openai',
+    });
     expect(getRequestContext()?.responsible).toBe('OWNER');
     expect(getRequestHistory()).toEqual([]);
     expect(input).not.toHaveProperty('history');
@@ -520,7 +541,10 @@ test('delegated worker has system, session, owner, an empty history scope, admis
     expect(input.trace?.traceId).toBeTruthy();
     return { output: 'read done' };
   });
-  await h.session.send('go');
+  await runWithSessionId('other-key', () => h.session.send('go'), [], 'bob', {
+    admin: false,
+    channel: 'openai',
+  });
   await until(() => h.outbox.pending().length > 0);
   expect(runWithRequestConnection).toHaveBeenCalledWith(
     connection,
@@ -533,7 +557,10 @@ test('delegated worker has system, session, owner, an empty history scope, admis
   expect(mockDrop).toHaveBeenCalledWith(
     mockRun.mock.calls[0][0].trace?.traceId,
   );
-  await h.session.send('again');
+  await runWithSessionId('key', () => h.session.send('again'), [], 'bob', {
+    admin: false,
+    channel: 'openai',
+  });
   await until(() => mockDrop.mock.calls.length === 2);
   expect(mockDrop.mock.calls[0][0]).not.toBe(mockDrop.mock.calls[1][0]);
   const release = await sharedExecutorPool().acquire();
@@ -1472,4 +1499,139 @@ test('dialogue worker and background pipeline preserve trace evidence in persist
   expect(
     (await getDialogueStoreBackend().load('alice', 'key'))?.tasks[0].toolTrace,
   ).toEqual(toolTrace);
+});
+
+test('reused handle captures caller privileges and channel for each queued turn', async () => {
+  liveSession('alice', 'key');
+  const sink = memorySink({ limit: 20 });
+  const recorder = createUsageRecorder({ transport: directTransport(sink) });
+  const { h } = await runWithSessionId('key', () => ready(), [], 'alice', {
+    admin: true,
+    channel: 'anthropic',
+  });
+  const registry = new CollectionRegistry();
+  await registry.createCollection({
+    id: 'global-notes',
+    logicalId: 'global-notes',
+    displayName: 'notes',
+    description: '',
+    scope: 'global',
+  });
+  const channels: string[] = [];
+  const allowed: boolean[] = [];
+  mockPlannerHook = async (text: string) => {
+    if (text.startsWith('[task events]')) return;
+    const identity = getRagCallerIdentity();
+    channels.push(identity.channel);
+    const result = await executeRagTool(
+      {
+        registry,
+        userId: getRequestUserId() ?? '',
+        admin: identity.admin,
+        sessionKey: 'key',
+        internal: true,
+        trustedAdmission: true,
+        readOnly: false,
+        permissions: { allows: () => true },
+        channel: identity.channel,
+        measurement: recorder,
+      },
+      'record_add',
+      { collection: 'global-notes', text: 'test' },
+    );
+    allowed.push(!result.isError);
+  };
+  const reused = await dialogueFor('alice', 'key', 'TEST');
+  expect(reused).toBe(h);
+  const trace = { traceId: 'reused-trace' };
+  const first = runWithSessionId(
+    'key',
+    () => h.session.send('first', { trace }),
+    [],
+    'alice',
+    { admin: true, channel: 'anthropic' },
+  );
+  const second = runWithSessionId(
+    'key',
+    () => reused.session.send('second', { trace }),
+    [],
+    'alice',
+    { admin: false, channel: 'openai' },
+  );
+  await Promise.all([first, second]);
+  expect(allowed).toEqual([true, false]);
+  expect(channels).toEqual(['anthropic', 'openai']);
+  await recorder.flush(1000);
+  const recordedChannels: string[] = [];
+  for await (const record of sink.read({
+    from: 0,
+    to: Number.MAX_SAFE_INTEGER,
+  })) {
+    if (record.context.channel) recordedChannels.push(record.context.channel);
+  }
+  expect(recordedChannels).toEqual(['anthropic', 'openai']);
+  await recorder.close(1000);
+});
+
+test('queued background tasks keep their scheduling turn identity across later callers', async () => {
+  const { h } = await ready();
+  const release = await sharedExecutorPool().acquire();
+  const identities: { admin: boolean; channel: string }[] = [];
+  mockRun.mockImplementation(async () => {
+    identities.push({ ...getRagCallerIdentity() });
+    return { output: 'done' };
+  });
+  try {
+    await runWithSessionId('key', () => h.session.send('first'), [], 'alice', {
+      admin: true,
+      channel: 'anthropic',
+    });
+    await runWithSessionId('key', () => h.session.send('second'), [], 'alice', {
+      admin: false,
+      channel: 'openai',
+    });
+    expect(identities).toEqual([]);
+  } finally {
+    release();
+  }
+  await until(() => identities.length === 2);
+  expect(identities).toEqual([
+    { admin: true, channel: 'anthropic' },
+    { admin: false, channel: 'openai' },
+  ]);
+});
+
+test('event planner uses the originating task identity when an earlier caller owns the drain', async () => {
+  const { h } = await ready();
+  const eventIdentities: { admin: boolean; channel: string }[] = [];
+  mockPlannerHook = async (text: string) => {
+    if (text.startsWith('[task events]')) {
+      eventIdentities.push({ ...getRagCallerIdentity() });
+    } else {
+      mockPlan = text.includes('first') ? { status: 'done' } : undefined;
+    }
+  };
+  const first = runWithSessionId(
+    'key',
+    () => h.session.send('first'),
+    [],
+    'alice',
+    {
+      admin: true,
+      channel: 'anthropic',
+    },
+  );
+  const second = runWithSessionId(
+    'key',
+    () => h.session.send('second'),
+    [],
+    'alice',
+    {
+      admin: false,
+      channel: 'openai',
+    },
+  );
+  await Promise.all([first, second]);
+  await until(() => eventIdentities.length > 0);
+  expect(eventIdentities).toEqual([{ admin: false, channel: 'openai' }]);
 });

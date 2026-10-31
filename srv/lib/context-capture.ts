@@ -18,6 +18,10 @@ export function runWithContextCapture<T>(
   return scope.run(context, fn);
 }
 
+export function currentContextTaskId(): string | undefined {
+  return scope.getStore()?.taskId;
+}
+
 /** Observe calls without changing messages, tool definitions, or responses. */
 export function captureLlm(
   llm: ILlm,

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { type CallOptions, RagError } from '@mcp-abap-adt/llm-agent';
 import {
   normalizeLogicalId,
-  resolveRouteId,
+  resolveToolCollectionId,
   sessionCollectionId,
   userCollectionId,
 } from '../collection-ids';
@@ -14,17 +14,11 @@ import {
 import { collectionAccessError } from './collection-access';
 import { CollectionBackendError } from './collection-persistence';
 
-export const RAG_WRITE_MAX_BYTES = 10 * 1024 * 1024;
+import { RagWriteError } from './rag-write-error';
 
-export class RagWriteError extends Error {
-  constructor(
-    readonly code: string,
-    readonly status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
+export { RagWriteError } from './rag-write-error';
+
+export const RAG_WRITE_MAX_BYTES = 10 * 1024 * 1024;
 
 export function validateRagWriteSize(input: object): void {
   if (Buffer.byteLength(JSON.stringify(input), 'utf8') > RAG_WRITE_MAX_BYTES)
@@ -47,12 +41,11 @@ export async function resolveRagWriteTarget(
   target: string,
   identity: RagWriteIdentity,
 ): Promise<string> {
-  const id = await resolveRouteId(
+  const id = await resolveToolCollectionId(
     registry,
     target,
     identity.userId,
     identity.sessionId,
-    true,
   );
   const meta = id ? await registry.getCollection(id) : null;
   if (!id || !meta)
@@ -161,11 +154,12 @@ export function deleteRagCollection(registry: CollectionRegistry, id: string) {
   return registry.deleteCollection(id);
 }
 
-export function addRagRecord(
+export async function addRagRecord(
   registry: CollectionRegistry,
   collection: string,
   input: {
     id?: string;
+    createOnly?: boolean;
     text: string;
     metadata?: RagDocument['metadata'];
     namespace?: string;
@@ -173,14 +167,17 @@ export function addRagRecord(
   options?: CallOptions,
 ) {
   validateRagText(input.text);
+  if (input.createOnly && input.id !== undefined && !input.id)
+    throw new RagWriteError('INVALID_ARGUMENT', 400, 'Document id is required');
   const document = {
     id: input.id || crypto.randomUUID(),
     text: input.text,
     metadata: input.metadata || {},
   };
-  return options
-    ? registry.addDocument(collection, document, input.namespace, options)
-    : registry.addDocument(collection, document, input.namespace);
+  return registry.addDocument(collection, document, input.namespace, {
+    ...options,
+    createOnly: input.createOnly,
+  });
 }
 
 export function updateRagRecord(
