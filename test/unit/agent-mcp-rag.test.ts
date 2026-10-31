@@ -1409,10 +1409,8 @@ test.each(['all', 'checker', 'allow-deny'] as const)(
           ),
           effect: readOnly ? 'read' : 'write',
         });
-        for (const path of [
-          'app/chat/webapp/index.html',
-          'app/router/chat/webapp/index.html',
-        ]) {
+        // The router copy is generated from this file at build time (git-ignored).
+        for (const path of ['app/chat/webapp/index.html']) {
           const html = readFileSync(path, 'utf8');
           const start = html.indexOf('                const reqBody = {');
           const end = html.indexOf(

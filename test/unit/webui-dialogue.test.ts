@@ -1612,7 +1612,6 @@ test('chat sends only consumer schemas and never dispatches RAG in the browser',
   ).toBe(false);
   expect(html).not.toContain('/v1/rag/tools');
   expect(html).not.toContain('/v1/rag/tool/');
-  expect(readFileSync('app/router/chat/webapp/index.html', 'utf8')).toBe(html);
 });
 
 test('server RAG errors appear in framed chat without browser execution', async () => {
