@@ -1,6 +1,6 @@
 # Unified RAG tools - design
 
-Status: draft (design only, no code)
+Status: implemented
 Date: 2026-10-31
 
 ## Decision
@@ -14,7 +14,7 @@ Remove `rag_list`, `rag_add`, `rag_correct`, `rag_deprecate`; no runtime aliases
 This supersedes the internal-LLM exclusion in the 2026-10-30 agent-MCP RAG write
 design and the old RAG names in the agent-profiles and planner-prompt designs.
 The five content/collection write contracts from that design remain authoritative.
-This change produces this document only; implementation and commits are excluded.
+Implementation is complete across stages 1?3.
 
 Parity means one catalogue, schemas, descriptions, effects and execution semantics
 for `/mcp/agent/stream/http`, OpenAI-compatible chat, WebUI, dialogue planner and
@@ -230,6 +230,4 @@ Record writes share in-process serialization by collection/document id, includin
 - Legacy lifecycle tags are filtered separately from enabled state. Should a
   later migration convert deprecated/superseded records to disabled records?
   Keep current filtering/data until decided; enabling alone is not resurrection.
-- No tool-contract version/migration hook currently exists in `HubDialogueState`.
-  Implementation must select a compatible persisted marker and library-supported
-  replan transition, proving no queued legacy mutation can resume automatically.
+- Resolved: `toolContractVersion` marks persisted state; older unfinished tasks are interrupted and unfinished steps blocked for replanning. Completed work is preserved.

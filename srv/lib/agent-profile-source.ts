@@ -13,6 +13,10 @@ import {
   validateAgentProfileRecord,
   workerProfile,
 } from './agent-profile-records';
+import {
+  effectiveProfileTools,
+  type RegisteredProfileTool,
+} from './agent-profile-tools';
 import { collectionAccessError } from './collection-access';
 import { recordPolicy } from './record-policy';
 
@@ -23,6 +27,7 @@ export interface AgentProfileReader {
   ): Promise<{ meta: CollectionMeta; documents: RagDocument[] } | null>;
 }
 export interface AgentProfileSelection {
+  readonly catalogue?: () => readonly RegisteredProfileTool[];
   readonly userId: string;
   readonly globalCollectionId: string;
   readonly selectedCollectionId: () => string | Promise<string>;
@@ -30,8 +35,11 @@ export interface AgentProfileSelection {
   readonly timeoutMs: number;
 }
 class ProfileFailure extends Error {
-  constructor(readonly code: AgentProfileError['code']) {
-    super(`Agent configuration ${code}`);
+  constructor(
+    readonly code: AgentProfileError['code'],
+    message?: string,
+  ) {
+    super(message ?? `Agent configuration ${code}`);
   }
 }
 
@@ -112,7 +120,24 @@ export class AgentProfileSource implements IAgentProfileSource {
       throw new ProfileFailure('invalid');
     }
     if (record.metadata.kind !== kind) throw new ProfileFailure('invalid');
+    this.validateTools(record);
     return record;
+  }
+  private validateTools(record: AgentProfileRecord): void {
+    if (record.metadata.kind !== 'profile' || !this.selection.catalogue) return;
+    try {
+      effectiveProfileTools({
+        catalogue: this.selection.catalogue(),
+        grants: new Set<string>(),
+        result: record.metadata.result,
+        policy: record.metadata.tools,
+      });
+    } catch (error) {
+      throw new ProfileFailure(
+        'invalid',
+        `Agent profile ${record.id}: ${error instanceof Error ? error.message : 'Invalid tool policy'}`,
+      );
+    }
   }
   private async run<T>(
     operation: (options: CallOptions) => Promise<T>,
@@ -143,7 +168,13 @@ export class AgentProfileSource implements IAgentProfileSource {
       const code = error instanceof ProfileFailure ? error.code : 'unavailable';
       return {
         ok: false,
-        error: { code, message: `Agent configuration ${code}` },
+        error: {
+          code,
+          message:
+            error instanceof ProfileFailure
+              ? error.message
+              : `Agent configuration ${code}`,
+        },
       };
     } finally {
       clearTimeout(timer);
@@ -166,6 +197,7 @@ export class AgentProfileSource implements IAgentProfileSource {
         } catch {
           throw new ProfileFailure('invalid');
         }
+        this.validateTools(record);
         if (record.metadata.kind === 'profile')
           summaries.push({
             name: record.id,

@@ -43,9 +43,11 @@ import { runWithDialogueRagTools } from './dialogue-rag-tools';
 import { dialogueSignals } from './dialogue-signals';
 import {
   createDialogueStateStore,
+  DIALOGUE_TOOL_CONTRACT_VERSION,
   deleteDialogueState,
   getDialogueStoreBackend,
   type HubDialogueState,
+  migrateDialogueToolContract,
   touchDialogueState,
 } from './dialogue-store';
 import { admitBackground, type PipelineSession } from './gatekeeper';
@@ -425,6 +427,7 @@ async function open(
   let savedState: HubDialogueState | undefined;
   try {
     savedState = await backend.load(userId, key);
+    if (savedState) savedState = migrateDialogueToolContract(savedState);
   } catch (error) {
     await pool.closeAll();
     throw error;
@@ -438,6 +441,7 @@ async function open(
     if (!state) return Promise.resolve();
     const row = {
       ...state,
+      toolContractVersion: DIALOGUE_TOOL_CONTRACT_VERSION,
       ...(savedState?.agentsCollectionId !== undefined
         ? { agentsCollectionId: savedState.agentsCollectionId }
         : {}),
@@ -659,6 +663,7 @@ async function open(
         save: async (_id, state) => {
           savedState = {
             ...state,
+            toolContractVersion: DIALOGUE_TOOL_CONTRACT_VERSION,
             ...(savedState?.agentsCollectionId !== undefined
               ? { agentsCollectionId: savedState.agentsCollectionId }
               : {}),

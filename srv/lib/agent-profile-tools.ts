@@ -46,7 +46,9 @@ export function effectiveProfileTools(input: {
   if (typeof policy === 'object') {
     for (const name of [...(policy.allow ?? []), ...(policy.deny ?? [])])
       if (!catalogue.has(name))
-        throw new Error(`Unregistered policy tool: ${name}`);
+        throw new Error(
+          `Unregistered policy tool: ${name}. Update the stored agents profile allow/deny policy against the registered catalogue; migrate legacy RAG operations to collection_create/record_add, record_update, record_set_enabled or paged collection_records/rag_read. Seeds never overwrite existing profiles.`,
+        );
   }
   return new AgentToolPermissions(
     input.catalogue

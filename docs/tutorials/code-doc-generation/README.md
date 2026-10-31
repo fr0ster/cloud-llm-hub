@@ -46,7 +46,7 @@ Tick each box as you go — keeps you oriented across a multi-hour run.
 
 - Do one phase, or one question within phase 3, at a time.
 - After each saved artifact, tick the checklist and pause.
-- Start a fresh chat session after each phase, or every ~10 messages within phase 3.
+- Start a fresh chat session after each phase, or every ~10 messages within phase 3. Reuse the existing user artifact collection across sessions. If records were deleted, restore downloaded full texts with `record_add` and the original explicit `record` IDs; file upload generates chunk IDs and cannot restore stable artifact IDs.
 - If the agent loses the thread, ask: *"Show my current phase, current artifact id, and
   which question we're on."*
 
@@ -146,7 +146,7 @@ When the brief is right:
 
 > Save it as `doc-task` in the `<your-collection>` collection.
 
-The agent calls `rag_add`. Confirm via the `RAG OP: rag_add OK` card.
+The agent calls `record_add`. Confirm the record ID in the server tool result.
 
 Checkpoint:
 - `doc-task` exists in RAG
@@ -216,7 +216,7 @@ Each artifact contains the raw findings + citations needed to fill that spec sec
 **Transformation:** plan + source code → cited findings.
 
 > **The plan keeps changing.** When a question reveals a new sub-question, fix the plan
-> first (`rag_correct analysis-plan`), then continue. This keeps the plan and the
+> first (`record_update analysis-plan`), then continue. This keeps the plan and the
 > evidence in sync.
 
 ### Question by question
@@ -224,7 +224,7 @@ Each artifact contains the raw findings + citations needed to fill that spec sec
 Walk the plan in order. For each question:
 
 > Answer question 3 from `analysis-plan`. Save the result into `evidence-§3` via
-> `rag_add` (or `rag_correct` if it exists).
+> `record_add` (or `record_update` if it exists).
 
 After the agent answers:
 
@@ -323,7 +323,7 @@ Walk the document section by section. For each:
 ### Fix what's wrong, then re-save
 
 > Row 4 of section 7 is in namespace Y* — that's outside scope. Remove it. Re-save
-> `tech-spec` via `rag_correct`.
+> `tech-spec` via `record_update`.
 
 ### Final cross-check
 
@@ -352,3 +352,5 @@ After this tutorial you know how to:
 
 The key idea: **AI is fast at reading and assembling; it is also fast at fabricating.
 The only protection is your citation discipline.** Make every row prove itself.
+
+Use the collection and stable artifact ID requested by the current task or phase; examples never override them. Reuse that collection if it exists, otherwise create it with `collection_create({ "name": "<requested-collection>", "scope": "user" })`, then call `record_add({ "collection": "<requested-collection>", "record": "<requested-artifact-id>", "text": "..." })`. Never update a different phase's artifact. Use user scope for durable results and session scope only for scratch. `record` is the optional stable physical ID; omission generates a UUID. Add is create-only: `RECORD_EXISTS` (409) requires reading the existing record and using `record_update({ collection, record, text })`. Read back with paged `collection_records` and `rag_read` using actual IDs; verify count and scope. Retire reversibly with `record_set_enabled({ collection, id, enabled: false })`; use `record_delete({ collection, record })` only for explicit permanent removal. Updates preserve ID and metadata but add no correction reason, audit history or supersede chain. Disabling does not free an ID. A live owned long session is required for every RAG call.

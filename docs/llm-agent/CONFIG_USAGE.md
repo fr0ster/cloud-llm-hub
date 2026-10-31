@@ -130,7 +130,7 @@ Design: [persistent RAG collections spec](../superpowers/specs/2026-10-19-persis
 
 **One backend.** When `LLM_AGENT_RAG_BACKEND` is a persistent kind, every new user or session collection uses it. A request `backend` naming anything else is refused with 400, and `GET /rag/backends` lists only that backend. Presets (`preset: true`) stay in process memory, together with their enabled flag. A write to a preset (documents, enabled, rename, delete) while the restore is not ready waits for it, because a restored collection under the same id replaces the preset: the write lands on what the restore leaves under that id, or is refused with 503.
 
-**Backend first.** Add, update, delete, `rag_correct`, `rag_deprecate`, rename, description and enabled writes go to the database first; memory changes only after it succeeded. A failure is an explicit error and leaves memory untouched, so no response reports a change a restart would undo.
+**Backend first.** Add, update, delete, `record_update`, `record_delete`, rename, description and enabled writes go to the database first; memory changes only after it succeeded. A failure is an explicit error and leaves memory untouched, so no response reports a change a restart would undo.
 
 | Status | Cause |
 |--------|-------|
@@ -292,7 +292,7 @@ Use a token carrying `MCP_Admin`; repeat for each index. Browser downloads throu
 
 Session overrides take precedence over collection defaults. They are deleted with session state. Long sessions persist overrides in their session record (SQLite/HANA/PG as configured) and restore them with the destination and history after restart; plain sessions keep overrides in memory, like their destination state.
 
-Dialogue chat does not run request-level collection retrieval or inject retrieved context into planner calls. Workers use RAG tools and the planner uses `[planning knowledge]`, both respecting session toggles and record policy. The upload endpoint returns `documentIds`; clients send the current message?s chunk IDs as `attachment_document_ids` alongside `rag_collections: ["uploads"]`. Selecting the collection alone does not attach earlier files. Explicit `uploads` attachments are read directly without embeddings or semantic search and passed only to the current planner turn, bounded to 16,000 characters and 100 records with a preview notice; workers can read the remaining records. Other coordinators retain request retrieval. Request retrieval uses enabled collections; `rag_collections` and `X-Rag-Collections` only narrow that set, including an explicit empty list. A request explicitly selecting its session `uploads` collection can use attached files for that request. Planner knowledge checks enablement on every search, so the next turn observes a toggle. Tool selection and built-in skills use separate tool/skill stores rather than these user collections. Executor history remains session memory. Explicit RAG tools are unchanged: `rag_list` can read a disabled collection when the caller has read access; add/correct/deprecate retain their existing permissions.
+Dialogue chat does not run request-level collection retrieval or inject retrieved context into planner calls. Workers use RAG tools and the planner uses `[planning knowledge]`, both respecting session toggles and record policy. The upload endpoint returns `documentIds`; clients send the current message?s chunk IDs as `attachment_document_ids` alongside `rag_collections: ["uploads"]`. Selecting the collection alone does not attach earlier files. Explicit `uploads` attachments are read directly without embeddings or semantic search and passed only to the current planner turn, bounded to 16,000 characters and 100 records with a preview notice; workers can read the remaining records. Other coordinators retain request retrieval. Request retrieval uses enabled collections; `rag_collections` and `X-Rag-Collections` only narrow that set, including an explicit empty list. A request explicitly selecting its session `uploads` collection can use attached files for that request. Planner knowledge checks enablement on every search, so the next turn observes a toggle. Tool selection and built-in skills use separate tool/skill stores rather than these user collections. Executor history remains session memory. Explicit RAG tools share the canonical catalogue on every channel. Disabled content is listed with attributes and reason, without text.
 
 ### Request time
 
@@ -310,7 +310,7 @@ excluded from knowledge search. Session selection APIs and profile runner wiring
 are introduced in a later stage. The main model remains the only required model;
 planner and classifier overrides are optional.
 
-### External agent MCP knowledge writes
+### Unified RAG knowledge tools
 
 Connect an authenticated external client to `/mcp/agent/stream/http` and call
 `session_open` to obtain a live session key. Pass it as `session` to each tool,
@@ -335,10 +335,10 @@ only, with no URL fetch. There is no upload or chunking through these tools.
 Success and error responses include matching text and `structuredContent.result`;
 errors also include `{ code, message, status }` and set `isError: true`.
 
-Agents collections are excluded from all five tools. Foreign owners and parallel
+Agents collections are excluded from all seven mutations, including both enablement tools. Foreign owners and parallel
 sessions stay hidden even for admins; existing global mutations follow REST
-resolution and require `MCP_Admin` where reachable. These external write names
-never enter internal planner, executor, checker, dialogue or tool-RAG lists;
-forged internal calls are rejected even under an all-tools profile. Existing
-internal `rag_add`, `rag_correct`, and `rag_deprecate` remain available according
-to their current policies. No new environment settings are required.
+resolution and require `MCP_Admin` where reachable. All eleven canonical RAG tools are host-executed on every channel, including internal planner and workers, subject to profile ceilings. No new environment settings are required.
+
+Create the target explicitly with `collection_create({ name: "result", scope: "user" })`, then call `record_add({ collection: "result", record: "tech-spec", text: "..." })`. Use user scope for durable results and session scope only for scratch. `record` is the optional stable physical ID; omission generates a UUID. Add is create-only: `RECORD_EXISTS` (409) requires reading the existing record and using `record_update({ collection, record, text })`. Read back with paged `collection_records` and `rag_read` using actual IDs; verify count and scope. Retire reversibly with `record_set_enabled({ collection, id, enabled: false })`; use `record_delete({ collection, record })` only for explicit permanent removal. Updates preserve ID and metadata but add no correction reason, audit history or supersede chain. Disabling does not free an ID. A live owned long session is required for every RAG call.
+
+Plain OpenAI chat clients must open a live caller-owned long session with `POST /v1/session` and bind its returned key with `x-clh-session` or the `clh_session` cookie. All eleven RAG tools stay listed but return `SESSION_REQUIRED` without that session. WebUI executes RAG on the server and renders server tool results; browsers must not dispatch them again. Removed tool names in client tool definitions, forced choices or calls return 400 with migration guidance; REST tool dispatch returns 404. Cross-instance `RECORD_EXISTS` protection is not atomic: providers offer upsert without conditional insert; serialization applies within one process.

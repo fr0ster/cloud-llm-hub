@@ -230,6 +230,13 @@ test('canonical tool candidates deduplicate imported names and obey the read cei
           metadata: { id: 'tool:record_add', name: 'record_add' },
           score: 1,
         },
+        ...['rag_list', 'rag_add', 'rag_correct', 'rag_deprecate'].map(
+          (name: string) => ({
+            text: 'stale cached candidate',
+            metadata: { id: `tool:${name}`, name },
+            score: 1,
+          }),
+        ),
       ],
     }),
     getById: async () => ({ ok: true, value: null }),

@@ -2863,6 +2863,17 @@ export function createAgentProfileSource(
   };
   const sessionId = getRequestSessionId();
   return new AgentProfileSource(getCollectionRegistry(), {
+    catalogue: () => [
+      ...[...getToolExpositionMap().keys()]
+        .filter((name) => !isRagTool(name))
+        .map((name) => ({
+          name,
+          effect: isReadOnlyTool(name, getToolAnnotations().get(name))
+            ? ('read' as const)
+            : ('write' as const),
+        })),
+      ...ragToolNames.map((name) => ({ name, effect: ragToolEffect(name) })),
+    ],
     userId,
     globalCollectionId: profiles.collectionId,
     selectedCollectionId:

@@ -86,7 +86,7 @@ This tutorial uses two RAG collections with different lifetimes — make sure bo
 | Collection | Scope | Contents | Lifetime |
 |------------|-------|----------|----------|
 | `RAP Skills` | shared/user | The reusable RAP skill catalog (`skills/*.md` — one task per file). Read-only reference; the same content drives every project. | Permanent — upload once, reuse across all RAP projects. |
-| `<project>` (e.g. `book-catalog`) | user | Per-project artifacts produced in Phase 1–3 (`business-requirements`, `tech-spec`, `impl-plan`). The agent writes them via `rag_add` and corrects them via `rag_correct` when Phase 4 surfaces an issue. | Per project — create one fresh per tutorial run; back up before stopping if the run spans sessions. |
+| `<project>` (e.g. `book-catalog`) | user | Per-project artifacts produced in Phase 1–3 (`business-requirements`, `tech-spec`, `impl-plan`). The agent writes them via `record_add` and corrects them via `record_update` when Phase 4 surfaces an issue. | Per project — create one fresh per tutorial run and reuse it across sessions; download backups for recovery. |
 
 ### Load the RAP skills
 
@@ -111,13 +111,11 @@ The agent saves the artifacts of Phase 1–3 (business requirements, technical s
 3. Enable the collection (checkbox ON)
 4. In your very first prompt to the agent, tell it the name: *"Use the `book-catalog` collection for all artifacts of this tutorial."*
 
-The agent then writes Phase 1–3 outputs into this collection via `rag_add` and corrects them via `rag_correct` when Phase 4 surfaces an issue. You do not need to interact with the collection manually — just keep it enabled.
+The agent then writes Phase 1–3 outputs into this collection via `record_add` and corrects them via `record_update` when Phase 4 surfaces an issue. You do not need to interact with the collection manually — just keep it enabled.
 
-### Backup RAG before you stop. Restore before you continue.
+### Reuse RAG across sessions and keep optional recovery backups
 
-> ⚠️ **Required if you split this tutorial across more than one session.** Otherwise skip.
-
-**TL;DR:** download 3 files at the end, upload them at the start.
+User collections persist across sessions. Reuse the existing collection when continuing; downloads are optional recovery backups.
 
 #### Stopping for the day → backup
 
@@ -130,15 +128,11 @@ Save all 3 files in one folder. Done.
 
 #### Coming back → restore
 
-1. Open **MANAGE**.
-2. Re-create collection `book-catalog` (scope `user`, enabled).
-3. Click **UPLOAD** → pick all 3 files at once.
-4. First prompt to agent:
-   > *"Use `book-catalog`. Phase 1–3 already in RAG. Continue from Phase 4."*
+1. Open **MANAGE** and reuse the existing enabled user collection `book-catalog`.
+2. Verify `business-requirements`, `tech-spec`, and `impl-plan` with paged `collection_records` and `rag_read`.
+3. Tell the agent: *"Use `book-catalog`. Phases 1-3 already in RAG. Continue from Phase 4."*
 
-#### Why bother
-
-No backup → empty RAG next session → agent re-asks you for everything (or invents it). 30 seconds saves a Phase.
+If the collection or records were deleted, create the missing user collection with `collection_create` and restore each downloaded document's full text through `record_add` with its explicit `record` ID: `business-requirements`, `tech-spec`, or `impl-plan`. For example: `record_add({ "collection": "book-catalog", "record": "tech-spec", "text": "<full downloaded technical specification>" })`. Read existing IDs before using `record_update`; never replace another artifact. Verify the restored IDs and full text before continuing. File upload generates chunk IDs and does not restore these stable artifact IDs; later updates would fail with `RECORD_NOT_FOUND`.
 
 ### RAG contract for this tutorial
 
@@ -150,8 +144,8 @@ No backup → empty RAG next session → agent re-asks you for everything (or in
 
 Rules:
 
-- Save each accepted artifact with `rag_add`.
-- Correct an existing artifact with `rag_correct`, not a second `rag_add`.
+- Save each accepted artifact with `record_add`.
+- Correct an existing artifact with `record_update`, not a second `record_add`.
 - Keep the same id after correction.
 - In Phase 4, prompts point to plan steps. You do not retype DDL or object names.
 
@@ -197,11 +191,11 @@ Repeat until you're satisfied. Then:
 
 > The business requirements look complete. Save them to the `book-catalog` collection as `business-requirements`.
 
-The agent calls `rag_add` and shows a `RAG OP: rag_add OK` card with id `business-requirements`. If it does not, ask explicitly: *"Use rag_add — collection `book-catalog`, id `business-requirements`."* From now on, later phases pull this artifact from RAG; you do not need to copy or re-paste it.
+The agent calls `record_add` and shows a server `record_add` tool result with record `business-requirements`. If it does not, ask explicitly: *"Use record_add — collection `book-catalog`, record `business-requirements`."* From now on, later phases pull this artifact from RAG; you do not need to copy or re-paste it.
 
 Checkpoint before moving on:
 
-- The RAG card says `rag_add OK`.
+- The server tool result confirms `record_add` and the expected record ID.
 - The id is `business-requirements`.
 - You can explain the business model in 2-3 sentences.
 
@@ -260,13 +254,13 @@ When the spec passes the checklist:
 
 > The specification is ready. Save it as `tech-spec` in the `book-catalog` collection.
 
-The agent calls `rag_add`. If it does not, prompt explicitly: *"Use rag_add — collection `book-catalog`, id `tech-spec`."*
+The agent calls `record_add`. If it does not, prompt explicitly: *"Use record_add — collection `book-catalog`, record `tech-spec`."*
 
-> **Spec is a living document.** Phase 4 may surface issues SAP only catches when checking the real DDL. The agent will then call `rag_correct` on `tech-spec` — see the skill for that flow.
+> **Spec is a living document.** Phase 4 may surface issues SAP only catches when checking the real DDL. The agent will then call `record_update` on `tech-spec` — see the skill for that flow.
 
 Checkpoint before moving on:
 
-- The RAG card says `rag_add OK`.
+- The server tool result confirms `record_add` and the expected record ID.
 - The id is `tech-spec`.
 - Draft tables, BDEF mappings, draft actions, and authorization rules passed the review checklist.
 
@@ -314,11 +308,11 @@ Repeat until the plan is solid. Then:
 
 > The plan looks good. Save it as `impl-plan` in the `book-catalog` collection.
 
-The agent calls `rag_add`. If it does not, prompt explicitly: *"Use rag_add — collection `book-catalog`, id `impl-plan`."*
+The agent calls `record_add`. If it does not, prompt explicitly: *"Use record_add — collection `book-catalog`, record `impl-plan`."*
 
 Checkpoint before moving on:
 
-- The RAG card says `rag_add OK`.
+- The server tool result confirms `record_add` and the expected record ID.
 - The id is `impl-plan`.
 - Every plan step has a clear verification step.
 
@@ -331,7 +325,7 @@ Checkpoint before moving on:
 **Your role:** reviewer and tester. **AI's role:** developer.
 **Input:** `impl-plan` (Phase 3) for the order; `tech-spec` (Phase 2) for the DDL/field/mapping details. Both come from RAG.
 **Output:** Real ABAP objects active in the SAP system, working Fiori app.
-**Transformation:** plan steps + spec details → MCP tool calls (`Create…`, `Update…`, `Activate…`) on the live system. When SAP rejects something the agent fixes the spec via `rag_correct` first, then retries — you do not retype DDL.
+**Transformation:** plan steps + spec details → MCP tool calls (`Create…`, `Update…`, `Activate…`) on the live system. When SAP rejects something the agent fixes the spec via `record_update` first, then retries — you do not retype DDL.
 
 > **The specification keeps changing.** When SAP rejects something during implementation (wrong key, missing mapping, wrong type), fix the specification first, then the code. This keeps the spec and the system in sync. By the end, your draft will have grown into an accurate final specification.
 
@@ -444,3 +438,5 @@ After this tutorial you know how to:
 6. **Verify** at every step instead of trusting AI output blindly
 
 The key idea: **AI speeds up development but does not replace your judgement.** Every decision — from entity design to field mapping — is yours. AI is the fastest pair programmer you can get, but only if you lead.
+
+Use the collection and stable artifact ID requested by the current task or phase; examples never override them. Reuse that collection if it exists, otherwise create it with `collection_create({ "name": "<requested-collection>", "scope": "user" })`, then call `record_add({ "collection": "<requested-collection>", "record": "<requested-artifact-id>", "text": "..." })`. Never update a different phase's artifact. Use user scope for durable results and session scope only for scratch. `record` is the optional stable physical ID; omission generates a UUID. Add is create-only: `RECORD_EXISTS` (409) requires reading the existing record and using `record_update({ collection, record, text })`. Read back with paged `collection_records` and `rag_read` using actual IDs; verify count and scope. Retire reversibly with `record_set_enabled({ collection, id, enabled: false })`; use `record_delete({ collection, record })` only for explicit permanent removal. Updates preserve ID and metadata but add no correction reason, audit history or supersede chain. Disabling does not free an ID. A live owned long session is required for every RAG call.

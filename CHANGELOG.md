@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Breaking changes
+
+- RAG now uses one canonical catalogue on MCP, chat, planner and workers. WebUI executes RAG server-side and displays server tool results; remove browser dispatch to prevent duplicate writes. Removed names have no aliases: chat definitions, forced choices and calls return 400; REST tool dispatch returns 404.
+
+| Old operation | Migration |
+| --- | --- |
+| `rag_list` | Paged `collection_records`, `collections_list` for discovery, paged `rag_read` for exact physical IDs |
+| `rag_add` | Explicit `collection_create`, then `record_add`; choose user scope for durable results, session for scratch |
+| `rag_correct` | `record_update` with `record` and `text` instead of `newText`; no correction history |
+| `rag_deprecate` | `record_set_enabled` with `id` and `enabled:false` for reversible retirement; explicit `record_delete` with `record` for permanent removal |
+
+- All eleven tools require a live owned long session. Plain/stateless chat clients receive `SESSION_REQUIRED`; open and bind a session before retrying.
+- `record_add.record` optionally selects a stable physical ID. Existing IDs fail with `RECORD_EXISTS` (409); add is not upsert. Cross-instance create-only enforcement is not atomic because providers expose upsert without conditional insert; serialization is in-process.
+- Old dialogue states remain loadable: completed work/transcripts survive, unfinished tasks are interrupted and plan steps blocked for replanning with the new catalogue; successful writes are never replayed. Stored profile allow/deny policies reject unregistered tools with migration guidance.
+- Seeds are missing-only: existing `agents` collections retain their text. Admins must explicitly migrate stored profiles and user-edited presets; startup does not overwrite them. Derived RAG candidates discard legacy entries and rebuild from the canonical catalogue.
+
 ## [9.10.0] - 2026-10-31
 
 ### Changed

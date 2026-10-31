@@ -20,7 +20,7 @@ One goal per prompt · Phases 1–3 produce documents only · Phase 4 is layer-b
 
 ## Prompt 1 — Phase 1: Formalize
 ```
-Use the `sap-abap` skill from the `sap-skills` marketplace (`sap-abap:sap-abap`) — that exact one, not `sap-abap-cds` or any other SAP skill. Read AI_PAIR_PROGRAMMING_PRINCIPLES.md and follow it; we're at Phase 1 (documents only). Formalize this into a business-requirements doc and, after my review, save it as `business-requirements` (persist it however you can read it back later): a single flat list of books — each with title, author name (plain text, not a separate entity), genre, publication year, price — full CRUD + draft, search by title/author, filter by genre/year, no sub-entities or related objects.
+Use the `sap-abap` skill from the `sap-skills` marketplace (`sap-abap:sap-abap`) — that exact one, not `sap-abap-cds` or any other SAP skill. Read AI_PAIR_PROGRAMMING_PRINCIPLES.md and follow it; we're at Phase 1 (documents only). Formalize this into a business-requirements doc and, after my review, save it as `business-requirements` (use record_add in book-catalog with record business-requirements; use record_update if it already exists): a single flat list of books — each with title, author name (plain text, not a separate entity), genre, publication year, price — full CRUD + draft, search by title/author, filter by genre/year, no sub-entities or related objects.
 ```
 ✔ Before next: `business-requirements` saved and retrievable for Phase 2.
 

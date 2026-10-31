@@ -40,6 +40,7 @@ import type {
   ToolTrace,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  DialogueSession,
   PlannerToolsClient,
   SmartAgentBuilder,
   SmartAgentSubAgent,
@@ -60,7 +61,9 @@ import {
 } from '../../srv/lib/dialogue-sessions';
 import { dialogueSignals } from '../../srv/lib/dialogue-signals';
 import {
+  DIALOGUE_TOOL_CONTRACT_VERSION,
   getDialogueStoreBackend,
+  type HubDialogueState,
   hasDialogueState,
 } from '../../srv/lib/dialogue-store';
 import { evaluateGated } from '../../srv/lib/step-reviewer';
@@ -1894,6 +1897,126 @@ test.each([false, true])(
     } finally {
       detach();
       finish();
+    }
+  },
+);
+
+test.each(['running', 'queued'] as const)(
+  'hub restore interrupts a legacy %s task before dispatch and persists the marker',
+  async (taskState) => {
+    const stored: HubDialogueState = {
+      conversation: [{ role: 'user', content: 'Keep this evidence' }],
+      tasks: [
+        {
+          id: 'legacy',
+          worker: 'executor',
+          goal: 'Continue old write',
+          state: taskState,
+          createdAt: 1,
+        },
+        {
+          id: 'completed',
+          worker: 'executor',
+          goal: 'Saved artifact',
+          state: 'done',
+          output: 'existing-id',
+          createdAt: 1,
+        },
+      ],
+      plan: {
+        version: 1,
+        status: 'active',
+        steps: [
+          {
+            id: 'phase',
+            goal: 'Continue',
+            state: 'running',
+            taskIds: ['legacy'],
+          },
+        ],
+      },
+      pending: [],
+      savedAt: Date.now(),
+    };
+    await getDialogueStoreBackend().save('alice', 'key', stored);
+    const h = await dialogueFor('alice', 'key', 'TEST');
+    expect(h.session.snapshot().tasks[0].state).toBe('interrupted');
+    expect(h.session.snapshot().tasks[1]).toMatchObject(stored.tasks[1]);
+    expect(h.session.snapshot().conversation).toEqual(stored.conversation);
+    expect(dialoguePlan(h.session.snapshot())?.steps?.[0].state).toBe(
+      'blocked',
+    );
+    // A plan-only turn exercises normal hub persistence without delegating new work.
+    mockPlan = { plan: 'Review existing IDs before replanning' };
+    await h.session.send('Review the restored work');
+    expect(mockRun).not.toHaveBeenCalled();
+    expect(
+      (await getDialogueStoreBackend().load('alice', 'key'))
+        ?.toolContractVersion,
+    ).toBe(DIALOGUE_TOOL_CONTRACT_VERSION);
+    await closeDialogue('alice', 'key', 'shutdown');
+    const reopened = await dialogueFor('alice', 'key', 'TEST');
+    expect(reopened.session.snapshot().tasks[0].state).toBe('interrupted');
+    expect(mockRun).not.toHaveBeenCalled();
+  },
+);
+
+test('hub restore preserves unfinished current-contract work', async () => {
+  const stored: HubDialogueState = {
+    toolContractVersion: DIALOGUE_TOOL_CONTRACT_VERSION,
+    conversation: [],
+    tasks: [],
+    plan: {
+      version: 1,
+      status: 'active',
+      steps: [{ id: 'phase', goal: 'Read', state: 'pending', taskIds: [] }],
+    },
+    pending: [],
+    savedAt: Date.now(),
+  };
+  await getDialogueStoreBackend().save('alice', 'key', stored);
+  const h = await dialogueFor('alice', 'key', 'TEST');
+  expect(h.session.snapshot().tasks).toEqual(stored.tasks);
+  expect(dialoguePlan(h.session.snapshot())?.steps?.[0].state).toBe('pending');
+  expect(mockRun).not.toHaveBeenCalled();
+});
+
+test.each(['queued', 'running'] as const)(
+  'hub passes current-contract %s tasks unchanged to library restore',
+  async (taskState) => {
+    const stored: HubDialogueState = {
+      toolContractVersion: DIALOGUE_TOOL_CONTRACT_VERSION,
+      conversation: [],
+      tasks: [
+        {
+          id: 'current',
+          worker: 'executor',
+          goal: 'Read current record',
+          state: taskState,
+          createdAt: 1,
+        },
+      ],
+      pending: [],
+      savedAt: Date.now(),
+    };
+    await getDialogueStoreBackend().save('alice', 'key', stored);
+    const open = DialogueSession.open.bind(DialogueSession);
+    const boundary = jest
+      .spyOn(DialogueSession, 'open')
+      .mockImplementationOnce(async (options) => {
+        const loaded = await options.store?.load('key');
+        expect(loaded?.tasks).toEqual(stored.tasks);
+        return open(options);
+      });
+    try {
+      const h = await dialogueFor('alice', 'key', 'TEST');
+      expect(boundary).toHaveBeenCalledTimes(1);
+      // The library independently interrupts active tasks on every restart.
+      // The migration boundary above must leave current-contract tasks untouched.
+      expect(h.session.snapshot().tasks[0].error).toBeUndefined();
+      expect(mockRun).not.toHaveBeenCalled();
+    } finally {
+      boundary.mockRestore();
     }
   },
 );

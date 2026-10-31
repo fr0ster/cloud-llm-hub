@@ -55,6 +55,10 @@ function fixture() {
   const source = new AgentProfileSource(
     { readAgentCollection: read },
     {
+      catalogue: () => [
+        { name: 'record_add', effect: 'write' },
+        { name: 'rag_read', effect: 'read' },
+      ],
       userId: 'reader',
       globalCollectionId: 'agents',
       selectedCollectionId: () => selected,
@@ -256,3 +260,32 @@ test('parallel dialogue reads capture selection once before asynchronous selecti
   expect(selected).toHaveBeenCalledTimes(1);
   expect(f.read).toHaveBeenCalledTimes(1);
 });
+
+test.each([
+  'rag_list',
+  'rag_add',
+  'rag_correct',
+  'rag_deprecate',
+  'NotRegistered',
+])(
+  'stored policy %s gives an actionable resolution error without changing text',
+  async (name: string) => {
+    const f = fixture();
+    const stored = profile('custom');
+    stored.metadata.tools = { deny: [name] };
+    f.records([stored]);
+    for (const result of [
+      await f.source.list(),
+      await f.source.get('custom'),
+    ]) {
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error('Expected invalid profile');
+      expect(result.error).toMatchObject({
+        code: 'invalid',
+        message: expect.stringContaining(name),
+      });
+      expect(result.error.message).toContain('Seeds never overwrite');
+    }
+    expect(stored.text).toBe('body:custom');
+  },
+);

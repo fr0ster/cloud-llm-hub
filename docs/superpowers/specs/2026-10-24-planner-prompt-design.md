@@ -1,5 +1,7 @@
 # Dialogue planner prompt: core, planner skills, RAG skills
 
+Superseded: internal RAG exclusions and legacy tool-name decisions are replaced by [the implemented unified RAG design](2026-10-31-unified-rag-tools-design.md).
+
 Status: draft (design only, no code yet)
 Date: 2026-10-24
 
