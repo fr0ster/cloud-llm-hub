@@ -57,6 +57,7 @@ import {
   type DialogueEvent,
   dialogueFor,
   dialoguePlan,
+  headlessDialogueFor,
   lookupDialogue,
   onDialogueCreated,
   sharedExecutorPool,
@@ -2133,4 +2134,52 @@ test('author gets planning knowledge and memory for the current open request', a
     retrieve.mockRestore();
     open.mockRestore();
   }
+});
+
+test('headless MCP opens the shared dialogue without a turn and restores interrupted tasks', async () => {
+  const request = Object.assign(express.request, {
+    headers: { authorization: 'Bearer test' },
+  });
+  const stored: HubDialogueState = {
+    toolContractVersion: DIALOGUE_TOOL_CONTRACT_VERSION,
+    conversation: [],
+    pending: [],
+    savedAt: Date.now(),
+    tasks: [
+      {
+        id: 'running-headless',
+        worker: 'executor',
+        goal: 'Read',
+        state: 'running',
+        createdAt: 1,
+      },
+    ],
+    plan: {
+      version: 1,
+      status: 'active',
+      steps: [
+        {
+          id: 'read',
+          goal: 'Read',
+          state: 'running',
+          taskIds: ['running-headless'],
+          workTaskId: 'running-headless',
+        },
+      ],
+    },
+  };
+  await getDialogueStoreBackend().save('alice', 'key', stored);
+  const h = await headlessDialogueFor(request, 'alice', 'key', 'TEST');
+  expect(await dialogueFor('alice', 'key', 'TEST')).toBe(h);
+  expect(mockPlannerTurns).toEqual([]);
+  expect(h.session.snapshot().tasks[0].state).toBe('interrupted');
+  expect(dialoguePlan(h.session.snapshot())?.steps?.[0].note).toContain(
+    'interrupted',
+  );
+  expect(mockRun).not.toHaveBeenCalled();
+  const result = await h.session.callTool('plan_get', {});
+  expect(result.ok).toBe(true);
+  expect(
+    (await getDialogueStoreBackend().load('alice', 'key'))?.tasks[0].state,
+  ).toBe('interrupted');
 });

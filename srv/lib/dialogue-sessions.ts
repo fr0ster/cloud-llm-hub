@@ -22,6 +22,7 @@ import {
   SemaphorePool,
 } from '@mcp-abap-adt/llm-agent-libs';
 import cds from '@sap/cds';
+import type { Request } from 'express';
 import { getAgentConfig } from '../agent-config';
 import {
   createAgentProfileSource,
@@ -206,6 +207,21 @@ export function sharedExecutorPool(): IConcurrencyPool {
   return executorPool;
 }
 const slot = (userId: string, key: string) => JSON.stringify([userId, key]);
+
+/** Open the shared board without sending a coordinator message. */
+export async function headlessDialogueFor(
+  req: Request,
+  userId: string,
+  key: string,
+  destination: string,
+): Promise<DialogueHandle> {
+  const handle = await dialogueFor(userId, key, destination);
+  await handle.factory.refresh(
+    { headers: req.headers, user: cds.context?.user },
+    destination,
+  );
+  return handle;
+}
 
 export function dialogueFor(
   userId: string,

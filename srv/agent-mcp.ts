@@ -1,4 +1,8 @@
 import type { TokenUsage } from '@mcp-abap-adt/llm-agent';
+import {
+  type OrchestrationTool,
+  registerOrchestrationTools,
+} from './agent-mcp-orchestration';
 import { requestStart } from './lib/request-start';
 import {
   measureRequest,
@@ -40,6 +44,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import {
   closeDestination,
+  createAgentProfileSource,
   type ExecutorAgentHandle,
   getSmartAgent,
   isDestinationClosed,
@@ -179,7 +184,12 @@ export interface StepCaller {
 export function executeStep(
   req: Request,
   caller: StepCaller,
-  input: { session?: string; destination?: string; task: string },
+  input: {
+    session?: string;
+    destination?: string;
+    task: string;
+    worker?: string;
+  },
   signal?: AbortSignal,
 ) {
   requestStart(req);
@@ -208,7 +218,12 @@ function measuredAgentCallback<
 >(
   req: Request,
   userId: string,
-  tool: 'session_open' | 'session_close' | 'list_destinations' | RagMcpTool,
+  tool:
+    | 'session_open'
+    | 'session_close'
+    | 'list_destinations'
+    | RagMcpTool
+    | OrchestrationTool,
   run: (args: T) => Promise<R>,
 ): (args: T) => Promise<R> {
   const runtime = usageRuntime();
@@ -231,7 +246,8 @@ async function measureAgentTool<R extends ReturnType<typeof textResult>>(
     | 'session_open'
     | 'session_close'
     | 'list_destinations'
-    | RagMcpTool,
+    | RagMcpTool
+    | OrchestrationTool,
   run: () => Promise<R>,
   signal?: AbortSignal,
 ) {
@@ -265,7 +281,12 @@ async function measureAgentTool<R extends ReturnType<typeof textResult>>(
 async function executeStepMeasured(
   req: Request,
   caller: StepCaller,
-  args: { session?: string; destination?: string; task: string },
+  args: {
+    session?: string;
+    destination?: string;
+    task: string;
+    worker?: string;
+  },
   callerSignal?: AbortSignal,
 ) {
   if (args.session === undefined)
@@ -308,7 +329,11 @@ async function executeStepMeasured(
 async function executeStepRun(
   req: Request,
   caller: StepCaller,
-  { destination, task }: { destination?: string; task: string },
+  {
+    destination,
+    task,
+    worker = 'executor',
+  }: { destination?: string; task: string; worker?: string },
   callerSignal?: AbortSignal,
   longSession?: LongSession,
 ) {
@@ -486,12 +511,59 @@ async function executeStepRun(
                 // runs alone, no controller. The honesty check the controller's
                 // NoticeFinalizer gives chat runs here instead, with the same
                 // inputs and the same trailing NOTICE.
-                const result = await runWithToolGateBypass(() =>
-                  (agentHandle.executor ?? agentHandle.agent).process(
+                const result = await runWithToolGateBypass(async () => {
+                  if (worker !== 'executor') {
+                    if (!handle?.profileRunner)
+                      throw new Error('Destination profile runner unavailable');
+                    const source = createAgentProfileSource(userId);
+                    const profile = await source.get(worker, opts);
+                    if (!profile.ok) throw new Error(profile.error.message);
+                    const prompts = await source.getPrompts(opts);
+                    if (!prompts.ok) throw new Error(prompts.error.message);
+                    const prepared = await handle.profileRunner.createWorker(
+                      {
+                        profile: profile.value,
+                        workerBase: prompts.value.workerBase,
+                      },
+                      opts,
+                    );
+                    if (!prepared.ok) throw new Error(prepared.error.message);
+                    const result = await prepared.value.run({
+                      task,
+                      ...opts,
+                      ...(history.length
+                        ? {
+                            context: `Previous session conversation:\n${JSON.stringify(history)}`,
+                          }
+                        : {}),
+                    });
+                    if (
+                      result.errorClass ||
+                      result.stopped ||
+                      result.status === 'awaiting-external'
+                    )
+                      return {
+                        ok: false as const,
+                        error: new Error(
+                          result.output || 'Worker did not complete',
+                        ),
+                      };
+                    return {
+                      ok: true as const,
+                      value: {
+                        content: result.output,
+                        usage: result.usage,
+                        iterations: undefined,
+                        toolCallCount: undefined,
+                        stopReason: undefined,
+                      },
+                    };
+                  }
+                  return (agentHandle.executor ?? agentHandle.agent).process(
                     [...history, { role: 'user', content: task }],
                     opts,
-                  ),
-                );
+                  );
+                });
                 if (result.ok && agentHandle.executor) {
                   const verdict = await evaluateGated({
                     usage: opts.usage,
@@ -665,6 +737,13 @@ export async function createAgentMcpServerForRequest(
     measuredAgentCallback(req, userId, name, run),
   );
 
+  await registerOrchestrationTools(
+    server,
+    req,
+    { userId, exposition },
+    (name, run) => measuredAgentCallback(req, userId, name, run),
+  );
+
   // --- list_destinations --------------------------------------------------
   server.registerTool(
     'list_destinations',
@@ -808,6 +887,10 @@ export async function createAgentMcpServerForRequest(
           .describe(
             'OPTIONAL. The SAP system to run this step against (a destination name from list_destinations). Omit it when this MCP server is already bound to a system via a default `X-SAP-Destination` header; only pass it when one connection can reach several systems.',
           ),
+        worker: z
+          .string()
+          .optional()
+          .describe('Worker profile name; defaults to executor.'),
         task: z
           .string()
           .describe(
@@ -818,7 +901,12 @@ export async function createAgentMcpServerForRequest(
     // `extra.signal` is aborted by the SDK when the transport closes; it lets a
     // step still queued at the door leave, and reaches nothing after admission.
     async (
-      args: { session?: string; destination?: string; task: string },
+      args: {
+        session?: string;
+        destination?: string;
+        task: string;
+        worker?: string;
+      },
       extra,
     ) => executeStep(req, { userId, exposition }, args, extra.signal),
   );

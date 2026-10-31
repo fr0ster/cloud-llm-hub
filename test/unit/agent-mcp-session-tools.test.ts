@@ -12,9 +12,23 @@ jest.mock(
   { virtual: true },
 );
 jest.mock('../../srv/env-setup', () => ({}));
-jest.mock('../../srv/agent-manager', () =>
-  require('./helpers/channel-harness').agentManagerMock(),
-);
+jest.mock('../../srv/agent-manager', () => ({
+  ...require('./helpers/channel-harness').agentManagerMock(),
+  createAgentProfileSource: () => ({
+    list: async () => ({ ok: true, value: [] }),
+    getPrompts: async () => ({ ok: true, value: {} }),
+    get: async (name: string) => ({
+      ok: true,
+      value: {
+        name,
+        description: '',
+        systemPrompt: '',
+        tools: name === 'writer' ? { allow: ['write'] } : 'read-only',
+        result: name === 'checker' ? 'verdict' : 'report',
+      },
+    }),
+  }),
+}));
 jest.mock('../../srv/lib/request-connection', () =>
   require('./helpers/channel-harness').requestConnectionMock(),
 );
@@ -610,3 +624,69 @@ test('execute_step ignores agents selection supplied as an extra execution field
     'agents',
   );
 });
+
+it('agent MCP lists all 23 tools including orchestration', () => {
+  expect(tools.size).toBe(23);
+  for (const name of [
+    'plan_create',
+    'plan_revise',
+    'plan_get',
+    'plan_update',
+    'delegate_task',
+    'get_task',
+    'list_tasks',
+    'stop_task',
+  ])
+    expect(tools.has(name)).toBe(true);
+});
+
+it.each(['checker', 'writer'])(
+  'execute_step resolves %s through the profile runner and enforces its grants',
+  async (worker) => {
+    const manager = jest.requireMock<typeof import('../../srv/agent-manager')>(
+      '../../srv/agent-manager',
+    );
+    const { AgentProfileRunner } = await import(
+      '../../srv/lib/agent-profile-runner'
+    );
+    const { profileToolAllowed } = await import('../../srv/request-session');
+    const original = manager.getSmartAgent;
+    const runner = new AgentProfileRunner({
+      catalogue: () => [
+        { name: 'read', effect: 'read' },
+        { name: 'write', effect: 'write' },
+      ],
+      grants: () => new Set(['read']),
+      buildPlanner: async () => {
+        throw new Error('No coordinator turn expected');
+      },
+      buildWorker: async (profile) => ({
+        name: profile.name,
+        capabilities: { contextPolicy: 'optional' },
+        run: async () => {
+          if (profile.name === 'writer' && !profileToolAllowed('write'))
+            throw new Error('Worker tool forbidden by caller grants');
+          return { output: '{"verdict":"pass"}' };
+        },
+      }),
+    });
+    const spy = jest
+      .spyOn(manager, 'getSmartAgent')
+      .mockImplementation(async (...args) => ({
+        ...(await original(...args)),
+        profileRunner: runner,
+      }));
+    try {
+      const result = await executeStep(req, caller, { task: 'Check', worker });
+      if (worker === 'checker') {
+        expect(result.isError).toBeUndefined();
+        expect(result.content[0].text).toContain('"verdict":"pass"');
+      } else {
+        expect(result.isError).toBe(true);
+        expect(result.content[0].text).toContain('forbidden by caller grants');
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  },
+);

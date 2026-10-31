@@ -255,6 +255,12 @@ const structuredPlan = planSchema(
     note: str.optional(),
   } satisfies Shape<Plan>),
 );
+export const revisionPlanSchema = structuredPlan.refine(
+  (plan) =>
+    Buffer.byteLength(JSON.stringify(plan), 'utf8') <= dialogueByteLimit(),
+  { message: 'Plan exceeds configured byte limit' },
+);
+
 const plannerMessage = z.object({
   id,
   text: str,

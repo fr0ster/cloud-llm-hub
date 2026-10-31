@@ -1,0 +1,426 @@
+import type {
+  DialoguePlan,
+  IPlanAuthor,
+  ISmartAgent,
+  ISubAgent,
+  ISubAgentInput,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  DialogueSession,
+  InMemoryDialogueStateStore,
+} from '@mcp-abap-adt/llm-agent-libs';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import express from 'express';
+import { z } from 'zod';
+import {
+  executeOrchestrationTool,
+  orchestrationDefinitions,
+  orchestrationTools,
+  registerOrchestrationTools,
+} from '../../srv/agent-mcp-orchestration';
+import { AgentProfileRunner } from '../../srv/lib/agent-profile-runner';
+import {
+  getRagCallerIdentity,
+  getRequestUserId,
+  profileToolAllowed,
+} from '../../srv/request-session';
+
+const mockPlan: DialoguePlan = {
+  version: 1,
+  status: 'active',
+  steps: [{ id: 'read', goal: 'Read', state: 'pending', taskIds: [] }],
+};
+const mockCreate: IPlanAuthor['create'] = jest.fn(async () => ({
+  ok: true as const,
+  value: structuredClone(mockPlan),
+}));
+const mockRevise: IPlanAuthor['revise'] = jest.fn(async (input) => ({
+  ok: true as const,
+  value: input.plan,
+}));
+const mockAuthorAgent: ISmartAgent = {
+  process: async () => ({
+    ok: true,
+    value: {
+      content: JSON.stringify({
+        steps: mockPlan.steps,
+        status: mockPlan.status,
+      }),
+      iterations: 1,
+      toolCallCount: 0,
+      stopReason: 'stop',
+    },
+  }),
+  streamProcess: async function* () {},
+};
+let mockSession: DialogueSession;
+const mockHeadless = jest.fn(async () => ({ session: mockSession }));
+const mockRelease = jest.fn();
+const mockLongSession = { key: 'owned', destination: 'TEST' };
+const mockRun = jest.fn(async (_input: ISubAgentInput) => ({
+  output: 'read done',
+}));
+const mockWorker: ISubAgent = {
+  name: 'executor',
+  capabilities: { contextPolicy: 'optional' },
+  run: (input) => mockRun(input),
+};
+const mockStore = new InMemoryDialogueStateStore();
+const mockSource = {
+  get: async () => ({
+    ok: true as const,
+    value: {
+      name: 'executor',
+      description: 'Read',
+      systemPrompt: '',
+      tools: 'all' as const,
+      result: 'report' as const,
+    },
+  }),
+  list: async () => ({
+    ok: true as const,
+    value: [
+      { name: 'executor', description: 'Read', result: 'report' as const },
+    ],
+  }),
+  getPrompts: async () => ({ ok: true as const, value: {} }),
+};
+jest.mock('../../srv/env-setup', () => ({}));
+jest.mock('../../srv/agent-manager', () => ({
+  createAgentProfileSource: () => mockSource,
+  getSmartAgent: async () => ({
+    profileRunner: {
+      preparePlanAuthor: async () => ({ ok: true, value: mockAuthorAgent }),
+    },
+  }),
+  runWithCallerExposition: (_levels: string[], run: () => Promise<object>) =>
+    run(),
+}));
+jest.mock('../../srv/lib/dialogue-sessions', () => ({
+  headlessDialogueFor: () => mockHeadless(),
+}));
+jest.mock('../../srv/lib/session-lifecycle', () => ({
+  resolveSession: async (user: string, key: string) =>
+    user === 'alice' && key === 'owned' ? mockLongSession : undefined,
+}));
+jest.mock('../../srv/lib/long-session', () => ({
+  longSessions: () => ({ get: () => mockLongSession, hold: () => () => {} }),
+}));
+jest.mock('../../srv/lib/gatekeeper', () => ({
+  leaseSession: () => ({ release: mockRelease }),
+}));
+jest.mock('../../srv/lib/usage/runtime', () => ({
+  usageRuntime: () => undefined,
+}));
+const caller = { userId: 'alice', exposition: undefined };
+const req = Object.assign(express.request, {
+  headers: { 'x-sap-destination': 'TEST' },
+});
+const call = (
+  name: (typeof orchestrationTools)[number],
+  args: Parameters<typeof executeOrchestrationTool>[3] = {},
+) => executeOrchestrationTool(req, caller, name, args);
+beforeEach(async () => {
+  jest.clearAllMocks();
+  mockRun.mockImplementation(async () => ({ output: 'read done' }));
+  mockSession = await DialogueSession.open({
+    id: 'owned',
+    planAuthor: { create: mockCreate, revise: mockRevise },
+    planner: {
+      process: async () => ({ ok: true, value: { content: 'Ready' } }),
+    },
+    board: { workers: new Map([['executor', mockWorker]]) },
+    store: mockStore,
+    maxCorrections: 0,
+  });
+});
+afterEach(async () => {
+  await mockSession.close();
+});
+
+test.each(
+  orchestrationTools.filter(
+    (name) => name !== 'plan_create' && name !== 'plan_revise',
+  ),
+)('%s requires an owned session', async (name) => {
+  expect(await call(name)).toMatchObject({
+    isError: true,
+    content: [{ text: 'SESSION_REQUIRED' }],
+  });
+  expect(await call(name, { session: 'foreign' })).toMatchObject({
+    isError: true,
+    content: [{ text: 'SESSION_NOT_FOUND' }],
+  });
+  expect(mockHeadless).not.toHaveBeenCalled();
+});
+test.each(['plan_create', 'plan_revise'] as const)(
+  '%s refuses an explicitly unknown session',
+  async (name) => {
+    expect(await call(name, { session: 'missing' })).toMatchObject({
+      isError: true,
+      content: [{ text: 'SESSION_NOT_FOUND' }],
+    });
+  },
+);
+test('stateless author returns a plan without opening or storing a dialogue', async () => {
+  const result = await call('plan_create', { goal: 'Read' });
+  expect(result).not.toMatchObject({ isError: true });
+  expect(JSON.parse(result.content[0].text)).toMatchObject({
+    version: 1,
+    steps: [{ id: 'read' }],
+  });
+  expect(mockHeadless).not.toHaveBeenCalled();
+  expect(mockSession.snapshot().plan).toBeUndefined();
+});
+test('stateless revise accepts an explicit current plan and stores nothing', async () => {
+  const result = await call('plan_revise', {
+    change: 'Keep the goal',
+    plan: z.json().parse(mockPlan),
+    context: 'Keep completed work',
+  });
+  expect(result).not.toMatchObject({ isError: true });
+  expect(mockHeadless).not.toHaveBeenCalled();
+  expect(mockSession.snapshot().plan).toBeUndefined();
+});
+test('stateless revise requires an explicit plan', async () => {
+  expect(
+    await call('plan_revise', {
+      change: 'Read',
+      context: JSON.stringify(mockPlan),
+    }),
+  ).toMatchObject({
+    isError: true,
+    content: [{ text: expect.stringContaining('requires plan') }],
+  });
+});
+
+test.each([
+  { ...mockPlan, version: 2 },
+  { ...mockPlan, steps: Array.from({ length: 1001 }, () => mockPlan.steps[0]) },
+  { ...mockPlan, steps: [{ ...mockPlan.steps[0], goal: 'x'.repeat(20001) }] },
+])('stateless revise rejects invalid or oversized plans', async (plan) => {
+  expect(
+    await call('plan_revise', { change: 'Read', plan: z.json().parse(plan) }),
+  ).toMatchObject({
+    isError: true,
+  });
+});
+
+test('session revise ignores the supplied plan and uses the session plan', async () => {
+  await call('plan_create', { session: 'owned', goal: 'Read' });
+  const sessionPlan = mockSession.snapshot().plan;
+  expect(
+    await call('plan_revise', {
+      session: 'owned',
+      change: 'Keep',
+      plan: {
+        ...z.object({}).passthrough().parse(mockPlan),
+        note: 'Ignore supplied plan',
+      },
+    }),
+  ).not.toMatchObject({ isError: true });
+  expect(mockRevise).toHaveBeenCalledWith(
+    expect.objectContaining({ plan: sessionPlan }),
+    expect.anything(),
+  );
+});
+
+test('session plan_create delegates and reads a completed task with MCP identity', async () => {
+  expect(
+    (await call('plan_create', { session: 'owned', goal: 'Read' })).isError,
+  ).toBeUndefined();
+  mockRun.mockImplementation(async () => {
+    expect(getRequestUserId()).toBe('alice');
+    expect(getRagCallerIdentity().channel).toBe('mcp-agent');
+    return { output: 'read done' };
+  });
+  const result = await call('delegate_task', {
+    session: 'owned',
+    worker: 'executor',
+    goal: 'Read',
+    step_id: 'read',
+  });
+  expect(result).not.toMatchObject({ isError: true });
+  for (
+    let i = 0;
+    i < 50 && mockSession.snapshot().tasks[0]?.state !== 'done';
+    i++
+  )
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  const task = mockSession.snapshot().tasks[0];
+  expect(task.state).toBe('done');
+  expect(
+    await call('get_task', { session: 'owned', task_id: task.id }),
+  ).toMatchObject({
+    content: [{ text: expect.stringContaining('read done') }],
+  });
+  expect(mockRelease).toHaveBeenCalled();
+});
+test('a busy shared dialogue refuses MCP tools and retains its plan', async () => {
+  await call('plan_create', { session: 'owned', goal: 'Read' });
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await mockSession.close();
+  mockSession = await DialogueSession.open({
+    id: 'owned',
+    planAuthor: { create: mockCreate, revise: mockRevise },
+    planner: {
+      process: async () => {
+        await gate;
+        return { ok: true, value: { content: 'Ready' } };
+      },
+    },
+    board: { workers: new Map() },
+    maxCorrections: 0,
+  });
+  await call('plan_create', { session: 'owned', goal: 'Read' });
+  const turn = mockSession.send('hello');
+  try {
+    const result = await call('plan_update', {
+      session: 'owned',
+      plan: 'replacement',
+    });
+    expect(result.isError).toBe(true);
+    expect(mockSession.snapshot().plan).toMatchObject(mockPlan);
+  } finally {
+    release();
+    await turn;
+  }
+});
+test('wire schemas reuse library definitions and accept delegation', async () => {
+  const server = new McpServer({ name: 'test', version: '1' });
+  const client = new Client({ name: 'test', version: '1' });
+  await registerOrchestrationTools(server, req, caller, (_name, run) => run);
+  const [left, right] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(left), client.connect(right)]);
+  try {
+    const listed = await client.listTools();
+    const definitions = await orchestrationDefinitions(mockSource);
+    expect(listed.tools).toHaveLength(8);
+    for (const tool of definitions) {
+      const wire = listed.tools.find((item) => item.name === tool.name);
+      expect(wire?.description).toContain(tool.description);
+      if (tool.name === 'plan_revise') {
+        expect(wire?.inputSchema.properties?.plan).toMatchObject({
+          type: 'object',
+        });
+        expect(wire?.description).toContain('required without a session');
+      }
+      const {
+        plan: _plan,
+        session: _session,
+        destination: _destination,
+        ...properties
+      } = wire?.inputSchema.properties ?? {};
+      const expected = z
+        .record(z.string(), z.json())
+        .parse(tool.inputSchema.properties);
+      if (tool.name === 'plan_revise') delete expected.plan;
+      expect({
+        ...properties,
+        ...(tool.name !== 'plan_revise' && _plan ? { plan: _plan } : {}),
+      }).toEqual(expected);
+      expect(wire?.inputSchema.required ?? []).toEqual(
+        tool.inputSchema.required,
+      );
+    }
+    await client.callTool({
+      name: 'plan_create',
+      arguments: { session: 'owned', goal: 'Read' },
+    });
+    expect(
+      await client.callTool({
+        name: 'delegate_task',
+        arguments: {
+          session: 'owned',
+          worker: 'executor',
+          goal: 'Read',
+          step_id: 'read',
+        },
+      }),
+    ).not.toMatchObject({ isError: true });
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('callTool receives cancellation, trace and long session id', async () => {
+  const spy = jest.spyOn(mockSession, 'callTool');
+  const signal = new AbortController().signal;
+  await executeOrchestrationTool(
+    req,
+    caller,
+    'plan_get',
+    { session: 'owned' },
+    signal,
+  );
+  expect(spy).toHaveBeenCalledWith(
+    'plan_get',
+    {},
+    {
+      signal,
+      usage: undefined,
+      trace: { traceId: expect.any(String) },
+      sessionId: 'owned',
+    },
+  );
+});
+
+test('delegated profiles cannot execute tools beyond the caller grants', async () => {
+  await mockSession.close();
+  const runner = new AgentProfileRunner({
+    catalogue: () => [{ name: 'write', effect: 'write' }],
+    grants: () => new Set(),
+    buildPlanner: async () => {
+      throw new Error('No turn expected');
+    },
+    buildWorker: async (profile) => ({
+      name: profile.name,
+      capabilities: { contextPolicy: 'optional' },
+      run: async () => {
+        if (!profileToolAllowed('write'))
+          throw new Error('Tool forbidden by caller grants');
+        return { output: 'written' };
+      },
+    }),
+  });
+  const source = {
+    ...mockSource,
+    get: async () => ({
+      ok: true as const,
+      value: {
+        name: 'executor',
+        description: '',
+        systemPrompt: '',
+        tools: { allow: ['write'] },
+        result: 'report' as const,
+      },
+    }),
+  };
+  mockSession = await DialogueSession.open({
+    id: 'owned',
+    planner: { process: async () => ({ ok: true, value: { content: '' } }) },
+    board: { profileSource: source, profileRunner: runner },
+    maxCorrections: 0,
+  });
+  await call('delegate_task', {
+    session: 'owned',
+    worker: 'executor',
+    goal: 'Write',
+  });
+  for (
+    let i = 0;
+    i < 50 && mockSession.snapshot().tasks[0]?.state !== 'failed';
+    i++
+  )
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(mockSession.snapshot().tasks[0]).toMatchObject({
+    state: 'failed',
+    error: expect.stringContaining('forbidden by caller grants'),
+  });
+});

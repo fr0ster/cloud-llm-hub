@@ -19,13 +19,17 @@ jest.mock('@sap/cds', (): object => ({
     },
   },
 }));
-jest.mock('../../srv/agent-manager', (): object =>
-  jest
+jest.mock('../../srv/agent-manager', (): object => ({
+  createAgentProfileSource: () => ({
+    list: async () => ({ ok: true, value: [] }),
+    getPrompts: async () => ({ ok: true, value: {} }),
+  }),
+  ...jest
     .requireActual<typeof import('./helpers/channel-harness')>(
       './helpers/channel-harness',
     )
     .agentManagerMock(),
-);
+}));
 jest.mock('../../srv/agent-config', (): object => ({
   ...jest.requireActual<typeof import('../../srv/agent-config')>(
     '../../srv/agent-config',

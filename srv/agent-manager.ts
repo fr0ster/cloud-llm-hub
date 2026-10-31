@@ -763,6 +763,18 @@ function getDumpBuffer(): DumpBufferStore {
   return dumpBufferSingleton;
 }
 
+const callerExposition = new AsyncLocalStorage<{
+  exposition: ExpositionLevel[] | undefined;
+}>();
+
+/** Bind profile grants before a headless call has a SAP connection. */
+export function runWithCallerExposition<T>(
+  exposition: ExpositionLevel[] | undefined,
+  run: () => T,
+): T {
+  return callerExposition.run({ exposition }, run);
+}
+
 const connectionALS = new AsyncLocalStorage<{
   connection: AbapConnectionLike;
   context: HandlerContext;
@@ -2960,7 +2972,10 @@ function destinationProfileRunner(
         catalogue()
           .filter((tool) => {
             if (isRagTool(tool.name)) return Boolean(getRequestUserId());
-            const allowed = connectionALS.getStore()?.exposition;
+            const caller = callerExposition.getStore();
+            const allowed = caller
+              ? caller.exposition
+              : connectionALS.getStore()?.exposition;
             return (
               allowed?.some(
                 (level) => level === getToolExpositionMap().get(tool.name),
