@@ -54,7 +54,9 @@ sessions, checker profile with `result: verdict`, honesty reviewer, profile tool
 
 ## Orchestration tool set
 
-One tool set, the same for every client: our coordinator (internal), and external agents over agent MCP
+The internal coordinator tool list is the agent MCP tool list minus `session_open` and `session_close`, plus turn-only library planner tools (`deliver`, `new_request`, and the existing `search_knowledge`). It retains every library planner tool and adds synchronous `execute_step` and `list_destinations`. `session_open` and `session_close` are connection-level tools for external clients only: the internal coordinator already runs inside its session and must not open or close sessions.
+
+One shared orchestration tool set, with the session-lifecycle and turn-only exceptions above, for every client: our coordinator (internal), and external agents over agent MCP
 (Claude Code, Codex, Copilot) that take the coordinator's place. This follows the binding rule "tools are the same
 for every connection" already applied to RAG; profile ceilings and the agents-collection exclusion still apply.
 

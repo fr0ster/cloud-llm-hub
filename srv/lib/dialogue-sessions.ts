@@ -7,7 +7,6 @@ import type {
   IConcurrencyPool,
   ISmartAgent,
   ISubAgent,
-  ISubAgentResult,
   IUsageRecorder,
   Message,
   PlannerMessage,
@@ -38,6 +37,7 @@ import {
   runWithToolGateBypass,
 } from '../request-session';
 import { runWithContextCapture } from './context-capture';
+import { withCoordinatorRun } from './coordinator-tools-client';
 import { DialogueOutbox, type OutboxEntry } from './dialogue-outbox';
 import {
   plannerWithAttachments,
@@ -139,6 +139,9 @@ export interface DialogueHandle {
     settledSeq: number;
     lastFailedSeq: number;
   };
+  runStep<T extends { ok: boolean }>(
+    run: (signal: AbortSignal | undefined) => Promise<T>,
+  ): Promise<T>;
   plannerCounts(counts: PlannerCounts): void;
   hasSubscribers(): boolean;
   drainPending(): Promise<void>;
@@ -350,6 +353,50 @@ async function open(
     taskStates.set(task.id, task.state);
     emit({ kind: 'task', task: taskView(task) });
   };
+  // Shared by TaskBoard.wrapRun and synchronous coordinator steps.
+  async function runAdmitted<
+    T extends {
+      ok?: boolean;
+      errorClass?: string;
+      stopped?: boolean;
+      status?: string;
+    },
+  >(
+    run: (lease: ConnectionLease, pipeline: PipelineSession) => Promise<T>,
+  ): Promise<T> {
+    let lease: ConnectionLease | undefined;
+    let pipeline: PipelineSession | undefined;
+    let healthy = false;
+    try {
+      lease = await pool.acquire(lifetime.signal);
+      const admission = await admitBackground(userId, key, lifetime.signal);
+      if (!('admitted' in admission))
+        throw new Error(
+          'Background task admission refused: session closed or unavailable',
+        );
+      pipeline = admission.admitted;
+      const acquiredLease = lease;
+      const admitted = pipeline;
+      const result = await admitted.run(() => run(acquiredLease, admitted));
+      healthy =
+        !lifetime.signal.aborted &&
+        result.ok !== false &&
+        result.errorClass !== 'epicfail' &&
+        !result.stopped &&
+        result.status !== 'awaiting-external';
+      return result;
+    } finally {
+      try {
+        await pipeline?.drain();
+      } finally {
+        try {
+          pipeline?.release();
+        } finally {
+          await lease?.release(healthy);
+        }
+      }
+    }
+  }
   // Carry task admission into the worker callback and rebuild its request scope.
   // Dialogue workers receive only their brief; no request history is injected.
   const scope = new AsyncLocalStorage<{
@@ -544,11 +591,8 @@ async function open(
   const unsubscribeActivity = signals.on(
     'dialogue.activity',
     ({ payload }) => {
-      if (
-        payload.running > 0 ||
-        payload.turnActive ||
-        payload.queuedInputs > 0
-      ) {
+      // running includes queued tasks; queuedInputs also includes deferred outcomes.
+      if (payload.running > 0 || payload.turnActive) {
         if (!releaseHold && longSession)
           releaseHold = registry?.hold(longSession);
       } else releaseLifetime();
@@ -671,7 +715,11 @@ async function open(
             : result;
         },
         preparePlanner: async (input, options) => {
-          const result = await profileRunner.preparePlanner(input, options);
+          const result = await withCoordinatorRun(
+            async (run) =>
+              (await dialogueFor(userId, key, destination)).runStep(run),
+            () => profileRunner.preparePlanner(input, options),
+          );
           if (!result.ok) return result;
           const prepared = result.value;
           return {
@@ -768,30 +816,15 @@ async function open(
             worker: task.worker,
             goalChars: task.goal.length,
           });
-          let lease: ConnectionLease | undefined;
-          let pipeline: PipelineSession | undefined;
-          let healthy = false;
           let state: TaskRecord['state'] = 'failed';
           const traceId = randomUUID();
           emitTask(task);
           try {
-            const acquiredLease = await pool.acquire(lifetime.signal);
-            lease = acquiredLease;
-            const admission = await admitBackground(
-              userId,
-              key,
-              lifetime.signal,
-            );
-            if (!('admitted' in admission))
-              throw new Error(
-                'Background task admission refused: session closed or unavailable',
-              );
-            pipeline = admission.admitted;
-            const result: ISubAgentResult = await pipeline.run(() =>
+            const result = await runAdmitted(async (acquiredLease, pipeline) =>
               scope.run(
                 {
                   lease: acquiredLease,
-                  pipeline: admission.admitted,
+                  pipeline,
                   traceId,
                   taskId: task.id,
                   ...caller,
@@ -803,7 +836,7 @@ async function open(
                   ),
               ),
             );
-            healthy =
+            const healthy =
               !lifetime.signal.aborted &&
               result.errorClass !== 'epicfail' &&
               !result.stopped &&
@@ -812,38 +845,25 @@ async function open(
             return result;
           } finally {
             try {
-              await pipeline?.drain();
-            } finally {
-              try {
-                pipeline?.release();
-              } finally {
-                try {
-                  await lease?.release(healthy);
-                } finally {
-                  try {
-                    recMcp.dropRequest(traceId);
-                  } catch (error) {
-                    cds.log('dialogue-sessions').warn('dropRequest failed', {
-                      errorType:
-                        error instanceof Error ? error.name : typeof error,
-                    });
-                  }
-                  emitTask({ ...task, state });
-                  log().info('task finished', {
-                    id: task.id,
-                    state,
-                    durationMs: Date.now() - startedAt,
-                  });
-                  if (stopped)
-                    log().info('close progress', {
-                      keyHash: keyHash(key),
-                      tasksRemaining: [...taskStates.values()].filter(
-                        (s) => s === 'running' || s === 'queued',
-                      ).length,
-                    });
-                }
-              }
+              recMcp.dropRequest(traceId);
+            } catch (error) {
+              cds.log('dialogue-sessions').warn('dropRequest failed', {
+                errorType: error instanceof Error ? error.name : typeof error,
+              });
             }
+            emitTask({ ...task, state });
+            log().info('task finished', {
+              id: task.id,
+              state,
+              durationMs: Date.now() - startedAt,
+            });
+            if (stopped)
+              log().info('close progress', {
+                keyHash: keyHash(key),
+                tasksRemaining: [...taskStates.values()].filter(
+                  (s) => s === 'running' || s === 'queued',
+                ).length,
+              });
           }
         },
       },
@@ -909,6 +929,23 @@ async function open(
       };
     },
     drainPending,
+    async runStep(run) {
+      const release = await sharedExecutorPool().acquire(lifetime.signal);
+      try {
+        return await runAdmitted((lease, pipeline) =>
+          runWithRequestSystem(lease.system, () =>
+            runWithRequestConnection(
+              lease.connection,
+              () => run(pipeline.signal),
+              lease.dumpScope,
+              factory.exposition,
+            ),
+          ),
+        );
+      } finally {
+        release();
+      }
+    },
     plannerCounts: (counts) => emit({ kind: 'planner', ...counts }),
     hasSubscribers: () => subscribers.size > 0,
     factory,

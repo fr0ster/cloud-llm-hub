@@ -4,7 +4,13 @@ import cds from '@sap/cds';
 import { parseContextCapture } from '../agent-config';
 import { getRequestSessionId } from '../request-session';
 
-type Component = 'planner' | 'executor' | 'checker' | 'chat' | 'other';
+type Component =
+  | 'planner'
+  | 'executor'
+  | 'checker'
+  | 'chat'
+  | 'other'
+  | 'planner-author';
 const scope = new AsyncLocalStorage<{
   component: Component;
   taskId?: string;
@@ -66,7 +72,9 @@ export function captureLlm(
         const context = scope.getStore();
         const stats = {
           component:
-            component === 'other' ? 'other' : (context?.component ?? component),
+            component === 'other' || component === 'planner-author'
+              ? component
+              : (context?.component ?? component),
           taskId: context?.taskId,
           sessionKey: context?.sessionKey ?? getRequestSessionId(),
           model: llm.model,

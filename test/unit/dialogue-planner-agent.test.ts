@@ -123,7 +123,7 @@ function llm(model: string) {
   };
   return { agent, tools, messages };
 }
-test('hard planner sends all nine control tools, hub prompt, and follows getSmartAgent model hot-swap', async () => {
+test('hard planner retains library turn tools and hub control tools, hub prompt, and follows getSmartAgent model hot-swap', async () => {
   const first = llm('first');
   const second = llm('second');
   jest.mocked(makeHubLlm).mockResolvedValue(first.agent);
@@ -137,13 +137,17 @@ test('hard planner sends all nine control tools, hub prompt, and follows getSmar
         ...ragToolNames,
         'delegate_task',
         'deliver',
+        'new_request',
+        'search_knowledge',
+        'execute_step',
+        'list_destinations',
+        'plan_create',
+        'plan_revise',
         'get_task',
         'plan_get',
         'list_tasks',
         'stop_task',
         'plan_update',
-        'search_knowledge',
-        'new_request',
       ].sort(),
     );
     expect(first.messages.join('\n')).toContain(plannerText);
@@ -600,4 +604,32 @@ test('fresh arbitrary worker composes base, profile, then one invariant library 
   ).toHaveLength(1);
   expect(text).not.toContain('fails twice');
   expect(text).not.toContain('Storing, collecting or remembering');
+});
+
+test('per-call SAP authors skip validation for repeated and switched models', async () => {
+  const authorClient = {
+    listTools: async () => ({ ok: true as const, value: [] }),
+    callTool: async () => ({ ok: true as const, value: { content: [] } }),
+  };
+  for (const modelName of ['author-first', 'author-first', 'author-second']) {
+    const model = llm(modelName);
+    const chat = jest.spyOn(model.agent, 'chat');
+    jest.mocked(makeHubLlm).mockResolvedValue(model.agent);
+    const author = await buildPlannerAgent(
+      {
+        ...config,
+        llm: { ...config.llm, provider: 'sap-ai-sdk', plannerModel: modelName },
+      },
+      'Write a plan',
+      authorClient,
+    );
+    try {
+      expect(chat).not.toHaveBeenCalled();
+      const result = await author.process('Create a plan');
+      expect(result.ok && result.value.content).toBe(modelName);
+      expect(model.messages.join('\n')).not.toContain('Reply with OK');
+    } finally {
+      releasePlannerAgent(author);
+    }
+  }
 });

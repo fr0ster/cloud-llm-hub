@@ -140,16 +140,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
         value: {
           streamProcess: async function* (message, callOptions) {
             const stream = scope(() =>
-              agent.streamProcess(message, {
-                ...callOptions,
-                ...(callOptions?.usage
-                  ? {
-                      usage: callOptions.usage.with({
-                        component: 'planner-author',
-                      }),
-                    }
-                  : {}),
-              }),
+              agent.streamProcess(message, callOptions),
             );
             const iterator = stream[Symbol.asyncIterator]();
             try {
@@ -163,18 +154,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
             }
           },
           process: (message, callOptions) =>
-            scope(() =>
-              agent.process(message, {
-                ...callOptions,
-                ...(callOptions?.usage
-                  ? {
-                      usage: callOptions.usage.with({
-                        component: 'planner-author',
-                      }),
-                    }
-                  : {}),
-              }),
-            ),
+            scope(() => agent.process(message, callOptions)),
         },
       };
     } catch {

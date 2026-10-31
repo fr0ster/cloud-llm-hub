@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { InMemoryRag, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
   createUsageRecorder,
@@ -44,6 +45,7 @@ import type {
 import {
   DialogueSession,
   PlannerToolsClient,
+  SemaphorePool,
   SmartAgentBuilder,
   SmartAgentSubAgent,
 } from '@mcp-abap-adt/llm-agent-libs';
@@ -1253,7 +1255,7 @@ test('a queued task cancelled before start releases the hold', async () => {
     expect(mockRun).not.toHaveBeenCalled();
     // Cancellation leaves the planner turn holding the session until it ends.
     expect(h.state().turnActive).toBe(true);
-    expect(registry.get('alice', 'key')?.lastActivity).toBe(0);
+    expect(registry.get('alice', 'key')?.lastActivity).toBe(2000);
     setTime(3000);
     expect(await registry.sweep()).toBe(0);
     await until(() => !h.state().turnActive);
@@ -2182,4 +2184,126 @@ test('headless MCP opens the shared dialogue without a turn and restores interru
   expect(
     (await getDialogueStoreBackend().load('alice', 'key'))?.tasks[0].state,
   ).toBe('interrupted');
+});
+
+test('MCP-only deferred outcomes release the inactivity hold', async () => {
+  const { registry, setTime } = lifetimeRegistry();
+  let finish = () => {};
+  mockRun.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({ output: 'done' });
+      }),
+  );
+  const { h } = await ready();
+  await h.session.callTool('delegate_task', {
+    worker: 'executor',
+    goal: 'Read',
+  });
+  await until(() =>
+    h.session.snapshot().tasks.some((task) => task.state === 'running'),
+  );
+  setTime(2000);
+  expect(await registry.sweep()).toBe(0);
+  finish();
+  await until(() =>
+    h.session.snapshot().tasks.every((task) => task.state === 'done'),
+  );
+  expect(h.state().queuedInputs).toBeGreaterThan(0);
+  setTime(3001);
+  expect(await registry.sweep()).toBe(1);
+});
+
+test('synchronous steps acquire and release session leases, bind connection and exposition, and cap execution at three', async () => {
+  const { h, connection } = await ready();
+  const bound = new AsyncLocalStorage<IAbapConnection>();
+  const binding = jest
+    .mocked(runWithRequestConnection)
+    .mockImplementation((conn, run) => bound.run(conn, run));
+  const slots = new SemaphorePool(3);
+  const hub = jest
+    .spyOn(sharedExecutorPool(), 'acquire')
+    .mockImplementation((signal) => slots.acquire(signal));
+  const releases: jest.Mock[] = [];
+  const acquire = jest.spyOn(h.pool, 'acquire').mockImplementation(async () => {
+    const release = jest.fn(async () => {});
+    releases.push(release);
+    return {
+      connection,
+      system: { responsible: 'OWNER' },
+      dumpScope: undefined,
+      version: 1,
+      release,
+    };
+  });
+  const finishes: Array<() => void> = [];
+  const step = () =>
+    runWithSessionId(
+      'key',
+      () =>
+        h.runStep(async () => {
+          expect(bound.getStore()).toBe(connection);
+          expect(getRequestContext()?.responsible).toBe('OWNER');
+          expect(getRequestUserId()).toBe('alice');
+          expect(getRequestSessionId()).toBe('key');
+          expect(currentAdmission()).toBe(mockRegister);
+          await new Promise<void>((resolve) => finishes.push(resolve));
+          return { ok: true };
+        }),
+      [],
+      'alice',
+    );
+  const calls = [step(), step(), step(), step()];
+  try {
+    await until(() => finishes.length === 3);
+    expect(acquire).toHaveBeenCalledTimes(3);
+    finishes[0]();
+    await until(() => finishes.length === 4);
+    finishes.forEach((finish) => {
+      finish();
+    });
+    await Promise.all(calls);
+    expect(acquire).toHaveBeenCalledTimes(4);
+    for (const release of releases) expect(release).toHaveBeenCalledWith(true);
+    expect(binding).toHaveBeenCalledWith(
+      connection,
+      expect.any(Function),
+      undefined,
+      ['readonly', 'search', 'system'],
+    );
+    expect(mockDrain).toHaveBeenCalledTimes(4);
+    expect(mockRelease).toHaveBeenCalledTimes(4);
+  } finally {
+    finishes.forEach((finish) => {
+      finish();
+    });
+    hub.mockRestore();
+    acquire.mockRestore();
+    binding.mockImplementation((_conn, run) => run());
+  }
+});
+
+test('synchronous steps share the hub slot with delegated tasks and release it after failure', async () => {
+  const { h } = await ready();
+  let finish: (() => void) | undefined;
+  mockRun.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({ output: 'done' });
+      }),
+  );
+  await h.session.send('go');
+  await until(() => !!finish);
+  let entered = false;
+  const step = h.runStep(async () => {
+    entered = true;
+    throw new Error('step failed');
+  });
+  const checked = expect(step).rejects.toThrow('step failed');
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(entered).toBe(false);
+  finish?.();
+  await checked;
+  expect(entered).toBe(true);
+  expect(await h.runStep(async () => ({ ok: true }))).toEqual({ ok: true });
 });

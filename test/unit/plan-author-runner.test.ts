@@ -2,24 +2,23 @@ import {
   type ILlm,
   type IMcpClient,
   InMemoryRag,
-  type UsageRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import {
   MCPClientWrapper,
   McpClientAdapter,
 } from '@mcp-abap-adt/llm-agent-mcp';
-import { createUsageRecorder } from '@mcp-abap-adt/llm-usage';
 import type { AgentConfig } from '../../srv/agent-config';
+import * as agentConfig from '../../srv/agent-config';
 import {
   buildAgentForDestination,
   buildPlannerAgent,
   ExpositionFilteringRag,
   getCollectionRegistry,
+  getSmartAgent,
   initProviders,
   releasePlannerAgent,
 } from '../../srv/agent-manager';
-import { AgentProfileRunner } from '../../srv/lib/agent-profile-runner';
 import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
 import { makeHubLlm } from '../../srv/lib/llm-factory';
 import { startProviders } from '../../srv/lib/providers';
@@ -205,72 +204,49 @@ test('destination author offers exactly four canonical read tools and inherits c
   expect(offered.at(-1)).toEqual(['rag_read']);
 });
 
-test('author record_add is refused and usage has its own component', async () => {
-  const records: UsageRecord[] = [];
-  const usage = createUsageRecorder({
-    transport: {
-      send: async (batch) => {
-        records.push(...batch);
-      },
-      close: async () => {},
-    },
-  });
-  const runner = new AgentProfileRunner({
-    catalogue: () =>
-      [...readTools, 'record_add'].map((name) => ({
-        name,
-        effect: name === 'record_add' ? 'write' : 'read',
-      })),
-    grants: () => new Set([...readTools, 'record_add']),
-    buildWorker: async () => {
-      throw new Error('Unexpected worker');
-    },
-    buildPlanner: async () => {
-      throw new Error('Unexpected coordinator');
-    },
-    buildPlanAuthor: async () => ({
-      process: async (_message, options) => {
-        expect(profileToolAllowed('record_add')).toBe(false);
-        expect(readTools.every(profileToolAllowed)).toBe(true);
-        options?.usage?.record({
-          kind: 'x.author',
-          context: {},
-          outcome: 'ok',
-          values: {},
-        });
-        return {
-          ok: true,
-          value: {
-            content: 'Plan',
-            iterations: 1,
-            toolCallCount: 0,
-            stopReason: 'stop',
-          },
-        };
-      },
-      streamProcess: async function* () {},
-    }),
-  });
-  const prepared = await runner.preparePlanAuthor({
-    systemPrompt: 'Plan',
-    mode: 'create',
-  });
-  if (!prepared.ok) throw new Error(prepared.error.message);
-  await prepared.value.process('Create', {
-    usage: usage.with({
-      sessionId: 'author-session',
-      turnId: 'author-turn',
-      component: 'planner',
-    }),
-  });
-  await usage.close(1000);
-  expect(records).toHaveLength(1);
-  expect(records[0].context).toMatchObject({
-    component: 'planner-author',
-    sessionId: 'author-session',
-    turnId: 'author-turn',
-  });
-});
+test.each([undefined, 'explicit-planner'])(
+  'author uses the active main model unless planner model is set (%s)',
+  async (plannerModel) => {
+    const authorConfig: AgentConfig = {
+      ...config,
+      llm: { ...config.llm, plannerModel },
+    };
+    const configSpy = jest
+      .spyOn(agentConfig, 'getAgentConfig')
+      .mockReturnValue(authorConfig);
+    jest.mocked(makeHubLlm).mockImplementation(async (options) => ({
+      ...model,
+      model: options.model,
+    }));
+    const empty: IMcpClient = {
+      listTools: async () => ({ ok: true, value: [] }),
+      callTool: async () => ({ ok: true, value: { content: '' } }),
+    };
+    const selected = jest.spyOn(SmartAgentBuilder.prototype, 'withMainLlm');
+    try {
+      for (const mainModel of ['main-before-switch', 'main-after-switch']) {
+        await getSmartAgent(mainModel);
+        const callsBeforeAuthor = jest.mocked(makeHubLlm).mock.calls.length;
+        const author = await buildPlannerAgent(authorConfig, 'Author', empty);
+        releasePlannerAgent(author);
+        expect(makeHubLlm).toHaveBeenCalledTimes(callsBeforeAuthor + 1);
+        expect(makeHubLlm).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            component: 'planner-author',
+            model: plannerModel ?? mainModel,
+          }),
+          config.llm.temperature,
+        );
+        expect(selected.mock.calls.at(-1)?.[0].model).toBe(
+          plannerModel ?? mainModel,
+        );
+      }
+    } finally {
+      selected.mockRestore();
+      configSpy.mockRestore();
+    }
+  },
+);
 
 test('coordinator defaults to planner model and an override selects a separate model', async () => {
   jest.mocked(makeHubLlm).mockImplementation(async (options) => ({

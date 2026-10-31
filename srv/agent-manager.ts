@@ -1,3 +1,28 @@
+import {
+  coordinatorToolsClient as createCoordinatorToolsClient,
+  currentCoordinatorRun,
+} from './lib/coordinator-tools-client';
+import { runExecutorStep as executeExecutorStep } from './lib/executor-step';
+
+export function runExecutorStep(
+  ...args: Parameters<typeof executeExecutorStep> extends [
+    unknown,
+    ...infer Rest,
+  ]
+    ? Rest
+    : never
+) {
+  return executeExecutorStep(createAgentProfileSource, ...args);
+}
+
+export function coordinatorToolsClient() {
+  return createCoordinatorToolsClient({
+    getSmartAgent,
+    runExecutorStep,
+    wrapRun: currentCoordinatorRun(),
+  });
+}
+
 import { toolSearchText } from '@mcp-abap-adt/lib/tool-search';
 import { AgentProfileRunner } from './lib/agent-profile-runner';
 import { AgentProfileSource } from './lib/agent-profile-source';
@@ -63,7 +88,6 @@ import {
   DagPlanInterpreter,
   InMemoryMetrics,
   LlmAdaptiveController,
-  PlannerToolsClient,
   SessionManager,
   type SmartAgent,
   SmartAgentBuilder,
@@ -2813,16 +2837,17 @@ export async function buildPlannerAgent(
   }
   const independentCoordinator =
     !authorClient && Boolean(config.llm.coordinatorModel);
-  let plannerLlm = independentCoordinator ? null : sharedPlannerLlm;
-  if (config.llm.plannerModel && !plannerLlm) {
+  let plannerLlm =
+    independentCoordinator || authorClient ? null : sharedPlannerLlm;
+  if ((config.llm.plannerModel || authorClient) && !plannerLlm) {
     plannerLlm = makeHubLlm(
       {
         contextCapture: config.llm.contextCapture,
         provider: config.llm.provider,
         apiKey: config.llm.apiKey,
         baseURL: config.llm.baseUrl,
-        component: 'chat',
-        model: config.llm.plannerModel,
+        component: authorClient ? 'planner-author' : 'chat',
+        model: config.llm.plannerModel ?? getCurrentModel(),
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,
         whenThrottled: config.llm.whenThrottled,
@@ -2830,8 +2855,8 @@ export async function buildPlannerAgent(
       config.llm.temperature,
     ).then(trackedLlm);
   }
-  if (!independentCoordinator) sharedPlannerLlm = plannerLlm;
-  const llm = await (config.llm.plannerModel && plannerLlm
+  if (!independentCoordinator && !authorClient) sharedPlannerLlm = plannerLlm;
+  const llm = await ((config.llm.plannerModel || authorClient) && plannerLlm
     ? plannerLlm
     : getOrCreateSharedLlms(config).mainLlm);
   // Pipeline stages retain the LLM supplied at build time. A stable forwarding
@@ -2844,7 +2869,9 @@ export async function buildPlannerAgent(
     },
   });
   const builder = new SmartAgentBuilder({
-    skipModelValidation: config.llm.provider !== 'sap-ai-sdk',
+    // Authors are built per call; validation would send an unattributed completion.
+    skipModelValidation:
+      Boolean(authorClient) || config.llm.provider !== 'sap-ai-sdk',
     agent: {
       timeZone: config.timeZone,
       maxIterations: config.agent.maxIterations,
@@ -2857,7 +2884,7 @@ export async function buildPlannerAgent(
     .withMainLlm(forwardingLlm)
     .withMcpClients([
       new RecordingMcpClient(
-        authorClient ?? new DialogueRagMcpClient(new PlannerToolsClient()),
+        authorClient ?? new DialogueRagMcpClient(coordinatorToolsClient()),
         undefined,
         config.agent.toolResultMaxChars,
         false,
