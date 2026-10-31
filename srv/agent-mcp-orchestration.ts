@@ -12,7 +12,6 @@ export {
 
 import { randomUUID } from 'node:crypto';
 import type { McpToolResult, PlanRevisionInput } from '@mcp-abap-adt/llm-agent';
-import { ProfilePlanAuthor } from '@mcp-abap-adt/llm-agent-libs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import cds from '@sap/cds';
 import type { Request } from 'express';
@@ -24,15 +23,23 @@ import {
 } from './agent-manager';
 import type { StepCaller } from './agent-mcp';
 import { ragTextResult } from './agent-mcp-rag';
+import {
+  BriefPlanAuthor,
+  planAuthorBriefRequest,
+} from './lib/brief-plan-author';
 import { headlessDialogueFor } from './lib/dialogue-sessions';
 import { revisionPlanSchema } from './lib/dialogue-store';
 import { leaseSession } from './lib/gatekeeper';
 import { longSessions } from './lib/long-session';
+import {
+  planAuthorContextNotes,
+  plannerSessionOptions,
+} from './lib/planner-memory';
 import { resolveSession } from './lib/session-lifecycle';
 import { isRefusal } from './lib/session-retention';
 import { requestMeasurement } from './lib/usage/request-records';
 import { usageRuntime } from './lib/usage/runtime';
-import { runWithSessionId } from './request-session';
+import { runWithSessionId, runWithStatelessKnowledge } from './request-session';
 import { resolveSessionKey } from './session-id';
 
 const argsSchema = z
@@ -166,20 +173,30 @@ export async function executeOrchestrationTool(
             if (!handle.profileRunner)
               throw new Error('Destination profile runner unavailable');
             const source = createAgentProfileSource(caller.userId);
-            const author = new ProfilePlanAuthor({
+            const retrieval = await plannerSessionOptions(
+              caller.userId,
+              sessionId,
+            );
+            const author = new BriefPlanAuthor({
               source,
               runner: handle.profileRunner,
               notes: async (options) => {
                 const workers = await source.list(options);
                 if (!workers.ok) throw new Error(workers.error.message);
                 return [
+                  ...(await planAuthorContextNotes(
+                    retrieval,
+                    sessionId,
+                    planAuthorBriefRequest(),
+                    options,
+                  )),
                   `Environment\nDestination: ${destination}`,
                   `[worker profiles] ${JSON.stringify(workers.value)}`,
                 ];
               },
             });
             const options = { signal, usage, trace, sessionId };
-            const result =
+            const result = await runWithStatelessKnowledge(async () =>
               name === 'plan_create'
                 ? await author.create(
                     z
@@ -191,7 +208,8 @@ export async function executeOrchestrationTool(
                       .parse(input),
                     options,
                   )
-                : await author.revise(revisionInput(input), options);
+                : await author.revise(revisionInput(input), options),
+            );
             return result.ok
               ? ragTextResult(JSON.stringify(result.value))
               : ragTextResult(result.error.message, true);

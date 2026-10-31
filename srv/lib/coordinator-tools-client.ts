@@ -11,7 +11,10 @@ import {
   listDestinations,
   listDestinationsDefinition,
 } from './coordinator-tool-definitions';
-import type { runExecutorStep as ExecutorStep } from './executor-step';
+import type {
+  runExecutorStep as ExecutorStep,
+  ExecutorStepArgs,
+} from './executor-step';
 import { longSessionsIfReady } from './long-session';
 import { orchestrationDefinitions } from './orchestration-tool-definitions';
 
@@ -47,9 +50,7 @@ export function coordinatorToolsClient({
   wrapRun: CoordinatorRun;
   getSmartAgent: typeof SmartAgentFactory;
   runExecutorStep: (
-    ...args: Parameters<typeof ExecutorStep> extends [unknown, ...infer Rest]
-      ? Rest
-      : never
+    ...args: ExecutorStepArgs
   ) => ReturnType<typeof ExecutorStep>;
 }): IMcpClient {
   const planner = new PlannerToolsClient();

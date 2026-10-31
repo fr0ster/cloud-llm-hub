@@ -2,16 +2,12 @@ import {
   coordinatorToolsClient as createCoordinatorToolsClient,
   currentCoordinatorRun,
 } from './lib/coordinator-tools-client';
-import { runExecutorStep as executeExecutorStep } from './lib/executor-step';
+import {
+  type ExecutorStepArgs,
+  runExecutorStep as executeExecutorStep,
+} from './lib/executor-step';
 
-export function runExecutorStep(
-  ...args: Parameters<typeof executeExecutorStep> extends [
-    unknown,
-    ...infer Rest,
-  ]
-    ? Rest
-    : never
-) {
+export function runExecutorStep(...args: ExecutorStepArgs) {
   return executeExecutorStep(createAgentProfileSource, ...args);
 }
 

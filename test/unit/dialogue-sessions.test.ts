@@ -2047,8 +2047,14 @@ test.each(['queued', 'running'] as const)(
 
 test('dialogue opens with a stateless profile plan author and environment notes', async () => {
   const open = jest.spyOn(DialogueSession, 'open');
+  const search = jest.fn(async () => [
+    { collection: 'planning', id: 'rule', text: 'Headless planning guidance' },
+  ]);
+  const setup = jest
+    .spyOn(plannerMemory, 'plannerSessionOptions')
+    .mockResolvedValue({ plannerKnowledge: [{ name: 'planning', search }] });
+  const retrieval = jest.spyOn(plannerMemory, 'planAuthorContextNotes');
   try {
-    const retrieval = jest.spyOn(plannerMemory, 'planAuthorContextNotes');
     const h = await dialogueFor('alice', 'author-wiring', 'TEST');
     const options = open.mock.calls.at(-1)?.[0];
     expect(options?.planAuthor).toBeDefined();
@@ -2065,9 +2071,28 @@ test('dialogue opens with a stateless profile plan author and environment notes'
     await h.session.callTool('plan_create', {
       goal: 'External coordinator request',
     });
-    expect(retrieval).not.toHaveBeenCalled();
-    retrieval.mockRestore();
+    expect(retrieval).toHaveBeenLastCalledWith(
+      expect.anything(),
+      'author-wiring',
+      expect.objectContaining({ text: 'External coordinator request' }),
+      expect.anything(),
+    );
+    expect(mockAuthorTurns.at(-1)).toContain('Headless planning guidance');
+    await h.session.callTool('plan_revise', {
+      change: 'Revise external plan',
+      context: 'Preserve scope',
+    });
+    expect(retrieval).toHaveBeenLastCalledWith(
+      expect.anything(),
+      'author-wiring',
+      expect.objectContaining({
+        text: expect.stringContaining('Revise external plan'),
+      }),
+      expect.anything(),
+    );
   } finally {
+    retrieval.mockRestore();
+    setup.mockRestore();
     open.mockRestore();
   }
 });

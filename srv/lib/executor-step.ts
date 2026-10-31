@@ -10,16 +10,28 @@ import { renderNotice } from './notify-policy';
 import { getReviewSignals } from './review-scope';
 import { evaluateGated } from './step-reviewer';
 
-/** Executes within the caller's existing request, admission and connection scope. */
-export async function runExecutorStep(
-  createAgentProfileSource: (userId: string) => IAgentProfileSource,
+export type ExecutorStepArgs = [
   agentHandle: Awaited<ReturnType<typeof getSmartAgent>>,
   userId: string,
   task: string,
   worker: string,
   opts: CallOptions,
-  history: Message[] = [],
+  history?: Message[],
   onReviewerUsage?: (usage: TokenUsage | undefined) => void,
+];
+
+/** Executes within the caller's existing request, admission and connection scope. */
+export async function runExecutorStep(
+  createAgentProfileSource: (userId: string) => IAgentProfileSource,
+  ...[
+    agentHandle,
+    userId,
+    task,
+    worker,
+    opts,
+    history = [],
+    onReviewerUsage,
+  ]: ExecutorStepArgs
 ) {
   const traceId = opts.trace?.traceId ?? '';
   const result = await runWithToolGateBypass(async () => {

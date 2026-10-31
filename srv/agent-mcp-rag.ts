@@ -290,6 +290,22 @@ async function executeRagMcpToolImpl(
       'SESSION_REQUIRED: call session_open first',
     );
   try {
+    if (
+      context.internal &&
+      context.statelessRead &&
+      context.readOnly &&
+      ragToolEffect(name) === 'read'
+    )
+      return await runRagTool(
+        userId,
+        key,
+        name,
+        args,
+        false,
+        traceId,
+        context.registry,
+        true,
+      );
     const s = context.internal
       ? longSessionsIfReady()?.get(userId, key)
       : await externalSession(userId, key);
@@ -384,6 +400,7 @@ async function runRagTool(
   admin: boolean,
   traceId?: string,
   suppliedRegistry?: CollectionRegistry,
+  hideAgents = false,
 ): Promise<Result> {
   const registry = suppliedRegistry ?? ragHost().getCollectionRegistry();
   if (isWriteTool(name)) {
@@ -480,9 +497,13 @@ async function runRagTool(
     if (!meta) throw new Error('Collection not found');
     if (
       meta.collectionKind === 'agents' &&
-      (name === 'record_set_enabled' || name === 'collection_set_enabled')
+      (hideAgents ||
+        name === 'record_set_enabled' ||
+        name === 'collection_set_enabled')
     )
       throw new Error('TOOL_FORBIDDEN: agents configuration is REST-only');
+    if (meta.scope === 'session' && meta.sessionId !== sid)
+      throw new Error('Collection not found');
     const refusal = collectionAccessError(
       meta,
       userId,
@@ -498,7 +519,11 @@ async function runRagTool(
     );
     return respond({
       collections: collections
-        .filter((c) => c.scope !== 'session' || c.sessionId === sid)
+        .filter(
+          (c) =>
+            (!hideAgents || c.collectionKind !== 'agents') &&
+            (c.scope !== 'session' || c.sessionId === sid),
+        )
         .map((c) => ({
           id: c.id,
           name: c.displayName,
@@ -705,6 +730,7 @@ export interface RagExecutionContext {
   readonly admin: boolean;
   readonly sessionKey?: string;
   readonly internal: boolean;
+  readonly statelessRead?: boolean;
   readonly trustedAdmission: boolean;
   readonly permissions: { allows(name: string): boolean };
   readonly readOnly: boolean;

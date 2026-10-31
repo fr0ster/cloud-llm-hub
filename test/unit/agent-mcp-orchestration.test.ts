@@ -20,7 +20,11 @@ import {
   orchestrationTools,
   registerOrchestrationTools,
 } from '../../srv/agent-mcp-orchestration';
+import { userCollectionId } from '../../srv/collection-ids';
 import { AgentProfileRunner } from '../../srv/lib/agent-profile-runner';
+import { LocalRagMcpClient } from '../../srv/lib/dialogue-rag-tools';
+import * as plannerMemory from '../../srv/lib/planner-memory';
+import { CollectionRegistry } from '../../srv/rag-collections';
 import {
   getRagCallerIdentity,
   getRequestUserId,
@@ -424,3 +428,124 @@ test('delegated profiles cannot execute tools beyond the caller grants', async (
     error: expect.stringContaining('forbidden by caller grants'),
   });
 });
+
+test('stateless author reads caller knowledge while agents stay hidden and blocked', async () => {
+  const registry = new CollectionRegistry();
+  for (const [id, owner, collectionKind] of [
+    ['knowledge', 'alice', 'knowledge'],
+    ['agents', 'alice', 'agents'],
+    ['foreign', 'bob', 'knowledge'],
+  ] as const) {
+    await registry.createCollection({
+      id: userCollectionId(id, owner),
+      logicalId: id,
+      displayName: id,
+      description: '',
+      scope: 'user',
+      owner,
+      collectionKind,
+    });
+    if (collectionKind === 'agents') continue;
+    await registry.addDocument(userCollectionId(id, owner), {
+      id: 'rule',
+      text: 'Planning rule',
+      metadata: {},
+    });
+  }
+  const client = new LocalRagMcpClient(
+    {
+      listTools: async () => ({ ok: true, value: [] }),
+      callTool: async () => ({
+        ok: false,
+        error: {
+          code: 'UNEXPECTED',
+          name: 'McpError',
+          message: 'Unexpected upstream call',
+        },
+      }),
+    },
+    () => registry,
+  );
+  const original = mockAuthorAgent.process;
+  const process = jest
+    .spyOn(mockAuthorAgent, 'process')
+    .mockImplementation(async (...args) => {
+      expect(
+        await client.callTool('rag_read', {
+          collection: 'knowledge',
+          id: 'rule',
+        }),
+      ).toMatchObject({
+        ok: true,
+        value: { content: expect.stringContaining('Planning rule') },
+      });
+      for (const collection of ['agents', 'foreign']) {
+        expect(
+          await client.callTool('rag_read', { collection, id: 'rule' }),
+        ).toMatchObject({ value: { isError: true } });
+      }
+      const listed = await client.callTool('collections_list', {});
+      expect(listed).toMatchObject({
+        value: { content: expect.stringContaining('knowledge') },
+      });
+      expect(listed).not.toMatchObject({
+        value: { content: expect.stringContaining('agents') },
+      });
+      expect(
+        await client.callTool('record_add', {
+          collection: 'knowledge',
+          text: 'Forbidden',
+        }),
+      ).toMatchObject({ value: { isError: true } });
+      return original(...args);
+    });
+  try {
+    expect(
+      await call('plan_create', { goal: 'Read guidance' }),
+    ).not.toMatchObject({ isError: true });
+    expect(process).toHaveBeenCalled();
+  } finally {
+    process.mockRestore();
+  }
+});
+
+test.each(['plan_create', 'plan_revise'] as const)(
+  '%s retrieves configured stateless planning guidance from its brief',
+  async (name) => {
+    const search = jest.fn(async () => [
+      { collection: 'planning', id: 'rule', text: 'Configured planning rule' },
+    ]);
+    const setup = jest
+      .spyOn(plannerMemory, 'plannerSessionOptions')
+      .mockResolvedValue({ plannerKnowledge: [{ name: 'planning', search }] });
+    const original = mockAuthorAgent.process;
+    const process = jest
+      .spyOn(mockAuthorAgent, 'process')
+      .mockImplementation(async (...args) => {
+        expect(JSON.stringify(args[0])).toContain('Configured planning rule');
+        return original(...args);
+      });
+    try {
+      const result = await call(
+        name,
+        name === 'plan_create'
+          ? { goal: 'Read objects', context: 'Use configured rules' }
+          : {
+              change: 'Read objects',
+              context: 'Use configured rules',
+              plan: z.json().parse(mockPlan),
+            },
+      );
+      expect(result).not.toMatchObject({ isError: true });
+      expect(search).toHaveBeenCalledWith(
+        { text: expect.stringContaining('Read objects') },
+        4,
+        expect.anything(),
+      );
+      expect(process).toHaveBeenCalled();
+    } finally {
+      process.mockRestore();
+      setup.mockRestore();
+    }
+  },
+);

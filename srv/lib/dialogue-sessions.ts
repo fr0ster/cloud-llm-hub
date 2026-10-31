@@ -15,11 +15,7 @@ import type {
   ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { addTokenUsage } from '@mcp-abap-adt/llm-agent';
-import {
-  DialogueSession,
-  ProfilePlanAuthor,
-  SemaphorePool,
-} from '@mcp-abap-adt/llm-agent-libs';
+import { DialogueSession, SemaphorePool } from '@mcp-abap-adt/llm-agent-libs';
 import cds from '@sap/cds';
 import type { Request } from 'express';
 import { getAgentConfig } from '../agent-config';
@@ -36,6 +32,7 @@ import {
   runWithSessionId,
   runWithToolGateBypass,
 } from '../request-session';
+import { BriefPlanAuthor, planAuthorBriefRequest } from './brief-plan-author';
 import { runWithContextCapture } from './context-capture';
 import { withCoordinatorRun } from './coordinator-tools-client';
 import { DialogueOutbox, type OutboxEntry } from './dialogue-outbox';
@@ -687,7 +684,7 @@ async function open(
     const retrieval = await plannerSessionOptions(userId, key);
     session = await DialogueSession.open({
       profileSource: source,
-      planAuthor: new ProfilePlanAuthor({
+      planAuthor: new BriefPlanAuthor({
         source,
         runner: profileRunner,
         notes: async (options) => {
@@ -696,9 +693,12 @@ async function open(
           const request = session
             ?.snapshot()
             .requests?.find((record) => record.closedAt === undefined);
-          const context = request
-            ? await planAuthorContextNotes(retrieval, key, request, options)
-            : [];
+          const context = await planAuthorContextNotes(
+            retrieval,
+            key,
+            request ?? planAuthorBriefRequest(),
+            options,
+          );
           return [
             ...context,
             environment(),
