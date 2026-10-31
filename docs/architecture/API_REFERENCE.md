@@ -691,6 +691,7 @@ destination, under a server-issued key. Its TTL counts from the last request.
 | Call | Answer |
 |---|---|
 | `POST /v1/session`, body `{ "destination"?: string }` | `201 { session, ttlSeconds, destination }`; the key also comes back in the `clh_session` cookie |
+| `POST /v1/chat/completions` or `POST /v1/messages` with body `session: "<key>"` | served in that session; body wins over header and cookie |
 | any `/v1` request with `x-clh-session: <key>` | served in that session; the header wins over the cookie |
 | `DELETE /v1/session` (or `POST /v1/session/close`) with the key | `204` once the session is closed: ABAP session, history, session collections and record are gone |
 
@@ -701,7 +702,7 @@ Anthropic envelope alike:
 | Code | Status | When |
 |---|---|---|
 | `SESSION_REQUIRED` | 400 | no key, plain mode off |
-| `SESSION_NOT_FOUND` | 404 | the header names no open session (closed, expired, never opened, another user's); an unknown cookie is ignored |
+| `SESSION_NOT_FOUND` | 404 | the body or header names no open session (closed, expired, never opened, another user's); an unknown cookie is ignored |
 | `SESSION_LIMIT` | 429 | an open (or a revival) beyond `LLM_AGENT_MAX_SESSIONS` / `LLM_AGENT_MAX_SESSIONS_PER_USER` |
 | `SESSION_BUSY` | 429 | the session's queue (`LLM_AGENT_SESSION_QUEUE`) is full |
 | `SESSION_STORE_UNAVAILABLE` | 503, `Retry-After: 5` | a revival asked for before the hub's providers are ready |
@@ -1118,4 +1119,4 @@ keep their snapshots. Agents collections never participate in knowledge context.
 
 Create the target explicitly with `collection_create({ name: "result", scope: "user" })`, then call `record_add({ collection: "result", record: "tech-spec", text: "..." })`. Use user scope for durable results and session scope only for scratch. `record` is the optional stable physical ID; omission generates a UUID. Add is create-only: `RECORD_EXISTS` (409) requires reading the existing record and using `record_update({ collection, record, text })`. Read back with paged `collection_records` and `rag_read` using actual IDs; verify count and scope. Retire reversibly with `record_set_enabled({ collection, id, enabled: false })`; use `record_delete({ collection, record })` only for explicit permanent removal. Updates preserve ID and metadata but add no correction reason, audit history or supersede chain. Disabling does not free an ID. A live owned long session is required for every RAG call.
 
-Plain OpenAI chat clients must open a live caller-owned long session with `POST /v1/session` and bind its returned key with `x-clh-session` or the `clh_session` cookie. All eleven RAG tools stay listed but return `SESSION_REQUIRED` without that session. WebUI executes RAG on the server and renders server tool results; browsers must not dispatch them again. Removed tool names in client tool definitions, forced choices or calls return 400 with migration guidance; REST tool dispatch returns 404. Cross-instance `RECORD_EXISTS` protection is not atomic: providers offer upsert without conditional insert; serialization applies within one process.
+Plain OpenAI and Anthropic chat clients must open a live caller-owned long session with `POST /v1/session` and bind its returned key with the top-level string body field `session`, `x-clh-session`, or the `clh_session` cookie, in that precedence order. The body field is validated and removed before forwarding upstream; invalid types return 400 and unknown, closed or foreign keys return `SESSION_NOT_FOUND`, as with the header. All eleven RAG tools stay listed but return `SESSION_REQUIRED` without that session. WebUI executes RAG on the server and renders server tool results; browsers must not dispatch them again. Removed tool names in client tool definitions, forced choices or calls return 400 with migration guidance; REST tool dispatch returns 404. Cross-instance `RECORD_EXISTS` protection is not atomic: providers offer upsert without conditional insert; serialization applies within one process.

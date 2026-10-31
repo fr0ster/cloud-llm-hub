@@ -1,3 +1,5 @@
+import { chatSessionBodyTests } from './helpers/chat-session-body';
+
 // Bootstrap logging is tested with real CAP in logging-config.test.ts.
 jest.mock('../../srv/lib/logging-config', () => ({
   applyLoggingConfig: jest.fn(),
@@ -934,3 +936,5 @@ test.each([false, true])(
     await done;
   },
 );
+
+chatSessionBodyTests('/chat/completions', handleChatCompletions);

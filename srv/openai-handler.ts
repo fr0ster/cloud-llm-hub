@@ -202,6 +202,7 @@ function trimHistoryForContext(messages: Message[]): Message[] {
 
 const openAIChatRequestSchema = z
   .object({
+    session: z.string().optional(),
     messages: z.array(
       z.object({
         role: z.string(),
@@ -333,6 +334,8 @@ async function handleChatCompletionsMeasured(
     );
     return;
   }
+
+  delete body.session;
 
   const userMessages = body.messages.filter((m) => m.role === 'user');
   if (userMessages.length === 0) {

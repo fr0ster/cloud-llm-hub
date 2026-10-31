@@ -212,6 +212,8 @@ chat session requirements change without aliases.
 
 ## Decisions (maintainer, 2026-10-31)
 
+- Plain OpenAI/Anthropic chat accepts a string body `session` before `x-clh-session` and `clh_session`; validate like the header and strip before upstream forwarding.
+
 Record writes share in-process serialization by collection/document id, including REST add/upload and tool add/update/delete. Cross-instance create-only is not atomic: the installed provider interfaces expose only upsert, with no conditional insert.
 
 - Stable record IDs: `record_add` gets an optional `record` input (caller-chosen

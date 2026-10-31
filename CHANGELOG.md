@@ -30,6 +30,8 @@ All notable changes to this project will be documented in this file. The format 
 ## [9.9.0] - 2026-10-30
 
 ### Added
+
+- OpenAI chat and Anthropic messages accept a top-level string `session` body parameter ahead of the header and cookie, with the same session validation and no upstream forwarding.
 - External agent MCP text knowledge tools `collection_create`, `collection_delete`, `record_add`, `record_update`, and `record_delete`, sharing REST write operations with authoritative persistent updates, typed results, session admission and internal LLM exclusion.
 - Agent profile records and Markdown seeds, persistent missing-only startup seeding, fresh profile sources, isolated runners and composable tool permission guards.
 - REST agent administration with canonical record validation, admin-only global writes, owner-only user copies, atomic copy publication and MCP/LLM write protection.

@@ -146,7 +146,22 @@ async function handleAnthropicMessagesMeasured(
   // Normalize request using adapter (validates and converts Anthropic → internal format)
   let normalized: NormalizedRequest;
   try {
-    normalized = adapter.normalizeRequest(req.body);
+    const parsed = z
+      .object({ session: z.string().optional() })
+      .catchall(z.json())
+      .safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'Invalid JSON body: session must be a string',
+        },
+      });
+      return;
+    }
+    const { session: _session, ...body } = parsed.data;
+    normalized = adapter.normalizeRequest(body);
   } catch (err) {
     if (err instanceof AdapterValidationError) {
       res.status(400).json({
