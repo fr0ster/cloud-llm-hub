@@ -1,4 +1,8 @@
-import { type ILlm, InMemoryRag } from '@mcp-abap-adt/llm-agent';
+import {
+  type ILlm,
+  InMemoryRag,
+  type ToolCallRecord,
+} from '@mcp-abap-adt/llm-agent';
 import {
   DIALOGUE_PLANNER_SYSTEM,
   SmartAgentBuilder,
@@ -7,6 +11,7 @@ import {
   MCPClientWrapper,
   McpClientAdapter,
 } from '@mcp-abap-adt/llm-agent-mcp';
+import { z } from 'zod';
 import type { AgentConfig } from '../../srv/agent-config';
 import * as agentConfig from '../../srv/agent-config';
 import {
@@ -28,6 +33,7 @@ import {
 } from '../../srv/lib/dialogue-rag-tools';
 import { makeHubLlm } from '../../srv/lib/llm-factory';
 import { startProviders } from '../../srv/lib/providers';
+import { ragToolEffect, ragToolNames } from '../../srv/lib/rag-tool-catalogue';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
 import { CollectionRegistry } from '../../srv/rag-collections';
@@ -35,6 +41,7 @@ import {
   runWithProfileTools,
   runWithSessionId,
 } from '../../srv/request-session';
+import { liveSession } from './helpers/canonical-rag';
 
 let plannerText = '';
 beforeAll(async () => {
@@ -123,6 +130,7 @@ test('hard planner sends all nine control tools, hub prompt, and follows getSmar
     expect(result.ok && result.value.content).toBe('first');
     expect(first.tools.flat().sort()).toEqual(
       [
+        ...ragToolNames,
         'delegate_task',
         'deliver',
         'get_task',
@@ -148,6 +156,127 @@ test('hard planner sends all nine control tools, hub prompt, and follows getSmar
     releasePlannerAgent(planner);
   }
 });
+
+test.each([false, true])(
+  'production planner records record_add results once (error: %s)',
+  async (invalid) => {
+    const seen: string[] = [];
+    const records: ToolCallRecord[] = [];
+    const response: ILlm['chat'] = async (messages) => {
+      const results = messages.filter((message) => message.role === 'tool');
+      if (results.length) {
+        seen.push(...results.map((message) => String(message.content)));
+        return { ok: true, value: { content: 'done', finishReason: 'stop' } };
+      }
+      return {
+        ok: true,
+        value: {
+          content: '',
+          toolCalls: [
+            {
+              id: 'add',
+              name: 'record_add',
+              arguments: {
+                collection: 'planner-results',
+                text: invalid ? '' : 'planner generated record',
+              },
+            },
+          ],
+          finishReason: 'tool_calls',
+        },
+      };
+    };
+    const model: ILlm = {
+      model: `planner-write-${invalid}`,
+      chat: response,
+      streamChat: async function* (messages, tools, options) {
+        yield await response(messages, tools, options);
+      },
+    };
+    jest.mocked(makeHubLlm).mockResolvedValue(model);
+    initProviders(await startProviders(config));
+    await getSmartAgent(model.model);
+    const planner = await buildPlannerAgent(config, plannerText);
+    try {
+      await runWithSessionId(
+        liveSession('alice', `planner-write-${invalid}`),
+        () =>
+          new DialogueRagMcpClient({
+            listTools: async () => ({ ok: true, value: [] }),
+            callTool: async () => {
+              throw new Error('Unexpected external call');
+            },
+          }).callTool('collection_create', {
+            name: 'planner-results',
+            scope: 'user',
+          }),
+        [],
+        'alice',
+      );
+      await runWithSessionId(
+        liveSession('alice', `planner-write-${invalid}`),
+        () => planner.process([{ role: 'user', content: 'save this' }]),
+        [],
+        'alice',
+        {
+          admin: false,
+          channel: 'openai',
+          onToolResult: (record) => records.push(record),
+        },
+      );
+      const clients = new Set<RecordingMcpClient>();
+      const callTool = RecordingMcpClient.prototype.callTool;
+      const calls = jest
+        .spyOn(RecordingMcpClient.prototype, 'callTool')
+        .mockImplementation(function (
+          this: RecordingMcpClient,
+          ...args: Parameters<RecordingMcpClient['callTool']>
+        ) {
+          clients.add(this);
+          return callTool.apply(this, args);
+        });
+      try {
+        for (let turn = 0; turn < 30; turn++) {
+          await runWithSessionId(
+            liveSession('alice', `planner-write-${invalid}`),
+            () =>
+              planner.process([{ role: 'user', content: 'save again' }], {
+                trace: { traceId: `turn-${turn}` },
+              }),
+            [],
+            'alice',
+          );
+        }
+        expect(clients.size).toBe(1);
+        for (const client of clients) {
+          expect(client).toMatchObject({ deltas: new Map() });
+        }
+      } finally {
+        calls.mockRestore();
+      }
+      expect(records).toHaveLength(1);
+      const result = records[0].result;
+      expect(Boolean(result.isError)).toBe(invalid);
+      expect(seen).toHaveLength(31);
+      expect(seen[0]).toEqual(result.content);
+      expect(JSON.parse(seen[0])).toEqual(
+        z.object({ structuredContent: z.json() }).parse(result)
+          .structuredContent,
+      );
+      expect(JSON.parse(seen[0])).toMatchObject(
+        invalid
+          ? { result: expect.any(String), error: { code: expect.any(String) } }
+          : {
+              result: 'Record added.',
+              record: expect.any(String),
+              collection: expect.any(String),
+            },
+      );
+    } finally {
+      releasePlannerAgent(planner);
+    }
+  },
+);
 
 test('dialogue tool-loop offers hub storage to executor and only readback to checker', async () => {
   const model = llm('worker');
@@ -188,8 +317,8 @@ test('dialogue tool-loop offers hub storage to executor and only readback to che
     );
     expect([...new Set(model.tools.flat())].sort()).toEqual(
       name === 'executor'
-        ? ['rag_add', 'rag_correct', 'rag_deprecate', 'rag_list']
-        : ['rag_list'],
+        ? [...ragToolNames].sort()
+        : ragToolNames.filter((tool) => ragToolEffect(tool) === 'read').sort(),
     );
   }
   expect(model.messages.join('\n')).toContain(
@@ -216,7 +345,7 @@ test.each(['adaptive', 'dialogue'] as const)(
   '%s tool loop sends capped text to the model',
   async (coordinator) => {
     const seen: string[] = [];
-    const name = 'rag_list';
+    const name = 'rag_read';
     const modelName = `cap-${coordinator}`;
     const response: ILlm['chat'] = async (messages, tools) => {
       const results = messages.filter((m) => m.role === 'tool');
@@ -288,12 +417,16 @@ test.each(['adaptive', 'dialogue'] as const)(
       cappedConfig,
     );
     await runWithSessionId(
-      'cap-test',
+      liveSession('alice', 'cap-test'),
       () =>
         runWithDialogueRagTools(async () => {
-          await client.callTool('rag_add', {
+          await client.callTool('collection_create', {
+            name: 'results',
+            scope: 'user',
+          });
+          await client.callTool('record_add', {
             collection: 'results',
-            id: 'large',
+            record: 'large',
             text: 'x'.repeat(1000),
           });
           await worker.run({
@@ -429,7 +562,7 @@ test('fresh arbitrary worker composes base, profile, then one invariant library 
     selectedConfig,
   );
   const created = await runWithProfileTools(
-    new AgentToolPermissions(['rag_list']),
+    new AgentToolPermissions(['collection_records']),
     () =>
       handle.profileRunner.createWorker({
         workerBase: 'BASE_MARK',
@@ -438,7 +571,7 @@ test('fresh arbitrary worker composes base, profile, then one invariant library 
           description: 'Research',
           systemPrompt: 'PROFILE_MARK',
           result: 'report',
-          tools: { deny: ['rag_add'] },
+          tools: { deny: ['record_add'] },
         },
       }),
   );

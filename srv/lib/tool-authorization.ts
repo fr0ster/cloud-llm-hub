@@ -1,5 +1,5 @@
 import { isReadOnlyTools, profileToolAllowed } from '../request-session';
-import { externalRagWriteNames } from './external-rag-write-names';
+import { isRagTool, ragToolEffect } from './rag-tool-catalogue';
 /**
  * Execution-time authorization for MCP tools.
  *
@@ -45,10 +45,6 @@ export function assertToolAllowed(
   allowed: readonly ExpositionLevel[] | undefined,
   annotations?: ToolEffectAnnotations,
 ): void {
-  if (externalRagWriteNames.has(toolName))
-    throw new ToolAuthorizationError(
-      'External agent write tools are unavailable to internal LLMs.',
-    );
   if (!profileToolAllowed(toolName)) {
     throw new ToolAuthorizationError(
       `Tool "${toolName}" was not executed: the agent profile forbids it.`,
@@ -59,6 +55,7 @@ export function assertToolAllowed(
       `Tool "${toolName}" was not executed: checker tools are read-only.`,
     );
   }
+  if (isRagTool(toolName)) return;
   if (!allowed || allowed.length === 0) {
     throw new ToolAuthorizationError(
       `Tool "${toolName}" was not executed: the caller's permissions could not be determined. ` +
@@ -103,6 +100,7 @@ export function isReadOnlyTool(
   name: string,
   annotations?: ToolEffectAnnotations,
 ): boolean {
+  if (isRagTool(name)) return ragToolEffect(name) === 'read';
   if (
     [
       'RuntimeRunClass',
@@ -123,7 +121,6 @@ export function isReadOnlyTool(
   )
     return false;
   return (
-    name === 'rag_list' ||
     /^(Get|Read|Search|Check|List|Find|Describe|Validate)/.test(name) ||
     [
       // Installed runtime handlers only retrieve existing evidence; no execution.

@@ -10,6 +10,7 @@ import cds from '@sap/cds';
 import type { Request, Response, Router } from 'express';
 import { z } from 'zod';
 import { getAgentConfig } from './agent-config';
+import { executeRagTool } from './agent-mcp-rag';
 import {
   normalizeLogicalId,
   resolveRouteId,
@@ -26,6 +27,7 @@ import {
 } from './lib/collection-toggle';
 import { withCollectionRestScope } from './lib/collection-write-scope';
 import { leaseSession } from './lib/gatekeeper';
+import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import {
   addRagRecord,
   createRagCollection,
@@ -42,18 +44,16 @@ import {
   doorRefusalSentence,
   sessionClosedText,
 } from './lib/throttle-surfacing';
+import { requestMeasurement } from './lib/usage/request-records';
+import { usageRuntime } from './lib/usage/runtime';
 import { ensurePresets } from './presets';
 import type { CollectionRegistry } from './rag-collections';
 import { sessionCollectionTtlMs } from './rag-collections';
-import {
-  buildRagToolSchemas,
-  dispatchRagTool,
-  getRagToolNames,
-} from './rag-tool-dispatcher';
-import { runWithSessionId } from './request-session';
+import { isReadOnlyTools, profileToolAllowed } from './request-session';
 import {
   carriesSessionHeader,
   honouredSessionId,
+  resolveSessionKey,
   sessionIdOf,
   type WithSession,
 } from './session-id';
@@ -522,7 +522,7 @@ export function registerRagRoutes(
       const isContentWrite =
         req.method !== 'GET' &&
         !req.path.endsWith('/query') &&
-        req.path !== '/enabled';
+        !req.path.endsWith('/enabled');
 
       // Waits for the restore of persistent collections; while it has failed
       // every collection route is a 503 "collections unavailable: <cause>".
@@ -1137,10 +1137,10 @@ export function registerRagRoutes(
   );
 
   // -------------------------------------------------------------------
-  // External-tool dispatch (rag_add / rag_correct / rag_deprecate)
+  // Canonical RAG tool catalogue and dispatch
   // -------------------------------------------------------------------
 
-  // GET /v1/rag/tools — OpenAI-format schemas for body.tools
+  // GET /v1/rag/tools — eligible canonical OpenAI-format definitions
   router.get('/rag/tools', (_req: Request, res: Response) => {
     json(res, 200, { tools: buildRagToolSchemas() });
   });
@@ -1150,33 +1150,51 @@ export function registerRagRoutes(
     '/rag/tool/:name',
     async (req: Request<{ name: string }>, res: Response) => {
       const name = req.params.name;
-      if (!getRagToolNames().includes(name as never)) {
-        error(res, 404, `Unknown RAG tool: ${name}`);
-        return;
-      }
-      const sid = sessionIdOf(req);
-      // rag_add may create a session collection, so a place is reserved for the
-      // caller's session before it can.
-      const lease = sid
-        ? leaseSession(getUserId(), sid, 'rag', {
-            presented: (req as Request & WithSession).sessionMinted === false,
-          })
-        : undefined;
-      if (lease && isRefusal(lease)) {
-        refuseLease(res, lease);
-        return;
-      }
-      try {
-        const result = await runWithSessionId(
-          sid,
-          () => dispatchRagTool(registry, name, req.body ?? {}),
-          undefined,
-          getUserId(),
+      if (!isRagTool(name)) {
+        error(
+          res,
+          404,
+          `Unknown RAG tool: ${name}. Use GET /v1/rag/tools for the canonical catalogue; legacy names were removed.`,
         );
-        json(res, result.ok ? 200 : (result.status ?? 400), result);
-      } finally {
-        lease?.release();
+        return;
       }
+      const parsedSession = z
+        .object({ session: z.string().optional() })
+        .safeParse(req.body);
+      const sessionKey =
+        (parsedSession.success ? parsedSession.data.session : undefined) ??
+        resolveSessionKey(req).key;
+      const userId = getUserId();
+      const traceId = requestMeasurement(req)?.traceId;
+      const result = await executeRagTool(
+        {
+          registry,
+          userId,
+          admin: isAdmin(),
+          sessionKey,
+          internal: false,
+          trustedAdmission: false,
+          permissions: { allows: profileToolAllowed },
+          readOnly: isReadOnlyTools(),
+          traceId,
+          channel: 'rest',
+          measurement: usageRuntime()
+            ?.forSession({ userId, sessionId: sessionKey ?? '' })
+            .with({ traceId }),
+        },
+        name,
+        req.body ?? {},
+      );
+      const failure = result.structuredContent;
+      json(
+        res,
+        failure && typeof failure.error === 'object'
+          ? failure.error.status
+          : result.isError
+            ? 400
+            : 200,
+        result,
+      );
     },
   );
 

@@ -1,4 +1,5 @@
 import {
+  type CollectionLookup,
   isPhysicalId,
   normalizeLogicalId,
   resolveByName,
@@ -10,8 +11,16 @@ import {
 
 // Minimal registry stub: returns the meta fields the resolvers read.
 function stubRegistry(
-  ids: Record<string, { owner?: string; scope?: string; sessionId?: string }>,
-) {
+  ids: Record<
+    string,
+    {
+      owner?: string;
+      scope?: 'global' | 'user' | 'session';
+      sessionId?: string;
+      collectionKind?: 'knowledge' | 'agents';
+    }
+  >,
+): CollectionLookup {
   return {
     getCollection: (id: string) =>
       id in ids
@@ -20,9 +29,10 @@ function stubRegistry(
             owner: ids[id].owner,
             scope: ids[id].scope,
             sessionId: ids[id].sessionId,
+            collectionKind: ids[id].collectionKind,
           }
         : null,
-  } as any;
+  };
 }
 
 const aliceKey = sanitizeUserKey('alice');
@@ -127,6 +137,45 @@ describe('resolveByName', () => {
 });
 
 describe('resolveRouteId', () => {
+  test.each([false, true])(
+    'global names preserve main private resolution forWrite=%s',
+    async (forWrite) => {
+      const up = userCollectionId('notes', 'alice');
+      const sp = sessionCollectionId('notes', 'alice', 'sess1');
+      const entries = {
+        notes: { scope: 'global' as const },
+        [up]: { owner: 'alice', scope: 'user' as const },
+        [sp]: { owner: 'alice', scope: 'session' as const, sessionId: 'sess1' },
+      };
+      expect(
+        await resolveRouteId(
+          stubRegistry(entries),
+          'notes',
+          'alice',
+          'sess1',
+          forWrite,
+        ),
+      ).toBe(sp);
+      expect(
+        await resolveRouteId(
+          stubRegistry({ notes: entries.notes, [up]: entries[up] }),
+          'notes',
+          'alice',
+          'sess1',
+          forWrite,
+        ),
+      ).toBe(up);
+      expect(
+        await resolveRouteId(
+          stubRegistry({ notes: entries.notes }),
+          'notes',
+          'alice',
+          'sess1',
+          forWrite,
+        ),
+      ).toBe(forWrite ? sp : undefined);
+    },
+  );
   test('physical id (has __) -> exact lookup', async () => {
     const reg = stubRegistry({ [`result__u_${aliceKey}`]: { owner: 'alice' } });
     expect(
@@ -162,5 +211,17 @@ describe('resolveRouteId', () => {
     expect(
       await resolveRouteId(reg, otherSessId, 'alice', 'sessOLD', false),
     ).toBe(otherSessId); // matching session OK
+  });
+  test('global agents collection wins over a private same-name collection', async () => {
+    const reg = stubRegistry({
+      agents: { scope: 'global', collectionKind: 'agents' },
+      [userCollectionId('agents', 'alice')]: { owner: 'alice', scope: 'user' },
+    });
+    expect(await resolveRouteId(reg, 'agents', 'alice', undefined, false)).toBe(
+      'agents',
+    );
+    expect(await resolveRouteId(reg, 'agents', 'alice', undefined, true)).toBe(
+      'agents',
+    );
   });
 });

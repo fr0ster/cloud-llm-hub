@@ -206,7 +206,11 @@ export async function streamDialogue(opts: {
         if (!chunk.ok) throw chunk.error;
         const v = chunk.value;
         if (v.clhUsage) deliveredUsage.push(v.clhUsage);
-        if (v.clhMessageId) comment('message-id', v.clhMessageId);
+        if (v.clhToolResult) {
+          comment('tool-result', JSON.stringify(v.clhToolResult));
+          if (!stream.out.detached && !stream.signal.aborted)
+            v.clhToolResultWritten?.();
+        } else if (v.clhMessageId) comment('message-id', v.clhMessageId);
         else if (v.clhMessageEnd) {
           if (stream.measurement) explicitMessages = true;
           comment('message-end', v.clhMessageEnd);
@@ -248,6 +252,10 @@ export async function streamDialogue(opts: {
               item.written();
               stream.measurement?.messageDelivered();
             }
+          } else if (item.kind === 'tool-result') {
+            comment('tool-result', JSON.stringify(item.record));
+            if (!stream.out.detached && !stream.signal.aborted)
+              item.written?.();
           } else if (item.kind === 'end') {
             stream.measurement?.end(item.reason);
             if (item.reason === 'error') {

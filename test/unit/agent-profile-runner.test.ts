@@ -199,3 +199,21 @@ test('a child created under a parent ceiling retains that ceiling when invoked l
   expect(f.offered).toEqual([['GetTable']]);
   expect(f.calls).toEqual([]);
 });
+
+it.each(['rag_list', 'rag_add', 'rag_correct', 'rag_deprecate'])(
+  'reports migration for stored policy %s before building a worker',
+  async (name: string) => {
+    const { runner, preambles } = fixture();
+    for (const tools of [{ allow: [name] }, { deny: [name] }]) {
+      const result = await runner.createWorker({
+        profile: { ...profile, tools },
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error('Expected invalid policy');
+      expect(result.error.code).toBe('invalid');
+      expect(result.error.message).toContain(name);
+      expect(result.error.message).toContain('stored agents profile');
+    }
+    expect(preambles).toEqual([]);
+  },
+);

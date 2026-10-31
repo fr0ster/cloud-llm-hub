@@ -522,6 +522,10 @@ async function executeStepRun(
             ),
           history,
           userId,
+          {
+            admin: cds.context?.user?.is('MCP_Admin') ?? false,
+            channel: 'mcp-agent',
+          },
         ),
       );
     });

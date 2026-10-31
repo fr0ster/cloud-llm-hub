@@ -313,7 +313,7 @@ describe('A. Cross-user session-scoped RAG isolation', () => {
     expect(res._status).toBe(404);
   });
 
-  test('rag_add for User A and User B with same raw session id land in different physical ids', () => {
+  test('record_add for User A and User B with same raw session id land in different physical ids', () => {
     const rawSessionId = 's1';
 
     const alicePhysId = sessionCollectionId(
@@ -462,7 +462,7 @@ describe('B. Cross-session-within-one-user RAG isolation', () => {
     expect(res._status).toBe(404);
   });
 
-  test('rag_add in session s1 and s2 for same user lands in different physical ids', () => {
+  test('record_add in session s1 and s2 for same user lands in different physical ids', () => {
     const sess1PhysId = sessionCollectionId(
       'result',
       'alice@example.com',

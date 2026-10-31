@@ -21,7 +21,7 @@ export interface OutputSink {
 export function detachedSink(res: Response): OutputSink {
   let detached = false;
   const guard = (fn: () => void) => {
-    if (detached || res.writableEnded) return;
+    if (detached || res.writableEnded || res.destroyed) return;
     try {
       fn();
     } catch {
@@ -30,7 +30,7 @@ export function detachedSink(res: Response): OutputSink {
   };
   return {
     get detached() {
-      return detached;
+      return detached || res.writableEnded || res.destroyed;
     },
     detach() {
       detached = true;

@@ -1,3 +1,12 @@
+jest.mock('../../srv/lib/session-lifecycle', () => ({
+  resolveSession: async (userId: string, key: string) =>
+    jest
+      .requireActual<typeof import('../../srv/lib/long-session')>(
+        '../../srv/lib/long-session',
+      )
+      .longSessions()
+      .get(userId, key),
+}));
 /**
  * The collection registry over a real PgVectorRagProvider (shared layout) on
  * PGlite: lifecycle, backend-first document mutations, isolation of two users
@@ -45,7 +54,7 @@ import {
 import { ensurePresets, presetCollectionId } from '../../srv/presets';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { registerRagRoutes } from '../../srv/rag-handler';
-import { dispatchRagTool } from '../../srv/rag-tool-dispatcher';
+import { callRag, liveSession } from './helpers/canonical-rag';
 import { type PgliteHandle, startPglite } from './helpers/pglite';
 import {
   findRoute,
@@ -377,7 +386,7 @@ describe('a failing backend write leaves memory untouched (Review Focus 2)', () 
     expect(await reg.getDocument(meta.id, 'b2')).toBeNull();
   });
 
-  it('update (also what rag_correct calls)', async () => {
+  it('update (also what record_update calls)', async () => {
     await expect(
       reg.updateDocument(meta.id, 'd1', {
         text: 'EMBED_FAIL text',
@@ -391,7 +400,7 @@ describe('a failing backend write leaves memory untouched (Review Focus 2)', () 
     expect((await backendDoc(meta.id, 'd1'))?.text).toBe('original text');
   });
 
-  it('delete (also what rag_deprecate calls)', async () => {
+  it('delete (also what record_delete calls)', async () => {
     down = true;
     await expect(reg.deleteDocument(meta.id, 'd1')).rejects.toBeInstanceOf(
       CollectionBackendError,
@@ -636,12 +645,15 @@ describe('fix round 1', () => {
     await conflict(reg.updateDocument(meta.id, 'd1', { text: 'late' }));
     await conflict(reg.deleteDocument(meta.id, 'd1'));
     expect(
-      await dispatchRagTool(reg, 'rag_add', {
+      await callRag(reg, 'record_add', {
         collection: 'going',
-        id: 'late-fact',
+        record: 'late-fact',
         text: 'late',
       }),
-    ).toMatchObject({ ok: false, status: 409 });
+    ).toMatchObject({
+      isError: true,
+      structuredContent: { error: { status: 409 } },
+    });
     const bulk = await reg.addDocumentsBulk(
       meta.id,
       [{ id: 'b1', text: 'late', metadata: {} }],
@@ -692,25 +704,28 @@ describe('fix round 1', () => {
     beforeEach(async () => {
       mockCdsContext.user = { id: 'alice', is: () => false };
       await reg.createCollection(userMeta('kb', 'alice'));
-      await dispatchRagTool(reg, 'rag_add', {
+      await callRag(reg, 'record_add', {
         collection: 'kb',
-        id: 'fact',
+        record: 'fact',
         text: 'the sky is blue',
       });
     });
 
     it.each([
-      ['rag_add', { collection: 'kb', id: 'other', text: 'grass is green' }],
       [
-        'rag_correct',
-        { collection: 'kb', id: 'fact', newText: 'red', reason: 'r' },
+        'record_add',
+        { collection: 'kb', record: 'other', text: 'grass is green' },
       ],
-      ['rag_deprecate', { collection: 'kb', id: 'fact', reason: 'r' }],
+      ['record_update', { collection: 'kb', record: 'fact', text: 'red' }],
+      ['record_delete', { collection: 'kb', record: 'fact' }],
     ])('%s with the backend down is 502', async (name, args) => {
       down = true;
-      const result = await dispatchRagTool(reg, name, args);
+      const result = await callRag(reg, name, args);
       down = false;
-      expect(result).toMatchObject({ ok: false, status: 502 });
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: { error: { status: 502 } },
+      });
     });
 
     it('/rag/tool/:name answers with that status, and 400 for a plain failure', async () => {
@@ -722,8 +737,9 @@ describe('fix round 1', () => {
       const failed = makeRes();
       await route.handler(
         makeReq({
-          params: { name: 'rag_correct' },
-          body: { collection: 'kb', id: 'fact', newText: 'red', reason: 'r' },
+          headers: { 'x-clh-session': liveSession() },
+          params: { name: 'record_update' },
+          body: { collection: 'kb', record: 'fact', text: 'red' },
         }),
         failed.res,
       );
@@ -733,12 +749,13 @@ describe('fix round 1', () => {
       const plain = makeRes();
       await route.handler(
         makeReq({
-          params: { name: 'rag_correct' },
-          body: { collection: 'kb', id: 'missing', newText: 'x', reason: 'r' },
+          headers: { 'x-clh-session': liveSession() },
+          params: { name: 'record_update' },
+          body: { collection: 'kb', record: 'missing', text: 'x' },
         }),
         plain.res,
       );
-      expect(plain._status).toBe(400);
+      expect(plain._status).toBe(404);
       expect(plain._body).not.toHaveProperty('status');
     });
   });
@@ -1109,13 +1126,12 @@ describe('restore at startup (Task 7)', () => {
       }
     }
     expect(
-      await dispatchRagTool(reg, 'rag_correct', {
+      await callRag(reg, 'record_update', {
         collection: 'secret',
-        id: 'd1',
-        newText: 'stolen',
-        reason: 'r',
+        record: 'd1',
+        text: 'stolen',
       }),
-    ).toMatchObject({ ok: false });
+    ).toMatchObject({ isError: true });
     expect((await backendDoc(a.id, 'd1'))?.text).toBe('alice only');
   });
 
@@ -1504,23 +1520,24 @@ describe('Task 7 fix round 1', () => {
     ['persistence off', () => new CollectionRegistry()],
     ['persistence on', () => reg],
   ])('get-or-create under concurrency (%s)', (_mode, make) => {
-    it('two parallel rag_add on a new collection: both succeed, one collection', async () => {
+    it('two parallel record_add after explicit creation: both succeed, one collection', async () => {
       const r = make();
+      await callRag(r, 'collection_create', { name: 'par', scope: 'user' });
       const results = await Promise.all([
-        dispatchRagTool(r, 'rag_add', {
+        callRag(r, 'record_add', {
           collection: 'par',
-          id: 'a',
+          record: 'a',
           text: 'one',
         }),
-        dispatchRagTool(r, 'rag_add', {
+        callRag(r, 'record_add', {
           collection: 'par',
-          id: 'b',
+          record: 'b',
           text: 'two',
         }),
       ]);
-      expect(results).toEqual([
-        { ok: true, id: 'a' },
-        { ok: true, id: 'b' },
+      expect(results).toMatchObject([
+        { structuredContent: { record: 'a', created: true } },
+        { structuredContent: { record: 'b', created: true } },
       ]);
       const mine = (await r.listCollections('alice')).filter(
         (c) => c.logicalId === 'par',

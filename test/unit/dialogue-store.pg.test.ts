@@ -26,7 +26,12 @@ import {
   createCollectionPersistence,
   WRITTEN_BY,
 } from '../../srv/lib/collection-persistence';
-import { ProviderDialogueStore } from '../../srv/lib/dialogue-store';
+import {
+  DIALOGUE_TOOL_CONTRACT_VERSION,
+  type HubDialogueState,
+  migrateDialogueToolContract,
+  ProviderDialogueStore,
+} from '../../srv/lib/dialogue-store';
 import { type PgliteHandle, startPglite } from './helpers/pglite';
 
 jest.setTimeout(120_000);
@@ -65,7 +70,8 @@ function newProvider(): PgVectorRagProvider {
 
 function scopedStore(store: ProviderDialogueStore) {
   return {
-    save: (id: string, state: typeof record) => store.save('alice', id, state),
+    save: (id: string, state: HubDialogueState) =>
+      store.save('alice', id, state),
     load: (id: string) => store.load('alice', id),
     delete: (id: string) => store.delete('alice', id),
   };
@@ -355,4 +361,14 @@ it('persists hub outbox with state and restores it through a new provider', asyn
     dimension: DIM,
   }).load('alice', 'replay');
   expect(restored).toEqual({ ...record, outbox });
+});
+
+it('persists the migrated tool contract marker through the provider envelope', async () => {
+  const migrated = migrateDialogueToolContract(record);
+  await newStore().save('tool-contract', migrated);
+  const restored = await newStore().load('tool-contract');
+  expect(restored).toEqual(migrated);
+  expect(restored?.toolContractVersion).toBe(DIALOGUE_TOOL_CONTRACT_VERSION);
+  if (!restored) throw new Error('missing restored tool contract');
+  expect(migrateDialogueToolContract(restored)).toBe(restored);
 });

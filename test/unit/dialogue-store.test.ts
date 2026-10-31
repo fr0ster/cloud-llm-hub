@@ -14,12 +14,14 @@ import type { DialogueState } from '@mcp-abap-adt/llm-agent';
 import { DialogueSession } from '@mcp-abap-adt/llm-agent-libs';
 import {
   createDialogueStateStore,
+  DIALOGUE_TOOL_CONTRACT_VERSION,
   deleteDialogueState,
   dialogueByteLimit,
   getDialogueStoreBackend,
   hasDialogueState,
   initializeDialogueStore,
   MemoryDialogueStore,
+  migrateDialogueToolContract,
   touchDialogueState,
 } from '../../srv/lib/dialogue-store';
 import { loadSessionConfig } from '../../srv/lib/session-config';
@@ -631,4 +633,102 @@ it('round-trips empty tool evidence and legacy tasks without evidence', async ()
   const restored = await store.load('alice', 'trace-compatibility');
   expect(restored).toEqual(current);
   expect(restored?.tasks[0]).not.toHaveProperty('toolTrace');
+});
+
+it.each(['rag_list', 'rag_add', 'rag_correct', 'rag_deprecate'])(
+  'interrupts old queued %s work without replaying writes on library restore',
+  async (name: string) => {
+    const legacy = {
+      ...state,
+      conversation: [
+        {
+          role: 'assistant' as const,
+          content: null,
+          tool_calls: [
+            {
+              id: 'old-call',
+              type: 'function' as const,
+              function: {
+                name,
+                arguments: '{"id":"tech-spec","newText":"old"}',
+              },
+            },
+          ],
+        },
+      ],
+      tasks: [
+        {
+          id: 't1',
+          worker: 'executor',
+          goal: name,
+          state: 'queued' as const,
+          createdAt: 1,
+        },
+        {
+          id: 't2',
+          worker: 'executor',
+          goal: 'completed write',
+          state: 'done' as const,
+          output: 'saved tech-spec',
+          createdAt: 1,
+        },
+      ],
+      plan: {
+        version: 1 as const,
+        status: 'active' as const,
+        steps: [
+          { id: 's1', goal: name, state: 'pending' as const, taskIds: ['t1'] },
+        ],
+      },
+    };
+    const migrated = migrateDialogueToolContract(legacy);
+    expect(migrated.toolContractVersion).toBe(DIALOGUE_TOOL_CONTRACT_VERSION);
+    expect(migrated.conversation).toEqual(legacy.conversation);
+    expect(migrated.tasks[1]).toEqual(legacy.tasks[1]);
+    expect(migrated.tasks[0].state).toBe('interrupted');
+    expect(
+      typeof migrated.plan === 'object' && migrated.plan.steps[0].state,
+    ).toBe('blocked');
+    expect(migrateDialogueToolContract(migrated)).toBe(migrated);
+    const run = jest.fn(async () => ({ output: 'must not run' }));
+    const session = await DialogueSession.open({
+      id: 'migration',
+      store: {
+        load: async () => migrated,
+        save: async () => {},
+        delete: async () => {},
+      },
+      board: {
+        workers: new Map([
+          [
+            'executor',
+            {
+              name: 'executor',
+              description: '',
+              capabilities: { contextPolicy: 'optional' as const },
+              run,
+            },
+          ],
+        ]),
+      },
+      planner: {
+        process: async () => ({
+          ok: true,
+          value: { content: 'Replan with canonical tools' },
+        }),
+      },
+    });
+    await session.send('Review existing record IDs before replanning');
+    expect(run).not.toHaveBeenCalled();
+    expect(session.snapshot().tasks[0].state).toBe('interrupted');
+    expect(session.snapshot().tasks[1].output).toBe('saved tech-spec');
+  },
+);
+
+it('persists the tool contract marker without changing completed evidence', async () => {
+  const store = new MemoryDialogueStore();
+  const migrated = migrateDialogueToolContract(state);
+  await store.save('alice', 'contract', migrated);
+  expect(await store.load('alice', 'contract')).toEqual(migrated);
+  expect(migrated.conversation).toEqual(state.conversation);
 });

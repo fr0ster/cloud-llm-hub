@@ -691,6 +691,7 @@ destination, under a server-issued key. Its TTL counts from the last request.
 | Call | Answer |
 |---|---|
 | `POST /v1/session`, body `{ "destination"?: string }` | `201 { session, ttlSeconds, destination }`; the key also comes back in the `clh_session` cookie |
+| `POST /v1/chat/completions` or `POST /v1/messages` with body `session: "<key>"` | served in that session; body wins over header and cookie |
 | any `/v1` request with `x-clh-session: <key>` | served in that session; the header wins over the cookie |
 | `DELETE /v1/session` (or `POST /v1/session/close`) with the key | `204` once the session is closed: ABAP session, history, session collections and record are gone |
 
@@ -701,7 +702,7 @@ Anthropic envelope alike:
 | Code | Status | When |
 |---|---|---|
 | `SESSION_REQUIRED` | 400 | no key, plain mode off |
-| `SESSION_NOT_FOUND` | 404 | the header names no open session (closed, expired, never opened, another user's); an unknown cookie is ignored |
+| `SESSION_NOT_FOUND` | 404 | the body or header names no open session (closed, expired, never opened, another user's); an unknown cookie is ignored |
 | `SESSION_LIMIT` | 429 | an open (or a revival) beyond `LLM_AGENT_MAX_SESSIONS` / `LLM_AGENT_MAX_SESSIONS_PER_USER` |
 | `SESSION_BUSY` | 429 | the session's queue (`LLM_AGENT_SESSION_QUEUE`) is full |
 | `SESSION_STORE_UNAVAILABLE` | 503, `Retry-After: 5` | a revival asked for before the hub's providers are ready |
@@ -730,8 +731,8 @@ destination }`, `execute_step({ session, task, destination? })` runs in it (a
 `session_close({ session })` closes it. Errors come back as tool errors with the
 codes above.
 
-The external agent endpoint additionally supports text knowledge writes. These five
-strict-object tools accept an optional nonempty `session` argument. A live,
+All channels share the same eleven RAG tools. The five content/collection writes below
+use strict objects and accept an optional nonempty `session` argument. A live,
 caller-owned session is required even for user collections. Key precedence is
 `session`, `x-clh-session`, then the `clh_session` cookie; obtain the key with
 `session_open`. Transport `mcp-session-id` and legacy `x-session-id` are not keys.
@@ -742,7 +743,7 @@ UTF-8 JSON-serialized arguments, including attributes and session, must fit in
 |---|---|---|---|
 | `collection_create` | `name: string`, `scope: "user" \| "session"` | `session` | `collection`, normalized `name`, `scope`, `created: boolean` |
 | `collection_delete` | `collection: string` | `session` | `collection`, `deleted: true` |
-| `record_add` | `collection: string`, `text: string` | `title: string`, `source: string`, `session` | `collection`, `record`, `created: true` |
+| `record_add` | `collection: string`, `text: string` | `record: string`, `title: string`, `source: string`, `session` | `collection`, `record`, `created: true` |
 | `record_update` | `collection: string`, `record: string`, `text: string` | `title: string`, `source: string`, `session` | `collection`, `record`, `updated: true` |
 | `record_delete` | `collection: string`, `record: string` | `session` | `collection`, `record`, `deleted: true` |
 
@@ -750,7 +751,8 @@ Required strings are nonempty; text is preserved verbatim. Empty optional title
 and source strings are allowed. Source is attribution only (no URL fetch).
 Create normalizes the name as REST does and returns a physical collection ID.
 Repeated create returns `created: false` and the existing knowledge collection.
-Add generates a UUID. Update replaces the full text, retains omitted title/source
+Add generates a UUID unless optional `record` supplies an exact physical ID.
+An occupied ID returns `RECORD_EXISTS` (409) without writing. Update replaces the full text, retains omitted title/source
 and all other stored metadata and creation time, and reads the authoritative
 backend record first. Delete removes exactly one document, including one old
 upload chunk. No record write implicitly creates a collection.
@@ -759,9 +761,13 @@ All five reject visible agents collections with `TOOL_FORBIDDEN`, including
 normalized-name collisions on create. Foreign user and other-session targets
 remain 404, including for admins. Existing global mutations require `MCP_Admin`
 only where the existing REST resolver exposes them; global creation and new
-global knowledge lookup are unavailable. These tools are excluded from internal
-planner, executor, checker, dispatcher and dialogue tool catalogues and retrieval;
-forged internal calls fail before forwarding.
+global knowledge lookup are unavailable. Tool collection arguments use the REST
+resolver: bare knowledge names resolve only within the caller's private namespace,
+and a global knowledge name alone returns 404 even for admins. Search retains
+exact registry-id lookup. Internal planner, executor, dialogue and
+all coordinators use the same catalogue and executor. Checker/verdict and read-only
+profiles receive only `rag_search`, `rag_read`, `collections_list`, and `collection_records`;
+profile allow/deny and parent ceilings apply to every listing and execution.
 
 Schema violations (missing fields, wrong types, invalid scope, extra fields, or empty required strings) are rejected by the MCP SDK before the callback as text errors with `isError: true`; they are not measured. Semantic errors, including the 10 MiB argument limit and reserved logical names, return structured errors with `structuredContent.result` from the measured callback.
 
@@ -786,7 +792,7 @@ Semantic errors set `isError: true` and carry
 `structuredContent: { result, error: { code, message, status } }` without echoing
 record text. Codes include `INVALID_ARGUMENT` (400), `PAYLOAD_TOO_LARGE` (413),
 `UNAUTHENTICATED` (401), `FORBIDDEN`/`TOOL_FORBIDDEN` (403),
-`COLLECTION_NOT_FOUND`/`RECORD_NOT_FOUND` (404), `EMBEDDING_FAILED` and
+`COLLECTION_NOT_FOUND`/`RECORD_NOT_FOUND` (404), `RECORD_EXISTS` (409), `SESSION_REQUIRED`, `EMBEDDING_FAILED` and
 `BACKEND_ERROR` (operation fallback). Backend RAG codes and backend statuses
 (409/502/503) are preserved. Session failures retain `SESSION_REQUIRED`,
 `SESSION_NOT_FOUND`, `SESSION_LIMIT`, `SESSION_STORE_UNAVAILABLE`,
@@ -1016,7 +1022,7 @@ Reconnects can pass `Last-Event-ID` to skip the rendered prefix.
 
 Session overrides take precedence over collection defaults. They are deleted with session state. Long sessions persist overrides in their session record (SQLite/HANA/PG as configured) and restore them with the destination and history after restart; plain sessions keep overrides in memory, like their destination state.
 
-Request retrieval uses enabled collections; `rag_collections` and `X-Rag-Collections` only narrow that set, including an explicit empty list. A request explicitly selecting its session `uploads` collection can use attached files for that request. Planner knowledge checks enablement on every search, so the next turn observes a toggle. Tool selection and built-in skills use separate tool/skill stores rather than these user collections. Executor history remains session memory. Explicit RAG tools are unchanged: `rag_list` can read a disabled collection when the caller has read access; add/correct/deprecate retain their existing permissions.
+Request retrieval uses enabled collections; `rag_collections` and `X-Rag-Collections` only narrow that set, including an explicit empty list. A request explicitly selecting its session `uploads` collection can use attached files for that request. Planner knowledge checks enablement on every search, so the next turn observes a toggle. Tool selection and built-in skills use separate tool/skill stores rather than these user collections. Executor history remains session memory. Explicit RAG tools share the canonical catalogue on every channel. Disabled content is listed with attributes and reason, without text.
 
 
 ### Record enable/disable
@@ -1056,8 +1062,7 @@ The shared collection query wrapper excludes disabled records for ordinary agent
 collection retrieval (`getRagStores`), collection query/REST search (`getRagStore`),
 and planner knowledge (`RagPlannerKnowledge` over `getRagStore`). It grows the candidate
 window until it finds up to k eligible records or exhausts the backend results.
-`rag_list` reports `enabled` for summaries and individual reads. `rag_correct` preserves
-the disabled flag while updating text in place. No additional LLM tools are introduced.
+`collection_records` and paged `rag_read` expose enabled state; disabled records expose attributes and reason without text. `record_update` preserves existing metadata and the physical ID.
 
 
 ### Agent configuration administration and session selection
@@ -1111,3 +1116,7 @@ from an explicit invalid choice. The selection persists in the session record
 and restores after restart; legacy sessions default to the configured global.
 New profile reads and queued task starts use the current choice; running workers
 keep their snapshots. Agents collections never participate in knowledge context.
+
+Create the target explicitly with `collection_create({ name: "result", scope: "user" })`, then call `record_add({ collection: "result", record: "tech-spec", text: "..." })`. Use user scope for durable results and session scope only for scratch. `record` is the optional stable physical ID; omission generates a UUID. Add is create-only: `RECORD_EXISTS` (409) requires reading the existing record and using `record_update({ collection, record, text })`. Read back with paged `collection_records` and `rag_read` using actual IDs; verify count and scope. Retire reversibly with `record_set_enabled({ collection, id, enabled: false })`; use `record_delete({ collection, record })` only for explicit permanent removal. Updates preserve ID and metadata but add no correction reason, audit history or supersede chain. Disabling does not free an ID. A live owned long session is required for every RAG call.
+
+Plain OpenAI and Anthropic chat clients must open a live caller-owned long session with `POST /v1/session` and bind its returned key with the top-level string body field `session`, `x-clh-session`, or the `clh_session` cookie, in that precedence order. The body field is validated and removed before forwarding upstream; invalid types return 400 and unknown, closed or foreign keys return `SESSION_NOT_FOUND`, as with the header. All eleven RAG tools stay listed but return `SESSION_REQUIRED` without that session. WebUI executes RAG on the server and renders server tool results; browsers must not dispatch them again. Removed tool names in client tool definitions, forced choices or calls return 400 with migration guidance; REST tool dispatch returns 404. Cross-instance `RECORD_EXISTS` protection is not atomic: providers offer upsert without conditional insert; serialization applies within one process.

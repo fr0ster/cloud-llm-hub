@@ -2,11 +2,14 @@ import { toolSearchText } from '@mcp-abap-adt/lib/tool-search';
 import { AgentProfileRunner } from './lib/agent-profile-runner';
 import { AgentProfileSource } from './lib/agent-profile-source';
 import { watchDestinations } from './lib/destination-watch';
-import { externalRagWriteNames } from './lib/external-rag-write-names';
 import { guardLlmOnlyAgent } from './lib/llm-only-guard';
 import { longSessionsIfReady } from './lib/long-session';
+import {
+  isRagTool,
+  ragToolEffect,
+  ragToolNames,
+} from './lib/rag-tool-catalogue';
 import { withToolResultCap } from './lib/tool-result-cap';
-import { getRagToolNames } from './rag-tool-dispatcher';
 /**
  * Agent Manager - SmartAgent lifecycle management
  *
@@ -632,8 +635,6 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       }
       return (
         typeof id === 'string' &&
-        !externalRagWriteNames.has(id.replace(/^tool:/, '')) &&
-        !externalRagWriteNames.has(String(r.metadata.name ?? '')) &&
         profileToolAllowed(id.replace(/^tool:/, '')) &&
         !!r.metadata.exposition &&
         allowed.has(r.metadata.exposition as string) &&
@@ -2540,7 +2541,7 @@ export async function buildEmbeddedMcpAdapter(
     transport: 'embedded',
     listToolsHandler: async () => {
       const list = entries
-        .filter((e) => !externalRagWriteNames.has(e.toolDefinition.name))
+        .filter((e) => !isRagTool(e.toolDefinition.name))
         .map((e) => ({
           name: e.toolDefinition.name,
           annotations: (
@@ -2581,7 +2582,7 @@ export async function buildEmbeddedMcpAdapter(
           ok: true,
           value: result.value.filter(
             (tool) =>
-              !externalRagWriteNames.has(tool.name) &&
+              !isRagTool(tool.name) &&
               profileToolAllowed(tool.name) &&
               (!isReadOnlyTools() ||
                 isReadOnlyTool(tool.name, getToolAnnotations().get(tool.name))),
@@ -2702,16 +2703,14 @@ async function configureDestinationAgentBuilder(
     .withMcpClients([
       mcpAdapter instanceof RecordingMcpClient
         ? mcpAdapter
-        : withToolResultCap(mcpAdapter, config.agent.toolResultMaxChars),
+        : withToolResultCap(
+            new DialogueRagMcpClient(mcpAdapter),
+            config.agent.toolResultMaxChars,
+          ),
     ]);
 
   // Tools RAG store for MCP tool selection (auto-vectorized)
-  if (!opts?.skipRetrieval)
-    builder.setToolsRag(
-      config.agent.chatCoordinator === 'dialogue'
-        ? withDialogueRagTools(toolsRag)
-        : toolsRag,
-    );
+  if (!opts?.skipRetrieval) builder.setToolsRag(withDialogueRagTools(toolsRag));
 
   // Recall of earlier turns. The pipeline already queries `history` on every
   // request; until now nothing wrote to it, so it answered nothing every time.
@@ -2834,9 +2833,11 @@ export async function buildPlannerAgent(
   })
     .withMainLlm(forwardingLlm)
     .withMcpClients([
-      withToolResultCap(
-        new PlannerToolsClient(),
+      new RecordingMcpClient(
+        new DialogueRagMcpClient(new PlannerToolsClient()),
+        undefined,
         config.agent.toolResultMaxChars,
+        false,
       ),
     ])
     .withClassification(false)
@@ -2862,6 +2863,17 @@ export function createAgentProfileSource(
   };
   const sessionId = getRequestSessionId();
   return new AgentProfileSource(getCollectionRegistry(), {
+    catalogue: () => [
+      ...[...getToolExpositionMap().keys()]
+        .filter((name) => !isRagTool(name))
+        .map((name) => ({
+          name,
+          effect: isReadOnlyTool(name, getToolAnnotations().get(name))
+            ? ('read' as const)
+            : ('write' as const),
+        })),
+      ...ragToolNames.map((name) => ({ name, effect: ragToolEffect(name) })),
+    ],
     userId,
     globalCollectionId: profiles.collectionId,
     selectedCollectionId:
@@ -2918,16 +2930,16 @@ function destinationProfileRunner(
 ): AgentProfileRunner {
   const catalogue = () => [
     ...[...getToolExpositionMap().keys()]
-      .filter((name: string) => !externalRagWriteNames.has(name))
+      .filter((name: string) => !isRagTool(name))
       .map((name) => ({
         name,
         effect: isReadOnlyTool(name, getToolAnnotations().get(name))
           ? ('read' as const)
           : ('write' as const),
       })),
-    ...getRagToolNames().map((name) => ({
+    ...ragToolNames.map((name) => ({
       name,
-      effect: name === 'rag_list' ? ('read' as const) : ('write' as const),
+      effect: ragToolEffect(name),
     })),
   ];
   return new AgentProfileRunner({
@@ -2936,9 +2948,7 @@ function destinationProfileRunner(
       new Set(
         catalogue()
           .filter((tool) => {
-            if (externalRagWriteNames.has(tool.name)) return false;
-            if (tool.name.startsWith('rag_'))
-              return Boolean(getRequestUserId());
+            if (isRagTool(tool.name)) return Boolean(getRequestUserId());
             const allowed = connectionALS.getStore()?.exposition;
             return (
               allowed?.some(
@@ -3007,9 +3017,7 @@ export async function buildAgentForDestination(
   // just which tool NAMES ran (a name match alone can't tell an activated
   // create from an inactive one).
   const recMcp = new RecordingMcpClient(
-    config.agent.chatCoordinator === 'dialogue'
-      ? new DialogueRagMcpClient(mcpAdapter, getCollectionRegistry)
-      : mcpAdapter,
+    new DialogueRagMcpClient(mcpAdapter),
     (name) => toolExpositionMap?.get(name),
     config.agent.toolResultMaxChars,
   );

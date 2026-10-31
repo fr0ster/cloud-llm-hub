@@ -5,7 +5,9 @@ description: Write ABAP program overview documentation as a markdown file — so
 
 # abap-overview-format
 
-Save the result to RAG collection `result` using `rag_add`, with id `<PROGRAM-NAME>-overview`, using exactly these sections in this order.
+Use the collection and stable artifact ID requested by the current task or phase; examples never override them. Reuse that collection if it exists, otherwise create it with `collection_create({ "name": "<requested-collection>", "scope": "user" })`, then call `record_add({ "collection": "<requested-collection>", "record": "<requested-artifact-id>", "text": "..." })`. Never update a different phase's artifact. Use user scope for durable results and session scope only for scratch. `record` is the optional stable physical ID; omission generates a UUID. Add is create-only: `RECORD_EXISTS` (409) requires reading the existing record and using `record_update({ collection, record, text })`. Read back with paged `collection_records` and `rag_read` using actual IDs; verify count and scope. Retire reversibly with `record_set_enabled({ collection, id, enabled: false })`; use `record_delete({ collection, record })` only for explicit permanent removal. Updates preserve ID and metadata but add no correction reason, audit history or supersede chain. Disabling does not free an ID. A live owned long session is required for every RAG call.
+
+Unless the task requests a different collection or artifact ID, save the overview to RAG collection `result` using `record_add`, with record `<PROGRAM-NAME>-overview`. Use exactly these sections in this order.
 
 ---
 

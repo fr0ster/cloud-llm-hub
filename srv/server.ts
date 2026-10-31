@@ -792,8 +792,14 @@ cds.on('bootstrap', (app: Application) => {
   );
   app.use('/v1', context, wrappedAuth, requireMcpRole, authJsonErrorHandler);
 
+  // Chat session parameters must be parsed before session resolution.
+  app.post(
+    ['/v1/chat/completions', '/v1/messages'],
+    express.json({ limit: RAG_WRITE_MAX_BYTES }),
+  );
+
   // Every /v1 request runs under a session this service issued: a long
-  // session named by its key (x-clh-session, or the cookie), or the
+  // session named by its key (chat body session, x-clh-session, or cookie), or the
   // per-request session of the plain mode (the cookie). x-session-id is not
   // read.
   app.use(

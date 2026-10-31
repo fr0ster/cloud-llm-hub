@@ -1,9 +1,12 @@
-import { QueryEmbedding, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+import {
+  type IUsageRecorder,
+  QueryEmbedding,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import cds from '@sap/cds';
 import type { Request } from 'express';
 import { z } from 'zod';
-import { getCollectionRegistry, getQueryEmbedder } from './agent-manager';
 import { resolveRouteId } from './collection-ids';
 import { collectionAccessError } from './lib/collection-access';
 import { restoredDocument } from './lib/collection-persistence';
@@ -13,9 +16,7 @@ import {
   updateSessionCollection,
 } from './lib/collection-toggle';
 import { withCollectionToolScope } from './lib/collection-write-scope';
-import { externalRagWriteNames } from './lib/external-rag-write-names';
-import { leaseSession } from './lib/gatekeeper';
-import { longSessions } from './lib/long-session';
+import { longSessions, longSessionsIfReady } from './lib/long-session';
 import { readRagDocuments } from './lib/rag-read';
 import {
   addRagRecord,
@@ -30,11 +31,13 @@ import {
   validateRagWriteSize,
 } from './lib/rag-write-operations';
 import { recordAttributes, recordPolicy } from './lib/record-policy';
-import { resolveSession } from './lib/session-lifecycle';
 import { isRefusal } from './lib/session-retention';
 import { requestMeasurement } from './lib/usage/request-records';
 import { usageRuntime } from './lib/usage/runtime';
-import { CollectionSearchRag } from './rag-collections';
+import {
+  type CollectionRegistry,
+  CollectionSearchRag,
+} from './rag-collections';
 import {
   isReadOnlyTools,
   profileToolAllowed,
@@ -42,150 +45,17 @@ import {
 } from './request-session';
 import { resolveSessionKey } from './session-id';
 
-const session = z.string().min(1).optional();
-const collection = z.string().min(1);
-const offset = z.number().int().nonnegative().optional();
-const enabled = z.boolean();
+export type { RagMcpTool } from './lib/rag-tool-catalogue';
+export { ragMcpSchemas } from './lib/rag-tool-catalogue';
 
-export { externalRagWriteNames };
-export const ragMcpSchemas = {
-  collection_create: z
-    .object({
-      session,
-      name: z.string().min(1),
-      scope: z.enum(['user', 'session']),
-    })
-    .strict(),
-  collection_delete: z.object({ session, collection }).strict(),
-  record_add: z
-    .object({
-      session,
-      collection,
-      text: z.string().min(1),
-      title: z.string().optional(),
-      source: z.string().optional(),
-    })
-    .strict(),
-  record_update: z
-    .object({
-      session,
-      collection,
-      record: z.string().min(1),
-      text: z.string().min(1),
-      title: z.string().optional(),
-      source: z.string().optional(),
-    })
-    .strict(),
-  record_delete: z
-    .object({ session, collection, record: z.string().min(1) })
-    .strict(),
-  rag_search: z.object({
-    session,
-    query: z.string().min(1),
-    collections: z.array(collection).optional(),
-    k: z.number().int().min(1).max(20).default(8),
-  }),
-  rag_read: z.object({
-    session,
-    collection,
-    id: z.string().min(1),
-    offset,
-    limit: z.number().int().min(1).max(32000).default(8000),
-  }),
-  collections_list: z.object({ session }),
-  collection_set_enabled: z.object({ session, collection, enabled }),
-  collection_records: z.object({
-    session,
-    collection,
-    offset,
-    limit: z.number().int().min(1).max(200).default(50),
-  }),
-  record_set_enabled: z.object({
-    session,
-    collection,
-    id: z.string().min(1).optional(),
-    source: z.string().min(1).optional(),
-    uploadId: z.string().optional(),
-    enabled,
-  }),
-};
-export type RagMcpTool = keyof typeof ragMcpSchemas;
-// The SDK rejects schema violations before the measured callback.
-// Direct executor calls retain the shared strict validation above.
-const writeSession = z
-  .string()
-  .min(1)
-  .describe(
-    'Live caller-owned session key; may also come from header or cookie',
-  )
-  .optional();
-const writeCollection = z
-  .string()
-  .min(1)
-  .describe('Existing collection name or physical id');
-const writeRecord = z.string().min(1).describe('Exact document id');
-const writeText = z
-  .string()
-  .min(1)
-  .describe('Full record text, preserved verbatim');
-const writeAttributes = {
-  title: z.string().describe('Record title').optional(),
-  source: z.string().describe('Attribution only; no URL fetch').optional(),
-};
-const ragWriteInputSchemas = {
-  collection_create: z
-    .object({
-      session: writeSession,
-      name: z
-        .string()
-        .min(1)
-        .describe('Logical collection name; reserved __ is rejected'),
-      scope: z
-        .enum(['user', 'session'])
-        .describe('Collection scope: user or session'),
-    })
-    .strict(),
-  collection_delete: z
-    .object({ session: writeSession, collection: writeCollection })
-    .strict(),
-  record_add: z
-    .object({
-      session: writeSession,
-      collection: writeCollection,
-      text: writeText,
-      ...writeAttributes,
-    })
-    .strict(),
-  record_update: z
-    .object({
-      session: writeSession,
-      collection: writeCollection,
-      record: writeRecord,
-      text: writeText,
-      ...writeAttributes,
-    })
-    .strict(),
-  record_delete: z
-    .object({
-      session: writeSession,
-      collection: writeCollection,
-      record: writeRecord,
-    })
-    .strict(),
-};
-const toolNames: RagMcpTool[] = [
-  'collection_create',
-  'collection_delete',
-  'record_add',
-  'record_update',
-  'record_delete',
-  'rag_search',
-  'rag_read',
-  'collections_list',
-  'collection_set_enabled',
-  'collection_records',
-  'record_set_enabled',
-];
+import {
+  eligibleRagTools,
+  type RagMcpTool,
+  ragDescriptions,
+  ragMcpSchemas,
+  ragToolEffect,
+} from './lib/rag-tool-catalogue';
+
 type Args = {
   name?: string;
   scope?: string;
@@ -315,35 +185,8 @@ export const ragWriteOutputSchemas = {
 function isWriteTool(
   name: RagMcpTool,
 ): name is keyof typeof ragWriteOutputSchemas {
-  return externalRagWriteNames.has(name);
+  return name in ragWriteOutputSchemas;
 }
-const writeConditions =
-  ' Eligible user/session knowledge collections; existing global mutations require MCP_Admin where REST resolves them; agents collections are excluded. Requires a live caller-owned session (argument, x-clh-session, or clh_session cookie). Maximum UTF-8 JSON arguments: 10 MiB.';
-const descriptions: Record<RagMcpTool, string> = {
-  collection_create:
-    'Create a user/session knowledge collection idempotently.' +
-    writeConditions,
-  collection_delete: `Delete a collection.${writeConditions}`,
-  record_add:
-    'Add one unchunked text record; source is attribution only, no URL fetch.' +
-    writeConditions,
-  record_update:
-    'Update one record: replace the full text, retaining omitted title/source; source is attribution only, no URL fetch.' +
-    writeConditions,
-  record_delete: `Delete one record by exact document id.${writeConditions}`,
-  rag_search:
-    'Search RAG content in collections enabled for this session; collections only narrows the selection.',
-  rag_read:
-    'Read a RAG record, paged by characters. Disabled content exposes attributes and a reason only.',
-  collections_list:
-    'List readable collections and their effective session enablement.',
-  collection_set_enabled:
-    'Enable or disable a collection for this session only.',
-  collection_records:
-    'List a page of record attributes and visible titles in a collection.',
-  record_set_enabled:
-    'Enable or disable a record by id or all chunks of a source upload. Requires write permission.',
-};
 
 export function registerRagMcpTools(
   server: McpServer,
@@ -354,18 +197,7 @@ export function registerRagMcpTools(
     run: (args: Args) => Promise<Result>,
   ) => (args: Args) => Promise<Result>,
 ): void {
-  for (const name of toolNames) {
-    if (
-      !profileToolAllowed(name) ||
-      (isReadOnlyTools() &&
-        ![
-          'rag_search',
-          'rag_read',
-          'collection_records',
-          'collections_list',
-        ].includes(name))
-    )
-      continue;
+  for (const name of eligibleRagTools()) {
     const run = measure(name, (args) =>
       executeRagMcpTool(
         req,
@@ -378,10 +210,9 @@ export function registerRagMcpTools(
     server.registerTool(
       name,
       {
-        description: descriptions[name],
-        inputSchema: isWriteTool(name)
-          ? ragWriteInputSchemas[name]
-          : ragMcpSchemas[name],
+        description: ragDescriptions[name],
+        annotations: { readOnlyHint: ragToolEffect(name) === 'read' },
+        inputSchema: ragMcpSchemas[name],
         ...(isWriteTool(name)
           ? { outputSchema: ragWriteOutputSchemas[name] }
           : {}),
@@ -392,16 +223,24 @@ export function registerRagMcpTools(
   }
 }
 
+// Keep the host's lifecycle graph out of cached local adapter construction.
+function ragHost(): typeof import('./agent-manager') {
+  return require('./agent-manager');
+}
+async function externalSession(userId: string, key: string) {
+  const lifecycle: typeof import('./lib/session-lifecycle') = require('./lib/session-lifecycle');
+  return lifecycle.resolveSession(userId, key);
+}
+
 /** Validates even direct calls, before acquiring the session queue and lease. */
 async function executeRagMcpToolImpl(
-  req: Pick<Request, 'headers'>,
-  userId: string,
+  context: RagExecutionContext,
   name: RagMcpTool,
-  input: Args,
-  traceId?: string,
+  input: object,
 ): Promise<Result> {
+  const { userId, traceId } = context;
   const fail = (code: string, status: number, message: string): Result =>
-    isWriteTool(name)
+    isWriteTool(name) || context.internal
       ? writeError(code, status, message)
       : ragTextResult(message, true);
   if (isWriteTool(name)) {
@@ -418,14 +257,8 @@ async function executeRagMcpToolImpl(
       return fail('UNAUTHENTICATED', 401, 'Authenticated user required');
   }
   if (
-    !profileToolAllowed(name) ||
-    (isReadOnlyTools() &&
-      ![
-        'rag_search',
-        'rag_read',
-        'collection_records',
-        'collections_list',
-      ].includes(name))
+    !context.permissions.allows(name) ||
+    (context.readOnly && ragToolEffect(name) === 'write')
   )
     return fail('TOOL_FORBIDDEN', 403, `TOOL_FORBIDDEN: ${name}`);
   const parsed = ragMcpSchemas[name].safeParse(input);
@@ -437,7 +270,19 @@ async function executeRagMcpToolImpl(
     Boolean(args.id) === Boolean(args.source)
   )
     return ragTextResult('Provide exactly one of id or source', true);
-  const key = args.session ?? resolveSessionKey(req).key;
+  if (
+    context.internal &&
+    args.session !== undefined &&
+    args.session !== context.sessionKey
+  )
+    return fail(
+      'INVALID_ARGUMENT',
+      400,
+      'Session must match the enclosing conversation',
+    );
+  const key = context.internal
+    ? context.sessionKey
+    : (args.session ?? context.sessionKey);
   if (!key)
     return fail(
       'SESSION_REQUIRED',
@@ -445,9 +290,21 @@ async function executeRagMcpToolImpl(
       'SESSION_REQUIRED: call session_open first',
     );
   try {
-    const s = await resolveSession(userId, key);
-    if (!s) return fail('SESSION_NOT_FOUND', 404, 'SESSION_NOT_FOUND');
-    const result = await longSessions().run(s, async () => {
+    const s = context.internal
+      ? longSessionsIfReady()?.get(userId, key)
+      : await externalSession(userId, key);
+    if (!s)
+      return context.internal
+        ? fail(
+            'SESSION_REQUIRED',
+            400,
+            'SESSION_REQUIRED: call session_open first',
+          )
+        : fail('SESSION_NOT_FOUND', 404, 'SESSION_NOT_FOUND');
+    const run = async () => {
+      const {
+        leaseSession,
+      }: typeof import('./lib/gatekeeper') = require('./lib/gatekeeper');
       const lease = leaseSession(userId, key, 'rag', { presented: true });
       if (isRefusal(lease))
         return fail(
@@ -460,14 +317,26 @@ async function executeRagMcpToolImpl(
       try {
         return await runWithSessionId(
           key,
-          () => runRagTool(userId, key, name, args, traceId),
+          () =>
+            runRagTool(
+              userId,
+              key,
+              name,
+              args,
+              context.admin,
+              traceId,
+              context.registry,
+            ),
           undefined,
           userId,
         );
       } finally {
         lease.release();
       }
-    });
+    };
+    const result = context.trustedAdmission
+      ? await run()
+      : await longSessions().run(s, run);
     return 'refused' in result
       ? fail(
           result.refused === 'SESSION_CLOSED' && isWriteTool(name)
@@ -497,7 +366,11 @@ async function executeRagMcpToolImpl(
       return writeError(failure.code, failure.status, failure.message);
     }
     return ragTextResult(
-      error instanceof Error ? error.message : String(error),
+      error instanceof RagWriteError
+        ? `${error.code}: ${error.message}`
+        : error instanceof Error
+          ? error.message
+          : String(error),
       true,
     );
   }
@@ -508,10 +381,11 @@ async function runRagTool(
   sid: string,
   name: RagMcpTool,
   args: ValidatedArgs,
+  admin: boolean,
   traceId?: string,
+  suppliedRegistry?: CollectionRegistry,
 ): Promise<Result> {
-  const registry = getCollectionRegistry();
-  const admin = cds.context?.user?.is('MCP_Admin') ?? false;
+  const registry = suppliedRegistry ?? ragHost().getCollectionRegistry();
   if (isWriteTool(name)) {
     const identity = { userId, sessionId: sid, admin };
     if (name === 'collection_create') {
@@ -572,7 +446,7 @@ async function runRagTool(
       const doc = await addRagRecord(
         registry,
         id,
-        { text: args.text ?? '', metadata },
+        { id: args.record, createOnly: true, text: args.text ?? '', metadata },
         options,
       );
       return writeResult({
@@ -647,7 +521,7 @@ async function runRagTool(
         )
         .map((c) => c.id);
     const ids = [...new Set(await Promise.all(entries.map(resolve)))];
-    const embedder = getQueryEmbedder();
+    const embedder = ragHost().getQueryEmbedder();
     const embedding = embedder
       ? new QueryEmbedding(args.query ?? '', embedder, {
           usage: usageRuntime()
@@ -744,7 +618,14 @@ async function runRagTool(
     }
     return respond(payload(bounded));
   }
-  const id = await resolve(args.collection ?? '');
+  const id =
+    name === 'record_set_enabled'
+      ? await resolveRagWriteTarget(registry, args.collection ?? '', {
+          userId,
+          sessionId: sid,
+          admin,
+        })
+      : await resolve(args.collection ?? '');
   const meta = await registry.getCollection(id);
   if (!meta) throw new Error('Collection not found');
   const active = collectionEnabled(registry, userId, sid, meta);
@@ -818,8 +699,75 @@ async function runRagTool(
   });
 }
 
+export interface RagExecutionContext {
+  readonly registry?: CollectionRegistry;
+  readonly userId: string;
+  readonly admin: boolean;
+  readonly sessionKey?: string;
+  readonly internal: boolean;
+  readonly trustedAdmission: boolean;
+  readonly permissions: { allows(name: string): boolean };
+  readonly readOnly: boolean;
+  readonly traceId?: string;
+  readonly taskId?: string;
+  readonly channel: 'openai' | 'anthropic' | 'mcp-agent' | 'rest';
+  readonly measurement?: IUsageRecorder;
+}
+
+export async function executeRagTool(
+  context: RagExecutionContext,
+  name: RagMcpTool,
+  input: object,
+): Promise<Result> {
+  const started = Date.now();
+  const result = await withCollectionToolScope(() =>
+    executeRagMcpToolImpl(context, name, input),
+  );
+  context.measurement?.record({
+    context: {
+      userId: context.userId,
+      sessionId: context.sessionKey,
+      traceId: context.traceId,
+      ...(context.taskId ? { taskId: context.taskId } : {}),
+      channel: context.channel,
+    },
+    kind: 'tool.call',
+    outcome: result.isError ? 'error' : 'ok',
+    tool: name,
+    dispatched: true,
+    embedded: true,
+    transportOutcome: 'ok',
+    toolOutcome: result.isError ? 'error' : 'ok',
+    durationMs: Date.now() - started,
+    requestBytes: Buffer.byteLength(JSON.stringify(input)),
+    responseBytes: Buffer.byteLength(JSON.stringify(result)),
+  });
+  return result;
+}
+
+/** External MCP preserves argument/header/cookie precedence and queue admission. */
 export function executeRagMcpTool(
-  ...args: Parameters<typeof executeRagMcpToolImpl>
-): ReturnType<typeof executeRagMcpToolImpl> {
-  return withCollectionToolScope(() => executeRagMcpToolImpl(...args));
+  req: Pick<Request, 'headers'>,
+  userId: string,
+  name: RagMcpTool,
+  input: Args,
+  traceId?: string,
+  registry?: CollectionRegistry,
+): Promise<Result> {
+  return executeRagTool(
+    {
+      userId,
+      registry,
+      admin: cds.context?.user?.is('MCP_Admin') ?? false,
+      sessionKey: resolveSessionKey(req).key,
+      internal: false,
+      trustedAdmission: false,
+      permissions: { allows: profileToolAllowed },
+      readOnly: isReadOnlyTools(),
+      traceId,
+      channel: 'mcp-agent',
+    },
+    name,
+    input,
+  );
 }

@@ -13,6 +13,7 @@ import type {
   PlannerMessage,
   TaskRecord,
   TokenUsage,
+  ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { addTokenUsage } from '@mcp-abap-adt/llm-agent';
 import { DialogueSession, SemaphorePool } from '@mcp-abap-adt/llm-agent-libs';
@@ -24,7 +25,10 @@ import {
   runWithRequestConnection,
 } from '../agent-manager';
 import {
+  getRagCallerIdentity,
   getRequestHistory,
+  getRequestUserId,
+  type RagCallerIdentity,
   runWithSessionId,
   runWithToolGateBypass,
 } from '../request-session';
@@ -39,9 +43,11 @@ import { runWithDialogueRagTools } from './dialogue-rag-tools';
 import { dialogueSignals } from './dialogue-signals';
 import {
   createDialogueStateStore,
+  DIALOGUE_TOOL_CONTRACT_VERSION,
   deleteDialogueState,
   getDialogueStoreBackend,
   type HubDialogueState,
+  migrateDialogueToolContract,
   touchDialogueState,
 } from './dialogue-store';
 import { admitBackground, type PipelineSession } from './gatekeeper';
@@ -63,6 +69,10 @@ import { usageRuntime } from './usage/runtime';
 
 type Plan = Exclude<DialogueState['plan'], string | undefined>;
 type PlanStep = Plan['steps'][number];
+interface TurnCaller {
+  userId: string;
+  identity: RagCallerIdentity;
+}
 
 export interface PlannerCounts {
   toolsSelected?: number;
@@ -76,6 +86,7 @@ export type DialogueEvent =
   | ({ kind: 'wait' } & DialogueSignals['dialogue.wait'])
   | { kind: 'settled'; outcome: 'ok' | 'failed'; trigger: 'user' | 'event' }
   | { kind: 'message'; message: PlannerMessage }
+  | { kind: 'tool-result'; record: ToolCallRecord; written?: () => void }
   | { kind: 'usage'; id: string; usage: NonNullable<PlannerMessage['usage']> }
   | { kind: 'plan'; plan: DialoguePlan }
   | {
@@ -125,7 +136,12 @@ export interface DialogueHandle {
   drainPending(): Promise<void>;
   factory: SessionConnectionFactory;
   pool: SessionConnectionPool;
-  subscribe(fn: (e: DialogueEvent) => void, cursor?: string): () => void;
+  /** Tool-result consumers replay pending results and acknowledge live writes. */
+  subscribe(
+    fn: (e: DialogueEvent) => void,
+    cursor?: string,
+    consumesToolResults?: boolean,
+  ): () => void;
 }
 interface LiveHandle extends DialogueHandle {
   stop(): void;
@@ -227,6 +243,7 @@ async function open(
   key: string,
   destination: string,
 ): Promise<LiveHandle> {
+  const turnCallers = new WeakMap<object, TurnCaller>();
   const config = getAgentConfig();
   const destinationHandle = await getSmartAgent(undefined, destination);
   if (
@@ -276,13 +293,23 @@ async function open(
     factory,
     config.agent.dialogue.executors,
   );
-  const subscribers = new Set<(e: DialogueEvent) => void>();
+  const subscribers = new Map<(e: DialogueEvent) => void, boolean>();
+  const pendingToolResults: Extract<DialogueEvent, { kind: 'tool-result' }>[] =
+    [];
   const lifetime = new AbortController();
   let stopped = false;
   let session: DialogueSession | undefined;
   const emit = (event: DialogueEvent) => {
     if (stopped) return;
-    for (const fn of subscribers) {
+    if (event.kind === 'tool-result') {
+      pendingToolResults.push(event);
+      if (pendingToolResults.length > 50) pendingToolResults.shift();
+      event.written = () => {
+        const index = pendingToolResults.indexOf(event);
+        if (index >= 0) pendingToolResults.splice(index, 1);
+      };
+    }
+    for (const fn of subscribers.keys()) {
       try {
         fn(event);
       } catch {
@@ -310,6 +337,8 @@ async function open(
     pipeline: PipelineSession;
     traceId: string;
     taskId: string;
+    userId: string;
+    identity: RagCallerIdentity;
   }>();
   const workers = new Map<string, ISubAgent>();
   const wrapWorker = (worker: ISubAgent): ISubAgent => {
@@ -384,7 +413,8 @@ async function open(
                 factory.exposition,
               ),
             undefined,
-            userId,
+            ctx.userId,
+            ctx.identity,
           ),
         );
       },
@@ -397,6 +427,7 @@ async function open(
   let savedState: HubDialogueState | undefined;
   try {
     savedState = await backend.load(userId, key);
+    if (savedState) savedState = migrateDialogueToolContract(savedState);
   } catch (error) {
     await pool.closeAll();
     throw error;
@@ -410,6 +441,7 @@ async function open(
     if (!state) return Promise.resolve();
     const row = {
       ...state,
+      toolContractVersion: DIALOGUE_TOOL_CONTRACT_VERSION,
       ...(savedState?.agentsCollectionId !== undefined
         ? { agentsCollectionId: savedState.agentsCollectionId }
         : {}),
@@ -429,6 +461,59 @@ async function open(
     await outbox.add(session?.takePending() ?? []);
   };
   const signals = dialogueSignals();
+  const dialogueIdentity = (): RagCallerIdentity => {
+    const { admin, channel } = getRagCallerIdentity();
+    return {
+      admin,
+      channel,
+      onToolResult: (record) => emit({ kind: 'tool-result', record }),
+    };
+  };
+  const taskCallers = new Map<string, TurnCaller>();
+  const pendingEventCallers: TurnCaller[] = [];
+  let eventCaller: TurnCaller | undefined;
+  const unsubscribeTaskCaller = signals.on(
+    'dialogue.task.state',
+    ({ payload: { task, previous } }) => {
+      if (task.state === 'queued' && previous === undefined)
+        taskCallers.set(task.id, {
+          userId: getRequestUserId() ?? userId,
+          identity: dialogueIdentity(),
+        });
+      if (
+        task.state === 'done' ||
+        task.state === 'failed' ||
+        task.state === 'stopped'
+      ) {
+        const caller = taskCallers.get(task.id);
+        if (caller) pendingEventCallers.push(caller);
+        taskCallers.delete(task.id);
+      }
+    },
+    { source: key },
+  );
+  const unsubscribeTurnCaller = signals.on(
+    'dialogue.turn.started',
+    ({ payload: { trigger } }) => {
+      eventCaller = undefined;
+      if (trigger !== 'event') return;
+      const callers = pendingEventCallers.splice(0);
+      const origin = callers[0];
+      if (origin)
+        eventCaller = {
+          ...origin,
+          // A batched event turn must not gain privileges from another task.
+          identity: {
+            ...origin.identity,
+            admin: callers.every(
+              (caller) =>
+                caller.identity.admin && caller.userId === origin.userId,
+            ),
+          },
+        };
+    },
+    { source: key },
+  );
   const registry = longSessionsIfReady();
   const longSession = registry?.get(userId, key);
   let releaseHold: (() => void) | undefined;
@@ -475,6 +560,9 @@ async function open(
     { source: key },
   );
   const stopLifetime = () => {
+    pendingToolResults.length = 0;
+    unsubscribeTaskCaller();
+    unsubscribeTurnCaller();
     unsubscribeWait();
     unsubscribeActivity();
     unsubscribeClosed();
@@ -486,13 +574,26 @@ async function open(
     input: Message[],
     options: AgentCallOptions,
   ) => {
+    const caller = (options.trace && turnCallers.get(options.trace)) ??
+      eventCaller ?? {
+        userId,
+        // Restored tasks and timer events have no authenticated originating turn.
+        identity: { admin: false, channel: 'openai' as const },
+      };
     const reply = options.trace && replies.get(options.trace);
     turnReply = undefined;
     turnReplyUsage = undefined;
     try {
       const result = await runWithContextCapture(
         { component: 'planner', sessionKey: key },
-        () => decoratePlanner(planner).process(input, options),
+        () =>
+          runWithSessionId(
+            key,
+            () => decoratePlanner(planner).process(input, options),
+            undefined,
+            caller.userId,
+            caller.identity,
+          ),
       );
       // The library appends this successful result before its final save.
       if (result.ok) {
@@ -562,6 +663,7 @@ async function open(
         save: async (_id, state) => {
           savedState = {
             ...state,
+            toolContractVersion: DIALOGUE_TOOL_CONTRACT_VERSION,
             ...(savedState?.agentsCollectionId !== undefined
               ? { agentsCollectionId: savedState.agentsCollectionId }
               : {}),
@@ -608,6 +710,12 @@ async function open(
         pool: sharedExecutorPool(),
         baseInput: () => ({ sessionId: key }),
         async wrapRun(task, run) {
+          // TaskBoard starts execution in the scheduling planner scope; its
+          // async context survives pool waits and later user turns.
+          const caller = {
+            userId: getRequestUserId() ?? userId,
+            identity: dialogueIdentity(),
+          };
           const startedAt = Date.now();
           // No free text from goals or errors reaches the logs: a goal may carry
           // whatever the user typed, credentials included. Ids correlate with
@@ -643,6 +751,7 @@ async function open(
                   pipeline: admission.admitted,
                   traceId,
                   taskId: task.id,
+                  ...caller,
                 },
                 () =>
                   runWithContextCapture(
@@ -713,7 +822,21 @@ async function open(
   }
   lastPlan = dialoguePlan(session.snapshot());
   const send = session.send.bind(session);
-  session.send = (...args) => send(...args).finally(drainPending);
+  session.send = (text, options = {}) => {
+    // Each queued input owns its snapshot even if callers reuse a trace object.
+    const trace = options.trace
+      ? { ...options.trace }
+      : { traceId: randomUUID() };
+    const attachment = options.trace && attachments.get(options.trace);
+    if (attachment !== undefined) attachments.set(trace, attachment);
+    const reply = options.trace && replies.get(options.trace);
+    if (reply) replies.set(trace, reply);
+    turnCallers.set(trace, {
+      userId: getRequestUserId() ?? userId,
+      identity: dialogueIdentity(),
+    });
+    return send(text, { ...options, trace }).finally(drainPending);
+  };
   return {
     destination,
     session,
@@ -753,9 +876,16 @@ async function open(
       lifetime.abort();
       subscribers.clear();
     },
-    subscribe(fn, cursor) {
+    subscribe(fn, cursor, consumesToolResults = false) {
       if (stopped) return () => {};
-      subscribers.add(fn);
+      subscribers.set(fn, consumesToolResults);
+      for (const event of consumesToolResults ? [...pendingToolResults] : []) {
+        try {
+          fn(event);
+        } catch {
+          /* Observers cannot break work. */
+        }
+      }
       const unsubscribeMessages = outbox.subscribe(
         (message) => fn({ kind: 'message', message }),
         cursor,

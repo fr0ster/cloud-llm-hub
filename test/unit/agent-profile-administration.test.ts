@@ -14,8 +14,8 @@ import {
   type RagDocument,
 } from '../../srv/rag-collections';
 import { registerRagRoutes } from '../../srv/rag-handler';
-import { dispatchRagTool } from '../../srv/rag-tool-dispatcher';
 import { runWithSessionId } from '../../srv/request-session';
+import { callRag } from './helpers/canonical-rag';
 
 const mockIdentity = { id: 'alice', admin: false };
 jest.mock(
@@ -263,20 +263,17 @@ test('LLM writes to user copies and globals fail before mutation, including indi
   mockIdentity.admin = true;
   for (const collection of ['agents', 'personal-agents', own]) {
     for (const [name, args] of [
-      ['rag_add', { collection, id: 'forged', text: 'forged' }],
-      [
-        'rag_correct',
-        { collection, id: 'analyst', newText: 'forged', reason: 'test' },
-      ],
-      ['rag_deprecate', { collection, id: 'analyst', reason: 'test' }],
+      ['record_add', { collection, record: 'forged', text: 'forged' }],
+      ['record_update', { collection, record: 'analyst', text: 'forged' }],
+      ['record_delete', { collection, record: 'analyst' }],
     ] as const) {
       const result = await runWithSessionId(
         'session',
-        () => dispatchRagTool(registry, name, args),
+        () => callRag(registry, name, args),
         undefined,
         'alice',
       );
-      expect(result).toMatchObject({ ok: false });
+      expect(result).toMatchObject({ isError: true });
     }
   }
   const mutations: (() => Promise<void>)[] = [
@@ -396,11 +393,12 @@ test('worker readback uses current agent records for bodies and titles', async (
   ]) {
     const result = await runWithSessionId(
       'session',
-      () => dispatchRagTool(registry, 'rag_list', args),
+      () =>
+        callRag(registry, args.id ? 'rag_read' : 'collection_records', args),
       undefined,
       'alice',
     );
-    expect(result).toMatchObject({ ok: true });
+    expect(result.isError).not.toBe(true);
     expect(JSON.stringify(result)).toContain('record-disabled');
     expect(JSON.stringify(result)).not.toContain('private');
   }

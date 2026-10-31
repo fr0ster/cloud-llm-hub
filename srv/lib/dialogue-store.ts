@@ -32,10 +32,41 @@ type PlanStep = Plan['steps'][number];
 type TaskRecord = DialogueState['tasks'][number];
 
 export type HubDialogueState = DialogueState & {
+  toolContractVersion?: number;
   outbox?: OutboxEntry[];
   ackMode?: boolean;
   agentsCollectionId?: string;
 };
+
+export const DIALOGUE_TOOL_CONTRACT_VERSION = 1;
+
+/** Old contracts have no safe argument translation. Replan all unfinished work. */
+export function migrateDialogueToolContract(
+  state: HubDialogueState,
+): HubDialogueState {
+  if (state.toolContractVersion === DIALOGUE_TOOL_CONTRACT_VERSION)
+    return state;
+  const migrated = structuredClone(state);
+  const note =
+    'Tool catalogue changed; replan with canonical RAG tools and existing record IDs. Verify unsettled writes before retrying; never replay completed writes.';
+  for (const task of migrated.tasks) {
+    if (task.state === 'queued' || task.state === 'running') {
+      task.state = 'interrupted';
+      task.error = note;
+    }
+  }
+  if (typeof migrated.plan === 'object') {
+    for (const step of migrated.plan.steps) {
+      if (step.state === 'pending' || step.state === 'running') {
+        step.state = 'blocked';
+        step.note = note;
+      }
+    }
+    migrated.plan.note = [migrated.plan.note, note].filter(Boolean).join('\n');
+  }
+  migrated.toolContractVersion = DIALOGUE_TOOL_CONTRACT_VERSION;
+  return migrated;
+}
 
 // JSON worst case is 6 bytes per UTF-16 code unit (escaped controls/surrogates).
 // Open transcript: 400k; conversation: 200 * 20k; request texts: 200 * 20k
@@ -356,6 +387,16 @@ function stored(record: HubDialogueState): HubDialogueState {
           .parse(outbox);
   return {
     ...state,
+    ...((raw.toolContractVersion ?? raw.state?.toolContractVersion) !==
+    undefined
+      ? {
+          toolContractVersion: z
+            .number()
+            .int()
+            .nonnegative()
+            .parse(raw.toolContractVersion ?? raw.state?.toolContractVersion),
+        }
+      : {}),
     ...(agentsCollectionId !== undefined ? { agentsCollectionId } : {}),
     ...(parsed?.length ? { outbox: parsed } : {}),
     ...(ackMode !== undefined ? { ackMode } : {}),

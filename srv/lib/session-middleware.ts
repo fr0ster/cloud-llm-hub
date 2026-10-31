@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
+import { z } from 'zod';
 import {
   buildSetCookie,
   resolveSessionId,
@@ -51,11 +52,20 @@ export interface SessionMiddlewareDeps {
   keyOptional?: (req: Request) => boolean;
 }
 
+const chatSessionSchema = z
+  .object({ session: z.string().optional() })
+  .catchall(z.json());
+
 export type SessionDialect = 'openai' | 'anthropic';
 
 /** `/v1/messages` speaks Anthropic; every other `/v1` route the OpenAI envelope. */
+/** Express routes case-insensitively and accepts a trailing slash. */
+function routeOf(path: string | undefined): string {
+  return (path ?? '').toLowerCase().replace(/\/+$/, '');
+}
+
 function dialectOf(req: Request): SessionDialect {
-  return req.path === '/messages' ? 'anthropic' : 'openai';
+  return routeOf(req.path) === '/messages' ? 'anthropic' : 'openai';
 }
 
 function refuse(
@@ -77,14 +87,19 @@ function refuse(
  * A long-session key (`x-clh-session`, or a long-session key in the cookie)
  * binds the request to that session: live, or revived from its record. A key
  * that names none — closed, expired, never opened, another user's — is refused
- * 404 when sent in the header; an unknown cookie key is treated as absent.
- * The header takes precedence over the cookie.
+ * 404 when sent in the body or header; an unknown cookie key is treated as absent.
+ * Chat body `session` takes precedence over the header, then the cookie.
  *
  * Without a key, the plain mode of before: the presented `clh_session` is kept
  * when it names a live session, and otherwise one is minted and the cookie set
  * — never a revival of the old id, so state a caller asked us to destroy
  * cannot be reattached through the cookie in their jar.
  */
+function isChatRoute(path: string): boolean {
+  const route = routeOf(path);
+  return route === '/chat/completions' || route === '/messages';
+}
+
 export function sessionMiddleware(deps: SessionMiddlewareDeps = {}) {
   return (
     req: Request,
@@ -93,7 +108,32 @@ export function sessionMiddleware(deps: SessionMiddlewareDeps = {}) {
   ): undefined | Promise<void> => {
     const r = req as Request & WithSession & LongSessionRequest;
     const userId = deps.userIdOf?.() ?? 'anonymous';
-    const { key } = resolveSessionKey(r);
+    let bodySession: string | undefined;
+    let hasBodySession = false;
+    if (req.method === 'POST' && isChatRoute(req.path)) {
+      const parsed = chatSessionSchema.safeParse(req.body);
+      if (!parsed.success) {
+        const error = {
+          type: 'invalid_request_error',
+          message: 'Invalid JSON body: session must be a string',
+        };
+        res
+          .status(400)
+          .json(
+            dialectOf(req) === 'anthropic'
+              ? { type: 'error', error }
+              : { error },
+          );
+        return;
+      }
+      const { session, ...body } = parsed.data;
+      hasBodySession = session !== undefined;
+      bodySession = session?.trim() || undefined;
+      req.body = body;
+    }
+    const { key } = hasBodySession
+      ? { key: bodySession }
+      : resolveSessionKey(r);
     const resolve = deps.resolveSession;
     if (key === undefined || !resolve) {
       perRequest(r, res, userId, deps);
@@ -116,7 +156,7 @@ export function sessionMiddleware(deps: SessionMiddlewareDeps = {}) {
           return;
         }
         if (
-          !r.headers[SESSION_HEADER]?.toString().trim() ||
+          (!bodySession && !r.headers[SESSION_HEADER]?.toString().trim()) ||
           deps.keyOptional?.(req)
         ) {
           // The stale key is not a plain session either: mint.

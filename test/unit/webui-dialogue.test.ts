@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
+import { z } from 'zod';
 
 interface MessageNode {
   innerHTML: string;
@@ -67,7 +68,6 @@ function harness(now?: number, realSessionRecovery = false) {
     getActiveRagCollections: () => [],
     attachedFiles: [] as Array<{ documentIds: string[] }>,
     renderAttachedFiles: jest.fn(),
-    getRagTools: async () => [],
     classifierSelect: { value: '' },
     inputHistory: [],
     historyIndex: -1,
@@ -122,6 +122,9 @@ function harness(now?: number, realSessionRecovery = false) {
       createElement: () => {
         const node = {
           innerHTML: '',
+          appendChild: (child: { textContent: string }) => {
+            node.innerHTML += child.textContent;
+          },
           querySelector: (_selector: string) => ({
             remove: () => {
               node.innerHTML = node.innerHTML.replace(
@@ -171,7 +174,7 @@ function harness(now?: number, realSessionRecovery = false) {
       : '') +
       html.slice(
         html.indexOf('        const FILE_MIME_TYPES'),
-        html.indexOf('        // Lazy-loaded RAG'),
+        html.indexOf('        function getFileExt('),
       ) +
       html.slice(
         html.indexOf('        function getFileExt('),
@@ -1582,3 +1585,92 @@ test('attachments added during a send remain for the next message', async () => 
   ).toEqual(['added-during-flight']);
   expect(ui.attachedFiles).toHaveLength(0);
 });
+
+test('chat sends only consumer schemas and never dispatches RAG in the browser', async () => {
+  const ui = harness();
+  ui.fetch.mockResolvedValue(stream('data: [DONE]\n\n'));
+  ui.userInput.value = 'save my result';
+  await ui.sendMessage();
+  const completion = ui.fetch.mock.calls.find(
+    (call: [string, { body?: string }]) => call[0] === '/v1/chat/completions',
+  );
+  expect(completion).toBeDefined();
+  const sent = z
+    .object({
+      tools: z.array(z.object({ function: z.object({ name: z.string() }) })),
+    })
+    .parse(JSON.parse(completion?.[1].body ?? '{}'));
+  expect(
+    sent.tools.map(
+      (tool: { function: { name: string } }) => tool.function.name,
+    ),
+  ).toEqual(['GenerateFile']);
+  expect(
+    ui.fetch.mock.calls.some((call: [string]) =>
+      call[0].includes('/v1/rag/tool'),
+    ),
+  ).toBe(false);
+  expect(html).not.toContain('/v1/rag/tools');
+  expect(html).not.toContain('/v1/rag/tool/');
+});
+
+test('server RAG errors appear in framed chat without browser execution', async () => {
+  const ui = harness();
+  const record = {
+    call: { name: 'record_add', arguments: { collection: 'results' } },
+    result: {
+      isError: true,
+      structuredContent: {
+        result: 'Session required',
+        error: { code: 'SESSION_REQUIRED' },
+      },
+    },
+  };
+  ui.fetch.mockResolvedValue(
+    stream(
+      `: message-id rag\n\n: tool-result ${JSON.stringify(record)}\n\n: turn-end\n\n`,
+    ),
+  );
+  ui.userInput.value = 'save';
+  await ui.sendMessage();
+  expect(
+    ui.nodes.some((node: MessageNode) =>
+      node.textContent?.includes('SESSION_REQUIRED'),
+    ),
+  ).toBe(true);
+  expect(
+    ui.fetch.mock.calls.some((call: [string]) =>
+      call[0].includes('/v1/rag/tool'),
+    ),
+  ).toBe(false);
+});
+
+test.each([false, true])(
+  'RAG add results retain ids and downloads (framed=%s)',
+  async (framed: boolean) => {
+    const ui = harness();
+    const record = {
+      call: { name: 'record_add', arguments: { collection: 'results' } },
+      result: {
+        isError: false,
+        structuredContent: {
+          result: 'Record added.',
+          collection: 'results__u_alice',
+          record: 'saved',
+        },
+      },
+    };
+    ui.fetch.mockResolvedValue(
+      stream(
+        `${framed ? ': message-id rag\n\n' : ''}: tool-result ${JSON.stringify(record)}\n\ndata: [DONE]\n\n`,
+      ),
+    );
+    ui.userInput.value = 'save';
+    await ui.sendMessage();
+    const card = ui.nodes.find((node: MessageNode) =>
+      node.textContent?.includes('results__u_alice'),
+    );
+    expect(card?.textContent).toContain('saved');
+    expect(card?.innerHTML).toContain('DL');
+  },
+);

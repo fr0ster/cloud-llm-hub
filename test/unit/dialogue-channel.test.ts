@@ -116,6 +116,7 @@ beforeEach(() => {
   session = registry.open('alice', {}) as LongSession;
   jest.mocked(dialogueFor).mockResolvedValue({
     plannerCounts,
+    subscribe: () => () => {},
     attachments: turnContext,
     replies: new WeakMap(),
     factory: { refresh },
@@ -1164,8 +1165,9 @@ for (const anthropic of [false, true]) {
       idle: false,
     });
     const following = deferred();
+    let subscriptions = 0;
     handle.subscribe = () => {
-      following.resolve();
+      if (++subscriptions === 2) following.resolve();
       return () => {};
     };
     const res = fakeRes();
@@ -1360,8 +1362,9 @@ it('a request during follow sees the preceding turn in its history', async () =>
     idle: false,
   });
   const following = deferred();
+  let subscriptions = 0;
   handle.subscribe = () => {
-    following.resolve();
+    if (++subscriptions === 2) following.resolve();
     return () => {};
   };
   const res = fakeRes();

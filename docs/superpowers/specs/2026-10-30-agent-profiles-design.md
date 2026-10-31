@@ -1,5 +1,7 @@
 # Agent profiles - host design
 
+Superseded: internal RAG exclusions and legacy tool-name decisions are replaced by [the implemented unified RAG design](2026-10-31-unified-rag-tools-design.md).
+
 Status: draft (design only, no code)
 Date: 2026-10-30
 

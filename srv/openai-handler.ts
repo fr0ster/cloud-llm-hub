@@ -1,6 +1,9 @@
+import { isDeepStrictEqual } from 'node:util';
+import { z } from 'zod';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
+import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
 import {
   measureRequest,
@@ -197,26 +200,46 @@ function trimHistoryForContext(messages: Message[]): Message[] {
 // OpenAI request types
 // ---------------------------------------------------------------------------
 
-interface OpenAIChatRequest {
-  messages: Array<{
-    role: string;
-    content: unknown;
-    tool_call_id?: string;
-    tool_calls?: Array<{
-      id: string;
-      type: string;
-      function: { name: string; arguments: string };
-    }>;
-  }>;
-  stream?: boolean;
-  stream_options?: { include_usage?: boolean };
-  tools?: unknown[];
-  model?: string;
-  /** Accepted but ignored — classifier is driven by LLM_AGENT_CLASSIFIER_MODEL env var. */
-  classifier_model?: string;
-  // Backward-compatible no-op: llm-agent 5.15 no longer exposes a presentation stage.
-  presentation_model?: string;
-}
+const openAIChatRequestSchema = z
+  .object({
+    session: z.string().optional(),
+    messages: z.array(
+      z.object({
+        role: z.string(),
+        content: z.json().optional(),
+        tool_call_id: z.string().optional(),
+        tool_calls: z
+          .array(
+            z.object({
+              id: z.string(),
+              type: z.string(),
+              function: z.object({ name: z.string(), arguments: z.string() }),
+            }),
+          )
+          .optional(),
+      }),
+    ),
+    tool_choice: z
+      .union([
+        z.string(),
+        z.object({
+          type: z.string(),
+          function: z.object({ name: z.string() }),
+        }),
+      ])
+      .optional(),
+    stream: z.boolean().optional(),
+    stream_options: z
+      .object({ include_usage: z.boolean().optional() })
+      .optional(),
+    tools: z.array(z.json()).optional(),
+    model: z.string().optional(),
+    rag_collections: z.json().optional(),
+    classifier_model: z.string().optional(),
+    presentation_model: z.string().optional(),
+  })
+  .catchall(z.json());
+type OpenAIChatRequest = z.infer<typeof openAIChatRequestSchema>;
 
 // ---------------------------------------------------------------------------
 // Handlers
@@ -284,13 +307,15 @@ async function handleChatCompletionsMeasured(
   let body: OpenAIChatRequest;
   try {
     if (typeof req.body === 'object' && req.body !== null) {
-      body = req.body as OpenAIChatRequest;
+      body = openAIChatRequestSchema.parse(req.body);
     } else {
       const chunks: Buffer[] = [];
       for await (const chunk of req) {
         chunks.push(chunk as Buffer);
       }
-      body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+      body = openAIChatRequestSchema.parse(
+        JSON.parse(Buffer.concat(chunks).toString('utf-8')),
+      );
     }
   } catch {
     res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -310,6 +335,8 @@ async function handleChatCompletionsMeasured(
     return;
   }
 
+  delete body.session;
+
   const userMessages = body.messages.filter((m) => m.role === 'user');
   if (userMessages.length === 0) {
     res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -322,8 +349,90 @@ async function handleChatCompletionsMeasured(
     return;
   }
 
+  const migrations = new Map([
+    [
+      'rag_list',
+      'Use collections_list for discovery, collection_records for paging, or rag_read with an exact document id.',
+    ],
+    ['rag_add', 'Use collection_create when needed, then record_add.'],
+    [
+      'rag_correct',
+      'Use record_update with record and text (formerly newText).',
+    ],
+    [
+      'rag_deprecate',
+      'Use record_set_enabled with id and enabled: false for retirement, or record_delete with record for permanent removal.',
+    ],
+  ]);
+  const rejectTool = (message: string): void => {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(jsonError(message, 'invalid_request_error'));
+  };
+  const canonical = buildRagToolSchemas();
+  const consumerTools: NonNullable<OpenAIChatRequest['tools']> = [];
+  for (const entry of body.tools ?? []) {
+    const parsed = z
+      .object({ function: z.object({ name: z.string() }) })
+      .safeParse(entry);
+    const name = parsed.success ? parsed.data.function.name : '';
+    const migration = migrations.get(name);
+    if (migration) {
+      rejectTool(`${name} was removed. ${migration}`);
+      return;
+    }
+    if (isRagTool(name)) {
+      if (
+        !isDeepStrictEqual(
+          entry,
+          canonical.find((tool) => tool.function.name === name),
+        )
+      ) {
+        rejectTool(
+          `Conflicting definition for host RAG tool ${name}. Use the canonical definition or omit it.`,
+        );
+        return;
+      }
+    } else consumerTools.push(entry);
+  }
+  const forced =
+    typeof body.tool_choice === 'object'
+      ? body.tool_choice.function?.name
+      : undefined;
+  if (forced && migrations.has(forced)) {
+    rejectTool(`${forced} was removed. ${migrations.get(forced)}`);
+    return;
+  }
+  const hostIds = new Set<string>();
+  for (const message of body.messages) {
+    for (const call of message.tool_calls ?? []) {
+      if (message.role === 'assistant' && migrations.has(call.function.name)) {
+        rejectTool(
+          `${call.function.name} was removed. ${migrations.get(call.function.name)}`,
+        );
+        return;
+      }
+      if (isRagTool(call.function.name) || migrations.has(call.function.name))
+        hostIds.add(call.id);
+    }
+  }
+  if (
+    body.messages.some(
+      (message) =>
+        message.role === 'tool' && hostIds.has(message.tool_call_id ?? ''),
+    )
+  ) {
+    rejectTool('External results cannot claim host RAG tool call identities.');
+    return;
+  }
+  body = { ...body, tools: consumerTools };
+
   // A long session serves its requests one at a time, through the connection
   // it holds; without one the request stands alone, as it always has.
+  const authenticatedCaller = {
+    userId: getUserId(),
+    admin: cds.context?.user?.is?.('MCP_Admin') ?? false,
+    caller: describeCaller(cds.context?.user),
+  };
   const s = (req as LongSessionRequest).longSession;
   const measurement = requestMeasurement(req);
   measurement?.setStream(body.stream === true);
@@ -340,7 +449,16 @@ async function handleChatCompletionsMeasured(
     const continuation = s
       ? await longSessions().run(
           s,
-          () => serveChatCompletions(req, res, body, userMessages, s, early),
+          () =>
+            serveChatCompletions(
+              req,
+              res,
+              body,
+              userMessages,
+              authenticatedCaller,
+              s,
+              early,
+            ),
           () => early?.ensureStream(),
         )
       : await serveChatCompletions(
@@ -348,6 +466,7 @@ async function handleChatCompletionsMeasured(
           res,
           body,
           userMessages,
+          authenticatedCaller,
           undefined,
           early,
         );
@@ -378,6 +497,11 @@ async function serveChatCompletions(
   res: Response,
   body: OpenAIChatRequest,
   userMessages: OpenAIChatRequest['messages'],
+  authenticatedCaller: {
+    userId: string;
+    admin: boolean;
+    caller: ReturnType<typeof describeCaller>;
+  },
   s?: LongSession,
   early?: ChatStream,
 ): Promise<(() => Promise<void>) | void> {
@@ -412,12 +536,9 @@ async function serveChatCompletions(
   const serverManaged = !!explicitSessionId;
 
   // Resolve user identity early — needed for user-keyed session store lookups below.
-  const userId = getUserId();
+  const userId = authenticatedCaller.userId;
 
-  // The caller's permissions, resolved ONCE and used for two different jobs:
-  // the RAG filter (which tools are offered) and the ALS binding (which tools
-  // may actually run). They must agree, so they come from the same value.
-  const caller = describeCaller(cds.context?.user);
+  const caller = authenticatedCaller.caller;
   log.info('MCP caller', caller);
   const callerExposition = caller.exposition;
 
@@ -521,6 +642,21 @@ async function serveChatCompletions(
   const destBefore = getCurrentDestination(userId, sessionId);
   const destAfter = requestedDestination || s?.destination || destBefore;
   const useDialogue = dialogueMode && !!s && !!destAfter;
+  // The caller's permissions, resolved ONCE and used for two different jobs:
+  // the RAG filter (which tools are offered) and the ALS binding (which tools
+  // may actually run). They must agree, so they come from the same value.
+  const ragIdentity = {
+    admin: authenticatedCaller.admin,
+    channel: 'openai' as const,
+    onToolResult: useDialogue
+      ? undefined
+      : (record: import('@mcp-abap-adt/llm-agent').ToolCallRecord): void => {
+          if (body.stream)
+            (early?.out ?? out).write(
+              `: tool-result ${JSON.stringify(record)}\n\n`,
+            );
+        },
+  };
   if (dialogueMode && !useDialogue)
     res.setHeader('x-clh-coordinator', 'adaptive');
   if (useDialogue && s) {
@@ -926,7 +1062,7 @@ async function serveChatCompletions(
         source: chatAgent.streamProcess(normalizedMessages, opts),
         run: (fn) =>
           pipeline.run(() =>
-            runWithSessionId(sessionId, fn, priorTurns, userId),
+            runWithSessionId(sessionId, fn, priorTurns, userId, ragIdentity),
           ),
         maxMs: getAgentConfig().agent.dialogue?.followMaxMs ?? 1_800_000,
         onError: (error) => {
@@ -1010,8 +1146,7 @@ async function serveChatCompletions(
 
       log.info('Starting streamProcess', { sessionId });
 
-      // Bind the active session id into AsyncLocalStorage so the RAG tool dispatcher
-      // (rag_add / rag_correct / rag_deprecate) can resolve against the current session.
+      // Bind the caller and session for canonical host RAG execution.
       // The wrapper must enclose the whole retry loop so the context stays alive across
       // all stream iterations, including rate-limit retries.
       // Retry loop: restart stream on rate-limit errors (only before first content chunk)
@@ -1235,6 +1370,7 @@ async function serveChatCompletions(
             ),
           priorTurns,
           userId,
+          ragIdentity,
         ),
       );
       // end runWithSessionId / runWithRequestConnection / pipeline.run
@@ -1328,8 +1464,7 @@ async function serveChatCompletions(
     }
 
     // --- Non-streaming (with rate-limit retry) ---
-    // Bind the active session id into AsyncLocalStorage so the RAG tool dispatcher
-    // (rag_add / rag_correct / rag_deprecate) can resolve against the current session.
+    // Bind the caller and session for canonical host RAG execution.
     // The wrapper encloses the whole retry block so the context stays alive across retries.
     const result = await pipeline.run(() =>
       runWithSessionId(
@@ -1346,6 +1481,7 @@ async function serveChatCompletions(
           ),
         priorTurns,
         userId,
+        ragIdentity,
       ),
     );
 

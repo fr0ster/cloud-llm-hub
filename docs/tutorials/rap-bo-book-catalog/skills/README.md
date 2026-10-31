@@ -36,7 +36,7 @@ skills relevant to the task at hand.
 |----------------------------------------------------------------|--------------------------------------------------------------|
 | [`enforcing-target-package`](./enforcing-target-package.md)    | Never `$TMP`; verify after batch; report failures            |
 | [`avoiding-hallucinations`](./avoiding-hallucinations.md)      | Batch limits · read-back · token-count signals               |
-| [`managing-rag-artifacts`](./managing-rag-artifacts.md)        | `rag_add` / `rag_correct` / `rag_deprecate` · stable ids     |
+| [`managing-rag-artifacts`](./managing-rag-artifacts.md)        | `record_add` / `record_update` / `record_set_enabled` · stable ids     |
 | [`activating-objects`](./activating-objects.md)                | Group activation · prefix filter · BDEF tool                 |
 
 ## What's missing

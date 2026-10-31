@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 
-const html = readFileSync('app/chat/webapp/index.html', 'utf8');
+const html = readFileSync('app/chat/webapp/index.html', 'utf8').replace(
+  /\r\n/g,
+  '\n',
+);
 test.each(['discovering', 'none'])(
   'WebUI renders %s destination state',
   (state) => {

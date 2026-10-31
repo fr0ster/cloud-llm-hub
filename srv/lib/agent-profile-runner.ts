@@ -65,10 +65,16 @@ export class AgentProfileRunner implements IAgentProfileRunner {
         result: profile.result,
         policy: profile.tools,
       });
-    } catch {
+    } catch (error) {
       return {
         ok: false,
-        error: { code: 'invalid', message: 'Invalid agent tool policy' },
+        error: {
+          code: 'invalid',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Invalid agent tool policy',
+        },
       };
     }
     try {

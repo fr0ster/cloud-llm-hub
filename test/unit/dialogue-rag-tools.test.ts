@@ -1,332 +1,258 @@
-import type { IMcpClient, IRag } from '@mcp-abap-adt/llm-agent';
+import type { IMcpClient, IRag, IUsageRecorder } from '@mcp-abap-adt/llm-agent';
 import { TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+import { z } from 'zod';
 import {
-  sessionCollectionId,
-  userCollectionId,
-} from '../../srv/collection-ids';
+  createCallRegister,
+  runWithAdmission,
+} from '../../srv/lib/admission-scope';
 import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
 import {
-  DialogueRagMcpClient,
-  runWithDialogueRagTools,
+  LocalRagMcpClient,
+  localRagTools,
   withDialogueRagTools,
 } from '../../srv/lib/dialogue-rag-tools';
+import { longSessions } from '../../srv/lib/long-session';
+import { ragToolEffect, ragToolNames } from '../../srv/lib/rag-tool-catalogue';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { CollectionRegistry } from '../../srv/rag-collections';
-import * as dispatcher from '../../srv/rag-tool-dispatcher';
 import {
-  getRequestSessionId,
-  getRequestUserId,
   runWithProfileTools,
   runWithReadOnlyTools,
   runWithSessionId,
 } from '../../srv/request-session';
+import { liveSession } from './helpers/canonical-rag';
 
 function setup() {
   const registry = new CollectionRegistry();
   const inner: IMcpClient = {
-    listTools: jest.fn(async () => ({ ok: true as const, value: [] })),
+    listTools: async () => ({
+      ok: true,
+      value: [
+        { name: 'record_add', description: 'untrusted', inputSchema: {} },
+        { name: 'GetTable', description: 'read', inputSchema: {} },
+        { name: 'GetTable', description: 'read', inputSchema: {} },
+      ],
+    }),
     callTool: jest.fn(),
   };
-  const client = new RecordingMcpClient(
-    new DialogueRagMcpClient(inner, () => registry),
-  );
-  return { client, registry, inner };
+  const local = new LocalRagMcpClient(inner, () => registry);
+  return { registry, inner, local, client: new RecordingMcpClient(local) };
 }
-const inWorker = <T>(fn: () => T) =>
-  runWithSessionId(
-    'dialogue-1',
-    () => runWithDialogueRagTools(fn),
-    [],
-    'alice',
-  );
+const inSession = <T>(fn: () => T) =>
+  runWithSessionId(liveSession('alice', 'dialogue-1'), fn, [], 'alice');
 
-test('profile RAG definitions and forged direct calls share the same policy before storage effects', async () => {
-  const { client, registry } = setup();
-  const create = jest.spyOn(registry, 'getOrCreateCollection');
-  await inWorker(() =>
-    runWithProfileTools(new AgentToolPermissions(['rag_list']), async () => {
-      const listed = await client.listTools();
-      expect(listed.ok && listed.value.map((tool) => tool.name)).toEqual([
-        'rag_list',
-      ]);
-      expect(
-        await client.callTool('rag_add', {
-          collection: 'results',
-          text: 'forged',
-        }),
-      ).toMatchObject({ ok: true, value: { isError: true } });
-      expect(create).not.toHaveBeenCalled();
-      expect(await client.callTool('rag_list', {})).toMatchObject({ ok: true });
-    }),
-  );
-});
-
-test('worker collections persist across sessions, isolate users and allow explicit scratch scope', async () => {
-  const { client, registry } = setup();
-  await inWorker(async () => {
-    await client.callTool('rag_add', {
-      collection: 'results',
-      id: 'saved',
-      text: 'Keep',
-    });
-    await client.callTool('rag_add', {
-      collection: 'results',
-      scope: 'session',
-      id: 'scratch',
-      text: 'Temporary',
-    });
-  });
-  expect(
-    await registry.getCollection(userCollectionId('results', 'alice')),
-  ).toMatchObject({ owner: 'alice', scope: 'user' });
-  expect(
-    await registry.getCollection(
-      sessionCollectionId('results', 'alice', 'dialogue-1'),
-    ),
-  ).toMatchObject({
-    owner: 'alice',
-    scope: 'session',
-    sessionId: 'dialogue-1',
-  });
-  const call = (
-    user: string,
-    session: string,
-    name: string,
-    args: Record<string, unknown>,
-  ) =>
-    runWithSessionId(
-      session,
-      () => runWithDialogueRagTools(() => client.callTool(name, args)),
-      [],
-      user,
-    );
-  // The persistent collection wins even when this session has scratch data of the same name.
-  for (const session of ['dialogue-1', 'dialogue-2']) {
-    const read = await call('alice', session, 'rag_list', {
-      collection: 'results',
-      id: 'saved',
-    });
-    expect(read.ok && JSON.parse(String(read.value.content))).toMatchObject({
-      ok: true,
-      document: { text: 'Keep' },
-    });
-  }
-  const denied = await call('bob', 'dialogue-1', 'rag_list', {
-    collection: 'results',
-  });
-  expect(denied.ok && denied.value.isError).toBe(true);
-  const corrected = await call('alice', 'dialogue-2', 'rag_correct', {
-    collection: 'results',
-    id: 'saved',
-    newText: 'Updated',
-    reason: 'Update',
-  });
-  expect(corrected.ok && corrected.value.isError).toBe(false);
-  const removed = await call('alice', 'dialogue-2', 'rag_deprecate', {
-    collection: 'results',
-    id: 'saved',
-    reason: 'Retire',
-  });
-  expect(removed.ok && removed.value.isError).toBe(false);
-});
-
-test('executor sees four hub tools; checker sees only rag_list and cannot write', async () => {
-  const { client, registry, inner } = setup();
-  const executor = await inWorker(() => client.listTools());
-  expect(executor.ok && executor.value.map((t) => t.name).sort()).toEqual([
-    'rag_add',
-    'rag_correct',
-    'rag_deprecate',
-    'rag_list',
+test('all canonical tools are local, upstream collisions and duplicates cannot shadow them', async () => {
+  const { client, inner } = setup();
+  const result = await inSession(() => client.listTools());
+  expect(result.ok && result.value.map((tool) => tool.name)).toEqual([
+    'GetTable',
+    ...ragToolNames,
   ]);
-  await inWorker(() =>
-    runWithReadOnlyTools(async () => {
-      const checker = await client.listTools();
-      expect(checker.ok && checker.value.map((t) => t.name)).toEqual([
-        'rag_list',
-      ]);
-      const denied = await client.callTool('rag_add', {
-        collection: 'results',
-        text: 'no',
-      });
-      expect(denied.ok && denied.value.isError).toBe(true);
-    }),
-  );
   expect(
-    await registry.getCollection(
-      sessionCollectionId('results', 'alice', 'dialogue-1'),
-    ),
-  ).toBeNull();
+    result.ok &&
+      result.value.find((tool) => tool.name === 'record_add')?.description,
+  ).not.toBe('untrusted');
+  await inSession(() => client.callTool('record_add', {}));
   expect(inner.callTool).not.toHaveBeenCalled();
 });
 
-test('local dispatch binds session/user, persists results, reads them back and records ground truth', async () => {
+test('checker gets exactly four reads; allow/deny and cached adapters reject forged mutations', async () => {
   const { client, registry } = setup();
-  const original = dispatcher.dispatchRagTool;
-  const spy = jest
-    .spyOn(dispatcher, 'dispatchRagTool')
-    .mockImplementation((...args) => {
-      expect(getRequestSessionId()).toBe('dialogue-1');
-      expect(getRequestUserId()).toBe('alice');
-      return original(...args);
-    });
-  try {
-    await inWorker(async () => {
-      const added = await client.callTool(
-        'rag_add',
-        { collection: 'results', id: 'dump-1', text: 'Analysis persisted' },
-        { trace: { traceId: 'task-1' } },
-      );
-      expect(added.ok && added.value.isError).toBe(false);
-      await runWithReadOnlyTools(async () => {
-        const read = await client.callTool(
-          'rag_list',
-          { collection: 'results' },
-          { trace: { traceId: 'task-1' } },
-        );
-        expect(read.ok && JSON.parse(String(read.value.content))).toMatchObject(
-          {
-            ok: true,
-            total: 1,
-            documents: [
-              { id: 'dump-1', title: 'Analysis persisted', length: 18 },
-            ],
-          },
-        );
-      });
-    });
-    expect(spy).toHaveBeenCalledWith(registry, 'rag_add', expect.any(Object), {
-      defaultScope: 'user',
-    });
-    expect(client.getToolRecords('task-1').map((r) => r.call.name)).toEqual([
-      'rag_add',
-      'rag_list',
-    ]);
-    const meta = await registry.getCollection(
-      userCollectionId('results', 'alice'),
-    );
-    expect(meta).toMatchObject({
-      scope: 'user',
-      owner: 'alice',
-    });
-    const outside = await client.callTool('rag_add', {
-      collection: 'results',
-      text: 'no',
-    });
-    expect(outside.ok && outside.value.isError).toBe(true);
-  } finally {
-    spy.mockRestore();
-  }
-});
-
-test('hub tools remain selectable with an empty SAP search and checker selection excludes writes', async () => {
-  const rag = withDialogueRagTools({
-    query: async () => ({ ok: true, value: [] }),
-  } as unknown as IRag);
-  const query = () =>
-    rag.query({ text: 'store analysis' } as Parameters<IRag['query']>[0], 5);
-  expect(await query()).toEqual({ ok: true, value: [] });
-  const executor = await inWorker(query);
-  expect(executor.ok && executor.value.map((r) => r.metadata.id)).toEqual([
-    'tool:rag_list',
-    'tool:rag_add',
-    'tool:rag_correct',
-    'tool:rag_deprecate',
-  ]);
-  const checker = await inWorker(() => runWithReadOnlyTools(query));
-  expect(checker.ok && checker.value.map((r) => r.metadata.id)).toEqual([
-    'tool:rag_list',
-  ]);
-});
-
-test('dialogue local rag_list full read is capped and reviewer records the visible prefix', async () => {
-  const { registry, inner } = setup();
-  const client = new RecordingMcpClient(
-    new DialogueRagMcpClient(inner, () => registry),
-    undefined,
-    100,
-  );
-  await inWorker(async () => {
-    await client.callTool('rag_add', {
-      collection: 'results',
-      id: 'large',
-      text: 'x'.repeat(1000),
-    });
-    const result = await client.callTool(
-      'rag_list',
-      { collection: 'results', id: 'large' },
-      { trace: { traceId: 'large' } },
-    );
-    expect(result.ok && result.value.content).toContain(
-      '[result truncated: 100 of',
-    );
-    expect(result.ok && result.value.isError).toBe(false);
-    expect(client.getToolRecords('large')[0].result).toEqual(
-      result.ok && result.value,
-    );
-    expect(client.getToolRecords('large')[0]).toMatchObject({
-      truncation: { truncated: true, keptLength: 100 },
-    });
-  });
-});
-
-const externalWrites = [
-  'collection_create',
-  'collection_delete',
-  'record_add',
-  'record_update',
-  'record_delete',
-];
-
-test.each(externalWrites)(
-  'external %s is filtered and forged calls never forward, even with all tools allowed',
-  async (name: string) => {
-    const { client, inner } = setup();
-    jest.mocked(inner.listTools).mockResolvedValue({
-      ok: true,
-      value: externalWrites.map((tool: string) => ({
-        name: tool,
-        description: '',
-        inputSchema: { type: 'object' },
-      })),
-    });
-    await inWorker(async () => {
-      const listed = await client.listTools();
+  await inSession(() =>
+    runWithReadOnlyTools(async () => {
+      const result = await client.listTools();
       expect(
-        listed.ok &&
-          listed.value.some((tool) => externalWrites.includes(tool.name)),
-      ).toBe(false);
-      expect(await client.callTool(name, {})).toMatchObject({
-        ok: true,
-        value: { isError: true },
+        result.ok &&
+          result.value
+            .filter((tool) => ragToolNames.some((name) => name === tool.name))
+            .map((tool) => tool.name),
+      ).toEqual(ragToolNames.filter((name) => ragToolEffect(name) === 'read'));
+      expect(
+        await client.callTool('collection_create', {
+          name: 'denied',
+          scope: 'user',
+        }),
+      ).toMatchObject({ value: { isError: true } });
+    }),
+  );
+  await inSession(() =>
+    runWithProfileTools(new AgentToolPermissions(['rag_read']), async () => {
+      expect(await client.listTools()).toMatchObject({
+        value: [{ name: 'rag_read' }],
       });
+      expect(
+        await client.callTool('collection_create', {
+          name: 'denied',
+          scope: 'user',
+        }),
+      ).toMatchObject({ value: { isError: true } });
+    }),
+  );
+  expect(await registry.listCollections('alice')).toEqual([]);
+});
+
+test('local calls use enclosing sessions, physical ids and structured results; record evidence survives', async () => {
+  const { client, registry } = setup();
+  await inSession(async () => {
+    expect(
+      await client.callTool('collection_create', {
+        name: 'results',
+        scope: 'user',
+      }),
+    ).toMatchObject({ value: { structuredContent: { created: true } } });
+    expect(
+      await client.callTool(
+        'record_add',
+        { collection: 'results', record: 'tech-spec', text: 'Keep' },
+        { trace: { traceId: 'task' } },
+      ),
+    ).toMatchObject({ value: { structuredContent: { record: 'tech-spec' } } });
+    expect(
+      await client.callTool('record_add', {
+        collection: 'results',
+        record: 'tech-spec',
+        text: 'Overwrite',
+      }),
+    ).toMatchObject({
+      value: {
+        isError: true,
+        structuredContent: { error: { code: 'RECORD_EXISTS', status: 409 } },
+      },
     });
-    await inWorker(() => runWithReadOnlyTools(() => client.callTool(name, {})));
+    expect(
+      await client.callTool('rag_read', {
+        collection: 'results',
+        id: 'tech-spec',
+        session: 'different',
+      }),
+    ).toMatchObject({ value: { isError: true } });
+    const result = await client.callTool('rag_read', {
+      collection: 'results',
+      id: 'tech-spec',
+      session: 'dialogue-1',
+    });
+    expect(result.ok && JSON.stringify(result.value.content)).toContain('Keep');
+  });
+  expect(client.getToolRecords('task')).toHaveLength(1);
+  expect((await registry.listCollections('alice'))[0].documentCount).toBe(1);
+});
+
+test.each(ragToolNames)(
+  '%s stays listed without a session and returns SESSION_REQUIRED',
+  async (name) => {
+    const { local } = setup();
+    const inputs = {
+      collection_create: { name: 'results', scope: 'user' },
+      collection_delete: { collection: 'results' },
+      record_add: { collection: 'results', text: 'Keep' },
+      record_update: { collection: 'results', record: 'id', text: 'Keep' },
+      record_delete: { collection: 'results', record: 'id' },
+      rag_search: { query: 'Keep' },
+      rag_read: { collection: 'results', id: 'id' },
+      collections_list: {},
+      collection_records: { collection: 'results' },
+      collection_set_enabled: { collection: 'results', enabled: false },
+      record_set_enabled: { collection: 'results', id: 'id', enabled: false },
+    };
+    expect(localRagTools().some((tool) => tool.name === name)).toBe(true);
+    expect(
+      await runWithSessionId(
+        undefined,
+        () => local.callTool(name, inputs[name]),
+        [],
+        'alice',
+      ),
+    ).toMatchObject({
+      value: {
+        isError: true,
+        structuredContent: { error: { code: 'SESSION_REQUIRED' } },
+      },
+    });
+  },
+);
+
+test('nested host admission avoids the session FIFO and measures exactly once in the caller channel', async () => {
+  const { local } = setup();
+  const record = jest.fn<
+    ReturnType<IUsageRecorder['record']>,
+    Parameters<IUsageRecorder['record']>
+  >();
+  const usage: IUsageRecorder = { record, with: () => usage };
+  const key = liveSession('alice', 'nested');
+  const session = longSessions().get('alice', key);
+  if (!session) throw new Error('Missing live session');
+  await longSessions().run(session, () =>
+    runWithAdmission(createCallRegister(), () =>
+      runWithSessionId(
+        key,
+        () =>
+          local.callTool(
+            'collections_list',
+            {},
+            { usage, trace: { traceId: 'origin' } },
+          ),
+        [],
+        'alice',
+      ),
+    ),
+  );
+  expect(record).toHaveBeenCalledTimes(1);
+  expect(record).toHaveBeenCalledWith(
+    expect.objectContaining({
+      kind: 'tool.call',
+      context: expect.objectContaining({
+        traceId: 'origin',
+        channel: 'openai',
+        sessionId: key,
+      }),
+    }),
+  );
+});
+
+test.each(['rag_list', 'rag_add', 'rag_correct', 'rag_deprecate'])(
+  'removed %s is rejected without forwarding',
+  async (name) => {
+    const { local, inner } = setup();
+    expect(await local.callTool(name, {})).toMatchObject({
+      value: { isError: true },
+    });
     expect(inner.callTool).not.toHaveBeenCalled();
   },
 );
 
-test('external write catalogue hits are excluded from dialogue retrieval', async () => {
-  const rag: IRag = {
+test('canonical tool candidates deduplicate imported names and obey the read ceiling', async () => {
+  const base: IRag = {
     query: async () => ({
       ok: true,
-      value: externalWrites.map((name: string) => ({
-        text: name,
-        metadata: { id: `tool:${name}`, name },
-        score: 1,
-      })),
+      value: [
+        {
+          text: 'fake',
+          metadata: { id: 'tool:record_add', name: 'record_add' },
+          score: 1,
+        },
+        ...['rag_list', 'rag_add', 'rag_correct', 'rag_deprecate'].map(
+          (name: string) => ({
+            text: 'stale cached candidate',
+            metadata: { id: `tool:${name}`, name },
+            score: 1,
+          }),
+        ),
+      ],
     }),
     getById: async () => ({ ok: true, value: null }),
     healthCheck: async () => ({ ok: true, value: undefined }),
   };
-  const wrapped = withDialogueRagTools(rag);
-  const result = await inWorker(() =>
-    wrapped.query(new TextOnlyEmbedding('write'), 20),
+  const rag = withDialogueRagTools(base);
+  const result = await runWithReadOnlyTools(() =>
+    rag.query(new TextOnlyEmbedding('read'), 20),
   );
-  expect(
-    result.ok &&
-      result.value.some((hit) =>
-        externalWrites.includes(String(hit.metadata.name)),
-      ),
-  ).toBe(false);
+  expect(result.ok && result.value.map((row) => row.metadata.id)).toEqual(
+    ragToolNames
+      .filter((name) => ragToolEffect(name) === 'read')
+      .map((name) => `tool:${name}`),
+  );
+  for (const tool of localRagTools())
+    expect(
+      z.object({ type: z.literal('object') }).parse(tool.inputSchema),
+    ).toEqual({ type: 'object' });
 });
