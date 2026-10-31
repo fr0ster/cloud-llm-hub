@@ -19,6 +19,8 @@ describe('WebUI bootstrap readiness', () => {
         getElementById: jest.fn(() => ({})),
       },
       populateAuxSelect: jest.fn(),
+      populateModelSelects: jest.fn(),
+      syncHubStatePolling: jest.fn(),
       classifierSelect: {},
       destSelect: { appendChild: jest.fn(), innerHTML: '', disabled: true },
       renderDestinations: jest.fn(),

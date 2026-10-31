@@ -1319,7 +1319,7 @@ Each destination has its own cached `McpClientAdapter`, but that adapter is **no
    - Registers ALL as `pending` immediately (visible in UI)
    - Initializes each destination sequentially in background (the `LLM_AGENT_MCP_DESTINATION` hint, if set, goes first). The **tool corpus is loaded only once** into the shared `sharedToolsRag` from the build step's output (bundle for `vector`, prebuilt role stores for `qdrant`; nothing is embedded) — `initDestination()` reuses it (`agent-manager.ts`); per-destination init only wires the `McpClientAdapter` + the **generic** executor skills pool (`buildSkillsPool()`, identical for every destination; the chat-coordinator build skips it via `skipSkills`)
 3. A request to a not-yet-ready destination **waits** (bounded by `LLM_AGENT_DESTINATION_INIT_WAIT_MS`, default 90s) in `getSmartAgent` and is served once ready — instead of erroring `agent not initialized`. Concurrent inits are deduped via `ensureDestinationInit`.
-4. UI polls `GET /v1/models` every 15s to update destination status
+4. UI refreshes `GET /v1/models` when dropdowns open, chat turns finish, or the page becomes visible. Requests share one in-flight fetch and a 2s cooldown, preserving model selections. Visible pages poll every 15s only while waiting for destinations in LLM-only mode or while the open login gate has destinations that are not ready.
 
 ### Destination Switching
 

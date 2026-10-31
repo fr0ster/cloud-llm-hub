@@ -765,11 +765,13 @@
         function showLoginGate() {
             document.getElementById('login-gate-overlay').style.display = 'flex';
             populateGateDestinations();
+            syncHubStatePolling();
             setTimeout(() => document.getElementById('gate-dest')?.focus(), 50);
         }
 
         function hideLoginGate() {
             document.getElementById('login-gate-overlay').style.display = 'none';
+            syncHubStatePolling();
         }
 
         function populateGateDestinations() {
@@ -777,6 +779,14 @@
             if (!sel) return;
             const prev = sel.value;
             const all = gateDestinations || [];
+            const shown = all.map(d => ({ value: d.name, text: d.status === 'ready' ? d.name : `${d.name} (${destinationStatusLabel(d.status)})` }));
+            const current = Array.from(sel.options || []);
+            // Rebuilding the options of an open dropdown can close it: leave an unchanged list alone.
+            if (all.length > 0 && current.length === shown.length
+                && current.every((o, i) => o.value === shown[i].value && o.textContent === shown[i].text)) {
+                updateGateAuthentication();
+                return;
+            }
             sel.innerHTML = '';
             if (all.length === 0) {
                 const opt = document.createElement('option');
@@ -795,17 +805,20 @@
                 if (d.status === 'ready') {
                     opt.textContent = d.name;
                 } else {
-                    const label = d.status === 'vectorizing' ? 'vectorizing…'
-                        : d.status === 'pending' ? 'pending'
-                        : d.status === 'unreachable' ? 'unreachable'
-                        : d.status || 'initializing';
-                    opt.textContent = `${d.name} (${label})`;
+                    opt.textContent = `${d.name} (${destinationStatusLabel(d.status)})`;
                     opt.disabled = true;
                 }
                 if (d.name === prev && d.status === 'ready') opt.selected = true;
                 sel.appendChild(opt);
             }
             updateGateAuthentication();
+        }
+
+        function destinationStatusLabel(status) {
+            return status === 'vectorizing' ? 'vectorizing…'
+                : status === 'pending' ? 'pending'
+                : status === 'unreachable' ? 'unreachable'
+                : status || 'initializing';
         }
 
         function destinationUsesConfiguredAuth(dest) {
@@ -1536,27 +1549,13 @@
                 const data = await resp.json();
                 if (data.data && data.data.length > 0) {
                     const meta = data._meta || {};
-                    const activeModel = data._active_model || data.data[0].id;
                     const agentReady = data._agent_ready === true;
-
-                    // Populate model dropdown
-                    modelSelect.innerHTML = '';
-                    for (const m of data.data) {
-                        const opt = document.createElement('option');
-                        opt.value = m.id;
-                        opt.textContent = m.id;
-                        if (m.id === activeModel) opt.selected = true;
-                        modelSelect.appendChild(opt);
-                    }
-                    modelSelect.disabled = false;
+                    populateModelSelects(data);
 
                     document.getElementById('agent-mode').innerText = meta.mode || '?';
                     document.getElementById('rag-type').innerText = meta.rag_type || '?';
                     document.getElementById('embedding-model').innerText = meta.embedding_model || '?';
                     document.getElementById('planner-model').innerText = meta.planner_model || '?';
-
-                    // Populate auxiliary model dropdowns with all available models
-                    populateAuxSelect(classifierSelect, data.data, meta.classifier_model);
 
                     // Populate destination dropdown
                     const activeDest = data._active_destination || meta.mcp_destination || '';
@@ -1588,6 +1587,7 @@
                     // it, say so honestly in the status, and chat with the LLM only.
                     destinationDiscovery = data._destination_discovery || 'none';
                     llmOnlyMode = !meta.mcp_destination && destinations.length === 0;
+                    syncHubStatePolling();
                     setIdleStatus();
                     if (llmOnlyMode) {
                         if (!loginGateDone) enterLlmOnlyMode();
@@ -1612,24 +1612,72 @@
         }
         checkReady();
 
-        // Periodically refresh destination statuses (background vectorization updates)
-        setInterval(async () => {
-            if (!ready) return;
-            try {
-                const resp = await hubFetch('/v1/models');
-                const data = await resp.json();
-                // The planner follows a hot-swapped main model unless it has its own.
-                if (data._meta?.planner_model) document.getElementById('planner-model').innerText = data._meta.planner_model;
-                const destinations = data._destinations || [];
-                const activeDest = data._active_destination || '';
-                if (destinations.length > 0) {
-                    renderDestinations(destinations, activeDest);
-                    if (llmOnlyMode) leaveLlmOnlyMode();
-                } else if (llmOnlyMode) {
-                    updateDestinationDiscovery(data._destination_discovery);
+        // Lazy hub state refresh, shared by user actions and conditional polling.
+        let hubStateRequest = null;
+        let hubStateFinishedAt = -Infinity;
+        let hubStateTimer = null;
+
+        function populateModelSelects(data) {
+            if (!data.data?.length) return;
+            populateAuxSelect(modelSelect, data.data, data._active_model);
+            populateAuxSelect(classifierSelect, data.data, data._meta?.classifier_model);
+        }
+
+        function syncHubStatePolling() {
+            const gateOpen = document.getElementById('login-gate-overlay').style.display === 'flex';
+            const needed = ready && !hubSignedOut && !document.hidden && (llmOnlyMode
+                || (gateOpen && gateDestinations.some(d => d.status === 'pending' || d.status === 'vectorizing')));
+            if (!needed && hubStateTimer !== null) {
+                clearInterval(hubStateTimer);
+                hubStateTimer = null;
+            } else if (needed && hubStateTimer === null) {
+                hubStateTimer = setInterval(refreshHubState, 15000);
+            }
+        }
+
+        function refreshHubState() {
+            if (hubStateRequest) return hubStateRequest;
+            if (!ready || hubSignedOut || Date.now() - hubStateFinishedAt < 2000) {
+                // Signed out while polling: stop the timer instead of ticking forever.
+                syncHubStatePolling();
+                return Promise.resolve();
+            }
+            hubStateRequest = (async () => {
+                try {
+                    const resp = await hubFetch('/v1/models');
+                    const data = await resp.json();
+                    populateModelSelects(data);
+                    // The planner follows a hot-swapped main model unless it has its own.
+                    if (data._meta?.planner_model) document.getElementById('planner-model').innerText = data._meta.planner_model;
+                    const destinations = data._destinations || [];
+                    if (destinations.length > 0) {
+                        renderDestinations(destinations, data._active_destination || '');
+                        if (llmOnlyMode) leaveLlmOnlyMode();
+                    } else if (llmOnlyMode) {
+                        updateDestinationDiscovery(data._destination_discovery);
+                    }
+                } catch (e) { /* ignore */ }
+                finally {
+                    hubStateFinishedAt = Date.now();
+                    hubStateRequest = null;
+                    syncHubStatePolling();
                 }
-            } catch (e) { /* ignore */ }
-        }, 15000);
+            })();
+            return hubStateRequest;
+        }
+
+        // destSelect is hidden (the login gate owns destination choice), so it is not a trigger.
+        for (const select of [modelSelect, classifierSelect, document.getElementById('gate-dest')]) {
+            select.addEventListener('mousedown', refreshHubState);
+            select.addEventListener('focus', refreshHubState);
+            select.addEventListener('keydown', event => {
+                if (['ArrowDown', 'Enter', ' ', 'F4'].includes(event.key)) refreshHubState();
+            });
+        }
+        document.addEventListener('visibilitychange', () => {
+            syncHubStatePolling();
+            if (!document.hidden) refreshHubState();
+        });
 
         // Destination diagnostic — calls the independent probe endpoint that
         // classifies raw connectivity-proxy errors (tunnel_timeout, no_scc_*,
@@ -1797,22 +1845,23 @@
         });
 
         function populateAuxSelect(selectEl, models, activeValue) {
-            const currentVal = selectEl.value || activeValue;
-            selectEl.innerHTML = '';
-            for (const m of models) {
-                const opt = document.createElement('option');
-                opt.value = m.id;
-                opt.textContent = m.id;
-                if (m.id === currentVal) opt.selected = true;
-                selectEl.appendChild(opt);
-            }
-            // If active value not in models list, add it
-            if (activeValue && !Array.from(selectEl.options).some(o => o.value === activeValue)) {
-                const opt = document.createElement('option');
-                opt.value = activeValue;
-                opt.textContent = activeValue;
-                opt.selected = true;
-                selectEl.prepend(opt);
+            const ids = models.map(m => m.id);
+            // A configured value the list does not offer is still shown, as it is what the server uses.
+            if (activeValue && !ids.includes(activeValue)) ids.unshift(activeValue);
+            const currentVal = ids.includes(selectEl.value) ? selectEl.value : activeValue;
+            const options = Array.from(selectEl.options || []);
+            // Rebuilding the options of an open dropdown can close it: leave an unchanged list alone.
+            if (options.length !== ids.length || options.some((o, i) => o.value !== ids[i])) {
+                selectEl.innerHTML = '';
+                for (const id of ids) {
+                    const opt = document.createElement('option');
+                    opt.value = id;
+                    opt.textContent = id;
+                    if (id === currentVal) opt.selected = true;
+                    selectEl.appendChild(opt);
+                }
+            } else if (currentVal && selectEl.value !== currentVal) {
+                selectEl.value = currentVal;
             }
             selectEl.disabled = false;
         }
@@ -1939,6 +1988,7 @@
                 if (released) return;
                 released = true;
                 unlockInput(sendToken);
+                refreshHubState();
             }
 
             conversationHistory.push({ role: 'user', content: text });

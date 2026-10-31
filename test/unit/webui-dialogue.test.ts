@@ -76,6 +76,7 @@ function harness(now?: number, realSessionRecovery = false) {
     unlockInput: (token: string) => locks.delete(token),
     setStatus: jest.fn(),
     setIdleStatus: jest.fn(),
+    refreshHubState: jest.fn(async (): Promise<void> => {}),
     renderMermaidDiagrams: jest.fn(),
     localStorage: {
       getItem: (key: string) => storage.get(key) ?? null,

@@ -37,7 +37,7 @@ Automatic discovery and management of multiple SAP ABAP systems.
 - Live destination status in UI (ready/vectorizing/pending/error)
 - Per-request destination switching via `X-SAP-Destination` header
 - Destination mapping — map a short system code to a BTP destination name for cleaner client configuration
-- No page refresh needed — 15s polling for status updates
+- No page reload needed: refresh on dropdown open, chat completion and page visibility; poll every 15s only while visible and waiting for destinations or login-gate readiness
 
 **Benefits:**
 
