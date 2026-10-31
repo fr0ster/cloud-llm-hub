@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.1.0] - 2026-10-31
+
 ### Changed
 
 - WebUI refreshes models, planner and destinations on demand, preserving model selections and sharing requests with a 2s cooldown. Polling runs only while visible and waiting for destinations or login-gate readiness.
