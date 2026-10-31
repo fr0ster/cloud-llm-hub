@@ -1,6 +1,6 @@
 # Coordinator and planner split
 
-Status: draft, 2026-10-31. Roadmap item 2a. Library parts go to llm-agent, configuration and transport to the hub.
+Status: implemented, 2026-10-31. Roadmap item 2a. Library parts go to llm-agent, configuration and transport to the hub.
 
 ## Why
 

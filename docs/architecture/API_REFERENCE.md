@@ -733,6 +733,8 @@ codes above.
 
 Agent MCP lists 23 tools: the eleven RAG tools, `list_destinations`,
 `session_open`, `session_close`, `execute_step`, and these eight orchestration tools.
+The former plan tool names `get_plan` and `update_plan` are now `plan_get` and
+`plan_update`; no aliases are registered.
 Their argument schemas and descriptions come from the library's `PlannerToolsClient`;
 MCP adds optional `session` and `destination` routing arguments, and a structured
 `plan` argument for `plan_revise`.
@@ -1113,7 +1115,11 @@ Agents record creation uses `POST /v1/rag/collections/:id/documents` with
 `{ id, text, metadata }`. `id`, `metadata.canonicalKey` and `metadata.name` must
 match exactly. An existing canonical id returns 409. Replace a record explicitly
 with `PUT /v1/rag/collections/:id/documents/:did`; text may be empty. Metadata uses
-the strict profile, worker-base or planner schema in the agent profiles design.
+the strict worker profile, worker-base, coordinator or planner-author schema.
+The coordinator record is `coordinator`; plan author records are `planner-create`
+and `planner-revise`. `LLM_AGENT_PLANNER_RECORD` selects the coordinator record.
+Edited legacy `planner` prompts must be split into conversation/orchestration rules
+for the coordinator and planning rules for both author records.
 Unknown fields, malformed tool policies, reserved-name violations and mismatched
 ids return 400. Individual record enablement and deletion use the existing record
 routes. Generic chunked uploads, bulk imports, source toggles and collection
