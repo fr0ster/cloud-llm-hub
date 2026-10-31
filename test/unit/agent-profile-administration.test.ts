@@ -66,7 +66,7 @@ function source(id: string, userId = 'alice') {
     userId,
     globalCollectionId: 'agents',
     selectedCollectionId: () => id,
-    plannerRecord: 'planner',
+    plannerRecord: 'coordinator',
     timeoutMs: 1000,
   });
 }

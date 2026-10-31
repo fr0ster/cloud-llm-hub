@@ -2858,7 +2858,7 @@ export function createAgentProfileSource(
 ): AgentProfileSource {
   const profiles = getAgentConfig().profiles ?? {
     collectionId: 'agents',
-    plannerRecord: 'planner',
+    plannerRecord: 'coordinator',
     timeoutMs: 3000,
   };
   const sessionId = getRequestSessionId();

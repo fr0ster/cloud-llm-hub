@@ -147,7 +147,7 @@ async function until(condition: () => boolean, turns = 2000) {
 beforeAll(async () => {
   await manager
     .getCollectionRegistry()
-    .seedAgentConfiguration('agents', 'planner');
+    .seedAgentConfiguration('agents', 'coordinator');
 });
 
 afterAll(async () => {

@@ -151,7 +151,7 @@ jest.mock('../../srv/agent-manager', () => ({
       mockPlannerTurns.push(text);
       await mockPlannerHook?.(text);
       if (mockPlan) {
-        await new PlannerToolsClient().callTool('update_plan', mockPlan);
+        await new PlannerToolsClient().callTool('plan_update', mockPlan);
         return {
           ok: true,
           value: { content: 'Plan updated', usage: mockPlanUsage },
@@ -1683,7 +1683,7 @@ test.each([
       return { output: 'saved' };
     });
     mockPlannerHook = async () => {
-      await new PlannerToolsClient().callTool('update_plan', {
+      await new PlannerToolsClient().callTool('plan_update', {
         plan: 'Save record',
         status: 'active',
       });

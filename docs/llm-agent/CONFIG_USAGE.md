@@ -76,7 +76,7 @@ goal sizes, states, durations and hashed session keys. They never contain goal t
 | `LLM_AGENT_CLASSIFIER_MODEL` | falls back to `LLM_AGENT_MODEL` | Optional cheaper model for classification |
 | `LLM_AGENT_PLANNER_MODEL` | falls back to the main model (follows the WebUI selector) | Optional independent model for the dialogue planner; when set, the WebUI LLM selector changes only the executors |
 | `LLM_AGENT_PROFILES_COLLECTION` | `agents` | Exact global agents collection id; lowercase letters, digits, underscores and hyphens; no normalization or `__` |
-| `LLM_AGENT_PLANNER_RECORD` | `planner` | Exact planner record name (`planner-<variant>` also accepted) |
+| `LLM_AGENT_PLANNER_RECORD` | `coordinator` | Exact coordinator record name (`coordinator-<variant>` also accepted); planner authors use `planner-create` and `planner-revise` |
 | `LLM_AGENT_PROFILE_TIMEOUT_MS` | `3000` | Positive finite whole-number deadline for profile source reads; runner/library wiring follows in Stage B |
 | `LLM_AGENT_PLANNER_KNOWLEDGE` | `planning` | Comma-separated persistent user collection names for planner guidance, at most 10 distinct names. Empty disables knowledge. Missing or unavailable collections are logged and skipped. Resolved for the session's user each time a dialogue opens, so newly created or replaced collections are picked up by new sessions. |
 | `LLM_AGENT_THROTTLE_MAX_WAIT_MS` | `20000` | The longest LLM-side `429` interval we wait out **when no door is configured**. Anything longer is reported with the number attached. Not applied once `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` is set: behind a door an admitted session waits exactly the interval the server named. A value that is not a whole number of milliseconds is refused at startup |

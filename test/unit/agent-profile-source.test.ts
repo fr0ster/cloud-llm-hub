@@ -1,4 +1,5 @@
 import type { CallOptions } from '@mcp-abap-adt/llm-agent';
+import { parseAgentProfilesConfig } from '../../srv/agent-config';
 import {
   type AgentProfileReader,
   AgentProfileSource,
@@ -21,7 +22,7 @@ const profile = (name: string, enabled = true): RagDocument => ({
 });
 const prompt = (
   name: string,
-  kind: 'planner' | 'worker-base',
+  kind: 'coordinator' | 'planner-author' | 'worker-base',
 ): RagDocument => ({
   id: name,
   text: '',
@@ -46,7 +47,9 @@ function fixture() {
     profile('A'),
     profile('hidden', false),
     prompt('_worker-base', 'worker-base'),
-    prompt('planner', 'planner'),
+    prompt('coordinator', 'coordinator'),
+    prompt('planner-create', 'planner-author'),
+    prompt('planner-revise', 'planner-author'),
   ];
   const read = jest.fn<
     ReturnType<AgentProfileReader['readAgentCollection']>,
@@ -62,7 +65,7 @@ function fixture() {
       userId: 'reader',
       globalCollectionId: 'agents',
       selectedCollectionId: () => selected,
-      plannerRecord: 'planner',
+      plannerRecord: 'coordinator',
       timeoutMs: 30,
     },
   );
@@ -99,7 +102,12 @@ test('fresh exact listing, disabled descriptions omitted, empty prompt text pres
   });
   expect(await f.source.getPrompts()).toEqual({
     ok: true,
-    value: { workerBase: '', planner: '' },
+    value: {
+      workerBase: '',
+      coordinator: '',
+      plannerCreate: '',
+      plannerRevise: '',
+    },
   });
   f.records([profile('new')]);
   expect(await f.source.get('z')).toMatchObject({
@@ -144,8 +152,12 @@ test('malformed visible records and duplicate keys are invalid without body leak
     ok: false,
     error: { code: 'invalid' },
   });
-  f.records([prompt('planner', 'planner')]);
-  expect(await f.source.get('planner')).toMatchObject({
+  f.records([
+    prompt('coordinator', 'coordinator'),
+    prompt('planner-create', 'planner-author'),
+    prompt('planner-revise', 'planner-author'),
+  ]);
+  expect(await f.source.get('coordinator')).toMatchObject({
     ok: false,
     error: { code: 'invalid' },
   });
@@ -192,15 +204,27 @@ test.each(['worker', 'planner'] as const)(
     f.metadata({ id: 'own', scope: 'user', owner: 'reader' });
     f.records([
       { ...prompt('_worker-base', 'worker-base'), text: 'OTHER_BASE' },
-      { ...prompt('planner', 'planner'), text: 'OTHER_PLANNER' },
+      { ...prompt('coordinator', 'coordinator'), text: 'OTHER_PLANNER' },
+      prompt('planner-create', 'planner-author'),
+      prompt('planner-revise', 'planner-author'),
     ]);
     expect(await f.source.getPrompts(options)).toEqual({
       ok: true,
-      value: { workerBase: '', planner: '' },
+      value: {
+        workerBase: '',
+        coordinator: '',
+        plannerCreate: '',
+        plannerRevise: '',
+      },
     });
     expect(await f.source.getPrompts({})).toEqual({
       ok: true,
-      value: { workerBase: 'OTHER_BASE', planner: 'OTHER_PLANNER' },
+      value: {
+        workerBase: 'OTHER_BASE',
+        coordinator: 'OTHER_PLANNER',
+        plannerCreate: '',
+        plannerRevise: '',
+      },
     });
   },
 );
@@ -212,7 +236,9 @@ test.each(['executor', 'checker'] as const)(
     f.records([
       profile(name),
       prompt('_worker-base', 'worker-base'),
-      prompt('planner', 'planner'),
+      prompt('coordinator', 'coordinator'),
+      prompt('planner-create', 'planner-author'),
+      prompt('planner-revise', 'planner-author'),
     ]);
     const read = f.read.getMockImplementation();
     if (!read) throw new Error('Missing reader');
@@ -246,7 +272,7 @@ test('parallel dialogue reads capture selection once before asynchronous selecti
       userId: 'reader',
       globalCollectionId: 'agents',
       selectedCollectionId: selected,
-      plannerRecord: 'planner',
+      plannerRecord: 'coordinator',
       timeoutMs: 1000,
     },
   );
@@ -289,3 +315,37 @@ test.each([
     expect(stored.text).toBe('body:custom');
   },
 );
+
+test('maps each prompt body by its exact record and kind', async () => {
+  const f = fixture();
+  f.records([
+    { ...prompt('_worker-base', 'worker-base'), text: 'BASE' },
+    { ...prompt('coordinator', 'coordinator'), text: 'COORDINATE' },
+    { ...prompt('planner-create', 'planner-author'), text: 'CREATE' },
+    { ...prompt('planner-revise', 'planner-author'), text: 'REVISE' },
+  ]);
+  expect(await f.source.getPrompts()).toEqual({
+    ok: true,
+    value: {
+      workerBase: 'BASE',
+      coordinator: 'COORDINATE',
+      plannerCreate: 'CREATE',
+      plannerRevise: 'REVISE',
+    },
+  });
+  expect(await f.source.get('planner-create')).toMatchObject({
+    ok: false,
+    error: { code: 'invalid' },
+  });
+});
+
+test('legacy environment variable selects a coordinator record', () => {
+  expect(parseAgentProfilesConfig({}).plannerRecord).toBe('coordinator');
+  expect(
+    parseAgentProfilesConfig({ LLM_AGENT_PLANNER_RECORD: 'coordinator-custom' })
+      .plannerRecord,
+  ).toBe('coordinator-custom');
+  expect(() =>
+    parseAgentProfilesConfig({ LLM_AGENT_PLANNER_RECORD: 'planner' }),
+  ).toThrow('Invalid LLM_AGENT_PLANNER_RECORD');
+});

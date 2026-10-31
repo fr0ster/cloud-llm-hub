@@ -30,7 +30,7 @@ import type { IThrottleStrategy } from '@mcp-abap-adt/llm-agent';
 import { WaitAsTold } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { validateConfiguredCollectionId } from './collection-ids';
-import { plannerName } from './lib/agent-profile-records';
+import { coordinatorName } from './lib/agent-profile-records';
 import { BuildValidationError } from './lib/build-validation-error';
 import { readPositiveIntFrom } from './lib/env-int';
 import {
@@ -154,8 +154,8 @@ export interface AgentProfilesConfig {
 export function parseAgentProfilesConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): AgentProfilesConfig {
-  const planner = plannerName.safeParse(
-    env.LLM_AGENT_PLANNER_RECORD ?? 'planner',
+  const planner = coordinatorName.safeParse(
+    env.LLM_AGENT_PLANNER_RECORD ?? 'coordinator',
   );
   if (!planner.success) throw new Error('Invalid LLM_AGENT_PLANNER_RECORD');
   return {

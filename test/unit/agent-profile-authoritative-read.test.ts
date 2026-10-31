@@ -259,13 +259,13 @@ test.each(['create', 'replace', 'partial', 'delete'] as const)(
 
 test('startup seeds are immediately visible through generic agents listing', async () => {
   const { registry } = fixture();
-  await registry.seedAgentConfiguration('agents', 'planner');
+  await registry.seedAgentConfiguration('agents', 'coordinator');
   expect(
     (await registry.listDocuments('agents'))?.total,
   ).toBeGreaterThanOrEqual(5);
-  expect((await registry.getDocument('agents', 'planner'))?.metadata.kind).toBe(
-    'planner',
-  );
+  expect(
+    (await registry.getDocument('agents', 'coordinator'))?.metadata.kind,
+  ).toBe('coordinator');
 });
 
 test('persistent copies read current source data and remain fresh through writes and collection deletion', async () => {
@@ -394,7 +394,7 @@ test.each([
         },
       ]);
     else if (operation === 'seed')
-      await registry.seedAgentConfiguration('agents', 'planner');
+      await registry.seedAgentConfiguration('agents', 'coordinator');
     else if (operation === 'catalog')
       await registry.updateCollection('agents', { displayName: 'New' });
     else await registry.setEnabled('alice', 'agents', false);

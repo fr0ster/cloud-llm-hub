@@ -303,6 +303,37 @@ const toolTrace = z.object({
   omittedCount: z.number().int().nonnegative(),
   complete: z.boolean(),
 } satisfies Shape<ToolTrace>);
+const taskRecord = z.object({
+  id: str,
+  worker: str,
+  goal: str,
+  result: z.enum(['report', 'verdict']).optional(),
+  state: z.enum([
+    'queued',
+    'running',
+    'done',
+    'failed',
+    'stopped',
+    'interrupted',
+  ]),
+  usage: tokenUsage.optional(),
+  toolTrace: toolTrace.optional(),
+  budgetExhausted: z.boolean().optional(),
+  toolsSelected: num.optional(),
+  toolsAvailable: num.optional(),
+  toolCalls: num.optional(),
+  maxToolCalls: num.optional(),
+  output: str.optional(),
+  error: str.optional(),
+  createdAt: num,
+  startedAt: num.optional(),
+  finishedAt: num.optional(),
+} satisfies Shape<TaskRecord>);
+type TaskEvent = NonNullable<DialogueState['pendingEvents']>[number];
+const taskEvent = z.object({
+  kind: z.enum(['started', 'done', 'failed', 'stopped', 'long_running']),
+  task: taskRecord,
+} satisfies Shape<TaskEvent>);
 const schema = z.object({
   requests: z.array(request).max(200).optional(),
   requestSeq: num.optional(),
@@ -321,42 +352,15 @@ const schema = z.object({
         });
     })
     .optional(),
-  tasks: z
-    .array(
-      z.object({
-        id: str,
-        worker: str,
-        goal: str,
-        result: z.enum(['report', 'verdict']).optional(),
-        state: z.enum([
-          'queued',
-          'running',
-          'done',
-          'failed',
-          'stopped',
-          'interrupted',
-        ]),
-        usage: tokenUsage.optional(),
-        toolTrace: toolTrace.optional(),
-        budgetExhausted: z.boolean().optional(),
-        toolsSelected: num.optional(),
-        toolsAvailable: num.optional(),
-        toolCalls: num.optional(),
-        maxToolCalls: num.optional(),
-        output: str.optional(),
-        error: str.optional(),
-        createdAt: num,
-        startedAt: num.optional(),
-        finishedAt: num.optional(),
-      } satisfies Shape<TaskRecord>),
-    )
-    .superRefine((tasks, ctx) => {
-      if (tasks.length > dialogueMaxTasks())
-        ctx.addIssue({
-          code: 'custom',
-          message: 'Dialogue task limit exceeded',
-        });
-    }),
+  tasks: z.array(taskRecord).superRefine((tasks, ctx) => {
+    if (tasks.length > dialogueMaxTasks())
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Dialogue task limit exceeded',
+      });
+  }),
+  // Outcomes deferred while an external coordinator drives the session.
+  pendingEvents: z.array(taskEvent).max(1000).optional(),
   pending: z.array(plannerMessage),
   savedAt: num,
 } satisfies Shape<DialogueState>);

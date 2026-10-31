@@ -149,7 +149,10 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
   beforeAll(async () => {
     jest.mocked(makeHubLlm).mockResolvedValue(llm);
     initProviders(await startProviders(config));
-    await getCollectionRegistry().seedAgentConfiguration('agents', 'planner');
+    await getCollectionRegistry().seedAgentConfiguration(
+      'agents',
+      'coordinator',
+    );
   });
   beforeEach(() => {
     calls.length = 0;

@@ -145,7 +145,7 @@ test('queued user context stays out of an active event and its corrections', asy
           }
           calls.push({ input: JSON.stringify(input), trace: options.trace });
           if (calls.length === 1) {
-            await new PlannerToolsClient().callTool('update_plan', {
+            await new PlannerToolsClient().callTool('plan_update', {
               steps: [{ id: 'read', goal: 'Read' }],
               status: 'active',
             });
