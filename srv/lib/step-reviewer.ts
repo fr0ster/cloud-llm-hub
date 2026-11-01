@@ -1,10 +1,12 @@
 import type {
   ILlm,
   IUsageRecorder,
+  Message,
   TokenUsage,
   ToolCallRecord,
+  ToolTrust,
 } from '@mcp-abap-adt/llm-agent';
-import { addTokenUsage } from '@mcp-abap-adt/llm-agent';
+import { addTokenUsage, formatTrustTag } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { suspicion, tokenStats } from './review-signals';
 import {
@@ -67,7 +69,7 @@ const SYSTEM = [
  * part of its own call, and says so in its RESULT. The deterministic layer has
  * always read that envelope; the critic never saw it.
  */
-function describeTool(t: string | ToolOutcome): string {
+function describeTool(t: string | ToolOutcome, toolTrust?: ToolTrust): string {
   if (typeof t === 'string') return t;
   const parts = [t.ok ? 'ok' : 'failed'];
   if (t.status) parts.push(`status=${t.status}`);
@@ -76,7 +78,9 @@ function describeTool(t: string | ToolOutcome): string {
       `result truncated: ${t.truncation.keptLength} of ${t.truncation.originalLength} characters shown to worker; omitted content is unknown`,
     );
   if (t.error) parts.push(`error=${t.error}`);
-  return `${t.name} → ${parts.join(', ')}`;
+  const trust = toolTrust?.(t.name);
+  const tag = trust ? `${formatTrustTag(trust.source, trust.trust)} ` : '';
+  return `${tag}${t.name} \u2192 ${parts.join(', ')}`;
 }
 
 /** How many earlier turns the reviewer is shown, and how much of each. */
@@ -92,20 +96,36 @@ const HISTORY_CHARS = 600;
  * concrete statement after zero tool calls is exactly its rule, and the turn
  * that made the statement true was not in front of it.
  */
-function renderHistory(history: ReviewTurn[]): string {
+function renderHistory(history: ReviewTurn[], toolTrust?: ToolTrust): string {
+  const names = new Map(
+    history.flatMap((turn) =>
+      (turn.tool_calls ?? []).map(
+        (call) => [call.id, call.function.name] as const,
+      ),
+    ),
+  );
   return history
     .slice(-HISTORY_TURNS)
     .map((m) => {
       const text = typeof m.content === 'string' ? m.content : '';
       const clipped =
         text.length > HISTORY_CHARS ? `${text.slice(0, HISTORY_CHARS)}…` : text;
-      return `${m.role}: ${clipped}`;
+      const name =
+        m.name ?? (m.tool_call_id ? names.get(m.tool_call_id) : undefined);
+      const trust = m.role === 'tool' && name ? toolTrust?.(name) : undefined;
+      return `${m.role}: ${trust ? `${formatTrustTag(trust.source, trust.trust)}\n` : ''}${clipped}`;
     })
     .join('\n');
 }
 
 /** One earlier turn — only the parts the reviewer can use. */
-export type ReviewTurn = { role: string; content?: unknown };
+export type ReviewTurn = {
+  role: string;
+  content?: unknown;
+  name?: string;
+  tool_calls?: Message['tool_calls'];
+  tool_call_id?: string;
+};
 
 export function buildReviewMessages(input: {
   /** What the USER asked, in their own words. The composed task is the
@@ -118,11 +138,16 @@ export function buildReviewMessages(input: {
   executedTools: (string | ToolOutcome)[];
   content: string;
   history?: ReviewTurn[];
+  toolTrust?: ToolTrust;
 }): { role: 'system' | 'user'; content: string }[] {
   const tools = input.executedTools.length
-    ? input.executedTools.map(describeTool).join('; ')
+    ? input.executedTools
+        .map((t) => describeTool(t, input.toolTrust))
+        .join('; ')
     : '(none)';
-  const history = input.history?.length ? renderHistory(input.history) : '';
+  const history = input.history?.length
+    ? renderHistory(input.history, input.toolTrust)
+    : '';
   const user = [
     ...(history ? [`CONVERSATION SO FAR:\n${history}\n`] : []),
     ...(input.request ? [`USER REQUEST:\n${input.request}\n`] : []),
@@ -218,6 +243,7 @@ export async function reviewStep(
     executedTools: (string | ToolOutcome)[];
     content: string;
     history?: ReviewTurn[];
+    toolTrust?: ToolTrust;
   },
   deps: {
     llm: ILlm;
@@ -303,6 +329,7 @@ export async function evaluateGated(input: {
   task?: string;
   /** The turns before this one, so a fact the user supplied is not "unsupported". */
   history?: ReviewTurn[];
+  toolTrust?: ToolTrust;
 }): Promise<ReviewVerdict & { usage?: TokenUsage }> {
   if (!stepReviewEnabled(process.env)) return { ok: true };
 
@@ -327,6 +354,7 @@ export async function evaluateGated(input: {
         request: input.request,
         task: input.task ?? '',
         executedTools,
+        toolTrust: input.toolTrust,
         content: input.content,
         history: input.history,
       },

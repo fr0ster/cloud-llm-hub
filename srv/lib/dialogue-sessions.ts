@@ -22,7 +22,6 @@ import { getAgentConfig } from '../agent-config';
 import {
   createAgentProfileSource,
   getSmartAgent,
-  getTrustResolver,
   runWithRequestConnection,
 } from '../agent-manager';
 import {
@@ -75,7 +74,7 @@ import {
 import { evaluateGated } from './step-reviewer';
 import { cachedSystemIdentity } from './system-identity-cache';
 import { type TaskView, taskView } from './task-view';
-import type { TrustResolver } from './trust-resolver';
+import { resolverFor, type TrustResolver } from './trust-resolver';
 import { usageRuntime } from './usage/runtime';
 
 type Plan = Exclude<DialogueState['plan'], string | undefined>;
@@ -284,6 +283,7 @@ async function open(
   )
     throw new Error('Destination profile runner unavailable');
   const { recMcp, criticLlm, profileRunner } = destinationHandle;
+  const trustResolver = destinationHandle.trustResolver ?? resolverFor({});
   const usage = usageRuntime()?.forSession({
     sessionId: key,
     userId,
@@ -463,6 +463,7 @@ async function open(
                   )
                     return result;
                   const verdict = await evaluateGated({
+                    toolTrust: destinationHandle.toolTrust,
                     usage: input.usage,
                     content: result.output,
                     records: recMcp.getToolRecords(ctx.traceId),
@@ -689,7 +690,7 @@ async function open(
   );
   const coordinatorResolver = async (): Promise<TrustResolver> => {
     const prompts = await source.getPrompts();
-    return getTrustResolver().forProfile({
+    return trustResolver.forProfile({
       trust: prompts.ok ? prompts.value.trust?.coordinator : undefined,
     });
   };
@@ -699,7 +700,10 @@ async function open(
       key,
       coordinatorResolver,
     );
+    let coordinatorToolResolver = await coordinatorResolver();
     session = await DialogueSession.open({
+      toolTrust: (name) =>
+        destinationHandle.toolTrustFor?.(coordinatorToolResolver)(name),
       profileSource: source,
       planAuthor: new BriefPlanAuthor({
         source,
@@ -713,7 +717,7 @@ async function open(
           const authorPrompts = await source.getPrompts(options);
           const role =
             planAuthorMode() === 'create' ? 'plannerCreate' : 'plannerRevise';
-          const authorResolver = getTrustResolver().forProfile({
+          const authorResolver = trustResolver.forProfile({
             trust: authorPrompts.ok
               ? authorPrompts.value.trust?.[role]
               : undefined,
@@ -745,6 +749,7 @@ async function open(
             : result;
         },
         preparePlanner: async (input, options) => {
+          coordinatorToolResolver = trustResolver.forProfile(input);
           const result = await withCoordinatorRun(
             async (run) =>
               (await dialogueFor(userId, key, destination)).runStep(run),

@@ -67,16 +67,17 @@ describe('buildSkillsPool', () => {
       getSkill: async () => ({ ok: true as const, value: undefined }),
       matchSkills: async () => ({ ok: true as const, value: [] }),
     };
-    // biome-ignore lint/suspicious/noExplicitAny: test double
     const pool = buildSkillsPool({
       dirs: [tmp],
-      pluginManager: pluginManager as any,
+      pluginManager,
     });
     const r = await pool.listSkills();
     if (!r.ok) throw new Error('listSkills failed');
     expect(r.value).toHaveLength(1);
     const content = await r.value[0].getContent();
     if (!content.ok) throw new Error('getContent failed');
-    expect(content.value).toBe('preset body');
+    expect(content.value).toBe(
+      '[source: global:skills/dup; trust 4.5]\npreset body',
+    );
   });
 });

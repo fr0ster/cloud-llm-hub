@@ -636,3 +636,129 @@ test('per-call SAP authors skip validation for repeated and switched models', as
     }
   }
 });
+
+import type { ISkill, ISkillManager } from '@mcp-abap-adt/llm-agent';
+import { CompositeSkillManager } from '../../srv/lib/composite-skill-manager';
+import * as skillsPoolModule from '../../srv/lib/skills-pool';
+
+test('every profile role appends plugin base skills after its prompt and excludes them from Active Skills', async () => {
+  const base: ISkill = {
+    name: 'plugin-base',
+    description: 'base',
+    meta: { name: 'plugin-base', description: 'base', kind: 'base' },
+    getContent: async () => ({ ok: true, value: 'PLUGIN_BASE_BODY' }),
+    listResources: async () => ({ ok: true, value: [] }),
+    readResource: async () => ({ ok: true, value: '' }),
+  };
+  const info: ISkill = {
+    ...base,
+    name: 'info',
+    meta: { name: 'info', description: 'info' },
+    getContent: async () => ({ ok: true, value: 'INFORMATION_BODY' }),
+  };
+  const manager: ISkillManager = {
+    listSkills: async () => ({ ok: true, value: [base, info] }),
+    getSkill: async (name) => ({
+      ok: true,
+      value: [base, info].find((s) => s.name === name),
+    }),
+    matchSkills: async () => ({ ok: true, value: [base, info] }),
+  };
+  const pool = new CompositeSkillManager([{ source: 'plugin', manager }]);
+  const trustSpy = jest.spyOn(SmartAgentBuilder.prototype, 'withToolTrust');
+  const spy = jest
+    .spyOn(skillsPoolModule, 'buildSkillsPool')
+    .mockReturnValue(pool);
+  const model = llm('base-skills-all-roles');
+  jest.mocked(makeHubLlm).mockResolvedValue(model.agent);
+  const selectedConfig: AgentConfig = {
+    ...config,
+    agent: { ...config.agent, mode: 'hard', chatCoordinator: 'dialogue' },
+  };
+  initProviders(await startProviders(selectedConfig));
+  await getSmartAgent(model.agent.model);
+  const client = new McpClientAdapter(
+    new MCPClientWrapper({
+      transport: 'embedded',
+      listToolsHandler: async () => [],
+      callToolHandler: async () => ({ content: [] }),
+    }),
+  );
+  const handle = await buildAgentForDestination(
+    client,
+    new ExpositionFilteringRag(new InMemoryRag(), undefined, undefined, 0),
+    selectedConfig,
+  );
+  try {
+    const runner = handle.profileRunner;
+    for (const role of [
+      'coordinator',
+      'planner-create',
+      'planner-revise',
+      'executor',
+      'checker',
+    ]) {
+      model.messages.length = 0;
+      trustSpy.mockClear();
+      const roleTrust = {
+        system:
+          role === 'coordinator'
+            ? 1
+            : role === 'planner-create'
+              ? 2
+              : role === 'planner-revise'
+                ? 3
+                : role === 'executor'
+                  ? 4
+                  : 5,
+      };
+      if (role === 'executor' || role === 'checker') {
+        const worker = await runner.createWorker({
+          workerBase: 'WORKER_PREFIX',
+          profile: {
+            name: role,
+            description: role,
+            systemPrompt: `PROFILE_${role}`,
+            trust: roleTrust,
+            tools: { allow: [] },
+            result: 'report',
+          },
+        });
+        if (!worker.ok) throw new Error(worker.error.message);
+        await worker.value.run({ task: 'An unrelated question' });
+      } else {
+        const agent =
+          role === 'coordinator'
+            ? await runner.preparePlanner({
+                systemPrompt: `PROFILE_${role}`,
+                trust: roleTrust,
+              })
+            : await runner.preparePlanAuthor({
+                systemPrompt: `PROFILE_${role}`,
+                mode: role === 'planner-create' ? 'create' : 'revise',
+                trust: roleTrust,
+              });
+        if (!agent.ok) throw new Error(agent.error.message);
+        await agent.value.process('An unrelated question');
+      }
+      const trust = trustSpy.mock.calls[0]?.[0];
+      expect(trust?.('GetClass')).toEqual({
+        source: 'system:GetClass',
+        trust: roleTrust.system,
+      });
+      expect(trust?.('rag_read')).toBeUndefined();
+      expect(trust?.('get_task')).toBeUndefined();
+      const text = model.messages.join('\n');
+      expect(text).toContain(`PROFILE_${role}`);
+      expect(text.indexOf('PLUGIN_BASE_BODY')).toBeGreaterThan(
+        text.indexOf(`PROFILE_${role}`),
+      );
+      expect(text.match(/PLUGIN_BASE_BODY/g)).toHaveLength(1);
+      expect(text).not.toContain('INFORMATION_BODY');
+      expect(text).not.toContain('## Active Skills');
+    }
+  } finally {
+    spy.mockRestore();
+    trustSpy.mockRestore();
+  }
+});

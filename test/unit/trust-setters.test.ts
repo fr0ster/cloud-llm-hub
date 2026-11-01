@@ -278,13 +278,11 @@ test('base skills are fixed and missing skill/collection/record is NOT_FOUND', a
   if (!list.ok) throw list.error;
   const first = list.value[0];
   if (!first) throw new Error('missing skill');
-  jest.spyOn(skillsPool, 'buildSkillsPool').mockReturnValue({
-    ...pool,
-    listSkills: async () => ({
-      ok: true,
-      value: [{ ...first, meta: { ...first.meta, kind: 'base' } }],
-    }),
-  });
+  jest.spyOn(skillsPool, 'buildSkillsPool').mockReturnValue(pool);
+  jest.spyOn(pool, 'listSkills').mockImplementation(async () => ({
+    ok: true,
+    value: [{ ...first, meta: { ...first.meta, kind: 'base' } }],
+  }));
   expect((await rest('@skills', 3, first.name)).status).toBe(409);
   expect((await mcp('@skills', 3, first.name)).structuredContent).toMatchObject(
     { error: { code: 'TRUST_FIXED' } },

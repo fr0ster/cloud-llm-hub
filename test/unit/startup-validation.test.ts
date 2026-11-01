@@ -43,6 +43,7 @@ const restoreStatus: { value: { state: string; error?: string } } = {
 };
 // Set by a test to make the provider startup reject.
 const providersFailure: { error?: Error } = {};
+const agentsFailure: { error?: Error } = {};
 jest.mock('../../srv/lib/providers', () => ({
   startProviders: async () => {
     order.push('startProviders');
@@ -56,7 +57,9 @@ jest.mock('../../srv/agent-manager', () => ({
   // Initialisation fails here, as it does when AI Core is not reachable yet.
   initSmartAgents: () => {
     order.push('initSmartAgents');
-    return Promise.reject(new Error('AI Core not reachable'));
+    return Promise.reject(
+      agentsFailure.error ?? new Error('AI Core not reachable'),
+    );
   },
   getCollectionRegistry: () => ({
     sweepExpiredSessions: () => {},
@@ -310,6 +313,19 @@ describe("server.ts's served listener", () => {
       );
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  it('exits on a skill kind conflict during agent initialization', async () => {
+    const { SkillKindConflict } = await import(
+      '../../srv/lib/composite-skill-manager'
+    );
+    agentsFailure.error = new SkillKindConflict('conflicting-skill');
+    try {
+      expect(await runServed()).toEqual([1]);
+      expect(order).toContain('startCollectionRestore');
+    } finally {
+      delete agentsFailure.error;
     }
   });
 

@@ -95,6 +95,13 @@ const rows = [
   { score: 0.8, metadata: { id: 'GetClass', exposition: 'readonly' } },
   { score: 0.9, metadata: { id: 'skill:read' } },
 ];
+const trustedRows = [
+  rows[0],
+  {
+    ...rows[1],
+    metadata: { ...rows[1].metadata, source: 'global:skills/read', trust: 4.5 },
+  },
+];
 it.each(['closed', 'true', 'bypass', 'off', 'unconfigured'])(
   'RAG gate %s waits for analysis and uses translation before applying the gate',
   async (mode) => {
@@ -139,7 +146,10 @@ it.each(['closed', 'true', 'bypass', 'off', 'unconfigured'])(
     expect(query.mock.calls[0][0].text).toBe(
       mode === 'unconfigured' ? 'Hello there' : 'Translated request',
     );
-    expect(result).toEqual({ ok: true, value: mode === 'closed' ? [] : rows });
+    expect(result).toEqual({
+      ok: true,
+      value: mode === 'closed' ? [] : trustedRows,
+    });
   },
 );
 it('validates tool gate configuration', () => {
@@ -221,7 +231,10 @@ it.each(['smart', 'hard'] as const)(
     const result = await runWithSessionId('mode', () =>
       rag.query(new TextOnlyEmbedding('Hello'), 5),
     );
-    expect(result).toEqual({ ok: true, value: mode === 'hard' ? rows : [] });
+    expect(result).toEqual({
+      ok: true,
+      value: mode === 'hard' ? trustedRows : [],
+    });
   },
 );
 
@@ -308,7 +321,11 @@ it('isolates execute_step bypass between concurrent requests', async () => {
   );
   const normal = runWithSessionId('shared', search);
   release();
-  expect(await bypass).toEqual({ ok: true, value: rows });
+  const bypassResult = await bypass;
+  expect(bypassResult).toEqual({ ok: true, value: trustedRows });
+  if (!bypassResult.ok) throw bypassResult.error;
+  expect(bypassResult.value[0].metadata).not.toHaveProperty('source');
+  expect(bypassResult.value[0].metadata).not.toHaveProperty('trust');
   expect(await normal).toEqual({ ok: true, value: [] });
 });
 

@@ -10,6 +10,7 @@ import type {
   FinalizerResult,
   IFinalizer,
   ILlm,
+  ToolTrust,
 } from '@mcp-abap-adt/llm-agent';
 import { getRequestHistory } from '../request-session';
 import { renderNotice } from './notify-policy';
@@ -25,6 +26,7 @@ export class NoticeFinalizer implements IFinalizer {
   constructor(
     private readonly recMcp: RecordingMcpClient,
     private readonly criticLlm: ILlm,
+    private readonly toolTrust?: ToolTrust,
   ) {}
 
   async finalize(input: FinalizerInput): Promise<FinalizerResult> {
@@ -36,6 +38,7 @@ export class NoticeFinalizer implements IFinalizer {
     const records = this.recMcp.getToolRecords(input.trace?.traceId);
 
     const verdict = await evaluateGated({
+      toolTrust: this.toolTrust,
       usage: input.usage,
       content: input.interpreterOutput,
       records,

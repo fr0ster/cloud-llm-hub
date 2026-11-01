@@ -1,3 +1,4 @@
+import { type ISkillManager, SkillError } from '@mcp-abap-adt/llm-agent';
 import {
   CompositeSkillManager,
   type SkillSource,
@@ -29,15 +30,23 @@ function failingManager() {
   return {
     listSkills: async () => ({
       ok: false as const,
-      error: new Error('plugin exploded'),
+      error: new SkillError('plugin exploded'),
     }),
-    getSkill: async () => ({ ok: false as const, error: new Error('nope') }),
-    matchSkills: async () => ({ ok: false as const, error: new Error('nope') }),
+    getSkill: async () => ({
+      ok: false as const,
+      error: new SkillError('nope'),
+    }),
+    matchSkills: async () => ({
+      ok: false as const,
+      error: new SkillError('nope'),
+    }),
   };
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: test doubles
-const src = (source: string, m: any): SkillSource => ({ source, manager: m });
+const src = (source: string, m: ISkillManager): SkillSource => ({
+  source,
+  manager: m,
+});
 
 describe('CompositeSkillManager', () => {
   it('merges skills from every source', async () => {
@@ -60,7 +69,9 @@ describe('CompositeSkillManager', () => {
     expect(r.value).toHaveLength(1);
     const content = await r.value[0].getContent();
     if (!content.ok) throw new Error('getContent failed');
-    expect(content.value).toBe('preset body');
+    expect(content.value).toBe(
+      '[source: global:skills/dup; trust 4.5]\npreset body',
+    );
   });
 
   it('a failing source is skipped, the rest still load', async () => {

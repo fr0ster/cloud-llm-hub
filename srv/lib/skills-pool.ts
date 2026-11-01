@@ -20,7 +20,9 @@ import { z } from 'zod';
 import type { RagDocument } from '../rag-collections';
 import {
   CompositeSkillManager,
+  SkillKindConflict,
   type SkillSource,
+  validateSkillKinds,
 } from './composite-skill-manager';
 import { collectionView, documentView } from './record-policy';
 import type { TrustResolver } from './trust-resolver';
@@ -31,7 +33,8 @@ export const SKILLS_DIR = path.join(__dirname, '..', 'skills');
 export function buildSkillsPool(opts?: {
   dirs?: string[];
   pluginManager?: ISkillManager;
-}): ISkillManager {
+  resolver?: () => TrustResolver;
+}): CompositeSkillManager {
   const dirs = opts?.dirs ?? [SKILLS_DIR];
   const sources: SkillSource[] = [];
   if (opts?.pluginManager) {
@@ -42,13 +45,15 @@ export function buildSkillsPool(opts?: {
     source: 'preset',
     manager: new FileSystemSkillManager(dirs),
   });
-  return new CompositeSkillManager(sources);
+  return new CompositeSkillManager(sources, opts?.resolver);
 }
 
 /** Log the resolved pool so the mandatory set is visible in the deploy log. */
 export async function logSkillsPool(manager: ISkillManager): Promise<void> {
   const log = cds.log('skills');
   try {
+    const validation = await validateSkillKinds(manager);
+    if (!validation.ok) throw validation.error;
     const result = await manager.listSkills();
     if (!result.ok) {
       log.warn('skills pool unavailable', { error: result.error.message });
@@ -59,6 +64,7 @@ export async function logSkillsPool(manager: ISkillManager): Promise<void> {
       names: result.value.map((s) => s.name),
     });
   } catch (err) {
+    if (err instanceof SkillKindConflict) throw err;
     log.warn('skills pool logging failed', { error: String(err) });
   }
 }
@@ -120,7 +126,9 @@ export async function skillCollectionView(resolver: TrustResolver) {
 }
 export async function informationalSkillDocuments(
   resolver: TrustResolver,
-  manager: ISkillManager = buildSkillsPool(),
+  manager: Pick<ISkillManager, 'listSkills'> = buildSkillsPool({
+    resolver: () => resolver,
+  }),
 ) {
   const skills = await manager.listSkills();
   if (!skills.ok) throw skills.error;
@@ -141,4 +149,20 @@ export async function informationalSkillDocuments(
         );
       }),
   );
+}
+
+/** Base instructions follow the profile; later correction messages retain precedence. */
+export async function appendBaseSkills(
+  prompt: string,
+  pool: CompositeSkillManager,
+): Promise<string> {
+  const validation = await validateSkillKinds(pool);
+  if (!validation.ok) throw validation.error;
+  const bodies: string[] = [];
+  for (const skill of await pool.baseSkills()) {
+    const result = await skill.getContent();
+    if (!result.ok) throw result.error;
+    bodies.push(result.value);
+  }
+  return [prompt, ...bodies].filter(Boolean).join('\n\n');
 }

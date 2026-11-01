@@ -693,7 +693,13 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     const perCollection = parts.map((r) =>
       (r.ok ? r.value : []).filter(isAllowed),
     );
-    return { ok: true as const, value: capPerCollection(perCollection) };
+    return {
+      ok: true as const,
+      value: await trustedSkillResults(
+        capPerCollection(perCollection),
+        currentTrustResolver(),
+      ),
+    };
   }
 
   async healthCheck() {
@@ -876,7 +882,13 @@ import {
   isPersistentKind,
   PROVIDER_DEFAULT_DIMENSION,
 } from './lib/rag-provider-factory';
-import { buildSkillsPool, logSkillsPool } from './lib/skills-pool';
+import {
+  appendBaseSkills,
+  buildSkillsPool,
+  logSkillsPool,
+} from './lib/skills-pool';
+import { systemToolTrust } from './lib/system-tool-trust';
+import { trustedSkillResults } from './lib/trusted-skill';
 import { CollectionRegistry } from './rag-collections';
 
 /**
@@ -925,6 +937,11 @@ export type DestinationAgentHandle = SmartAgentHandle & {
   criticLlm: ILlm;
   workers: ReadonlyMap<string, ISubAgent>;
   profileRunner: AgentProfileRunner;
+  trustResolver: TrustResolver;
+  toolTrust: ReturnType<typeof getSystemToolTrust>;
+  toolTrustFor: (
+    resolver: TrustResolver,
+  ) => ReturnType<typeof getSystemToolTrust>;
 };
 export type HubAgentHandle = SmartAgentHandle & Partial<DestinationAgentHandle>;
 const agentHandles = new Map<string, HubAgentHandle>();
@@ -1673,6 +1690,28 @@ export function getHandlerExporterConfig() {
 }
 
 /** Static, destination-free tool list from HandlerExporter (same config as buildEmbeddedMcpAdapter). */
+let embeddedToolNames: ReadonlySet<string> | undefined;
+export function isEmbeddedSystemTool(name: string): boolean {
+  embeddedToolNames ??= new Set(
+    new HandlerExporter(getHandlerExporterConfig()).getToolNames(),
+  );
+  return embeddedToolNames.has(name);
+}
+function currentTrustResolver(): TrustResolver {
+  return resolverFor(
+    collectionRegistryInstance ?? {
+      trustResolver: new TrustResolver(
+        undefined,
+        trustStoreInstance,
+        getAgentConfig().trust.defaults,
+      ),
+    },
+  );
+}
+export function getSystemToolTrust() {
+  return systemToolTrust(isEmbeddedSystemTool, currentTrustResolver());
+}
+
 function listToolDefsFromExporter(): ToolDocInput[] {
   const exporter = new HandlerExporter(getHandlerExporterConfig());
   const coreTools = exporter.getHandlerEntries().map((e) => ({
@@ -2757,6 +2796,10 @@ async function configureDestinationAgentBuilder(
   // Skip SAP AI SDK model validation for non-SAP providers (openai, anthropic, deepseek)
   const skipModelValidation = config.llm.provider !== 'sap-ai-sdk';
 
+  const roleResolver = resolverFor(getCollectionRegistry());
+  const skillsPool = buildSkillsPool({ resolver: () => roleResolver });
+  await logSkillsPool(skillsPool);
+  const system = await appendBaseSkills(opts?.systemPrompt ?? '', skillsPool);
   const builder = new SmartAgentBuilder({
     skipModelValidation,
     agent: {
@@ -2772,7 +2815,7 @@ async function configureDestinationAgentBuilder(
       ragTranslateEnabled: false,
     },
     prompts: {
-      system: opts?.systemPrompt ?? '',
+      system,
       classifier: [
         'You are a Semantic Intent Analyzer. Decompose the user message into logical tasks.',
         'For each task, identify:',
@@ -2792,6 +2835,7 @@ async function configureDestinationAgentBuilder(
       ].join('\n'),
     },
   })
+    .withToolTrust(systemToolTrust(isEmbeddedSystemTool, roleResolver))
     .withMainLlm(opts?.skipRetrieval ? mainLlm : trackedLlm(mainLlm, true))
     .withClassifierLlm(classifierLlm)
     .withMcpClients([
@@ -2829,9 +2873,7 @@ async function configureDestinationAgentBuilder(
   // every destination init and regresses cold-start; the executor worker
   // (which DOES run the tool-loop) keeps skills enabled.
   if (!opts?.skipSkills) {
-    const skillsPool = buildSkillsPool();
-    builder.withSkillManager(skillsPool);
-    await logSkillsPool(skillsPool);
+    builder.withSkillManager(skillsPool.informationalSkills());
   }
 
   // Share embedder across all RAG queries
@@ -2926,6 +2968,9 @@ export async function buildPlannerAgent(
       return typeof value === 'function' ? value.bind(model.current) : value;
     },
   });
+  const roleResolver = resolverFor(getCollectionRegistry());
+  const skillsPool = buildSkillsPool({ resolver: () => roleResolver });
+  const system = await appendBaseSkills(systemPrompt, skillsPool);
   const builder = new SmartAgentBuilder({
     // Authors are built per call; validation would send an unattributed completion.
     skipModelValidation:
@@ -2936,9 +2981,10 @@ export async function buildPlannerAgent(
       classificationEnabled: false,
     },
     prompts: {
-      system: systemPrompt,
+      system,
     },
   })
+    .withToolTrust(systemToolTrust(isEmbeddedSystemTool, roleResolver))
     .withMainLlm(forwardingLlm)
     .withMcpClients([
       new RecordingMcpClient(
@@ -3280,7 +3326,7 @@ export async function buildAgentForDestination(
           }),
         ),
         workers,
-        finalizer: new NoticeFinalizer(recMcp, criticLlm),
+        finalizer: new NoticeFinalizer(recMcp, criticLlm, getSystemToolTrust()),
         runRecords: getRunRecordStore(),
         budget,
         fallbackWorker: 'executor',
@@ -3295,7 +3341,7 @@ export async function buildAgentForDestination(
       // interpreter throw PLAN_INVALID.
       workers: new Map([['executor', executorWorker]]),
       // Reads the SAME recMcp the worker was built with.
-      finalizer: new NoticeFinalizer(recMcp, criticLlm),
+      finalizer: new NoticeFinalizer(recMcp, criticLlm, getSystemToolTrust()),
       // errorStrategy omitted -> AbortErrorStrategy default;
       // reviewer omitted -> no plan-gate (NoopReviewStrategy default).
     });
@@ -3320,6 +3366,10 @@ export async function buildAgentForDestination(
     criticLlm,
     workers,
     profileRunner,
+    trustResolver: getTrustResolver(),
+    toolTrust: getSystemToolTrust(),
+    toolTrustFor: (resolver: TrustResolver) =>
+      systemToolTrust(isEmbeddedSystemTool, resolver),
   });
 
   return destinationHandle;
@@ -3374,16 +3424,13 @@ export async function buildExecutorWorker(
     prepareCompatibilityWorker(config, options, async (callOptions) => {
       const resolved = await resolve(callOptions);
       callOptions?.signal?.throwIfAborted();
-      const freshBuilder = await configureDestinationAgentBuilder(
-        mcpAdapter,
-        toolsRag,
-        config,
-        {
+      const freshBuilder = await runner.bind(resolved.profile)(() =>
+        configureDestinationAgentBuilder(mcpAdapter, toolsRag, config, {
           systemPrompt: [
             resolved.workerBase ?? '',
             resolved.profile.systemPrompt,
           ].join('\n'),
-        },
+        }),
       );
       callOptions.signal?.throwIfAborted();
       const fresh = await freshBuilder.build();
@@ -3541,6 +3588,7 @@ async function buildLlmOnlyAgent(
       ].join('\n'),
     },
   })
+    .withToolTrust(getSystemToolTrust())
     .withMainLlm(mainLlm)
     .withClassifierLlm(classifierLlm)
     .withClassification(false)
@@ -3753,6 +3801,7 @@ export async function getSmartAgent(
  */
 export async function initSmartAgents(): Promise<void> {
   const log = cds.log('agent-manager');
+  await logSkillsPool(buildSkillsPool());
   initDestinationMapping();
   const config = getAgentConfig();
   const destName = config.mcp.destination;

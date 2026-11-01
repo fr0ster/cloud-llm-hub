@@ -7,6 +7,8 @@ import {
 } from '../../srv/lib/dialogue-signals';
 
 jest.mock('../../srv/agent-manager', () => ({
+  getSystemToolTrust: () => () => undefined,
+  isEmbeddedSystemTool: () => false,
   getTrustResolver: () =>
     jest
       .requireActual<typeof import('./helpers/agent-profiles')>(

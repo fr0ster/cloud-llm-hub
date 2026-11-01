@@ -92,6 +92,7 @@ export async function runExecutorStep(
     agentHandle.criticLlm
   ) {
     const verdict = await evaluateGated({
+      toolTrust: agentHandle.toolTrust,
       usage: opts.usage,
       content: result.value.content ?? '',
       records: agentHandle.recMcp.getToolRecords(traceId),
