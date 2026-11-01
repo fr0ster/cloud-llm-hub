@@ -138,18 +138,24 @@ expect(effectiveTrust({ scope: 'session' }, d)).toBe(2);
 
 Record trust is stored in dedicated payload fields `_trust` / `_trustHistory`, written only by the trust
 setter and restored explicitly; they are not part of `PAYLOAD_BOOKKEEPING` (which would also drop them on
-restore). Free-form metadata keys `trust`, `trustHistory`, `source`, `_trust`, `_trustHistory` are stripped by
-the one sanitizer used by add, update, bulk and upload. Content updates preserve `_trust` / `_trustHistory`.
+restore). Free-form metadata keys `trust`, `trustHistory`, `_trust`, `_trustHistory` are stripped by the one sanitizer
+used by add, update, bulk and upload. The existing metadata `source` (uploaded file name: upload grouping,
+source toggles, WebUI reassembly/export) is kept as is; trust provenance never reads it — every projection
+derives provenance from the collection context instead. Content updates preserve `_trust` / `_trustHistory`.
 - Test: `test/unit/collection-trust-persistence.test.ts` (PGlite)
 
 **Interfaces:**
+- Produces: `collectionView(meta: CollectionMeta, defaults): CollectionMeta & { trust: number; trustOverride?: number; trustClass: TrustClass }`
+  — the one response projection for `GET /rag/collections` (ordinary and virtual rows) and collection tools;
+  it never writes defaults back to persisted metadata.
 - Produces: `TrustHistoryEntry = { from: number | null; to: number | null; actor: string; at: string }`
   (max 20, newest last); `recordAttributes(doc: RagDocument, collection: CollectionMeta, defaults: Record<TrustClass, number>): { enabled: boolean; trust: number; trustOverride?: number; source: string }`
   where `trust` is effective and `source` is `<class>:<collection displayName>/<record id>`.
 
 - [ ] **Step 1: Failing tests:** round-trip collection `trust: 4` and record `_trust: 1.5` through PGlite
   restore (restart keeps both); a content update keeps the record override; add / update / bulk / upload with
-  metadata `{ trust: 5, source: 'system:x' }` store neither key; collection stored without `trust` restores with `trust` undefined and `recordAttributes` reports the
+  metadata `{ trust: 5 }` do not store it; upload keeps `metadata.source` (file name) and source toggles, chunk
+  grouping and export still work; collection stored without `trust` restores with `trust` undefined and `recordAttributes` reports the
   class default; record added with metadata `{ trust: 5, trustHistory: [] }` stores neither key (stripped);
   history keeps the last 20 entries.
 - [ ] **Step 2–4:** Fail, implement, pass; full jest for persistence suites.
@@ -217,8 +223,12 @@ the one sanitizer used by add, update, bulk and upload. Content updates preserve
   joins tagged hits; the injected `CollectionSearchRag` stores receive the trusted collection context and
   overwrite `metadata.trust` / `metadata.source` with derived values, so stored metadata cannot impersonate
   `system`),
-  `srv/lib/session-history-rag.ts` (class `session`), `srv/lib/planner-memory.ts:81-137` and
-  `srv/lib/planner-context.ts` (fill `trust`/`source` on `PlannerKnowledgeEntry`/`PlannerMemoryEntry`)
+  `srv/lib/session-history-rag.ts` (class `session`), `srv/lib/planner-memory.ts`
+  (`plannerSessionOptions()` wraps each `registry.getRagStore(id)` in the same trust-enriching store as chat
+  retrieval instead of passing it raw; `planAuthorContextNotes()` ~line 201 builds its own memory entries and
+  gets `trust`/`source` too), `srv/lib/planner-context.ts`. Enrichment always resolves effective trust
+  (`_trust` → collection → default) and overwrites any `metadata.trust`/`metadata.source`, so old records without
+  trust and records with spoofed provenance render correctly.
 - Test: `test/unit/trust-tags-rag.test.ts`
 
 - [ ] **Step 1: Failing tests:** exact strings — chat retrieval block contains
@@ -226,7 +236,8 @@ the one sanitizer used by add, update, bulk and upload. Content updates preserve
   planner block line `(Notes/r1; trust 3) <text>`; session history item `[source: session; trust 2]`; a record
   override 1 beats collection 4; a name with `[x]` is escaped; a record whose free-form metadata claims
   `source: 'system:x'` is rendered with its real source; both chat auto-retrieval and library pipeline retrieval
-  (`ContextAssembler`) show the tag.
+  (`ContextAssembler`) show the tag; coordinator retrieval, `search_knowledge` and planner-create/revise context
+  show it for old records without trust and for records with spoofed metadata.
 - [ ] **Step 2–4:** Fail, implement, pass.
 - [ ] **Step 5:** Commit `feat(trust): tag RAG paths`.
 
@@ -240,9 +251,12 @@ the one sanitizer used by add, update, bulk and upload. Content updates preserve
   construction (~2882), destination recording (~3130), executor/checker workers. `isSystemTool` = the name is in
   the embedded mcp-abap-adt registry (`buildEmbeddedMcpAdapter`, ~2367); hub RAG and orchestration tools are
   never tagged.
-- Modify: skill rendering for `## Active Skills` (`srv/lib/composite-skill-manager.ts`): informational skills get
-  the tag after `### Skill: <name>`, looking trust up live from `TrustStore` in `getContent` (no cached value),
-  so an already-built agent renders a changed trust on its next call; base skills untouched
+- Create: `srv/lib/trusted-skill.ts` — `withSkillTrust(skill: ISkill, trust: () => Promise<number>): ISkill`, a
+  wrapper preserving every other skill method and metadata, whose `getContent` prefixes
+  `[source: global:skills/<name>; trust n]` resolved live (no cached value).
+- Modify: `srv/lib/composite-skill-manager.ts` (`getSkill`, `matchSkills`, `listSkills` return wrapped
+  informational skills; base skills unwrapped). Rendering stays in the library (`skill-select.ts`,
+  `rag-orchestrator.ts`), which calls `getContent` — test both paths.
 - Test: `test/unit/trust-tags-tools.test.ts`
 
 - [ ] **Step 1: Failing tests (each chain: chat, planner, executor, checker):** an embedded SAP tool result
@@ -262,12 +276,16 @@ file skills go through semantic selection (library `pipeline/handlers/skill-sele
 
 **Files:**
 - Modify: `srv/lib/composite-skill-manager.ts` / `srv/lib/skills-pool.ts` — base skills are excluded from the
-  selection store and appended to the agent's system content on every call (hub side; the hub already assembles
-  the profile system prompt); informational skills keep semantic selection.
+  selection store (informational skills keep semantic selection).
+- Modify: `srv/agent-manager.ts` system-content assembly for every role — `configureDestinationAgentBuilder`
+  (chat/executor), `buildPlannerAgent` (coordinator), plan-author construction (planner-create/revise) and the
+  profile/worker paths (executor, checker): base skill content is appended after the profile system prompt and
+  before corrections, keeping the preset override order (agent over preconfigured, correction over base).
 - Test: `test/unit/base-skills.test.ts`
 
-- [ ] **Step 1: Failing tests:** a `kind: base` skill appears in every executor call's system content even for
-  an unrelated query and never in `## Active Skills`; an informational skill is not loaded unless selected.
+- [ ] **Step 1: Failing tests:** a `kind: base` skill appears in the system content of coordinator,
+  planner-create, planner-revise, executor and checker calls even for an unrelated query, after the profile prompt,
+  and never in `## Active Skills`; an informational skill is not loaded unless selected.
   Existing file skills (`srv/skills/*`) stay informational (no front matter change in this release).
 - [ ] **Step 2–4:** Fail, implement, pass.
 - [ ] **Step 5:** Commit `feat(skills): base skills load with the agent preset`.
