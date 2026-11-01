@@ -75,6 +75,7 @@ import {
 import { evaluateGated } from './step-reviewer';
 import { cachedSystemIdentity } from './system-identity-cache';
 import { type TaskView, taskView } from './task-view';
+import type { TrustResolver } from './trust-resolver';
 import { usageRuntime } from './usage/runtime';
 
 type Plan = Exclude<DialogueState['plan'], string | undefined>;
@@ -127,6 +128,7 @@ export interface DialogueHandle {
   destination: string;
   session: DialogueSession;
   usage?: IUsageRecorder;
+  coordinatorResolver(): Promise<TrustResolver>;
   attachments: WeakMap<object, string>;
   replies: WeakMap<object, { id: string; createdAt: number }>;
   outbox: DialogueOutbox;
@@ -685,13 +687,13 @@ async function open(
       config.profiles?.collectionId ??
       'agents',
   );
+  const coordinatorResolver = async (): Promise<TrustResolver> => {
+    const prompts = await source.getPrompts();
+    return getTrustResolver().forProfile({
+      trust: prompts.ok ? prompts.value.trust?.coordinator : undefined,
+    });
+  };
   try {
-    const coordinatorResolver = async () => {
-      const prompts = await source.getPrompts();
-      return getTrustResolver().forProfile({
-        trust: prompts.ok ? prompts.value.trust?.coordinator : undefined,
-      });
-    };
     const retrieval = await plannerSessionOptions(
       userId,
       key,
@@ -933,6 +935,7 @@ async function open(
     session,
     ...(usage ? { usage } : {}),
     attachments,
+    coordinatorResolver,
     replies,
     outbox,
     state() {
