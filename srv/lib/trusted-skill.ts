@@ -5,6 +5,11 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import type { TrustResolver } from './trust-resolver';
 
+/** Managers assign ids before composition; standalone legacy skills retain their external key. */
+export function skillId(skill: ISkill): string {
+  return typeof skill.meta.id === 'string' ? skill.meta.id : skill.name;
+}
+
 const originals = new WeakMap<ISkill, ISkill>();
 
 /** Preserve the skill receiver, metadata and resources; resolve trust on each read. */
@@ -21,7 +26,7 @@ export function withSkillTrust(
           return result.ok
             ? {
                 ...result,
-                value: `${formatTrustTag(`global:skills/${target.name}`, await trust())}\n${result.value}`,
+                value: `${formatTrustTag(`global:skills/${skillId(target)}`, await trust())}\n${result.value}`,
               }
             : result;
         };

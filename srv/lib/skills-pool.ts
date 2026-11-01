@@ -1,4 +1,4 @@
-import { type Dirent, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 /**
  * The mandatory skill pool — composed here, fixed at deploy time.
  *
@@ -7,89 +7,92 @@ import { type Dirent, existsSync, readdirSync, readFileSync } from 'node:fs';
  * mandatory skills is decided here and logged at startup — it must be knowable
  * from a deploy log, not a function of what any user enabled.
  *
- * Sources, in merge order (later wins):
+ * Sources (ids are independent of display names):
  *   1. the connected llm-agent plugin, if it exports a skillManager
  *   2. the in-code preset in `srv/skills/` — the product's own rules
  */
 import path from 'node:path';
-import type { ISkillManager } from '@mcp-abap-adt/llm-agent';
-import { FileSystemSkillManager } from '@mcp-abap-adt/llm-agent-libs';
+import type { ISkill, ISkillManager } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
-import { JSON_SCHEMA, load } from 'js-yaml';
-import { z } from 'zod';
 import type { RagDocument } from '../rag-collections';
 import {
   CompositeSkillManager,
-  SkillKindConflict,
   type SkillSource,
-  validateSkillKinds,
 } from './composite-skill-manager';
+import { loadSkillFromDir } from './filesystem-skill';
 import { collectionView, documentView } from './record-policy';
 import type { TrustResolver } from './trust-resolver';
+import { skillId } from './trusted-skill';
 
 /** Absolute path to the in-code skills directory (`srv/skills`). */
 export const SKILLS_DIR = path.join(__dirname, '..', 'skills');
 
-const skillDeclaration = z.object({
-  name: z.string(),
-  kind: z.enum(['base', 'informational']).default('informational'),
-});
-
-/** Compare declarations before library scanning can hide collisions in SkillError. */
-function validateDirectorySkillKinds(dirs: readonly string[]): void {
-  const kinds = new Map<string, 'base' | 'informational'>();
-  for (const dir of dirs) {
-    let entries: Dirent[];
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      let declaration: z.infer<typeof skillDeclaration>;
-      try {
-        const text = readFileSync(
-          path.join(dir, entry.name, 'SKILL.md'),
-          'utf8',
-        );
-        const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1];
-        if (!front) continue;
-        const parsed = skillDeclaration.safeParse(
-          load(front, { schema: JSON_SCHEMA }),
-        );
-        if (!parsed.success) continue;
-        declaration = parsed.data;
-      } catch {
-        // Leave unrelated read/parse failures to the source manager.
-        continue;
-      }
-      const previous = kinds.get(declaration.name);
-      if (previous !== undefined && previous !== declaration.kind)
-        throw new SkillKindConflict(declaration.name);
-      kinds.set(declaration.name, declaration.kind);
-    }
-  }
-}
-
 export function buildSkillsPool(opts?: {
-  dirs?: string[];
-  /** Plugin skill directories known to the hub, already managed by pluginManager. */
-  pluginDirs?: string[];
+  dirs?: (string | { dir: string; source: string })[];
   pluginManager?: ISkillManager;
   resolver?: () => TrustResolver;
 }): CompositeSkillManager {
   const dirs = opts?.dirs ?? [SKILLS_DIR];
-  validateDirectorySkillKinds([...(opts?.pluginDirs ?? []), ...dirs]);
   const sources: SkillSource[] = [];
   if (opts?.pluginManager) {
     sources.push({ source: 'plugin', manager: opts.pluginManager });
   }
-  // Preset last: the product's own rules win a name collision.
-  for (const dir of dirs) {
+  const labels = new Set<string>();
+  for (const entry of dirs) {
+    const dir = typeof entry === 'string' ? entry : entry.dir;
+    const isHub = path.resolve(dir) === path.resolve(SKILLS_DIR);
+    const source =
+      typeof entry === 'string'
+        ? path.basename(path.resolve(dir))
+        : entry.source;
+    if (!isHub && (!/^[\w.-]+$/.test(source) || labels.has(source))) {
+      throw new Error(
+        `Skill source label must be unique and path-free: ${source}`,
+      );
+    }
+    if (!isHub) labels.add(source);
+    let skills: ISkill[] = [];
+    const refresh = () => {
+      const discovered: ISkill[] = [];
+      if (existsSync(dir)) {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          const skill = loadSkillFromDir(path.join(dir, entry.name));
+          if (!skill) continue;
+          skill.meta.id =
+            typeof skill.meta.id === 'string'
+              ? skill.meta.id
+              : isHub
+                ? entry.name
+                : `${source}/${entry.name}`;
+          discovered.push(skill);
+        }
+      }
+      skills = discovered;
+    };
+    // Like FileSystemSkillManager, discover before returning the manager. Agent
+    // builds must not wait for filesystem I/O inside the processing pipeline.
+    refresh();
     sources.push({
-      source: `preset:${dir}`,
-      manager: new FileSystemSkillManager([dir]),
+      source: isHub ? 'hub' : source,
+      manager: {
+        refresh,
+        async listSkills() {
+          return { ok: true, value: skills };
+        },
+        async getSkill(id, options) {
+          const result = await this.listSkills(options);
+          return result.ok
+            ? {
+                ok: true,
+                value: result.value.find((skill) => skillId(skill) === id),
+              }
+            : result;
+        },
+        async matchSkills() {
+          return { ok: true, value: [] };
+        },
+      },
     });
   }
   return new CompositeSkillManager(sources, opts?.resolver);
@@ -99,8 +102,6 @@ export function buildSkillsPool(opts?: {
 export async function logSkillsPool(manager: ISkillManager): Promise<void> {
   const log = cds.log('skills');
   try {
-    const validation = await validateSkillKinds(manager);
-    if (!validation.ok) throw validation.error;
     const result = await manager.listSkills();
     if (!result.ok) {
       log.warn('skills pool unavailable', { error: result.error.message });
@@ -111,38 +112,8 @@ export async function logSkillsPool(manager: ISkillManager): Promise<void> {
       names: result.value.map((s) => s.name),
     });
   } catch (err) {
-    if (err instanceof SkillKindConflict) throw err;
     log.warn('skills pool logging failed', { error: String(err) });
   }
-}
-
-/** Read only front matter; skill content is never loaded or tagged here. */
-export function skillKind(
-  name: string,
-  dirs: readonly string[] = [SKILLS_DIR],
-): 'base' | 'informational' {
-  let kind: 'base' | 'informational' = 'informational';
-  for (const dir of dirs) {
-    if (!existsSync(dir)) continue;
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const file = entry.isDirectory()
-        ? path.join(dir, entry.name, 'SKILL.md')
-        : path.join(dir, entry.name);
-      if (!entry.isDirectory() && !entry.name.endsWith('.md')) continue;
-      if (!existsSync(file)) continue;
-      const text = readFileSync(file, 'utf8');
-      const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1];
-      if (!front) continue;
-      const parsed = z
-        .object({
-          name: z.string(),
-          kind: z.enum(['base', 'informational']).optional(),
-        })
-        .parse(load(front, { schema: JSON_SCHEMA }));
-      if (parsed.name === name) kind = parsed.kind ?? 'informational';
-    }
-  }
-  return kind;
 }
 
 /** The same synchronous document projection, with the virtual source resolved first. */
@@ -187,7 +158,7 @@ export async function informationalSkillDocuments(
         if (!content.ok) throw content.error;
         return skillDocumentView(
           {
-            id: skill.name,
+            id: skillId(skill),
             text: content.value,
             metadata: { description: skill.description },
             createdAt: '',
@@ -203,13 +174,6 @@ export async function appendBaseSkills(
   prompt: string,
   pool: CompositeSkillManager,
 ): Promise<string> {
-  const validation = await validateSkillKinds(pool);
-  if (!validation.ok) throw validation.error;
-  const bodies: string[] = [];
-  for (const skill of await pool.baseSkills()) {
-    const result = await skill.getContent();
-    if (!result.ok) throw result.error;
-    bodies.push(result.value);
-  }
+  const bodies = await pool.baseSkillContents();
   return [prompt, ...bodies].filter(Boolean).join('\n\n');
 }

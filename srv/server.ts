@@ -1,4 +1,3 @@
-import { SkillKindConflict } from './lib/composite-skill-manager';
 import { RAG_WRITE_MAX_BYTES } from './lib/rag-write-operations';
 import {
   beginUsageShutdown,
@@ -1025,13 +1024,6 @@ cds.on('served', () => {
             log.info('SmartAgents initialized and ready');
           },
           (err) => {
-            if (err instanceof SkillKindConflict) {
-              log.error('Skill configuration conflict, exiting', {
-                error: err.message,
-              });
-              process.exit(1);
-              return;
-            }
             log.warn(
               'SmartAgent initialization failed, will retry on first request',
               { error: err instanceof Error ? err.message : String(err) },

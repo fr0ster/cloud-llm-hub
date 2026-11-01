@@ -74,9 +74,8 @@ Repo `C:\Users\OleksiiKyslytsia\projects\llm-agent`, branch `feat/trust-tag` fro
   enclosing budget; the excerpt's own truncation is unchanged); and a `get_task` response projection in `planner-tools-client.ts`
   (~420) that tags each `toolTrace` result in a copy, never the board's stored task. Stored traces, outcome
   parsing and truncation counts stay untagged; a result is tagged once.
-- Skill discovery: `skills/skill-utils.ts` `scanDirsForSkills` reports a name that appears in several directories
-  with different front matter `kind` as an error before deduplication (`byName.set`), instead of silently keeping
-  one.
+- Skill discovery preserves skills by id, independently of display names and kinds. Equal names do not
+  conflict or fail startup; content conflicts between informational sources resolve through trust tags.
 - Rerankers: `reranker/llm-reranker.ts` (~128) and `reranker/decision-reranker.ts` (~155) render candidates with
   the same tag when `metadata.trust` is a number; relevance scoring is unchanged (no trust-based filtering).
 - Changeset: minor for both packages.
@@ -122,7 +121,7 @@ test('toolTrust tags model-facing tool results only', () => {
   // ContextAssembler history, checker evidence and get_task projection tagged once; board task unchanged
 });
 test('rerankers show the trust tag and keep relevance scoring', () => {});
-test('skill discovery rejects one name with base and informational kinds across two directories', () => {});
+test('skill discovery preserves same-name base and informational skills by id', () => {});
 test('ContextAssembler tags results with metadata.trust', () => {
   // RagResult { text: 'x', metadata: { trust: 3, source: 'user:Notes/r1' }, score: 0.9 } → "- [source: user:Notes/r1; trust 3] x"
   // without metadata.trust → "- x"; non-number trust → "- x"
@@ -417,10 +416,11 @@ file skills go through semantic selection (library `pipeline/handlers/skill-sele
 - Modify: `srv/lib/skills-pool.ts` / `srv/lib/composite-skill-manager.ts` — two views over the same pool:
   `informationalSkills(): ISkillManager` (passed to `SmartAgentBuilder`, which vectorizes only what it is given)
   and `baseSkills(): readonly ISkill[]` (used for system-content assembly). Plugin-provided skills follow their own
-  front matter (default informational). A name that exists as both kinds fails startup with a clear error (library discovery check from Task 1 for
-  one file-system manager, hub check across managers). The conflict is surfaced by an explicit
-  `validateSkillKinds(pool): Result<void, SkillKindConflict>` run at startup that throws; `listSkills()` failures
-  in `CompositeSkillManager` and `logSkillsPool()` must not swallow it (they still log-and-skip other errors).
+  front matter (default informational). Identity is the skill id, never the display name. All enabled base
+  skills are appended to every role's single system content without search. Informational skills are selected
+  only through semantic retrieval, edited by id, and tagged with trust. Equal names across kinds are valid;
+  startup succeeds. Manager errors retain normal log-and-skip behavior. Content conflicts between informational
+  sources resolve by trust tags.
 - Modify: `srv/agent-manager.ts` system-content assembly for every role — `configureDestinationAgentBuilder`
   (chat/executor), `buildPlannerAgent` (coordinator), plan-author construction (planner-create/revise) and the
   profile/worker paths (executor, checker): base skill content is appended after the profile system prompt and
@@ -431,7 +431,8 @@ file skills go through semantic selection (library `pipeline/handlers/skill-sele
   planner-create, planner-revise, executor and checker calls even for an unrelated query, after the profile prompt,
   and never in `## Active Skills`; an informational skill is not loaded unless selected.
   Existing file skills (`srv/skills/*`) stay informational (no front matter change in this release); a
-  plugin skill with `kind: base` loads directly; a duplicate name across kinds fails startup through the composed pool (not just a logged warning).
+  plugin skill with `kind: base` loads directly; same-name skills across kinds both load by id, startup succeeds, and semantic selection includes only the
+  informational skill with its trust tag.
 - [ ] **Step 2–4:** Fail, implement, pass.
 - [ ] **Step 5:** Commit `feat(skills): base skills load with the agent preset`.
 

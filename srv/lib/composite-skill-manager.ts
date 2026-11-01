@@ -10,51 +10,46 @@
  * skills are mandatory belongs here — and the pool is fixed at deploy time rather
  * than depending on what a user happened to enable.
  *
- * Collision rule: sources are merged in order and the LAST one wins, mirroring
- * `scanDirsForSkills` ("duplicate names from later directories override earlier
- * ones"). Callers pass the in-code preset last so a plugin cannot silently
- * redefine one of the product's own rules.
+ * Skills are identified by id. Equal display names do not hide other skills.
  */
-import type { ISkill, ISkillManager, Result } from '@mcp-abap-adt/llm-agent';
+import type { ISkill, ISkillManager } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 
 import { resolverFor, type TrustResolver } from './trust-resolver';
-import { withSkillTrust } from './trusted-skill';
+import { skillId, withSkillTrust } from './trusted-skill';
 
-export class SkillKindConflict extends Error {
-  readonly code = 'SKILL_KIND_CONFLICT';
-  constructor(name: string) {
-    super(`Skill ${name} has conflicting base and informational kinds`);
-  }
-}
-export async function validateSkillKinds(
-  pool: ISkillManager,
-): Promise<Result<void, SkillKindConflict>> {
-  try {
-    const result = await pool.listSkills();
-    if (!result.ok) {
-      if (result.error instanceof SkillKindConflict)
-        return { ok: false, error: result.error };
-      throw result.error;
-    }
-    const kinds = new Map<string, boolean>();
-    for (const skill of result.value) {
-      const base = skill.meta.kind === 'base';
-      const previous = kinds.get(skill.name);
-      if (previous !== undefined && previous !== base)
-        return { ok: false, error: new SkillKindConflict(skill.name) };
-      kinds.set(skill.name, base);
-    }
-    return { ok: true, value: undefined };
-  } catch (error) {
-    if (error instanceof SkillKindConflict) return { ok: false, error };
-    throw error;
-  }
-}
-
-export type SkillSource = { source: string; manager: ISkillManager };
+export type SkillSource = {
+  source: string;
+  manager: ISkillManager & { refresh?: () => void | Promise<void> };
+};
 
 export class CompositeSkillManager implements ISkillManager {
+  private readonly baseContent = new Map<string, Promise<string>>();
+
+  /** Reload source discovery and invalidate base bodies explicitly. */
+  async refresh(): Promise<void> {
+    this.baseContent.clear();
+    await Promise.all(this.sources.map(({ manager }) => manager.refresh?.()));
+  }
+
+  /** Cache in-flight reads too, so concurrent agent builds share each body. */
+  async baseSkillContents(): Promise<readonly string[]> {
+    return Promise.all(
+      (await this.baseSkills()).map((skill) => {
+        const id = skillId(skill);
+        let content = this.baseContent.get(id);
+        if (!content) {
+          content = skill.getContent().then((result) => {
+            if (!result.ok) throw result.error;
+            return result.value;
+          });
+          this.baseContent.set(id, content);
+        }
+        return content;
+      }),
+    );
+  }
+
   constructor(
     private readonly sources: SkillSource[],
     private readonly resolver: () => TrustResolver = () => resolverFor({}),
@@ -68,7 +63,15 @@ export class CompositeSkillManager implements ISkillManager {
       return result.ok
         ? {
             ...result,
-            value: result.value.filter((s) => s.meta.kind !== 'base'),
+            value: result.value
+              .filter((s) => s.meta.kind !== 'base')
+              .map((skill) => ({
+                ...skill,
+                name: skillId(skill),
+                getContent: skill.getContent.bind(skill),
+                listResources: skill.listResources.bind(skill),
+                readResource: skill.readResource.bind(skill),
+              })),
           }
         : result;
     };
@@ -105,31 +108,32 @@ export class CompositeSkillManager implements ISkillManager {
   async listSkills(
     options?: Parameters<ISkillManager['listSkills']>[0],
   ): ReturnType<ISkillManager['listSkills']> {
-    const byName = new Map<string, ISkill>();
+    const byId = new Map<string, ISkill>();
     for (const { source, manager } of this.sources) {
       try {
         const result = await manager.listSkills(options);
         if (!result.ok) {
-          if (result.error instanceof SkillKindConflict) throw result.error;
           cds.log('skills').warn('skill source failed, skipping', {
             source,
             error: result.error.message,
           });
           continue;
         }
-        // Later source wins — see the collision rule above.
-        for (const skill of result.value) {
-          const previous = byName.get(skill.name);
-          if (
-            previous &&
-            (previous.meta.kind === 'base') !== (skill.meta.kind === 'base')
-          )
-            throw new SkillKindConflict(skill.name);
-          byName.set(skill.name, skill);
+        for (const [index, skill] of result.value.entries()) {
+          const id =
+            typeof skill.meta.id === 'string'
+              ? skill.meta.id
+              : JSON.stringify([source, index]);
+          byId.set(id, {
+            name: skill.name,
+            description: skill.description,
+            meta: { ...skill.meta, id },
+            getContent: skill.getContent.bind(skill),
+            listResources: skill.listResources.bind(skill),
+            readResource: skill.readResource.bind(skill),
+          });
         }
       } catch (err) {
-        if (err instanceof SkillKindConflict) throw err;
-
         cds.log('skills').warn('skill source threw, skipping', {
           source,
           error: String(err),
@@ -138,10 +142,10 @@ export class CompositeSkillManager implements ISkillManager {
     }
     return {
       ok: true as const,
-      value: [...byName.values()].map((skill) => {
+      value: [...byId.values()].map((skill) => {
         const resolve = this.resolver;
         return skill.meta.kind !== 'base'
-          ? withSkillTrust(skill, () => resolve().skill(skill.name))
+          ? withSkillTrust(skill, () => resolve().skill(skillId(skill)))
           : skill;
       }),
     };
@@ -153,7 +157,10 @@ export class CompositeSkillManager implements ISkillManager {
   ): ReturnType<ISkillManager['getSkill']> {
     const all = await this.listSkills(options);
     if (!all.ok) return all;
-    return { ok: true as const, value: all.value.find((s) => s.name === name) };
+    return {
+      ok: true as const,
+      value: all.value.find((s) => skillId(s) === name),
+    };
   }
 
   async matchSkills(

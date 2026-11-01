@@ -264,7 +264,20 @@ test.each(['pipeline', 'rag-orchestrator'])(
       store,
       parseTrustDefaults(undefined),
     );
-    const skill = fixtureSkill();
+    const skill = {
+      ...fixtureSkill(),
+      name: 'shared display name',
+      meta: { ...fixtureSkill().meta, id: 'info', name: 'shared display name' },
+    };
+    const base = {
+      ...fixtureSkill('base', 'base'),
+      name: 'shared display name',
+      meta: {
+        ...fixtureSkill('base', 'base').meta,
+        id: 'base',
+        name: 'shared display name',
+      },
+    };
     const manager = new CompositeSkillManager(
       [
         {
@@ -272,7 +285,7 @@ test.each(['pipeline', 'rag-orchestrator'])(
           manager: {
             listSkills: async () => ({
               ok: true,
-              value: [skill, fixtureSkill('base', 'base')],
+              value: [skill, base],
             }),
             getSkill: async () => ({ ok: true, value: skill }),
             matchSkills: async () => ({ ok: true, value: [skill] }),

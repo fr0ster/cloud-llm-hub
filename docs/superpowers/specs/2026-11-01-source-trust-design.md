@@ -53,7 +53,7 @@ each context item is an effective, cheap way to make conflict resolution predict
 
 Records in collections fall into these groups (user's model, 2026-11-01):
 
-1. **System:** the system prompt and base skills.
+1. **System:** one system prompt and all enabled base skills (`kind: base`), appended to every role?s system content.
 2. **Corrections of the system prompt:** additional notes under learning, long-term and short-term. They override
    the system prompt and base skills. The learning process (step 4) decides whether a correction helps or harms
    and then folds it into the base system prompt and skills.
@@ -71,6 +71,12 @@ may later be restricted by role), user (the user and the admin, persistent) and 
 Loading: the system prompt, base skills and corrections are loaded into the context directly, without semantic
 search. Everything else — tool groups, informational skills and collections — is found by semantic search in
 RAG. Tool results (target system, documentation) arrive through tool calls.
+
+Skills are identified and edited by id, never by display name. Informational skills (the default, or
+`kind: informational`) are found only by semantic search and carry trust tags. Base skills never appear in
+semantic selection or Active Skills. A base skill and an informational skill may share a name and both load;
+there is no name conflict or kind-based startup failure. Content conflicts between informational sources are
+resolved by trust tags. Source-manager errors are logged and skipped.
 
 ## Trust
 

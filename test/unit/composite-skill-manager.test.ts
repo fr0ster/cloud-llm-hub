@@ -2,7 +2,6 @@ import { type ISkillManager, SkillError } from '@mcp-abap-adt/llm-agent';
 import {
   CompositeSkillManager,
   type SkillSource,
-  validateSkillKinds,
 } from '../../srv/lib/composite-skill-manager';
 import { logSkillsPool } from '../../srv/lib/skills-pool';
 
@@ -22,18 +21,18 @@ test.each(['returned', 'thrown'])(
       src('good', manager([skill('good', '', '')])),
     ]);
     await expect(logSkillsPool(pool)).resolves.toBeUndefined();
-    await expect(validateSkillKinds(pool)).resolves.toEqual({
+    await expect(pool.listSkills()).resolves.toMatchObject({
       ok: true,
-      value: undefined,
+      value: [{ name: 'good' }],
     });
   },
 );
 
-function skill(name: string, description: string, body: string) {
+function skill(name: string, description: string, body: string, id = name) {
   return {
     name,
     description,
-    meta: { name, description },
+    meta: { id, name, description },
     getContent: async () => ({ ok: true as const, value: body }),
     listResources: async () => ({ ok: true as const, value: [] }),
     readResource: async () => ({ ok: true as const, value: '' }),
@@ -77,32 +76,38 @@ describe('CompositeSkillManager', () => {
   it('merges skills from every source', async () => {
     const c = new CompositeSkillManager([
       src('plugin', manager([skill('a', 'desc a', 'body a')])),
-      src('preset', manager([skill('b', 'desc b', 'body b')])),
+      src('preset', manager([skill('b', 'desc b', 'b')])),
     ]);
     const r = await c.listSkills();
     if (!r.ok) throw new Error('listSkills failed');
     expect(r.value.map((s) => s.name).sort()).toEqual(['a', 'b']);
   });
 
-  it('later source wins a name collision', async () => {
+  it('preserves same-name skills from separate sources', async () => {
     const c = new CompositeSkillManager([
-      src('plugin', manager([skill('dup', 'plugin desc', 'plugin body')])),
-      src('preset', manager([skill('dup', 'preset desc', 'preset body')])),
+      src(
+        'plugin',
+        manager([skill('dup', 'plugin desc', 'plugin body', 'plugin-id')]),
+      ),
+      src(
+        'preset',
+        manager([skill('dup', 'preset desc', 'preset body', 'preset-id')]),
+      ),
     ]);
     const r = await c.listSkills();
     if (!r.ok) throw new Error('listSkills failed');
-    expect(r.value).toHaveLength(1);
-    const content = await r.value[0].getContent();
+    expect(r.value).toHaveLength(2);
+    const content = await r.value[1].getContent();
     if (!content.ok) throw new Error('getContent failed');
     expect(content.value).toBe(
-      '[source: global:skills/dup; trust 4.5]\npreset body',
+      '[source: global:skills/preset-id; trust 4.5]\npreset body',
     );
   });
 
   it('a failing source is skipped, the rest still load', async () => {
     const c = new CompositeSkillManager([
       src('plugin', failingManager()),
-      src('preset', manager([skill('b', 'desc b', 'body b')])),
+      src('preset', manager([skill('b', 'desc b', 'b')])),
     ]);
     const r = await c.listSkills();
     if (!r.ok) throw new Error('listSkills failed');
@@ -111,7 +116,7 @@ describe('CompositeSkillManager', () => {
 
   it('getSkill finds by exact name', async () => {
     const c = new CompositeSkillManager([
-      src('preset', manager([skill('b', 'desc b', 'body b')])),
+      src('preset', manager([skill('b', 'desc b', 'b')])),
     ]);
     const r = await c.getSkill('b');
     if (!r.ok) throw new Error('getSkill failed');

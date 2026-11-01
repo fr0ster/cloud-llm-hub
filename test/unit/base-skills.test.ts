@@ -1,15 +1,20 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import type { ISkill, ISkillManager } from '@mcp-abap-adt/llm-agent';
-import {
-  CompositeSkillManager,
-  validateSkillKinds,
-} from '../../srv/lib/composite-skill-manager';
+import { CompositeSkillManager } from '../../srv/lib/composite-skill-manager';
 import { appendBaseSkills, logSkillsPool } from '../../srv/lib/skills-pool';
 
 function skill(name: string, kind: string): ISkill {
   return {
     name,
     description: name,
-    meta: { name, description: name, kind },
+    meta: {
+      id: kind === 'base' ? `base:${name}` : name,
+      name,
+      description: name,
+      kind,
+    },
     getContent: async () => ({ ok: true, value: `${name} body` }),
     listResources: async () => ({ ok: true, value: [] }),
     readResource: async () => ({ ok: true, value: '' }),
@@ -53,14 +58,22 @@ test.each([
     expect(prompt).not.toContain('info body');
   },
 );
-test('cross-manager kind collision fails validation and logging rather than disappearing during merge', async () => {
+test('same-name skills of both kinds load without a startup failure', async () => {
   const pool = new CompositeSkillManager([
     { source: 'plugin', manager: manager([skill('dup', 'base')]) },
     { source: 'preset', manager: manager([skill('dup', 'informational')]) },
   ]);
-  const result = await validateSkillKinds(pool);
-  expect(result.ok).toBe(false);
-  await expect(logSkillsPool(pool)).rejects.toThrow(/dup.*kind/i);
+  await expect(logSkillsPool(pool)).resolves.toBeUndefined();
+  await expect(appendBaseSkills('system', pool)).resolves.toBe(
+    'system\n\ndup body',
+  );
+  const result = await pool.informationalSkills().listSkills();
+  if (!result.ok) throw result.error;
+  expect(result.value).toHaveLength(1);
+  expect(await result.value[0].getContent()).toEqual({
+    ok: true,
+    value: '[source: global:skills/dup; trust 4.5]\ndup body',
+  });
 });
 
 import { buildSkillsPool } from '../../srv/lib/skills-pool';
@@ -70,4 +83,44 @@ test('shipped file skills remain informational', async () => {
   expect(await pool.baseSkills()).toEqual([]);
   const skills = await pool.informationalSkills().listSkills();
   expect(skills.ok && skills.value.length).toBeGreaterThan(0);
+});
+
+test('filesystem discovery and base bodies stay cached until explicit refresh', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'base-cache-'));
+  const skillDir = path.join(dir, 'rules');
+  mkdirSync(skillDir);
+  const file = path.join(skillDir, 'SKILL.md');
+  const write = (body: string) =>
+    writeFileSync(file, `---\nname: rules\nkind: base\n---\n${body}`);
+  try {
+    write('original');
+    const pool = buildSkillsPool({ dirs: [{ dir, source: 'test' }] });
+    write('changed');
+    await expect(appendBaseSkills('profile', pool)).resolves.toBe(
+      'profile\n\noriginal',
+    );
+    await pool.refresh();
+    await expect(appendBaseSkills('profile', pool)).resolves.toBe(
+      'profile\n\nchanged',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('concurrent agent builds share base content by id until refresh', async () => {
+  const base = skill('rules', 'base');
+  const getContent = jest.fn(base.getContent);
+  base.getContent = getContent;
+  const pool = new CompositeSkillManager([
+    { source: 'plugin', manager: manager([base]) },
+  ]);
+  await Promise.all([
+    appendBaseSkills('one', pool),
+    appendBaseSkills('two', pool),
+  ]);
+  expect(getContent).toHaveBeenCalledTimes(1);
+  await pool.refresh();
+  await appendBaseSkills('three', pool);
+  expect(getContent).toHaveBeenCalledTimes(2);
 });

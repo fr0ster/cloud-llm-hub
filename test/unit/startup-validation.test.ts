@@ -316,19 +316,6 @@ describe("server.ts's served listener", () => {
     }
   });
 
-  it('exits on a skill kind conflict during agent initialization', async () => {
-    const { SkillKindConflict } = await import(
-      '../../srv/lib/composite-skill-manager'
-    );
-    agentsFailure.error = new SkillKindConflict('conflicting-skill');
-    try {
-      expect(await runServed()).toEqual([1]);
-      expect(order).toContain('startCollectionRestore');
-    } finally {
-      delete agentsFailure.error;
-    }
-  });
-
   /** Runs `served` with timers stubbed and `process.exit` recorded. */
   async function runServed(): Promise<number[]> {
     order.length = 0;
