@@ -14,13 +14,23 @@ jest.mock(
   { virtual: true },
 );
 
-import { InMemoryRag, type IRagBackendWriter } from '@mcp-abap-adt/llm-agent';
+import {
+  CircuitBreaker,
+  CircuitBreakerEmbedder,
+  InMemoryRag,
+  type IRagBackendWriter,
+  type IRagEditor,
+  type IRetrievalEmbedder,
+} from '@mcp-abap-adt/llm-agent';
 import {
   getTrustStore,
   initProviders,
   startCollectionRestore,
 } from '../../srv/agent-manager';
 import { HISTORY_OPEN_COOL_DOWN_MS } from '../../srv/lib/collection-persistence';
+import type { Providers } from '../../srv/lib/providers';
+import { createRagStoreFactory } from '../../srv/lib/rag-store-factory';
+import { IN_MEMORY_RAG } from './helpers/providers';
 
 test('Qdrant trust dimension discovery is lazy and retries after a transient embedding failure', async () => {
   const rag = new InMemoryRag();
@@ -34,23 +44,45 @@ test('Qdrant trust dimension discovery is lazy and retries after a transient emb
   writer.upsertPrecomputedRaw = write;
   jest.spyOn(rag, 'writer').mockReturnValue(writer);
   const embedDocument = jest
-    .fn()
+    .fn<
+      ReturnType<IRetrievalEmbedder['embedDocument']>,
+      Parameters<IRetrievalEmbedder['embedDocument']>
+    >()
     .mockRejectedValueOnce(new Error('temporary embedder outage'))
     .mockResolvedValue({ vector: [1, 2, 3] });
-  initProviders({
+  const editor: IRagEditor = {
+    upsert: async (text, metadata, options) => {
+      const { id, ...attributes } = metadata;
+      if (typeof id !== 'string') throw new Error('Missing id');
+      const result = await writer.upsertRaw(id, text, attributes, options);
+      return result.ok ? { ok: true, value: { id } } : result;
+    },
+    deleteById: (id, options) => writer.deleteByIdRaw(id, options),
+  };
+  const breaker = new CircuitBreaker();
+  const providers = {
     embedding: {
-      retrieval: { embedDocument },
-      breaker: null,
+      embedder: new CircuitBreakerEmbedder({ embed: embedDocument }, breaker),
+      retrieval: { embedDocument, embedQuery: embedDocument },
+      breaker,
       fingerprint: { provider: 'ollama', embeddingModel: 'bge-m3' },
     },
-    stores: { backendOf: () => 'qdrant' },
+    stores: {
+      ...createRagStoreFactory(IN_MEMORY_RAG, null),
+      backendOf: () => 'qdrant',
+    },
     collections: {
-      openCollection: async () => ({ ok: true, value: { rag, editor: {} } }),
+      name: 'test',
+      kind: 'vector',
+      editable: true,
+      supportedScopes: ['user'],
+      deleteCollection: async () => ({ ok: true, value: undefined }),
+      openCollection: async () => ({ ok: true, value: { rag, editor } }),
       describeCollections: async () => ({
         ok: true,
         value: { records: [], rejected: [] },
       }),
-      createCollection: async () => ({ ok: true, value: { rag, editor: {} } }),
+      createCollection: async () => ({ ok: true, value: { rag, editor } }),
     },
     destinations: {
       metadata: async () => undefined,
@@ -58,7 +90,8 @@ test('Qdrant trust dimension discovery is lazy and retries after a transient emb
       clearCache: () => {},
       refuse: () => null,
     },
-  } as never);
+  } satisfies Providers;
+  initProviders(providers);
   const now = jest.spyOn(Date, 'now').mockReturnValue(1000);
   await expect(startCollectionRestore()).resolves.toBeUndefined();
   expect(embedDocument).not.toHaveBeenCalled();

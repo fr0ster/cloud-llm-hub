@@ -225,9 +225,38 @@ test.each([2, null])(
   },
 );
 
-test('adding a new record does not read the backend', async () => {
+test('adding a new record checks the backend once', async () => {
   const { registry, backend, id } = await fixture();
   const read = jest.spyOn(backend, 'getById');
   await registry.addDocument(id, { id: 'new', text: 'new', metadata: {} });
-  expect(read).not.toHaveBeenCalled();
+  expect(read).toHaveBeenCalledTimes(1);
+  expect(read).toHaveBeenCalledWith(`doc:${id}:new`, undefined);
+});
+
+test('replacement preserves trust on a record another writer created after restore', async () => {
+  const { registry, backend, writer, id } = await fixture();
+  const history = [{ from: null, to: 4, actor: 'other', at: 'now' }];
+  await writer.upsertRaw(`doc:${id}:external`, 'external', {
+    docId: 'external',
+    collectionId: id,
+    _trust: 4,
+    _trustHistory: history,
+  });
+  expect(await registry.getDocument(id, 'external')).toBeNull();
+  const read = jest.spyOn(backend, 'getById');
+  const scan = jest.spyOn(backend, 'scan');
+  await registry.addDocument(id, {
+    id: 'external',
+    text: 'replacement',
+    metadata: {},
+  });
+  expect(read).toHaveBeenCalledTimes(1);
+  expect(read).toHaveBeenCalledWith(`doc:${id}:external`, undefined);
+  expect(scan).not.toHaveBeenCalled();
+  const result = await backend.getById(`doc:${id}:external`);
+  if (!result.ok) throw result.error;
+  expect(result.value).toMatchObject({
+    text: 'replacement',
+    metadata: { _trust: 4, _trustHistory: history },
+  });
 });

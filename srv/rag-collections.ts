@@ -1954,11 +1954,10 @@ export class CollectionRegistry {
     if (stored.persistent) refuseWhileDeleting(stored, 'add document');
     if (stored.meta.collectionKind !== 'agents') {
       // A replacement must preserve live trust, including externally cleared
-      // overrides. New records need no preservation read.
-      const previous =
-        stored.persistent && stored.documents.has(doc.id)
-          ? await readPersistentDocument(stored, doc.id)
-          : stored.documents.get(doc.id);
+      // overrides and records added by another writer after restore.
+      const previous = stored.persistent
+        ? await readPersistentDocument(stored, doc.id)
+        : stored.documents.get(doc.id);
       doc = {
         ...doc,
         metadata: {
