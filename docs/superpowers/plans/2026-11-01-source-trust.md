@@ -56,8 +56,9 @@ Repo `C:\Users\OleksiiKyslytsia\projects\llm-agent`, branch `feat/trust-tag` fro
   `packages/llm-agent-libs/src/coordinator/dialogue/planner-context-builder.ts` (labels),
   `packages/llm-agent-libs/src/context/context-assembler.ts:88-93` (`formatRagEntry`)
 - Test: `packages/llm-agent-libs/src/__tests__/trust-tag.test.ts`
-- Modify: `packages/llm-agent-libs/src/pipeline/handlers/skill-select.ts` (~line 78): in hard mode, when no skill
-  name matches, load no skills instead of all skills (informational skills are semantic-only); add an option
+- Modify: `packages/llm-agent-libs/src/pipeline/handlers/skill-select.ts` (~line 78) and
+  `packages/llm-agent-libs/src/agent/rag-orchestrator.ts` (~line 300): in hard mode, when no skill name matches,
+  load no skills instead of all skills (informational skills are semantic-only); add an option
   only if an existing consumer depends on the old fallback (check and document).
 - Changeset: minor for both packages.
 
@@ -89,7 +90,7 @@ test('planner retrieval keeps trust and source from metadata', async () => {
   // knowledge result metadata { id: 'r1', trust: 4, source: 'user:kb/r1' } → entry.trust 4, entry.source 'user:kb/r1';
   // same through search_knowledge rendering and planner-create/revise context
 });
-test('hard-mode skill selection loads nothing when no skill matches', () => { /* was: all skills */ });
+test('hard-mode skill selection loads nothing when no skill matches (pipeline and rag-orchestrator)', () => { /* was: all skills */ });
 test('ContextAssembler tags results with metadata.trust', () => {
   // RagResult { text: 'x', metadata: { trust: 3, source: 'user:Notes/r1' }, score: 0.9 } → "- [source: user:Notes/r1; trust 3] x"
   // without metadata.trust → "- x"; non-number trust → "- x"
@@ -144,8 +145,11 @@ expect(effectiveTrust({ scope: 'session' }, d)).toBe(2);
 
 Record trust is stored in dedicated payload fields `_trust` / `_trustHistory`, written only by the trust
 setter and restored explicitly; they are not part of `PAYLOAD_BOOKKEEPING` (which would also drop them on
-restore). Free-form metadata keys `trust`, `trustHistory`, `_trust`, `_trustHistory` are stripped by the one sanitizer
-used by add, update, bulk and upload. The existing metadata `source` (uploaded file name: upload grouping,
+restore). Two separate paths: (1) `sanitizeExternalMetadata()` strips `trust`, `trustHistory`, `_trust`, `_trustHistory`
+from caller-supplied metadata in add, update, bulk and upload, before anything else; (2) internal persistence
+(`ownMetadata()`, payload construction, restore, content replacement) carries `_trust` / `_trustHistory`
+through untouched. On `RagDocument` the trusted values live in `metadata._trust` / `metadata._trustHistory`
+(written only by the setter); query projections read them from the stored payload. The existing metadata `source` (uploaded file name: upload grouping,
 source toggles, WebUI reassembly/export) is kept as is; trust provenance never reads it — every projection
 derives provenance from the collection context instead. Content updates preserve `_trust` / `_trustHistory`.
 - Test: `test/unit/collection-trust-persistence.test.ts` (PGlite)
@@ -154,7 +158,8 @@ derives provenance from the collection context instead. Content updates preserve
 - Produces: `documentView(doc: RagDocument, collection: CollectionMeta, defaults): RagDocument & { enabled: boolean; trust: number; trustOverride?: number; source: string }`
   — the one projection for REST document listings and reads (`srv/rag-handler.ts` ~708, ~911) and the virtual
   `@skills` listing; `recordAttributes` (MCP) uses the same resolution.
-- Produces: `collectionView(meta: CollectionMeta, defaults): CollectionMeta & { trust: number; trustOverride?: number; trustClass: TrustClass }`
+- Produces: `collectionView(meta: CollectionMeta, defaults): (CollectionMeta & { trusted: true; trust: number; trustOverride?: number; trustClass: TrustClass }) | (CollectionMeta & { trusted: false })`
+  — `trusted: false` for agent-preset collections (`collectionKind === 'agents'`), with no trust fields
   — the one response projection for `GET /rag/collections` (ordinary and virtual rows) and collection tools;
   it never writes defaults back to persisted metadata.
 - Produces: `TrustHistoryEntry = { from: number | null; to: number | null; actor: string; at: string }`
@@ -163,9 +168,10 @@ derives provenance from the collection context instead. Content updates preserve
 
 - [ ] **Step 1: Failing tests:** round-trip collection `trust: 4` + `trustHistory` and record `_trust: 1.5` +
   `_trustHistory` through PGlite restore (restart keeps values and the last 20 history entries); a content update keeps the record override; add / update / bulk / upload with
-  metadata `{ trust: 5 }` do not store it; upload keeps `metadata.source` (file name) and source toggles, chunk
+  metadata `{ trust: 5, trustHistory: [], _trust: 5, _trustHistory: [] }` store none of them, while an existing
+  override survives update, restart and content replacement; upload keeps `metadata.source` (file name) and source toggles, chunk
   grouping and export still work; REST document listing shows inherited trust, a record override, and inherited
-  again after the override is cleared; collection stored without `trust` restores with `trust` undefined and `recordAttributes` reports the
+  again after the override is cleared; an agents collection lists as `trusted: false` without trust fields; collection stored without `trust` restores with `trust` undefined and `recordAttributes` reports the
   class default; record added with metadata `{ trust: 5, trustHistory: [] }` stores neither key (stripped);
   history keeps the last 20 entries.
 - [ ] **Step 2–4:** Fail, implement, pass; full jest for persistence suites.
@@ -196,13 +202,23 @@ derives provenance from the collection context instead. Content updates preserve
 - [ ] **Step 2–4:** Fail, implement, pass.
 - [ ] **Step 5:** Commit `feat(trust): trust store and skill kinds`.
 
+Cache contract (applies to Tasks 3–7): effective trust is resolved live on every read through one
+`TrustResolver` created at startup with the registry, the `TrustStore` (initialized on the same RAG provider as
+the other `h_*` stores) and the defaults. Collection trust is read from the registry's current meta, never
+captured when a long-lived store wrapper is built. The registry and `TrustStore` are the only caches; a write
+updates its own entry (record, collection or source) and nothing else.
+
 ### Task 5: Admin setters (REST + MCP)
 
 **Files:**
-- Create: `srv/lib/trust-guard.ts` — `parseTrustInput(raw: unknown, allowNull: boolean): { ok: true; value: number | null } | { ok: false }`
-  at the request/tool-argument boundary (zod; the only place raw input is narrowed), then
+- Create: `srv/lib/trust-guard.ts` — zod schemas `collectionTrustArgs` (`trust: number`) and `recordTrustArgs`
+  (`trust: number | null`) refined with `normalizeTrust`; REST bodies and MCP tool arguments are parsed by these
+  schemas where they enter (the MCP tool definitions already validate with zod), and only the inferred types
+  travel further. Then
   `trustWriteError(input: { admin: boolean; target: TrustTarget; value: number | null; allowNull: boolean }): { status: 400 | 403 | 404 | 409; code: 'INVALID_TRUST' | 'FORBIDDEN' | 'NOT_FOUND' | 'TRUST_FIXED' } | undefined`,
-  the only policy used by REST and MCP (not `collectionAccessError`, which lets owners write)
+  the trust policy used by REST, MCP and `@skills`. It runs after the existing `collectionAccessError`
+  visibility/ownership check (pending agent copies stay hidden, inaccessible collections stay `NOT_FOUND`), and
+  adds the stricter admin + global-informational rule on top
 - Modify: `srv/rag-handler.ts` (`PUT /rag/collections/:id` accepts `trust`; new
   `PATCH /rag/collections/:id/documents/:did/trust`; virtual source `@skills` is routed before the registry
   middleware: `GET /rag/collections` lists it (class `global`, effective trust),
@@ -226,7 +242,8 @@ derives provenance from the collection context instead. Content updates preserve
   `FORBIDDEN`; user collection → `TRUST_FIXED`; informational preset (`preset: true`) → `TRUST_FIXED` but its hits are tagged
   `user` (Task 6); agents collection → `TRUST_FIXED`; base skill → `TRUST_FIXED`;
   values `"5"`, `4.55`, `-1`, `5.1`, `NaN` → `INVALID_TRUST`; `null` on `record_set_trust` clears;
-  both tools listed on agent MCP and internal tool lists (parity test).
+  both tools listed on agent MCP and internal tool lists (parity test); a pending agent copy and another
+  user's collection stay `NOT_FOUND` for admin and non-admin alike.
 - [ ] **Step 2–4:** Fail, implement, pass.
 - [ ] **Step 5:** Commit `feat(trust): admin trust setters`.
 
@@ -254,7 +271,8 @@ derives provenance from the collection context instead. Content updates preserve
   override 1 beats collection 4; a name with `[x]` is escaped; a record whose free-form metadata claims
   `source: 'system:x'` is rendered with its real source; both chat auto-retrieval and library pipeline retrieval
   (`ContextAssembler`) show the tag; coordinator retrieval, `search_knowledge` and planner-create/revise context
-  show it for old records without trust and for records with spoofed metadata; coordinator recall of
+  show it for old records without trust and for records with spoofed metadata; after an admin changes a
+  collection's or the `@skills` source's trust, an already-built agent's next retrieval shows the new value; coordinator recall of
   planner-memory records written before this change shows `; trust 2`.
 - [ ] **Step 2–4:** Fail, implement, pass.
 - [ ] **Step 5:** Commit `feat(trust): tag RAG paths`.
@@ -273,17 +291,28 @@ derives provenance from the collection context instead. Content updates preserve
   wrapper preserving every other skill method and metadata, whose `getContent` prefixes
   `[source: global:skills/<name>; trust n]` resolved live (no cached value).
 - Modify: `srv/lib/composite-skill-manager.ts` (`getSkill`, `matchSkills`, `listSkills` return wrapped
-  informational skills; base skills unwrapped). Rendering stays in the library (`skill-select.ts`,
+  informational skills; base skills unwrapped).
+- Modify: the tools/skills RAG store in `srv/agent-manager.ts` (skills vectorized as `skill:<name>`
+  descriptions, rendered by `ContextAssembler` from `ctx.ragResults`): wrap it so informational `skill:*` results
+  get live `metadata.trust` / `metadata.source` (`global:skills/<name>`) on every query; MCP tool-group entries
+  stay untagged. Rendering stays in the library (`skill-select.ts`,
   `rag-orchestrator.ts`), which calls `getContent` — test both paths.
 - Test: `test/unit/trust-tags-tools.test.ts`
 
+- Modify (library, ships in Task 1's release): `ContextAssembler` tool-history rendering and
+  `coordinator/dialogue/tool-trace-render.ts` (checker evidence, planner `get_task`) accept an optional
+  `trustFor(toolName: string): { source: string; trust: number } | undefined` callback and prefix the tag to
+  rendered results it returns a value for; stored records, outcome parsing and truncation counts stay untagged.
+  The hub passes a callback answering only for embedded mcp-abap-adt tools.
 - [ ] **Step 1: Failing tests (each chain: chat, planner, executor, checker):** an embedded SAP tool result
   reaches the LLM as
   `[source: system:GetClass; trust 4.5]\n<result>`; the recorded result and reviewer `parseToolOutcome` input
   are untagged; a truncated result has the tag once and the same truncation marker; RAG and orchestration tool
-  results are untagged; informational skill content starts with `[source: global:skills/<name>; trust 4.5]`,
+  results are untagged; replayed tool history and checker evidence / `get_task` traces of
+  an embedded SAP call show the tag once, stored traces do not; informational skill content starts with `[source: global:skills/<name>; trust 4.5]`,
   base skill content has no tag; after `setRecord` on an
-  already-built agent the next `getContent` shows the new trust.
+  already-built agent the next `getContent` and the next retrieved `skill:<name>` description both show the new
+  trust; tool-group entries in the same store stay untagged.
 - [ ] **Step 2–4:** Fail, implement, pass.
 - [ ] **Step 5:** Commit `feat(trust): tag system results and informational skills`.
 
@@ -293,8 +322,10 @@ The spec loads the agent preset (system prompt, base skills, corrections) withou
 file skills go through semantic selection (library `pipeline/handlers/skill-select.ts`).
 
 **Files:**
-- Modify: `srv/lib/composite-skill-manager.ts` / `srv/lib/skills-pool.ts` — base skills are excluded from the
-  selection store (informational skills keep semantic selection).
+- Modify: `srv/lib/skills-pool.ts` / `srv/lib/composite-skill-manager.ts` — two views over the same pool:
+  `informationalSkills(): ISkillManager` (passed to `SmartAgentBuilder`, which vectorizes only what it is given)
+  and `baseSkills(): readonly ISkill[]` (used for system-content assembly). Plugin-provided skills follow their own
+  front matter (default informational). A name that exists as both kinds fails startup with a clear error.
 - Modify: `srv/agent-manager.ts` system-content assembly for every role — `configureDestinationAgentBuilder`
   (chat/executor), `buildPlannerAgent` (coordinator), plan-author construction (planner-create/revise) and the
   profile/worker paths (executor, checker): base skill content is appended after the profile system prompt and
@@ -304,7 +335,8 @@ file skills go through semantic selection (library `pipeline/handlers/skill-sele
 - [ ] **Step 1: Failing tests:** a `kind: base` skill appears in the system content of coordinator,
   planner-create, planner-revise, executor and checker calls even for an unrelated query, after the profile prompt,
   and never in `## Active Skills`; an informational skill is not loaded unless selected.
-  Existing file skills (`srv/skills/*`) stay informational (no front matter change in this release).
+  Existing file skills (`srv/skills/*`) stay informational (no front matter change in this release); a
+  plugin skill with `kind: base` loads directly; a duplicate name across kinds fails startup.
 - [ ] **Step 2–4:** Fail, implement, pass.
 - [ ] **Step 5:** Commit `feat(skills): base skills load with the agent preset`.
 
