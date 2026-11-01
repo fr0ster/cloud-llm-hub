@@ -25,10 +25,19 @@ export function plannerWithParagraphs(planner: PlannerAgent): PlannerAgent {
   return {
     async process(input, options) {
       let content = '';
+      let progress = '';
+      let final = false;
       let interrupted = false;
       const result = await planner.process(input, {
         ...options,
         onPartial(chunk) {
+          // The planner's own boundaries: tool-round text is progress, a
+          // retried attempt is discarded; only the final iteration answers.
+          if (chunk.kind === 'iteration-end' && !chunk.nodeId) {
+            if (chunk.outcome === 'tool_calls') progress += content;
+            if (chunk.outcome !== 'final') content = '';
+            final = chunk.outcome === 'final';
+          }
           if (chunk.kind !== 'content') {
             interrupted = true;
             options.onPartial?.(chunk);
@@ -44,8 +53,14 @@ export function plannerWithParagraphs(planner: PlannerAgent): PlannerAgent {
           options.onPartial?.({ ...chunk, delta });
         },
       });
-      return result.ok && content
-        ? { ...result, value: { ...result.value, content } }
+      const answer =
+        final || !progress
+          ? content
+          : content
+            ? progress + paragraphPad(progress) + content
+            : progress;
+      return result.ok && answer
+        ? { ...result, value: { ...result.value, content: answer } }
         : result;
     },
   };
