@@ -147,7 +147,14 @@ Hub branch `feat/source-trust` from the reviewed `design/source-trust` head (spe
 - Modify: `srv/agent-config.ts` (parse `LLM_AGENT_TRUST_DEFAULTS` at startup, expose `config.trust.defaults`)
 - Modify: `srv/lib/agent-profile-records.ts` (front matter `trust`: optional map of `TrustClass` → value,
   validated with `normalizeTrust`; unknown class or invalid value rejects the record like other invalid front
-  matter) and the profile types that carry it to the runtime
+  matter); `srv/lib/agent-profile-source.ts` (`getPrompts()` and worker lookup return the profile's `trust` map
+  alongside the prompts instead of discarding front matter)
+- Library (ships in Task 1's release): `WorkerProfile` and `AgentPrompts` gain `trust?: Partial<Record<string, number>>`
+  (opaque pass-through, validated by the hub); `AgentProfileRunnerHost.buildPlanAuthor(input)` receives
+  `{ profile: string; mode: 'create' | 'revise'; trust?: Partial<Record<string, number>> }` so the hub can build the
+  author with that profile's resolver
+- Modify: `srv/lib/dialogue-sessions.ts` — coordinator and plan author no longer share one retrieval
+  configuration: each gets retrieval stores wrapped with its own role's resolver
 
 **Interfaces:**
 - Produces: `type TrustClass = 'global' | 'user' | 'session' | 'system' | 'docs'`;
@@ -169,6 +176,8 @@ expect(effectiveTrust({ scope: 'session' }, d)).toBe(2);
 expect(classTrust({ docs: 4 }, d)).toEqual({ ...d, docs: 4 });
 expect(classTrust(undefined, d)).toEqual(d);
 // profile front matter: trust { docs: 4 } accepted; { nope: 1 } and { docs: 6 } rejected
+// distinct maps on coordinator, planner-create, planner-revise, executor and checker each reach their own role's
+// rendered tags (one end-to-end test with five different maps)
 ```
 
 - [ ] **Step 2–4:** Fail, implement (uses `normalizeTrust` from Task 1), pass; tsc both configs, lint.
@@ -186,7 +195,9 @@ expect(classTrust(undefined, d)).toEqual(d);
 Record trust is stored in dedicated payload fields `_trust` / `_trustHistory`, written only by the trust
 setter and restored explicitly; they are not part of `PAYLOAD_BOOKKEEPING` (which would also drop them on
 restore). Two separate paths: (1) `sanitizeExternalMetadata()` strips `trust`, `trustHistory`, `_trust`, `_trustHistory`
-from caller-supplied metadata in add, update, bulk and upload, before anything else; (2) internal persistence
+from caller-supplied metadata in add, update, bulk and upload, before anything else — only for informational
+collections; agents collections (`collectionKind === 'agents'`, global and user copies) keep their validated
+profile front matter, including the `trust` map, under the existing profile validation and access rules; (2) internal persistence
 (`ownMetadata()`, payload construction, restore, content replacement) carries `_trust` / `_trustHistory`
 through untouched. On `RagDocument` the trusted values live in `metadata._trust` / `metadata._trustHistory`
 (written only by the setter); query projections read them from the stored payload. The existing metadata `source` (uploaded file name: upload grouping,
@@ -195,7 +206,7 @@ derives provenance from the collection context instead. Content updates preserve
 - Test: `test/unit/collection-trust-persistence.test.ts` (PGlite)
 
 **Interfaces:**
-- Produces: `documentView(doc: RagDocument, collection: CollectionMeta, defaults): (RagDocument & { enabled: boolean; trusted: true; trust: number; trustOverride?: number; source: string }) | (RagDocument & { enabled: boolean; trusted: false })`
+- Produces: `documentView(doc: RagDocument, input: TrustInput | { trusted: false }): (RagDocument & { enabled: boolean; trusted: true; trust: number; trustOverride?: number; source: string }) | (RagDocument & { enabled: boolean; trusted: false })`
   — `trusted: false` without trust fields for agent-preset collections. `RecordTrustView = { trusted: true; trust: number; trustOverride?: number; source: string } | { trusted: false }`
   is the one shared union; `defaults: Record<TrustClass, number>`. Projections are synchronous over a
   pre-resolved input: `TrustInput = { class: TrustClass; source: string; collectionTrust?: number; recordTrust?: number }`.
@@ -203,12 +214,14 @@ derives provenance from the collection context instead. Content updates preserve
   `await TrustStore.getSource/getRecord` before projecting, so REST and MCP share one projection for both.
   — the one projection for REST document listings and reads (`srv/rag-handler.ts` ~708, ~911) and the virtual
   `@skills` listing; `recordAttributes` (MCP) uses the same resolution.
-- Produces: `collectionView(meta: CollectionMeta, defaults): (CollectionMeta & { trusted: true; trust: number; trustOverride?: number; trustClass: TrustClass }) | (CollectionMeta & { trusted: false })`
+- Produces: `collectionView(meta: CollectionMeta, input: TrustInput | { trusted: false }): (CollectionMeta & { trusted: true; trust: number; trustOverride?: number; trustClass: TrustClass }) | (CollectionMeta & { trusted: false })`
   — `trusted: false` for agent-preset collections (`collectionKind === 'agents'`), with no trust fields
   — the one response projection for `GET /rag/collections` (ordinary and virtual rows) and collection tools;
   it never writes defaults back to persisted metadata.
 - Produces: `TrustHistoryEntry = { from: number | null; to: number | null; actor: string; at: string }`
-  (max 20, newest last); `recordAttributes(doc: RagDocument, collection: CollectionMeta, defaults: Record<TrustClass, number>): { enabled: boolean } & RecordTrustView`
+  (max 20, newest last); `recordAttributes(doc: RagDocument, input: TrustInput | { trusted: false }): { enabled: boolean } & RecordTrustView`
+  (`TrustInput` is built by `TrustResolver.inputFor(doc, meta)` for catalog collections, by
+  `await TrustResolver.inputForSkill(name)` for `@skills`, and is `{ trusted: false }` for agent-preset records)
   (was `recordAttributes(metadata)`; callers to update: `rag_read`, hidden-record reads and `collection_records` in
   `srv/agent-mcp-rag.ts`, and any other caller found by `grep recordAttributes`) where `trust` is effective and
   `source` is `<class>:<collection displayName>/<record id>`.
@@ -216,7 +229,8 @@ derives provenance from the collection context instead. Content updates preserve
 - [ ] **Step 1: Failing tests:** round-trip collection `trust: 4` + `trustHistory` and record `_trust: 1.5` +
   `_trustHistory` through PGlite restore (restart keeps values and the last 20 history entries); a content update keeps the record override; add / update / bulk / upload with
   metadata `{ trust: 5, trustHistory: [], _trust: 5, _trustHistory: [] }` store none of them, while an existing
-  override survives update, restart and content replacement; upload keeps `metadata.source` (file name) and source toggles, chunk
+  override survives update, restart and content replacement; an agent profile record (global and user copy) keeps
+  its `trust` map through save, update and restart; upload keeps `metadata.source` (file name) and source toggles, chunk
   grouping and export still work; REST document listing shows inherited trust, a record override, and inherited
   again after the override is cleared (for a catalog collection and for `@skills`, including a live change of
   the `@skills` source value); an agents collection lists as `trusted: false` without trust fields, and its documents (REST list/read, MCP
