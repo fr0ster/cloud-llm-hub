@@ -1,6 +1,7 @@
 import {
   formatTrustTag,
   type ISkill,
+  type ISkillManager,
   type RagResult,
 } from '@mcp-abap-adt/llm-agent';
 import type { TrustResolver } from './trust-resolver';
@@ -42,7 +43,15 @@ export function withSkillTrust(
 export async function trustedSkillResults(
   rows: RagResult[],
   resolver: TrustResolver,
+  manager?: Pick<ISkillManager, 'listSkills'>,
 ): Promise<RagResult[]> {
+  const skills = await manager?.listSkills();
+  if (skills && !skills.ok) throw skills.error;
+  const ambiguous = new Set(
+    skills?.value
+      .filter((skill) => skill.meta.trustAmbiguous === true)
+      .map(skillId),
+  );
   return Promise.all(
     rows.map(async (row) => {
       const id = row.metadata.id;
@@ -53,7 +62,7 @@ export async function trustedSkillResults(
         metadata: {
           ...row.metadata,
           source: `global:skills/${name}`,
-          trust: await resolver.skill(name),
+          trust: await resolver.skill(name, ambiguous.has(name)),
         },
       };
     }),

@@ -38,18 +38,18 @@ export class CompositeSkillManager implements ISkillManager {
   async baseSkillContents(): Promise<readonly string[]> {
     return Promise.all(
       (await this.baseSkills()).map((skill) => {
-        const id = skillId(skill);
+        const key = JSON.stringify([skill.meta.source, skillId(skill)]);
         let content =
           skill.meta.trustAmbiguous === true
             ? undefined
-            : this.baseContent.get(id);
+            : this.baseContent.get(key);
         if (!content) {
           content = skill.getContent().then((result) => {
             if (!result.ok) throw result.error;
             return result.value;
           });
           if (skill.meta.trustAmbiguous !== true)
-            this.baseContent.set(id, content);
+            this.baseContent.set(key, content);
         }
         return content;
       }),
@@ -140,21 +140,10 @@ export class CompositeSkillManager implements ISkillManager {
         });
         for (const entry of identities) {
           const { skill, id } = entry;
-          const ambiguous =
-            identities.filter((other) => other.id === id).length > 1;
-          if (ambiguous && !this.warnedAmbiguousIds.has(id)) {
-            this.warnedAmbiguousIds.add(id);
-            cds
-              .log('skills')
-              .warn('Ambiguous skill id; add an explicit `id` to each skill', {
-                source,
-                id,
-              });
-          }
           loaded.push({
             name: skill.name,
             description: skill.description,
-            meta: { ...skill.meta, id, trustAmbiguous: ambiguous },
+            meta: { ...skill.meta, source, id },
             getContent: skill.getContent.bind(skill),
             listResources: skill.listResources.bind(skill),
             readResource: skill.readResource.bind(skill),
@@ -167,15 +156,33 @@ export class CompositeSkillManager implements ISkillManager {
         });
       }
     }
+    const counts = new Map<string, number>();
+    for (const skill of loaded) {
+      const id = skillId(skill);
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    for (const skill of loaded) {
+      const id = skillId(skill);
+      skill.meta.trustAmbiguous = (counts.get(id) ?? 0) > 1;
+      if (skill.meta.trustAmbiguous && !this.warnedAmbiguousIds.has(id)) {
+        this.warnedAmbiguousIds.add(id);
+        cds
+          .log('skills')
+          .warn('Ambiguous skill id; add an explicit `id` to each skill', {
+            id,
+          });
+      }
+    }
     return {
       ok: true as const,
       value: loaded.map((skill) => {
         const resolve = this.resolver;
         return skill.meta.kind !== 'base'
           ? withSkillTrust(skill, async () =>
-              skill.meta.trustAmbiguous === true
-                ? resolve().classDefault('global')
-                : resolve().skill(skillId(skill)),
+              resolve().skill(
+                skillId(skill),
+                skill.meta.trustAmbiguous === true,
+              ),
             )
           : skill;
       }),

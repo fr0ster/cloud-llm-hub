@@ -69,9 +69,11 @@ export class TrustResolver {
         : {}),
     };
   }
-  async inputForSkill(name: string): Promise<TrustInput> {
+  async inputForSkill(name: string, ambiguous = false): Promise<TrustInput> {
     const collectionTrust = await this.store?.getSource('skills');
-    const recordTrust = await this.store?.getRecord('skills', name);
+    const recordTrust = ambiguous
+      ? undefined
+      : await this.store?.getRecord('skills', name);
     return {
       trusted: true,
       class: 'global',
@@ -81,8 +83,8 @@ export class TrustResolver {
       ...(recordTrust !== undefined ? { recordTrust } : {}),
     };
   }
-  async skill(name: string): Promise<number> {
-    const input = await this.inputForSkill(name);
+  async skill(name: string, ambiguous = false): Promise<number> {
+    const input = await this.inputForSkill(name, ambiguous);
     return input.recordTrust ?? input.collectionTrust ?? input.classTrust;
   }
 }

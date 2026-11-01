@@ -277,6 +277,7 @@ const isSkillId = (id: unknown): boolean =>
   typeof id === 'string' && id.startsWith('skill:');
 
 export class ExpositionFilteringRag implements IRag, IRagEditor {
+  private skillTrustPool?: ReturnType<typeof buildSkillsPool>;
   /**
    * Two collections, searched separately.
    *
@@ -694,6 +695,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       });
     }
 
+    this.skillTrustPool ??= buildSkillsPool();
     const perCollection = parts.map((r) =>
       (r.ok ? r.value : []).filter(isAllowed),
     );
@@ -702,6 +704,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       value: await trustedSkillResults(
         capPerCollection(perCollection),
         currentTrustResolver(),
+        this.skillTrustPool,
       ),
     };
   }

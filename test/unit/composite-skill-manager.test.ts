@@ -16,6 +16,7 @@ import {
 import { parseTrustDefaults } from '../../srv/lib/trust';
 import { TrustResolver } from '../../srv/lib/trust-resolver';
 import { TrustStore } from '../../srv/lib/trust-store';
+import { trustedSkillResults } from '../../srv/lib/trusted-skill';
 
 test.each(['returned', 'thrown'])(
   'unrelated conflicting kind error (%s) does not fail startup',
@@ -51,7 +52,7 @@ function skill(name: string, description: string, body: string, id = name) {
   };
 }
 
-function manager(skills: ReturnType<typeof skill>[]) {
+function manager(skills: ISkill[]): ISkillManager {
   return {
     listSkills: async () => ({ ok: true as const, value: skills }),
     getSkill: async (n: string) => ({
@@ -250,7 +251,7 @@ test('fallback identities survive deployment moves, content edits and additions'
   expect(await ids()).toEqual(['plugin/alpha', 'plugin/beta']);
 });
 
-test('same-name skills without locations remain usable but ambiguous with class default trust', async () => {
+test('same-name skills without locations remain usable but ambiguous with source trust', async () => {
   const warn = jest
     .spyOn(cds.log('skills'), 'warn')
     .mockImplementation(() => {});
@@ -299,11 +300,11 @@ test('same-name skills without locations remain usable but ambiguous with class 
       expect(bodies).toEqual([
         {
           ok: true,
-          value: '[source: global:skills/plugin/Same; trust 4.5]\nsecond',
+          value: '[source: global:skills/plugin/Same; trust 2]\nsecond',
         },
         {
           ok: true,
-          value: '[source: global:skills/plugin/Same; trust 4.5]\nfirst',
+          value: '[source: global:skills/plugin/Same; trust 2]\nfirst',
         },
       ]);
     }
@@ -315,4 +316,127 @@ test('same-name skills without locations remain usable but ambiguous with class 
   } finally {
     warn.mockRestore();
   }
+});
+
+test.each(['explicit', 'fallback'] as const)(
+  'cross-source %s id collisions use live source trust for bodies and descriptions',
+  async (identity) => {
+    const warn = jest
+      .spyOn(cds.log('skills'), 'warn')
+      .mockImplementation(() => {});
+    try {
+      const store = new TrustStore(new InMemoryRag(), 3);
+      const resolver = new TrustResolver(
+        {},
+        store,
+        parseTrustDefaults(undefined),
+      );
+      const first: ISkill = skill(
+        'shared',
+        'first description',
+        'first body',
+        'plugin/shared',
+      );
+      if (identity === 'fallback') delete first.meta.id;
+      const pool = new CompositeSkillManager(
+        [
+          src('plugin', manager([first])),
+          src(
+            'preset',
+            manager([
+              skill(
+                'other',
+                'second description',
+                'second body',
+                'plugin/shared',
+              ),
+            ]),
+          ),
+        ],
+        () => resolver,
+      );
+      await store.setRecord('skills', 'plugin/shared', 1, 'alice');
+      const result = await pool.listSkills();
+      if (!result.ok) throw result.error;
+      expect(result.value).toHaveLength(2);
+      expect(result.value.every((s) => s.meta.trustAmbiguous === true)).toBe(
+        true,
+      );
+      const rows = result.value.map((s) => ({
+        text: s.description,
+        score: 1,
+        metadata: { id: `skill:${String(s.meta.id)}` },
+      }));
+      for (const trust of [4.5, 2, 3]) {
+        if (trust !== 4.5) await store.setSource('skills', trust, 'alice');
+        expect(
+          await Promise.all(result.value.map((s) => s.getContent())),
+        ).toEqual([
+          {
+            ok: true,
+            value: `[source: global:skills/plugin/shared; trust ${trust}]\nfirst body`,
+          },
+          {
+            ok: true,
+            value: `[source: global:skills/plugin/shared; trust ${trust}]\nsecond body`,
+          },
+        ]);
+        const descriptions = await trustedSkillResults(rows, resolver, pool);
+        expect(descriptions.map((row) => row.metadata.trust)).toEqual([
+          trust,
+          trust,
+        ]);
+      }
+      expect(await informationalSkillDocuments(resolver, pool)).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  },
+);
+
+test('base bodies with cross-source duplicate ids never share cached content', async () => {
+  const first = {
+    ...skill('first', '', 'first body', 'shared'),
+    meta: { name: 'base', description: '', id: 'shared', kind: 'base' },
+  };
+  const second = {
+    ...skill('second', '', 'second body', 'shared'),
+    meta: { name: 'base', description: '', id: 'shared', kind: 'base' },
+  };
+  const skills: ISkill[] = [];
+  const pool = new CompositeSkillManager([
+    src('plugin', manager([first])),
+    src('preset', {
+      ...manager([]),
+      listSkills: async () => ({ ok: true, value: skills }),
+    }),
+  ]);
+  expect(await pool.baseSkillContents()).toEqual(['first body']);
+  skills.push(second);
+  expect(await pool.baseSkillContents()).toEqual(['first body', 'second body']);
+  skills.splice(0, 1);
+  expect(await pool.baseSkillContents()).toEqual(['first body']);
+});
+
+test('base body cache separates sources when an id moves between them', async () => {
+  const make = (body: string): ISkill => ({
+    ...skill('base', '', body, 'shared'),
+    meta: { name: 'base', description: '', id: 'shared', kind: 'base' },
+  });
+  const first = [make('first source body')];
+  const second: ISkill[] = [];
+  const source = (name: string, skills: ISkill[]): SkillSource =>
+    src(name, {
+      ...manager([]),
+      listSkills: async () => ({ ok: true, value: skills }),
+    });
+  const pool = new CompositeSkillManager([
+    source('one', first),
+    source('two', second),
+  ]);
+  expect(await pool.baseSkillContents()).toEqual(['first source body']);
+  first.pop();
+  second.push(make('second source body'));
+  expect(await pool.baseSkillContents()).toEqual(['second source body']);
 });
