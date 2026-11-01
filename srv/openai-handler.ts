@@ -5,6 +5,7 @@ import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
+import { summarizeToolResult } from './lib/tool-result-summary';
 import {
   measureRequest,
   requestMeasurement,
@@ -651,9 +652,13 @@ async function serveChatCompletions(
     onToolResult: useDialogue
       ? undefined
       : (record: import('@mcp-abap-adt/llm-agent').ToolCallRecord): void => {
-          if (body.stream)
+          if (
+            body.stream &&
+            req.headers['x-clh-tool-results']?.toString().toLowerCase() ===
+              'summary'
+          )
             (early?.out ?? out).write(
-              `: tool-result ${JSON.stringify(record)}\n\n`,
+              `: tool-result ${JSON.stringify(summarizeToolResult(record))}\n\n`,
             );
         },
   };

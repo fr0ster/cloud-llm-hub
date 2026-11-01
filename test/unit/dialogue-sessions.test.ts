@@ -1668,15 +1668,22 @@ test('event planner uses the originating task identity when an earlier caller ow
   expect(eventIdentities).toEqual([{ admin: false, channel: 'openai' }]);
 });
 
-test.each([
-  { reconnect: false, isError: false },
-  { reconnect: true, isError: false },
-  { reconnect: false, isError: true },
-  { reconnect: true, isError: true },
-  { reconnect: true, isError: false, initial: true },
-])(
+test.each(
+  [
+    { reconnect: false, isError: false },
+    { reconnect: true, isError: false },
+    { reconnect: false, isError: true },
+    { reconnect: true, isError: true },
+    { reconnect: true, isError: false, initial: true },
+  ].flatMap((options) =>
+    [undefined, 'summary', 'SuMmArY', 'full'].map((toolResults) => ({
+      ...options,
+      toolResults,
+    })),
+  ),
+)(
   'worker RAG result reaches the active stream once (reconnect: $reconnect, error: $isError)',
-  async ({ reconnect, isError, initial }) => {
+  async ({ reconnect, isError, initial, toolResults }) => {
     let finishTool!: () => void;
     const blocked = new Promise<void>((resolve) => {
       finishTool = resolve;
@@ -1770,7 +1777,10 @@ test.each([
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('No port');
       const url = `http://127.0.0.1:${address.port}/`;
-      const first = await fetch(url, { signal: controller.signal });
+      const first = await fetch(url, {
+        signal: controller.signal,
+        headers: toolResults ? { 'x-clh-tool-results': toolResults } : {},
+      });
       await until(() =>
         initial ? followers >= 1 : mockRun.mock.calls.length === 1,
       );
@@ -1783,7 +1793,9 @@ test.each([
         finishTool();
         await until(() => toolFinished);
         if (initial) mockPlannerHook = undefined;
-        response = await fetch(url);
+        response = await fetch(url, {
+          headers: toolResults ? { 'x-clh-tool-results': toolResults } : {},
+        });
         await until(() => followers >= (initial ? 3 : 4));
       }
       // Settle the plan after the delayed tool result reaches the follower.
@@ -1791,10 +1803,25 @@ test.each([
       mockPlan = { status: 'done' };
       finishTool();
       const body = await response.text();
-      expect(body.match(/: tool-result /g)).toHaveLength(1);
-      expect(body).toContain('saved-id');
-      expect(body).toContain('record_add');
-      expect(body).toContain(JSON.stringify(toolResult));
+      if (toolResults?.toLowerCase() === 'summary') {
+        expect(body.match(/: tool-result /g)).toHaveLength(1);
+        expect(body).toContain('saved-id');
+        expect(body).toContain('record_add');
+        const line = body
+          .split('\n')
+          .find((value) => value.startsWith(': tool-result '));
+        expect(JSON.parse(line?.slice(14) ?? '{}')).toEqual({
+          call: { name: 'record_add', arguments: { collection: 'notes' } },
+          result: {
+            isError,
+            structuredContent: {
+              collection: 'notes',
+              record: 'saved-id',
+              ...(isError ? { error: { code: 'ERROR' } } : {}),
+            },
+          },
+        });
+      } else expect(body).not.toContain(': tool-result ');
       expect(body).toContain('[DONE]');
       expect(originalSink).not.toHaveBeenCalled();
     } finally {
