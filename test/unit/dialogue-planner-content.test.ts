@@ -54,6 +54,46 @@ test('wrappers preserve paragraph content when DialogueSession buffers content p
   }
 });
 
+test('paragraph wrapper keeps only the final iteration of the planner', async () => {
+  const planner: PlannerAgent = {
+    async process(_input, options) {
+      options.onPartial?.({ kind: 'content', delta: 'Checking tools.' });
+      options.onPartial?.({ kind: 'iteration-end', outcome: 'tool_calls' });
+      options.onPartial?.({ kind: 'content', delta: 'Rejected.' });
+      options.onPartial?.({ kind: 'iteration-end', outcome: 'retry' });
+      options.onPartial?.({ kind: 'content', delta: 'Final answer.' });
+      options.onPartial?.({ kind: 'iteration-end', outcome: 'final' });
+      return { ok: true, value: { content: 'Final answer.' } };
+    },
+  };
+  const result = await plannerWithParagraphs(planner).process([], {});
+  expect(result.ok && result.value.content).toBe('Final answer.');
+
+  const session = await DialogueSession.open({
+    id: 'final-only',
+    planner: plannerWithParagraphs(planner),
+    board: { workers: new Map(), maxConcurrent: 1 },
+  });
+  try {
+    expect((await session.send('hello')).text).toBe('Final answer.');
+  } finally {
+    await session.close();
+  }
+});
+
+test('paragraph wrapper keeps accumulated text when no final iteration arrives', async () => {
+  const planner: PlannerAgent = {
+    async process(_input, options) {
+      options.onPartial?.({ kind: 'content', delta: 'Partial.' });
+      options.onPartial?.({ kind: 'iteration-end', outcome: 'tool_calls' });
+      options.onPartial?.({ kind: 'content', delta: 'Stopped.' });
+      return { ok: true, value: { content: 'Partial.Stopped.' } };
+    },
+  };
+  const result = await plannerWithParagraphs(planner).process([], {});
+  expect(result.ok && result.value.content).toBe('Partial.\n\nStopped.');
+});
+
 test('environment reaches user and event turns without changing persisted conversation', async () => {
   const process = jest.fn(async () => ({
     ok: true as const,
