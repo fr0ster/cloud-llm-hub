@@ -15,8 +15,116 @@ import { collectionAccessError } from './collection-access';
 import { CollectionBackendError } from './collection-persistence';
 
 import { RagWriteError } from './rag-write-error';
+import { buildSkillsPool } from './skills-pool';
+import { trustWriteError } from './trust-guard';
+import { resolverFor } from './trust-resolver';
 
 export { RagWriteError } from './rag-write-error';
+
+/** Visibility is checked before applying the stricter trust policy. */
+export async function setRagTrust(
+  registry: CollectionRegistry,
+  collection: string,
+  input: { trust: number | null; record?: string },
+  identity: RagWriteIdentity,
+  update: { displayName?: string; description?: string } = {},
+) {
+  if (collection === '@skills') {
+    const skills = await buildSkillsPool().listSkills();
+    if (!skills.ok) throw skills.error;
+    const skill =
+      input.record === undefined
+        ? undefined
+        : skills.value.find((s) => s.name === input.record);
+    const refusal = trustWriteError({
+      admin: identity.admin,
+      value: input.trust,
+      allowNull: input.record !== undefined,
+      target: {
+        exists: input.record === undefined || skill !== undefined,
+        scope: 'global',
+        kind: skill?.meta.kind === 'base' ? 'base' : 'informational',
+      },
+    });
+    if (refusal)
+      throw new RagWriteError(refusal.code, refusal.status, refusal.code);
+    const store = resolverFor(registry).store;
+    if (!store) throw new Error('Trust store unavailable');
+    if (input.record !== undefined)
+      await store.setRecord(
+        'skills',
+        input.record,
+        input.trust,
+        identity.userId,
+      );
+    else if (input.trust !== null)
+      await store.setSource('skills', input.trust, identity.userId);
+    return { collection };
+  }
+  const exact = await registry.getCollection(collection);
+  const id =
+    exact?.id ??
+    (await resolveRouteId(
+      registry,
+      collection,
+      identity.userId,
+      identity.sessionId,
+      false,
+    ));
+  const meta = id ? await registry.getCollection(id) : null;
+  const hidden =
+    meta &&
+    collectionAccessError(meta, identity.userId, identity.admin, 'read');
+  if (
+    !id ||
+    !meta ||
+    hidden ||
+    (meta.scope === 'session' && meta.sessionId !== identity.sessionId)
+  )
+    throw new RagWriteError('NOT_FOUND', 404, 'Collection not found');
+  const access = collectionAccessError(
+    meta,
+    identity.userId,
+    identity.admin,
+    'write',
+  );
+  if (access)
+    throw new RagWriteError(
+      access.status === 404 ? 'NOT_FOUND' : 'FORBIDDEN',
+      access.status,
+      access.message,
+    );
+  const refusal = trustWriteError({
+    admin: identity.admin,
+    value: input.trust,
+    allowNull: input.record !== undefined,
+    target: {
+      exists: true,
+      scope: meta.scope,
+      collectionKind: meta.collectionKind,
+    },
+  });
+  if (refusal)
+    throw new RagWriteError(refusal.code, refusal.status, refusal.code);
+  if (input.record !== undefined) {
+    const document = await registry.setRecordTrust(
+      id,
+      input.record,
+      input.trust,
+      identity.userId,
+    );
+    if (!document)
+      throw new RagWriteError('NOT_FOUND', 404, 'Document not found');
+    return { collection: id };
+  }
+  if (input.trust !== null)
+    await registry.updateCollection(id, {
+      ...update,
+      trust: input.trust,
+      trustActor: identity.userId,
+    });
+  return { collection: id };
+}
 
 export const RAG_WRITE_MAX_BYTES = 10 * 1024 * 1024;
 

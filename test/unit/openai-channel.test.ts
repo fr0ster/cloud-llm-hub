@@ -920,6 +920,8 @@ test.each([false, true])(
         rag_search: { query: 'keep' },
         rag_read: { collection: 'results', id: 'id' },
         collection_records: { collection: 'results' },
+        collection_set_trust: { collection: 'notes', trust: 3 },
+        record_set_trust: { collection: 'notes', record: 'visible', trust: 3 },
         collection_create: { name: 'results', scope: 'user' },
         collection_delete: { collection: 'results' },
         record_add: { collection: 'results', text: 'keep' },

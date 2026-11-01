@@ -10,7 +10,7 @@ import {
   recordPolicy,
   sanitizeExternalMetadata,
 } from './lib/record-policy';
-import type { TrustHistoryEntry } from './lib/trust';
+import { type TrustHistoryEntry, trustHistorySchema } from './lib/trust';
 import { resolverFor, type TrustResolver } from './lib/trust-resolver';
 /**
  * RAG Collection Registry — manages dynamic RAG collections at runtime.
@@ -1238,16 +1238,31 @@ export class CollectionRegistry {
 
   async updateCollection(
     id: string,
-    update: Partial<Pick<CollectionMeta, 'displayName' | 'description'>>,
+    update: Partial<
+      Pick<CollectionMeta, 'displayName' | 'description' | 'trust'>
+    > & { trustActor?: string },
   ): Promise<CollectionMeta | null> {
     if (this.persistence) await this.settled(id, true);
     const stored = this.collections.get(id);
     try {
       if (stored) assertCollectionWrite(stored.meta);
       if (!stored) return null;
+      const at = new Date().toISOString();
       const apply = (m: CollectionMeta) => {
         if (update.displayName) m.displayName = update.displayName;
         if (update.description) m.description = update.description;
+        if (update.trust !== undefined) {
+          m.trustHistory = [
+            ...(m.trustHistory ?? []),
+            {
+              from: m.trust ?? null,
+              to: update.trust,
+              actor: update.trustActor ?? '',
+              at,
+            },
+          ].slice(-20);
+          m.trust = update.trust;
+        }
       };
       if (stored.persistent && this.persistence) {
         // Serialized with the collection's other record writes; see updateRecord.
@@ -2120,11 +2135,39 @@ export class CollectionRegistry {
     return { added, errors };
   }
 
-  updateDocument(
-    ...args: Parameters<CollectionRegistry['updateDocumentUnlocked']>
+  setRecordTrust(
+    collectionId: string,
+    docId: string,
+    trust: number | null,
+    actor: string,
   ): Promise<RagDocument | null> {
-    return this.serializeRecord(args[0], args[1], () =>
-      this.updateDocumentUnlocked(...args),
+    return this.serializeRecord(collectionId, docId, () =>
+      this.updateDocumentUnlocked(
+        collectionId,
+        docId,
+        {},
+        undefined,
+        undefined,
+        { trust, actor },
+      ),
+    );
+  }
+
+  updateDocument(
+    collectionId: string,
+    docId: string,
+    update: Parameters<CollectionRegistry['updateDocumentUnlocked']>[2],
+    namespace?: string,
+    options?: CallOptions,
+  ): Promise<RagDocument | null> {
+    return this.serializeRecord(collectionId, docId, () =>
+      this.updateDocumentUnlocked(
+        collectionId,
+        docId,
+        update,
+        namespace,
+        options,
+      ),
     );
   }
 
@@ -2134,6 +2177,7 @@ export class CollectionRegistry {
     update: { text?: string; metadata?: Record<string, unknown> },
     namespace?: string,
     options?: CallOptions,
+    trustChange?: { trust: number | null; actor: string },
   ): Promise<RagDocument | null> {
     if (this.persistence) await this.settled(collectionId, true);
     const stored = this.collections.get(collectionId);
@@ -2155,6 +2199,29 @@ export class CollectionRegistry {
         ...update,
         metadata: sanitizeExternalMetadata(update.metadata),
       };
+    if (trustChange) {
+      const previous =
+        typeof existing.metadata._trust === 'number'
+          ? existing.metadata._trust
+          : null;
+      const history = trustHistorySchema.parse(
+        existing.metadata._trustHistory ?? [],
+      );
+      update = {
+        metadata: {
+          _trust: trustChange.trust ?? undefined,
+          _trustHistory: [
+            ...history,
+            {
+              from: previous,
+              to: trustChange.trust,
+              actor: trustChange.actor,
+              at: new Date().toISOString(),
+            },
+          ].slice(-20),
+        },
+      };
+    }
     if (stored.meta.collectionKind === 'agents')
       validateAgentProfileRecord({
         id: docId,

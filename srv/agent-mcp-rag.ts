@@ -26,6 +26,7 @@ import {
   RagWriteError,
   ragWriteFailure,
   resolveRagWriteTarget,
+  setRagTrust,
   updateRagRecord,
   validateRagText,
   validateRagWriteSize,
@@ -63,6 +64,7 @@ import {
 } from './lib/rag-tool-catalogue';
 
 type Args = {
+  trust?: z.infer<ReturnType<typeof z.json>>;
   name?: string;
   scope?: string;
   record?: string;
@@ -127,13 +129,19 @@ export interface RecordDeleteResult extends WriteFields {
   record: string;
   deleted: true;
 }
+interface TrustSetResult extends WriteFields {
+  result: string;
+  collection: string;
+  updated: true;
+}
 type WriteResult =
   | RagWriteErrorResult
   | CollectionCreateResult
   | CollectionDeleteResult
   | RecordAddResult
   | RecordUpdateResult
-  | RecordDeleteResult;
+  | RecordDeleteResult
+  | TrustSetResult;
 type Result = ReturnType<typeof ragTextResult> & {
   structuredContent?: WriteResult;
 };
@@ -169,6 +177,8 @@ function writeOutputSchema<T extends z.ZodRawShape>(fields: T) {
   );
 }
 export const ragWriteOutputSchemas = {
+  collection_set_trust: writeOutputSchema({ updated: z.literal(true) }),
+  record_set_trust: writeOutputSchema({ updated: z.literal(true) }),
   collection_create: writeOutputSchema({
     name: z.string(),
     scope: z.enum(['user', 'session']),
@@ -218,7 +228,12 @@ export function registerRagMcpTools(
       {
         description: ragDescriptions[name],
         annotations: { readOnlyHint: ragToolEffect(name) === 'read' },
-        inputSchema: ragMcpSchemas[name],
+        // Let trust reach our canonical zod parser so invalid values return
+        // INVALID_TRUST rather than the SDK's generic argument error.
+        inputSchema:
+          name === 'collection_set_trust' || name === 'record_set_trust'
+            ? ragMcpSchemas[name].extend({ trust: z.json().optional() })
+            : ragMcpSchemas[name],
         ...(isWriteTool(name)
           ? { outputSchema: ragWriteOutputSchemas[name] }
           : {}),
@@ -269,7 +284,14 @@ async function executeRagMcpToolImpl(
     return fail('TOOL_FORBIDDEN', 403, `TOOL_FORBIDDEN: ${name}`);
   const parsed = ragMcpSchemas[name].safeParse(input);
   if (!parsed.success)
-    return fail('INVALID_ARGUMENT', 400, parsed.error.message);
+    return fail(
+      (name === 'collection_set_trust' || name === 'record_set_trust') &&
+        parsed.error.issues.some((issue) => issue.path[0] === 'trust')
+        ? 'INVALID_TRUST'
+        : 'INVALID_ARGUMENT',
+      400,
+      parsed.error.message,
+    );
   const args: ValidatedArgs = parsed.data;
   if (
     name === 'record_set_enabled' &&
@@ -411,6 +433,23 @@ async function runRagTool(
   const registry = suppliedRegistry ?? ragHost().getCollectionRegistry();
   if (isWriteTool(name)) {
     const identity = { userId, sessionId: sid, admin };
+    if (name === 'collection_set_trust' || name === 'record_set_trust') {
+      const parsed = ragMcpSchemas[name].parse(args);
+      const result = await setRagTrust(
+        registry,
+        parsed.collection,
+        {
+          trust: parsed.trust,
+          ...('record' in parsed ? { record: parsed.record } : {}),
+        },
+        identity,
+      );
+      return writeResult({
+        result: 'Trust updated.',
+        collection: result.collection,
+        updated: true,
+      });
+    }
     if (name === 'collection_create') {
       const created = await createAgentKnowledgeCollection(
         registry,

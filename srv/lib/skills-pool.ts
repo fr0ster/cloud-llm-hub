@@ -22,7 +22,7 @@ import {
   CompositeSkillManager,
   type SkillSource,
 } from './composite-skill-manager';
-import { documentView } from './record-policy';
+import { collectionView, documentView } from './record-policy';
 import type { TrustResolver } from './trust-resolver';
 
 /** Absolute path to the in-code skills directory (`srv/skills`). */
@@ -98,6 +98,25 @@ export async function skillDocumentView(
   resolver: TrustResolver,
 ) {
   return documentView(doc, await resolver.inputForSkill(doc.id));
+}
+export async function skillCollectionView(resolver: TrustResolver) {
+  const input = await resolver.inputForSkill('');
+  return collectionView(
+    {
+      id: '@skills',
+      logicalId: '@skills',
+      displayName: 'Skills',
+      description: 'Global informational skills',
+      scope: 'global',
+      createdAt: '',
+      documentCount: 0,
+      sourceCount: 0,
+      ...(input.collectionTrust !== undefined
+        ? { trust: input.collectionTrust }
+        : {}),
+    },
+    input,
+  );
 }
 export async function informationalSkillDocuments(
   resolver: TrustResolver,

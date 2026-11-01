@@ -1,5 +1,9 @@
 import { collectionView, documentView } from './lib/record-policy';
-import { informationalSkillDocuments } from './lib/skills-pool';
+import {
+  informationalSkillDocuments,
+  skillCollectionView,
+} from './lib/skills-pool';
+import { collectionTrustArgs, recordTrustArgs } from './lib/trust-guard';
 import { resolverFor } from './lib/trust-resolver';
 /**
  * RAG Management REST API — /v1/rag/*
@@ -36,6 +40,8 @@ import {
   createRagCollection,
   deleteRagCollection,
   deleteRagRecord,
+  ragWriteFailure,
+  setRagTrust,
   updateRagRecord,
 } from './lib/rag-write-operations';
 import {
@@ -207,6 +213,108 @@ export function registerRagRoutes(
     withCollectionRestScope(getUserId(), isAdmin(), next),
   );
 
+  // Trust setters resolve visibility themselves, including the virtual source.
+  const writeTrust = async (req: Request, res: Response, record?: string) => {
+    const parsed = (
+      record === undefined
+        ? collectionTrustArgs.extend({
+            displayName: z.string().optional(),
+            description: z.string().optional(),
+          })
+        : recordTrustArgs
+    ).safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: { code: 'INVALID_TRUST', message: parsed.error.message },
+      });
+      return;
+    }
+    try {
+      const result = await setRagTrust(
+        registry,
+        String(req.params.id),
+        {
+          trust: parsed.data.trust,
+          ...(record === undefined ? {} : { record }),
+        },
+        {
+          userId: getUserId(),
+          admin: isAdmin(),
+          sessionId: honouredSessionId(req),
+        },
+        {
+          ...('displayName' in parsed.data &&
+          typeof parsed.data.displayName === 'string'
+            ? { displayName: parsed.data.displayName }
+            : {}),
+          ...('description' in parsed.data &&
+          typeof parsed.data.description === 'string'
+            ? { description: parsed.data.description }
+            : {}),
+        },
+      );
+      if (result.collection === '@skills') {
+        if (record === undefined)
+          json(res, 200, await skillCollectionView(resolverFor(registry)));
+        else {
+          const documents = await informationalSkillDocuments(
+            resolverFor(registry),
+          );
+          json(
+            res,
+            200,
+            documents.find((doc) => doc.id === record),
+          );
+        }
+      } else {
+        const meta = await registry.getCollection(result.collection);
+        if (record === undefined && meta) {
+          json(
+            res,
+            200,
+            collectionView(
+              meta,
+              resolverFor(registry).inputFor(
+                { id: '', text: '', createdAt: '', metadata: {} },
+                meta,
+              ),
+            ),
+          );
+        } else {
+          json(
+            res,
+            200,
+            await registry.getDocument(result.collection, record ?? ''),
+          );
+        }
+      }
+    } catch (err) {
+      const failed = ragWriteFailure(
+        err instanceof Error ? err : new Error(String(err)),
+        500,
+      );
+      res
+        .status(failed.status)
+        .json({ error: { code: failed.code, message: failed.message } });
+    }
+  };
+  router.put(
+    '/rag/collections/:id',
+    async (req: Request, res: Response, next) => {
+      if (!Object.hasOwn(req.body ?? {}, 'trust')) {
+        next();
+        return;
+      }
+      await writeTrust(req, res);
+    },
+  );
+  router.patch(
+    '/rag/collections/:id/documents/:did/trust',
+    async (req: Request, res: Response) => {
+      await writeTrust(req, res, String(req.params.did));
+    },
+  );
+
   // Virtual informational skill reads precede catalog-id resolution.
   router.get(
     '/rag/collections/@skills/documents',
@@ -298,7 +406,17 @@ export function registerRagRoutes(
     }));
 
     json(res, 200, {
-      collections: mapped,
+      collections: [
+        ...mapped,
+        ...(isAdmin()
+          ? [
+              {
+                ...(await skillCollectionView(resolverFor(registry))),
+                writable: true,
+              },
+            ]
+          : []),
+      ],
       ...(unavailable ? { collectionsUnavailable: unavailable } : {}),
     });
   });

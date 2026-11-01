@@ -656,7 +656,7 @@ it('agent MCP lists all 23 tools including orchestration', async () => {
   if (!catalogue.ok) throw new Error(catalogue.error.message);
   for (const tool of library.value)
     expect(catalogue.value).toContainEqual(tool);
-  expect(tools.size).toBe(23);
+  expect(tools.size).toBe(25);
   const {
     executeStepSchema,
     EXECUTE_STEP_DESCRIPTION,

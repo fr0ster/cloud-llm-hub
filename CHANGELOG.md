@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- Admin trust setters for global informational collections, records and the virtual `@skills` source through REST and the `collection_set_trust` / `record_set_trust` MCP tools, with validation, bounded audit history and key-scoped writes.
+
 ## [10.2.2] - 2026-11-01
 
 ### Changed

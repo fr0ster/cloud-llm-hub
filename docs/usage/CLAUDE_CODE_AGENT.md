@@ -254,7 +254,7 @@ receives the assistant's text exactly as it streamed, including
 ## Coordinating a long session over agent MCP
 
 An external agent can coordinate through `/mcp/agent/stream/http`. Its 23 tools
-include eleven RAG tools, destination/session tools, `execute_step`, and eight
+include thirteen RAG tools, destination/session tools, `execute_step`, and eight
 orchestration tools: `plan_create`, `plan_revise`, `plan_get`, `plan_update`,
 `delegate_task`, `get_task`, `list_tasks`, `stop_task`.
 

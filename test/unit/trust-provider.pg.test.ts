@@ -21,6 +21,7 @@ import {
   storeNameFor,
   WRITTEN_BY,
 } from '../../srv/lib/collection-persistence';
+import { setRagTrust } from '../../srv/lib/rag-write-operations';
 import { parseTrustDefaults } from '../../srv/lib/trust';
 import { TrustResolver } from '../../srv/lib/trust-resolver';
 import { TrustStore } from '../../srv/lib/trust-store';
@@ -87,6 +88,59 @@ function newRegistry(provider = newProvider()) {
   );
   return registry;
 }
+
+test('admin setters persist bounded history and clearing across registry restarts', async () => {
+  let registry = newRegistry();
+  const id = 'trust-setters-global';
+  const identity = { userId: 'alice', admin: true };
+  await registry.createCollection({
+    id,
+    logicalId: id,
+    displayName: id,
+    description: '',
+    scope: 'global',
+  });
+  for (const record of ['changed', 'sibling'])
+    await registry.addDocument(id, { id: record, text: record, metadata: {} });
+  for (let index = 0; index < 22; index++) {
+    await setRagTrust(registry, id, { trust: index % 5 }, identity);
+    await setRagTrust(
+      registry,
+      id,
+      { record: 'changed', trust: index % 5 },
+      identity,
+    );
+  }
+  registry = newRegistry();
+  await registry.restore();
+  expect(await registry.getCollection(id)).toMatchObject({
+    trust: 1,
+    trustHistory: expect.arrayContaining([
+      expect.objectContaining({ actor: 'alice' }),
+    ]),
+  });
+  expect((await registry.getCollection(id))?.trustHistory).toHaveLength(20);
+  expect(
+    (await registry.getDocument(id, 'changed'))?.metadata._trustHistory,
+  ).toHaveLength(20);
+  expect(
+    (await registry.getDocument(id, 'sibling'))?.metadata._trustHistory,
+  ).toBeUndefined();
+  await setRagTrust(registry, id, { record: 'changed', trust: null }, identity);
+  registry = newRegistry();
+  await registry.restore();
+  const cleared = await registry.getDocument(id, 'changed');
+  expect(cleared?.metadata._trust).toBeUndefined();
+  expect(cleared).toMatchObject({
+    trust: 1,
+    metadata: {
+      _trustHistory: expect.arrayContaining([
+        expect.objectContaining({ from: 1, to: null, actor: 'alice' }),
+      ]),
+    },
+  });
+  expect(cleared).not.toHaveProperty('trustOverride');
+});
 test('PGlite source/record/history survive restart and trust store survives sweep', async () => {
   const store = await TrustStore.open(newProvider(), DIM);
   await store.setSource('skills', 4, 'admin');

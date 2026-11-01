@@ -99,6 +99,8 @@ let other: string;
 const cid = userCollectionId('notes', 'alice');
 const second = userCollectionId('second', 'alice');
 const inputs: Record<RagMcpTool, Parameters<typeof executeRagMcpTool>[3]> = {
+  collection_set_trust: { collection: 'notes', trust: 3 },
+  record_set_trust: { collection: 'notes', record: 'visible', trust: 3 },
   collection_create: { name: 'new-notes', scope: 'user' },
   collection_delete: { collection: 'notes' },
   record_add: { collection: 'notes', text: 'new record' },
@@ -115,6 +117,54 @@ const inputs: Record<RagMcpTool, Parameters<typeof executeRagMcpTool>[3]> = {
   collection_records: { collection: 'notes' },
   record_set_enabled: { collection: 'notes', id: 'visible', enabled: false },
 };
+
+test('SDK trust setters map malformed trust to INVALID_TRUST and share the internal catalogue', async () => {
+  mockWriteIdentity.admin = true;
+  const server = new McpServer({ name: 'trust-setters', version: '1' });
+  const client = new Client({ name: 'test', version: '1' });
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  registerRagMcpTools(server, express.request, 'alice', (_name, run) => run);
+  await Promise.all([
+    server.connect(serverTransport),
+    client.connect(clientTransport),
+  ]);
+  try {
+    expect(
+      (await client.listTools()).tools.map((tool) => tool.name).sort(),
+    ).toEqual(
+      buildRagToolSchemas()
+        .map((tool) => tool.function.name)
+        .sort(),
+    );
+    for (const name of ['collection_set_trust', 'record_set_trust']) {
+      for (const trust of [
+        '5',
+        4.55,
+        -1,
+        5.1,
+        ...(name === 'collection_set_trust' ? [null] : []),
+      ]) {
+        const result = await client.callTool({
+          name,
+          arguments: {
+            collection: cid,
+            session: sid,
+            trust,
+            ...(name === 'record_set_trust' ? { record: 'visible' } : {}),
+          },
+        });
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          error: { code: 'INVALID_TRUST', status: 400 },
+        });
+      }
+    }
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
 const names: RagMcpTool[] = [
   'rag_search',
   'rag_read',

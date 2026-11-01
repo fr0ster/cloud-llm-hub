@@ -19,7 +19,7 @@ export class TrustResolver {
   private readonly classes: TrustDefaults;
   constructor(
     private readonly registry: TrustRegistry | undefined,
-    private readonly store: TrustStore | undefined,
+    readonly store: TrustStore | undefined,
     private readonly defaults: TrustDefaults,
     profile?: Partial<Record<TrustClass, number>>,
   ) {

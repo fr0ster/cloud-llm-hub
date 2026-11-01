@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { isReadOnlyTools, profileToolAllowed } from '../request-session';
+import { collectionTrustArgs, recordTrustArgs } from './trust-guard';
 
 const session = z
   .string()
@@ -16,6 +17,12 @@ const offset = z.number().int().nonnegative().optional();
 const enabled = z.boolean();
 
 export const ragMcpSchemas = {
+  collection_set_trust: collectionTrustArgs
+    .extend({ session, collection })
+    .strict(),
+  record_set_trust: recordTrustArgs
+    .extend({ session, collection, record: z.string().min(1) })
+    .strict(),
   collection_create: z
     .object({
       session,
@@ -83,6 +90,8 @@ export const ragMcpSchemas = {
 };
 export type RagMcpTool = keyof typeof ragMcpSchemas;
 export const ragToolNames: RagMcpTool[] = [
+  'collection_set_trust',
+  'record_set_trust',
   'collection_create',
   'collection_delete',
   'record_add',
@@ -98,6 +107,10 @@ export const ragToolNames: RagMcpTool[] = [
 const writeConditions =
   ' Eligible user/session knowledge collections; existing global mutations require MCP_Admin where REST resolves them; agents collections are excluded. Requires a live caller-owned session (argument, x-clh-session, or clh_session cookie). Maximum UTF-8 JSON arguments: 10 MiB.';
 export const ragDescriptions: Record<RagMcpTool, string> = {
+  collection_set_trust:
+    'Set global informational source trust (0 to 5, one decimal). MCP_Admin required; @skills addresses informational skills.',
+  record_set_trust:
+    'Set global informational record trust; null clears the override. MCP_Admin required; @skills records are skill names.',
   collection_create:
     'Create a user/session knowledge collection idempotently.' +
     writeConditions,
