@@ -102,8 +102,27 @@ Class resolution (my calls):
 - `system` is exactly the embedded mcp-abap-adt tool set, identified by its registry origin. RAG tools and
   hub-internal (orchestration, planning) tools are not tagged.
 
-Effective trust of a record = record trust if set, else its collection's trust, else the class default of the
-collection's scope. Effective trust of a tool result = the class default of the tool's class (`system`, `docs`).
+### Agent trust map (user decision, 2026-11-01)
+
+Trust per class is part of the agent preset and follows the same override order as prompts: the selected agent
+overrides the preconfigured settings. A profile may carry a map in its front matter:
+
+```yaml
+trust:
+  system: 4.5
+  docs: 4
+  user: 3
+  session: 2
+```
+
+Class trust resolves: selected agent's map → `LLM_AGENT_TRUST_DEFAULTS` (preconfigured) → built-in defaults.
+Explicit trust on a record or collection (admin, global sources) beats any class value. Each role uses the map of
+the profile it runs (coordinator, planner-create/revise, executor, checker). The map is edited where profiles are
+edited today (MANAGE → agents collection, global by the admin, user copies by the user); no separate screen. The
+preset itself stays outside the scale.
+
+Effective trust of a record = record trust if set, else its collection's trust, else the class value from the agent map or
+deploy defaults for the's scope. Effective trust of a tool result = the class default of the tool's class (`system`, `docs`).
 
 ## How it reaches the model
 

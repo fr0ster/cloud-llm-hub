@@ -137,7 +137,7 @@ test('ContextAssembler tags results with metadata.trust', () => {
 - [ ] **Step 5:** Commit `feat(context): trust tag for planner retrieval and context assembler`. PR, Codex
   review, merge, release (version PR → signed tags → user publishes npm). Hub tasks use the new versions.
 
-### Task 2: Trust classes and defaults (hub)
+### Task 2: Trust classes, defaults and agent trust map (hub)
 
 Hub branch `feat/source-trust` from the reviewed `design/source-trust` head (spec + plan), rebased on current
 `main`.
@@ -145,12 +145,16 @@ Hub branch `feat/source-trust` from the reviewed `design/source-trust` head (spe
 **Files:**
 - Create: `srv/lib/trust.ts`, `test/unit/trust.test.ts`
 - Modify: `srv/agent-config.ts` (parse `LLM_AGENT_TRUST_DEFAULTS` at startup, expose `config.trust.defaults`)
+- Modify: `srv/lib/agent-profile-records.ts` (front matter `trust`: optional map of `TrustClass` → value,
+  validated with `normalizeTrust`; unknown class or invalid value rejects the record like other invalid front
+  matter) and the profile types that carry it to the runtime
 
 **Interfaces:**
 - Produces: `type TrustClass = 'global' | 'user' | 'session' | 'system' | 'docs'`;
   `parseTrustDefaults(value: string | undefined): Record<TrustClass, number>` (throws
   `BuildValidationError` naming the bad entry); `classForScope(scope: 'global' | 'user' | 'session'): TrustClass`;
-  `effectiveTrust(input: { record?: number; collection?: number; scope: 'global' | 'user' | 'session' }, defaults: Record<TrustClass, number>): number`.
+  `classTrust(agentMap: Partial<Record<TrustClass, number>> | undefined, defaults: Record<TrustClass, number>): Record<TrustClass, number>`
+  (agent map over defaults); `effectiveTrust(input: { record?: number; collection?: number; scope: 'global' | 'user' | 'session' }, classes: Record<TrustClass, number>): number`.
 
 - [ ] **Step 1: Failing tests**
 
@@ -162,6 +166,9 @@ for (const bad of ['user=6', 'user=x', 'nope=1', 'user', 'user=4.55'])
 expect(effectiveTrust({ record: 1, collection: 4, scope: 'user' }, d)).toBe(1);
 expect(effectiveTrust({ collection: 4, scope: 'user' }, d)).toBe(4);
 expect(effectiveTrust({ scope: 'session' }, d)).toBe(2);
+expect(classTrust({ docs: 4 }, d)).toEqual({ ...d, docs: 4 });
+expect(classTrust(undefined, d)).toEqual(d);
+// profile front matter: trust { docs: 4 } accepted; { nope: 1 } and { docs: 6 } rejected
 ```
 
 - [ ] **Step 2–4:** Fail, implement (uses `normalizeTrust` from Task 1), pass; tsc both configs, lint.
@@ -252,6 +259,10 @@ captured when a long-lived store wrapper is built. `TrustStore` is a persistence
 caching stays in the DB provider (cache-only-in-DB-provider rule) with key-scoped invalidation, so a write
 invalidates only its own record, collection or source entry.
 
+The resolver is per role: `TrustResolver.forProfile(profile)` applies that profile's trust map (Task 2) over the
+deploy defaults; every chain (coordinator, plan author, executor, checker, chat) uses the resolver of the profile
+it runs, and `systemToolTrust` reads `system` / `docs` from it.
+
 `TrustResolver` (`srv/lib/trust-resolver.ts`, created in Task 4, wired at startup in `srv/agent-manager.ts` next to
 the registry): `classDefault(c: TrustClass): number` and `systemTool(name: string): number` are synchronous
 (defaults only — `ToolTrust` is synchronous); `collection(meta: CollectionMeta): number`,
@@ -333,7 +344,9 @@ stored `_trust`; `skill(name: string): Promise<number>` awaits `TrustStore`.
   (`ContextAssembler`) show the tag; coordinator retrieval, `search_knowledge` and planner-create/revise context
   show it for old records without trust and for records with spoofed metadata; each `[attached files]` entry
   carries a whole tag even when the preview is truncated; after an admin changes a
-  collection's or the `@skills` source's trust, an already-built agent's next retrieval shows the new value (record and source writes, no second cache); coordinator recall of
+  collection's or the `@skills` source's trust, an already-built agent's next retrieval shows the new value (record and source writes, no second cache); an
+  executor whose profile maps `user: 4` renders a user record with `trust 4` while the coordinator (no map) renders
+  the deploy default; coordinator recall of
   planner-memory records written before this change shows `; trust 2`.
 - [ ] **Step 2–4:** Fail, implement, pass.
 - [ ] **Step 5:** Commit `feat(trust): tag RAG paths`.
