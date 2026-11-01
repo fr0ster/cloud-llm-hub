@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.2.1] - 2026-11-01
+
 ### Fixed
 
 - Coordinator replies and worker task results no longer include the text the model writes before each tool call; only the final answer is kept. Progress still streams live. Depends on `@mcp-abap-adt/llm-agent` 30.26.0 and `@mcp-abap-adt/llm-agent-libs` 30.25.0.
