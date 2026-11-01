@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- RAG tool-result SSE comments now require `x-clh-tool-results: summary` and contain compact metadata without returned texts; WebUI opts in.
+
 ### Fixed
 
 - WebUI shows each RAG tool call as one summary line (tool, outcome, hit or record count, collections, error code) instead of the raw JSON with all returned texts.

@@ -2051,7 +2051,7 @@
                     mainRequests.push(mainRequest); renderActiveAgents(dialogueTasks);
                 }
                 const requestKey = sessionKey;
-                const headers = { 'Content-Type': 'application/json', ...getSapCredHeaders(), 'x-clh-ack': sessionAcks.get(requestKey) || 'none' };
+                const headers = { 'Content-Type': 'application/json', 'x-clh-tool-results': 'summary', ...getSapCredHeaders(), 'x-clh-ack': sessionAcks.get(requestKey) || 'none' };
                 if (selectedDest) headers['X-SAP-Destination'] = selectedDest;
 
                 // Include dynamic RAG collections via body (not header — headers don't support non-ASCII)

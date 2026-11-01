@@ -1596,6 +1596,7 @@ test('chat sends only consumer schemas and never dispatches RAG in the browser',
     (call: [string, { body?: string }]) => call[0] === '/v1/chat/completions',
   );
   expect(completion).toBeDefined();
+  expect(completion?.[1].headers['x-clh-tool-results']).toBe('summary');
   const sent = z
     .object({
       tools: z.array(z.object({ function: z.object({ name: z.string() }) })),

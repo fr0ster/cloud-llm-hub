@@ -15,6 +15,7 @@ import {
   failDialogueResponse,
 } from './dialogue-chat';
 import { type LongSession, longSessions } from './long-session';
+import { summarizeToolResult } from './tool-result-summary';
 import { responseMeasurement } from './usage/request-records';
 import {
   dialogueUsageToWire,
@@ -28,6 +29,9 @@ export function chatStream(
   protocol: 'openai' | 'anthropic',
   session?: LongSession,
 ) {
+  const toolResults =
+    res.req?.headers['x-clh-tool-results']?.toString().toLowerCase() ===
+    'summary';
   const createdAt = Date.now();
   const out = detachedSink(res);
   const controller = new AbortController();
@@ -47,6 +51,7 @@ export function chatStream(
   res.on('finish', stop);
   return {
     createdAt,
+    toolResults,
     measurement: responseMeasurement(res),
     signal: controller.signal,
     get opened() {
@@ -207,7 +212,11 @@ export async function streamDialogue(opts: {
         const v = chunk.value;
         if (v.clhUsage) deliveredUsage.push(v.clhUsage);
         if (v.clhToolResult) {
-          comment('tool-result', JSON.stringify(v.clhToolResult));
+          if (stream.toolResults)
+            comment(
+              'tool-result',
+              JSON.stringify(summarizeToolResult(v.clhToolResult)),
+            );
           if (!stream.out.detached && !stream.signal.aborted)
             v.clhToolResultWritten?.();
         } else if (v.clhMessageId) comment('message-id', v.clhMessageId);
@@ -253,7 +262,11 @@ export async function streamDialogue(opts: {
               stream.measurement?.messageDelivered();
             }
           } else if (item.kind === 'tool-result') {
-            comment('tool-result', JSON.stringify(item.record));
+            if (stream.toolResults)
+              comment(
+                'tool-result',
+                JSON.stringify(summarizeToolResult(item.record)),
+              );
             if (!stream.out.detached && !stream.signal.aborted)
               item.written?.();
           } else if (item.kind === 'end') {

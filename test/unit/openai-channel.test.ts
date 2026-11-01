@@ -94,9 +94,17 @@ const body = (stream = false) => ({
   messages: [{ role: 'user', content: 'hi' }],
 });
 
-function call(b: unknown, res = fakeRes(), sessionId = 's-1') {
+function call(
+  b: unknown,
+  res = fakeRes(),
+  sessionId = 's-1',
+  toolResults?: string,
+) {
+  const request = fakeReq(b, sessionId);
+  if (toolResults)
+    Object.assign(request.headers, { 'x-clh-tool-results': toolResults });
   const done = handleChatCompletions(
-    fakeReq(b, sessionId) as unknown as Request,
+    request as unknown as Request,
     res as unknown as Response,
   );
   return { res, done };
@@ -812,9 +820,15 @@ describe('host RAG tool contract', () => {
     expect(forged.res.body).toContain('host RAG');
   });
 
-  test.each([false, true])(
-    'binds the caller through host execution (stream=%s)',
-    async (stream: boolean) => {
+  test.each([
+    { stream: false, toolResults: undefined },
+    ...[undefined, 'summary', 'SuMmArY', 'full'].map((toolResults) => ({
+      stream: true,
+      toolResults,
+    })),
+  ])(
+    'binds the caller through host execution (toolResults=%s)',
+    async ({ stream, toolResults }) => {
       const key = liveSession('alice', `openai-rag-${stream}`);
       const registry = new CollectionRegistry();
       const client = new RecordingMcpClient(
@@ -855,10 +869,19 @@ describe('host RAG tool contract', () => {
         yield { ok: true, value: { content: 'done' } };
         yield { ok: true, value: { finishReason: 'stop' } };
       };
-      const { res, done } = call(body(stream), fakeRes(), key);
+      const { res, done } = call(body(stream), fakeRes(), key, toolResults);
       await done;
       expect(res.statusCode).toBe(200);
-      if (stream) expect(res.body).toContain(': tool-result ');
+      if (stream && toolResults?.toLowerCase() === 'summary') {
+        expect(res.body).toContain(': tool-result ');
+        const line = res.body
+          .split('\n')
+          .find((value) => value.startsWith(': tool-result '));
+        expect(JSON.parse(line?.slice(14) ?? '{}')).toEqual({
+          call: { name: 'collections_list', arguments: {} },
+          result: { isError: false, structuredContent: { collections: [] } },
+        });
+      } else expect(res.body).not.toContain(': tool-result ');
       expect(record).toHaveBeenCalledTimes(1);
       expect(record).toHaveBeenCalledWith(
         expect.objectContaining({
