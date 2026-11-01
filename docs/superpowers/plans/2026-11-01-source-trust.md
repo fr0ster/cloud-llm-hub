@@ -64,11 +64,14 @@ Repo `C:\Users\OleksiiKyslytsia\projects\llm-agent`, branch `feat/trust-tag` fro
   exported from `@mcp-abap-adt/llm-agent`. Plumbing: `SmartAgentConfig.toolTrust?: ToolTrust` (set via
   `SmartAgentBuilder.withToolTrust(fn)`), `DialogueSessionOptions.toolTrust?: ToolTrust` (passed on to
   `PlannerToolsClient` and `tool-trace-render.ts`). Raw and model-facing values stay separate: availability checks, session logging, execution callbacks, trace
-  capture and pending-result storage keep the raw `text`; the tag is applied only where the tool message for
-  the model is constructed (`pipeline/handlers/tool-loop-core.ts` ~491) and where pending results are injected
-  as messages (mixed-tool-call path). `ToolTrust` is wired through the tool-loop interfaces,
+  capture, pending-result storage and `ToolRound.results` (recorded by context strategies, `tool-loop.ts`
+  `batchRound` / `strategy.record`) keep the raw `text`. A single projection `toModelToolMessage(raw, toolTrust)`
+  is applied when messages are handed to the LLM: the live tool messages of a round, replayed rounds from every
+  context strategy, and pending results injected as messages (mixed-tool-call path). `ToolTrust` is wired through the tool-loop interfaces,
   `ContextAssemblerConfig` and `default-pipeline.ts`; `ContextAssembler` tool-history rendering;
-  `tool-trace-render.ts` (checker evidence); and a `get_task` response projection in `planner-tools-client.ts`
+  `tool-trace-render.ts` (checker evidence: the complete tag is rendered outside the JSON-quoted raw excerpt,
+  e.g. `[source: system:GetClass; trust 4.5] result: "<escaped excerpt>"`, with its length reserved in the
+  enclosing budget; the excerpt's own truncation is unchanged); and a `get_task` response projection in `planner-tools-client.ts`
   (~420) that tags each `toolTrace` result in a copy, never the board's stored task. Stored traces, outcome
   parsing and truncation counts stay untagged; a result is tagged once.
 - Skill discovery: `skills/skill-utils.ts` `scanDirsForSkills` reports a name that appears in several directories
@@ -97,8 +100,9 @@ test('normalizeTrust', () => {
 });
 // libs
 test('planner knowledge label carries trust', () => {
-  const [block] = renderPlannerRetrieval({ memory: [], knowledge: [{ collection: 'kb', id: 'r1', text: 't', trust: 4 }] });
+  const [block] = renderPlannerRetrieval({ memory: [], knowledge: [{ collection: 'kb', id: 'r1', text: 't', trust: 4, source: 'user:kb/r1' }] });
   assert.match(block, /\(user:kb\/r1; trust 4\) t/); // entry.source replaces the collection/id label when present
+  // trust without source → '(kb/r1; trust 4)'; source without trust → unchanged '(kb/r1)'
 });
 test('planner label without trust is unchanged', () => { /* (kb/r1) t */ });
 test('memory label carries trust', () => { /* (planner-input s1 q1 offset 0; trust 2) text */ });
@@ -107,9 +111,13 @@ test('planner retrieval keeps trust and source from metadata', async () => {
   // same through search_knowledge rendering and planner-create/revise context
 });
 test('hard-mode skill selection loads nothing when no skill matches (pipeline and rag-orchestrator)', () => { /* was: all skills */ });
+test('checker evidence tag sits outside the quoted excerpt', () => {
+  // exact tag text, excerpt truncation unchanged, very long tool name keeps a whole tag within budget
+});
 test('toolTrust tags model-facing tool results only', () => {
   // tool-loop-core message construction and pending-result injection: model message '[source: system:GetClass; trust 4.5]\n<result>',
-  // internal consumers (availability check, session log, callbacks, pending store) see the raw text,
+  // internal consumers (availability check, session log, callbacks, pending store, recorded ToolRound) see the raw text;
+  // replayed rounds from each context strategy reach the model with exactly one tag,
   // recorded invocation untagged; truncated result tagged once; tool without toolTrust answer untagged;
   // ContextAssembler history, checker evidence and get_task projection tagged once; board task unchanged
 });
@@ -182,7 +190,10 @@ derives provenance from the collection context instead. Content updates preserve
 **Interfaces:**
 - Produces: `documentView(doc: RagDocument, collection: CollectionMeta, defaults): (RagDocument & { enabled: boolean; trusted: true; trust: number; trustOverride?: number; source: string }) | (RagDocument & { enabled: boolean; trusted: false })`
   — `trusted: false` without trust fields for agent-preset collections. `RecordTrustView = { trusted: true; trust: number; trustOverride?: number; source: string } | { trusted: false }`
-  is the one shared union; `defaults: Record<TrustClass, number>`.
+  is the one shared union; `defaults: Record<TrustClass, number>`. Projections are synchronous over a
+  pre-resolved input: `TrustInput = { class: TrustClass; source: string; collectionTrust?: number; recordTrust?: number }`.
+  Catalog collections build it from meta and `_trust`; the `@skills` source builds it with
+  `await TrustStore.getSource/getRecord` before projecting, so REST and MCP share one projection for both.
   — the one projection for REST document listings and reads (`srv/rag-handler.ts` ~708, ~911) and the virtual
   `@skills` listing; `recordAttributes` (MCP) uses the same resolution.
 - Produces: `collectionView(meta: CollectionMeta, defaults): (CollectionMeta & { trusted: true; trust: number; trustOverride?: number; trustClass: TrustClass }) | (CollectionMeta & { trusted: false })`
@@ -200,7 +211,8 @@ derives provenance from the collection context instead. Content updates preserve
   metadata `{ trust: 5, trustHistory: [], _trust: 5, _trustHistory: [] }` store none of them, while an existing
   override survives update, restart and content replacement; upload keeps `metadata.source` (file name) and source toggles, chunk
   grouping and export still work; REST document listing shows inherited trust, a record override, and inherited
-  again after the override is cleared; an agents collection lists as `trusted: false` without trust fields, and its documents (REST list/read, MCP
+  again after the override is cleared (for a catalog collection and for `@skills`, including a live change of
+  the `@skills` source value); an agents collection lists as `trusted: false` without trust fields, and its documents (REST list/read, MCP
   `rag_read` / `collection_records`) carry no trust fields either; collection stored without `trust` restores with `trust` undefined and `recordAttributes` reports the
   class default; record added with metadata `{ trust: 5, trustHistory: [] }` stores neither key (stripped);
   history keeps the last 20 entries.
@@ -373,7 +385,9 @@ file skills go through semantic selection (library `pipeline/handlers/skill-sele
   `informationalSkills(): ISkillManager` (passed to `SmartAgentBuilder`, which vectorizes only what it is given)
   and `baseSkills(): readonly ISkill[]` (used for system-content assembly). Plugin-provided skills follow their own
   front matter (default informational). A name that exists as both kinds fails startup with a clear error (library discovery check from Task 1 for
-  one file-system manager, hub check across managers).
+  one file-system manager, hub check across managers). The conflict is surfaced by an explicit
+  `validateSkillKinds(pool): Result<void, SkillKindConflict>` run at startup that throws; `listSkills()` failures
+  in `CompositeSkillManager` and `logSkillsPool()` must not swallow it (they still log-and-skip other errors).
 - Modify: `srv/agent-manager.ts` system-content assembly for every role — `configureDestinationAgentBuilder`
   (chat/executor), `buildPlannerAgent` (coordinator), plan-author construction (planner-create/revise) and the
   profile/worker paths (executor, checker): base skill content is appended after the profile system prompt and
@@ -384,7 +398,7 @@ file skills go through semantic selection (library `pipeline/handlers/skill-sele
   planner-create, planner-revise, executor and checker calls even for an unrelated query, after the profile prompt,
   and never in `## Active Skills`; an informational skill is not loaded unless selected.
   Existing file skills (`srv/skills/*`) stay informational (no front matter change in this release); a
-  plugin skill with `kind: base` loads directly; a duplicate name across kinds fails startup.
+  plugin skill with `kind: base` loads directly; a duplicate name across kinds fails startup through the composed pool (not just a logged warning).
 - [ ] **Step 2–4:** Fail, implement, pass.
 - [ ] **Step 5:** Commit `feat(skills): base skills load with the agent preset`.
 
