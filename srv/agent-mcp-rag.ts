@@ -30,8 +30,14 @@ import {
   validateRagText,
   validateRagWriteSize,
 } from './lib/rag-write-operations';
-import { recordAttributes, recordPolicy } from './lib/record-policy';
+import {
+  collectionView,
+  recordAttributes,
+  recordPolicy,
+} from './lib/record-policy';
 import { isRefusal } from './lib/session-retention';
+import { informationalSkillDocuments } from './lib/skills-pool';
+import { resolverFor } from './lib/trust-resolver';
 import { requestMeasurement } from './lib/usage/request-records';
 import { usageRuntime } from './lib/usage/runtime';
 import {
@@ -513,6 +519,41 @@ async function runRagTool(
     if (refusal) throw new Error(refusal.message);
     return id;
   };
+  if (
+    args.collection === '@skills' &&
+    (name === 'rag_read' || name === 'collection_records')
+  ) {
+    const all = await informationalSkillDocuments(resolverFor(registry));
+    if (name === 'rag_read') {
+      const doc = all.find((item) => item.id === args.id);
+      if (!doc) throw new Error('Document not found');
+      const input = await resolverFor(registry).inputForSkill(doc.id);
+      const start = args.offset ?? 0;
+      const end = Math.min(doc.text.length, start + (args.limit ?? 8000));
+      return respond({
+        id: doc.id,
+        offset: start,
+        total: doc.text.length,
+        ...(end < doc.text.length ? { next: end } : {}),
+        text: doc.text.slice(start, end),
+        attributes: recordAttributes(doc, input),
+      });
+    }
+    const offset = args.offset ?? 0;
+    return respond({
+      total: all.length,
+      records: await Promise.all(
+        all.slice(offset, offset + (args.limit ?? 50)).map(async (doc) => ({
+          id: doc.id,
+          title: doc.text.split(/\r?\n/, 1)[0].slice(0, 120),
+          attributes: recordAttributes(
+            doc,
+            await resolverFor(registry).inputForSkill(doc.id),
+          ),
+        })),
+      ),
+    });
+  }
   if (name === 'collections_list') {
     const collections = await registry.listCollections(
       userId && userId !== 'anonymous' ? userId : undefined,
@@ -532,6 +573,25 @@ async function runRagTool(
           enabled: collectionEnabled(registry, userId, sid, c),
           defaultEnabled: collectionDefault(registry, userId, c),
           documents: c.documentCount,
+          ...(() => {
+            const view = collectionView(
+              c,
+              resolverFor(registry).inputFor(
+                { id: '', text: '', createdAt: '', metadata: {} },
+                c,
+              ),
+            );
+            return view.trusted
+              ? {
+                  trusted: true,
+                  trust: view.trust,
+                  trustClass: view.trustClass,
+                  ...(view.trustOverride !== undefined
+                    ? { trustOverride: view.trustOverride }
+                    : {}),
+                }
+              : { trusted: false };
+          })(),
         })),
     });
   }
@@ -683,7 +743,10 @@ async function runRagTool(
       ?.documents[0];
     if (!doc) throw new Error('Document not found');
     const visibility = recordPolicy(doc.metadata, active);
-    const attributes = recordAttributes(doc.metadata);
+    const attributes = recordAttributes(
+      doc,
+      resolverFor(registry).inputFor(doc, meta),
+    );
     if (!visibility.visible)
       return respond({ id: doc.id, attributes, reason: visibility.reason });
     const start = args.offset ?? 0;
@@ -708,7 +771,10 @@ async function runRagTool(
       const visibility = recordPolicy(doc.metadata, active);
       return {
         id: doc.id,
-        attributes: recordAttributes(doc.metadata),
+        attributes: recordAttributes(
+          doc,
+          resolverFor(registry).inputFor(doc, meta),
+        ),
         ...(visibility.visible
           ? {
               title: doc.text.split(/\r?\n/, 1)[0].slice(0, 120),

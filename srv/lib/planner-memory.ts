@@ -30,6 +30,7 @@ import {
 } from './planner-memory-scope';
 import { turnOwner } from './session-history-rag';
 import { fingerprintHash } from './tool-corpus';
+import { runWithTrustResolver, type TrustResolver } from './trust-resolver';
 
 let sharedPlannerMemoryRag: IRag | undefined;
 
@@ -81,6 +82,7 @@ export async function forgetPlannerMemory(owner: string): Promise<boolean> {
 export async function plannerSessionOptions(
   userId: string,
   key: string,
+  resolver?: TrustResolver | (() => Promise<TrustResolver>),
 ): Promise<PlannerRetrievalOptions> {
   try {
     const embedding = getProviders().embedding;
@@ -88,7 +90,12 @@ export async function plannerSessionOptions(
       memory: () => {
         const rag = getSharedPlannerMemoryRag();
         return rag
-          ? scopedPlannerMemory(rag, turnOwner(userId, key), key)
+          ? resolver
+            ? roleRetrievalStore(
+                scopedPlannerMemory(rag, turnOwner(userId, key), key),
+                resolver,
+              )
+            : scopedPlannerMemory(rag, turnOwner(userId, key), key)
           : undefined;
       },
       embedding: embedding
@@ -121,7 +128,9 @@ export async function plannerSessionOptions(
           false,
           'user',
         );
-        return id ? registry.getRagStore(id) : null;
+        const rag = id ? await registry.getRagStore(id) : null;
+        if (!rag || !resolver) return rag;
+        return roleRetrievalStore(rag, resolver);
       },
       warn: (message) => cds.log('planner-memory').warn(message),
     });
@@ -236,4 +245,29 @@ export async function planAuthorContextNotes(
     })
     .map((message) => message.content ?? '')
     .filter(Boolean);
+}
+
+/** Role binding is independent of later trust-tag projection at the LLM boundary. */
+export function roleRetrievalStore(
+  rag: IRag,
+  resolver: TrustResolver | (() => Promise<TrustResolver>),
+): IRag {
+  return new Proxy(rag, {
+    get(target, property) {
+      if (property === 'query')
+        return async (...args: Parameters<IRag['query']>) =>
+          runWithTrustResolver(
+            typeof resolver === 'function' ? await resolver() : resolver,
+            () => target.query(...args),
+          );
+      if (property === 'getById')
+        return async (...args: Parameters<IRag['getById']>) =>
+          runWithTrustResolver(
+            typeof resolver === 'function' ? await resolver() : resolver,
+            () => target.getById(...args),
+          );
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
 }

@@ -1,3 +1,6 @@
+import { collectionView, documentView } from './lib/record-policy';
+import { informationalSkillDocuments } from './lib/skills-pool';
+import { resolverFor } from './lib/trust-resolver';
 /**
  * RAG Management REST API — /v1/rag/*
  *
@@ -59,6 +62,28 @@ import {
 } from './session-id';
 
 const log = cds.log('rag-handler');
+function collectionTrustFields(
+  registry: CollectionRegistry,
+  meta: import('./rag-collections').CollectionMeta,
+) {
+  const resolver = resolverFor(registry);
+  const input = resolver.inputFor(
+    { id: '', text: '', metadata: {}, createdAt: '' },
+    meta,
+  );
+  const view = collectionView(meta, input);
+  return view.trusted
+    ? {
+        trusted: true,
+        trust: view.trust,
+        trustClass: view.trustClass,
+        ...(view.trustOverride !== undefined
+          ? { trustOverride: view.trustOverride }
+          : {}),
+      }
+    : { trusted: false };
+}
+
 const agentCopyInput = z
   .object({
     id: z.string().min(1),
@@ -182,6 +207,42 @@ export function registerRagRoutes(
     withCollectionRestScope(getUserId(), isAdmin(), next),
   );
 
+  // Virtual informational skill reads precede catalog-id resolution.
+  router.get(
+    '/rag/collections/@skills/documents',
+    async (req: Request, res: Response) => {
+      try {
+        const all = await informationalSkillDocuments(resolverFor(registry));
+        const offset = Math.max(0, Number(req.query.offset) || 0);
+        const limit = Math.min(Number(req.query.limit) || 50, 200);
+        json(res, 200, {
+          documents: all.slice(offset, offset + limit),
+          total: all.length,
+        });
+      } catch (err) {
+        failure(res, err, 500);
+      }
+    },
+  );
+  router.get(
+    '/rag/collections/@skills/documents/:did',
+    async (req: Request, res: Response) => {
+      try {
+        const documents = await informationalSkillDocuments(
+          resolverFor(registry),
+        );
+        const document = documents.find((item) => item.id === req.params.did);
+        if (!document) {
+          error(res, 404, 'Document not found');
+          return;
+        }
+        json(res, 200, document);
+      } catch (err) {
+        failure(res, err, 500);
+      }
+    },
+  );
+
   // GET /v1/rag/backends — list available backend types
   router.get('/rag/backends', (_req: Request, res: Response) => {
     json(res, 200, { backends: registry.listBackends() });
@@ -233,6 +294,7 @@ export function registerRagRoutes(
       ...(c.status ? { status: c.status, statusError: c.statusError } : {}),
       enabled: collectionEnabled(registry, effectiveUserId ?? '', sid, c),
       defaultEnabled: collectionDefault(registry, effectiveUserId ?? '', c),
+      ...collectionTrustFields(registry, c),
     }));
 
     json(res, 200, {
@@ -703,10 +765,9 @@ export function registerRagRoutes(
             ? {
                 documents: current.documents
                   .slice(offset, offset + limit)
-                  .map((document) => ({
-                    ...document,
-                    enabled: document.metadata.enabled !== false,
-                  })),
+                  .map((document) =>
+                    documentView(document, { trusted: false }),
+                  ),
                 total: current.documents.length,
               }
             : null;
@@ -727,7 +788,12 @@ export function registerRagRoutes(
           ...result,
           documents: result.documents.map((document) =>
             document.metadata.enabled === false
-              ? { id: document.id, enabled: false, reason: 'record-disabled' }
+              ? {
+                  id: document.id,
+                  enabled: false,
+                  trusted: false,
+                  reason: 'record-disabled',
+                }
               : document,
           ),
         });
@@ -907,9 +973,7 @@ export function registerRagRoutes(
           const document = current?.documents.find(
             (entry) => entry.id === req.params.did,
           );
-          doc = document
-            ? { ...document, enabled: document.metadata.enabled !== false }
-            : null;
+          doc = document ? documentView(document, { trusted: false }) : null;
         } else {
           doc = await registry.getDocument(physId, req.params.did);
         }
@@ -926,6 +990,7 @@ export function registerRagRoutes(
         json(res, 200, {
           id: doc.id,
           enabled: false,
+          trusted: false,
           reason: 'record-disabled',
         });
         return;

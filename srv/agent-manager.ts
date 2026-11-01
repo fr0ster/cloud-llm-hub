@@ -6,6 +6,8 @@ import {
   type ExecutorStepArgs,
   runExecutorStep as executeExecutorStep,
 } from './lib/executor-step';
+import { TrustResolver } from './lib/trust-resolver';
+import { TrustStore } from './lib/trust-store';
 
 export function runExecutorStep(...args: ExecutorStepArgs) {
   return executeExecutorStep(createAgentProfileSource, ...args);
@@ -872,6 +874,7 @@ import {
   collectionDimension,
   createCollectionProvider,
   isPersistentKind,
+  PROVIDER_DEFAULT_DIMENSION,
 } from './lib/rag-provider-factory';
 import { buildSkillsPool, logSkillsPool } from './lib/skills-pool';
 import { CollectionRegistry } from './rag-collections';
@@ -1234,6 +1237,21 @@ export function isProvidersReady(): boolean {
 // ---------------------------------------------------------------------------
 
 let collectionRegistryInstance: CollectionRegistry | null = null;
+let trustResolverInstance: TrustResolver | undefined;
+let trustStoreInstance: TrustStore | undefined;
+export function getTrustResolver(): TrustResolver {
+  const registry = getCollectionRegistry();
+  if (!trustResolverInstance)
+    trustResolverInstance = new TrustResolver(
+      registry,
+      trustStoreInstance,
+      getAgentConfig().trust.defaults,
+    );
+  return trustResolverInstance;
+}
+export function getTrustStore(): TrustStore | undefined {
+  return trustStoreInstance;
+}
 
 /** Get or create the shared CollectionRegistry. */
 export function getCollectionRegistry(): CollectionRegistry {
@@ -1274,6 +1292,14 @@ export function getCollectionRegistry(): CollectionRegistry {
         : {}),
     });
   }
+  if (!collectionRegistryInstance.trustResolver) {
+    trustResolverInstance = new TrustResolver(
+      collectionRegistryInstance,
+      trustStoreInstance,
+      getAgentConfig().trust.defaults,
+    );
+    collectionRegistryInstance.trustResolver = trustResolverInstance;
+  }
   return collectionRegistryInstance;
 }
 
@@ -1284,10 +1310,37 @@ export function getCollectionRegistry(): CollectionRegistry {
  * promise resolves once restored; nothing need wait for it — the registry's
  * methods wait for the restore themselves, and /health reports it.
  */
-export function startCollectionRestore(
+export async function startCollectionRestore(
   opts: Omit<RetryRestoreOptions, 'log'> = {},
 ): Promise<void> {
   const registry = getCollectionRegistry();
+  const { collections, stores, embedding } = getProviders();
+  if (!trustStoreInstance) {
+    const kind = stores.backendOf('persistent');
+    const dimension =
+      kind === 'qdrant' && embedding
+        ? (await embedding.retrieval.embedDocument('dimension probe')).vector
+            .length
+        : PROVIDER_DEFAULT_DIMENSION;
+    trustStoreInstance = collections
+      ? new TrustStore(
+          new PersistentHistoryStore(collections, cds.log('trust-store'), {
+            storePrefix: storePrefixFor(
+              kind,
+              getAgentConfig().rag.qdrant?.prefix,
+            ),
+            storeName: 'h_trust',
+          }),
+          dimension,
+        )
+      : new TrustStore(new InMemoryRag(), dimension);
+    trustResolverInstance = new TrustResolver(
+      registry,
+      trustStoreInstance,
+      getAgentConfig().trust.defaults,
+    );
+    registry.trustResolver = trustResolverInstance;
+  }
   if (registry.restoreStatus().state === 'off') return Promise.resolve();
   const log = cds.log('rag-collections');
   return retryRestore(() => registry.restore(), {
@@ -2989,6 +3042,7 @@ function destinationProfileRunner(
     })),
   ];
   return new AgentProfileRunner({
+    trustResolver: getTrustResolver,
     catalogue,
     grants: () =>
       new Set(
@@ -3026,7 +3080,8 @@ function destinationProfileRunner(
         { description: profile.description },
       );
     },
-    buildPlanAuthor: async (systemPrompt, options) => {
+    buildPlanAuthor: async (input, options) => {
+      const { systemPrompt } = input;
       options?.signal?.throwIfAborted();
       const client = new DialogueRagMcpClient(
         {

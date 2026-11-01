@@ -243,7 +243,39 @@ export class AgentProfileSource implements IAgentProfileSource {
   ): Promise<Result<AgentPrompts, AgentProfileError>> {
     return this.run(async (call) => {
       const documents = await this.read(call, options);
+      const coordinator = this.record(
+        documents,
+        this.selection.plannerRecord,
+        'coordinator',
+      );
+      const plannerCreate = this.record(
+        documents,
+        'planner-create',
+        'planner-author',
+      );
+      const plannerRevise = this.record(
+        documents,
+        'planner-revise',
+        'planner-author',
+      );
       return {
+        ...(coordinator.metadata.trust ||
+        plannerCreate.metadata.trust ||
+        plannerRevise.metadata.trust
+          ? {
+              trust: {
+                ...(coordinator.metadata.trust
+                  ? { coordinator: coordinator.metadata.trust }
+                  : {}),
+                ...(plannerCreate.metadata.trust
+                  ? { plannerCreate: plannerCreate.metadata.trust }
+                  : {}),
+                ...(plannerRevise.metadata.trust
+                  ? { plannerRevise: plannerRevise.metadata.trust }
+                  : {}),
+              },
+            }
+          : {}),
         workerBase: this.record(documents, '_worker-base', 'worker-base').text,
         coordinator: this.record(
           documents,

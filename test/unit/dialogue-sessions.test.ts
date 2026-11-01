@@ -120,6 +120,12 @@ jest.mock('../../srv/agent-config', () => ({
   }),
 }));
 jest.mock('../../srv/agent-manager', () => ({
+  getTrustResolver: () =>
+    jest
+      .requireActual<typeof import('./helpers/agent-profiles')>(
+        './helpers/agent-profiles',
+      )
+      .fixtureTrustResolver(),
   getProviders: () => ({ embedding: undefined }),
   forgetPlannerMemory: jest.fn(async () => true),
   releasePlannerAgent: jest.fn(),

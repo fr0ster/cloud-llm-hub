@@ -22,6 +22,7 @@ import { getAgentConfig } from '../agent-config';
 import {
   createAgentProfileSource,
   getSmartAgent,
+  getTrustResolver,
   runWithRequestConnection,
 } from '../agent-manager';
 import {
@@ -32,7 +33,11 @@ import {
   runWithSessionId,
   runWithToolGateBypass,
 } from '../request-session';
-import { BriefPlanAuthor, planAuthorBriefRequest } from './brief-plan-author';
+import {
+  BriefPlanAuthor,
+  planAuthorBriefRequest,
+  planAuthorMode,
+} from './brief-plan-author';
 import { runWithContextCapture } from './context-capture';
 import { withCoordinatorRun } from './coordinator-tools-client';
 import { DialogueOutbox, type OutboxEntry } from './dialogue-outbox';
@@ -681,7 +686,17 @@ async function open(
       'agents',
   );
   try {
-    const retrieval = await plannerSessionOptions(userId, key);
+    const coordinatorResolver = async () => {
+      const prompts = await source.getPrompts();
+      return getTrustResolver().forProfile({
+        trust: prompts.ok ? prompts.value.trust?.coordinator : undefined,
+      });
+    };
+    const retrieval = await plannerSessionOptions(
+      userId,
+      key,
+      coordinatorResolver,
+    );
     session = await DialogueSession.open({
       profileSource: source,
       planAuthor: new BriefPlanAuthor({
@@ -693,8 +708,21 @@ async function open(
           const request = session
             ?.snapshot()
             .requests?.find((record) => record.closedAt === undefined);
+          const authorPrompts = await source.getPrompts(options);
+          const role =
+            planAuthorMode() === 'create' ? 'plannerCreate' : 'plannerRevise';
+          const authorResolver = getTrustResolver().forProfile({
+            trust: authorPrompts.ok
+              ? authorPrompts.value.trust?.[role]
+              : undefined,
+          });
+          const authorRetrieval = await plannerSessionOptions(
+            userId,
+            key,
+            authorResolver,
+          );
           const context = await planAuthorContextNotes(
-            retrieval,
+            authorRetrieval,
             key,
             request ?? planAuthorBriefRequest(),
             options,

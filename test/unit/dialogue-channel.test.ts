@@ -29,6 +29,12 @@ jest.mock(
   { virtual: true },
 );
 jest.mock('../../srv/agent-manager', () => ({
+  getTrustResolver: () =>
+    jest
+      .requireActual<typeof import('./helpers/agent-profiles')>(
+        './helpers/agent-profiles',
+      )
+      .fixtureTrustResolver(),
   ...require('./helpers/channel-harness').agentManagerMock(),
   getQueryEmbedder: jest.fn(() => undefined),
 }));

@@ -320,7 +320,12 @@ test('read and record lists never reveal disabled content or metadata titles', a
   expect(result.content[0].text).toBe(
     JSON.stringify({
       id: 'hidden',
-      attributes: { enabled: false },
+      attributes: {
+        enabled: false,
+        trusted: true,
+        trust: 3,
+        source: 'user:notes/hidden',
+      },
       reason: 'record-disabled',
     }),
   );
@@ -480,7 +485,12 @@ test('read and lists use normalized safe attributes for visible and invisible re
     total: 11,
     next: 1,
     text: 'p',
-    attributes: { enabled: true },
+    attributes: {
+      enabled: true,
+      trusted: true,
+      trust: 3,
+      source: 'user:notes/metadata',
+    },
   });
   const records = await call('collection_records');
   expect(records.content[0].text).not.toContain('PRIVATE');
@@ -500,7 +510,12 @@ test('read and lists use normalized safe attributes for visible and invisible re
     JSON.parse((await call('rag_read', { id: 'metadata' })).content[0].text),
   ).toEqual({
     id: 'metadata',
-    attributes: { enabled: true },
+    attributes: {
+      enabled: true,
+      trusted: true,
+      trust: 3,
+      source: 'user:notes/metadata',
+    },
     reason: 'collection-disabled',
   });
 });

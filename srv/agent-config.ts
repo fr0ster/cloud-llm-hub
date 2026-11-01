@@ -1,3 +1,4 @@
+import { parseTrustDefaults, type TrustDefaults } from './lib/trust';
 /**
  * Agent Configuration Module
  *
@@ -168,6 +169,7 @@ export function parseAgentProfilesConfig(
 }
 
 export interface AgentConfig {
+  trust: { defaults: TrustDefaults };
   profiles?: AgentProfilesConfig;
   timeZone?: string;
   /**
@@ -653,6 +655,9 @@ export function loadAgentConfig(): AgentConfig {
   );
 
   const config: AgentConfig = {
+    trust: {
+      defaults: parseTrustDefaults(process.env.LLM_AGENT_TRUST_DEFAULTS),
+    },
     profiles: parseAgentProfilesConfig(),
     timeZone: parseTimeZone(),
     llm: {

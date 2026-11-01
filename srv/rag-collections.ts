@@ -5,7 +5,13 @@ import {
 } from './lib/agent-profile-seeds';
 import { assertCollectionWrite } from './lib/collection-write-scope';
 import { RagWriteError } from './lib/rag-write-error';
-import { recordPolicy } from './lib/record-policy';
+import {
+  documentView,
+  recordPolicy,
+  sanitizeExternalMetadata,
+} from './lib/record-policy';
+import type { TrustHistoryEntry } from './lib/trust';
+import { resolverFor, type TrustResolver } from './lib/trust-resolver';
 /**
  * RAG Collection Registry — manages dynamic RAG collections at runtime.
  *
@@ -163,6 +169,8 @@ function storeNameFor(collectionId: string): string {
 }
 
 export interface CollectionMeta {
+  trust?: number;
+  trustHistory?: TrustHistoryEntry[];
   id: string;
   logicalId: string;
   displayName: string;
@@ -200,11 +208,7 @@ export interface RagDocument {
   createdAt: string;
 }
 
-export type EnabledDocument = RagDocument & { enabled: boolean };
-
-function withEnabled(doc: RagDocument): EnabledDocument {
-  return { ...doc, enabled: doc.metadata.enabled !== false };
-}
+export type EnabledDocument = ReturnType<typeof documentView>;
 
 interface StoredCollection {
   usageTextBytes?: number;
@@ -550,6 +554,17 @@ const builtInBackends: Record<string, RagBackend> = {
 };
 
 export class CollectionRegistry {
+  trustResolver?: TrustResolver;
+  currentMeta(id: string): CollectionMeta | undefined {
+    return this.collections.get(id)?.meta;
+  }
+  private viewDocument(
+    doc: RagDocument,
+    meta: CollectionMeta,
+  ): EnabledDocument {
+    return documentView(doc, resolverFor(this).inputFor(doc, meta));
+  }
+
   private refreshStorageCache(meta: CollectionMeta): void {
     if (!storageEnabled() || !meta.owner) return;
     if (meta.scope === 'user') {
@@ -1775,7 +1790,9 @@ export class CollectionRegistry {
     const offset = opts?.offset ?? 0;
     const limit = opts?.limit ?? 50;
     return {
-      documents: all.slice(offset, offset + limit).map(withEnabled),
+      documents: all
+        .slice(offset, offset + limit)
+        .map((doc) => this.viewDocument(doc, stored.meta)),
       total: all.length,
     };
   }
@@ -1794,7 +1811,7 @@ export class CollectionRegistry {
             (record) => record.id === docId,
           )
         : stored.documents.get(docId);
-    return doc ? withEnabled(doc) : null;
+    return doc ? this.viewDocument(doc, stored.meta) : null;
   }
 
   /**
@@ -1934,6 +1951,24 @@ export class CollectionRegistry {
     if (!stored) throw new Error(`Collection "${collectionId}" not found`);
     this.refuseDegraded(stored, 'add document', 'write');
     assertCollectionWrite(stored.meta);
+    if (stored.persistent) refuseWhileDeleting(stored, 'add document');
+    if (stored.meta.collectionKind !== 'agents') {
+      // Retain known trust on replacement without reading storage on the add
+      // path. Updates read the authoritative record before preserving trust.
+      const previous = stored.documents.get(doc.id);
+      doc = {
+        ...doc,
+        metadata: {
+          ...sanitizeExternalMetadata(doc.metadata),
+          ...(previous?.metadata._trust !== undefined
+            ? { _trust: previous.metadata._trust }
+            : {}),
+          ...(previous?.metadata._trustHistory !== undefined
+            ? { _trustHistory: previous.metadata._trustHistory }
+            : {}),
+        },
+      };
+    }
     if (stored.meta.collectionKind === 'agents')
       validateAgentProfileRecord(doc);
     // Backend first, memory only on success; see addPersistentDocument.
@@ -2113,6 +2148,11 @@ export class CollectionRegistry {
           ? await readPersistentDocument(stored, docId)
           : stored.documents.get(docId);
     if (!existing) return null;
+    if (stored.meta.collectionKind !== 'agents' && update.metadata)
+      update = {
+        ...update,
+        metadata: sanitizeExternalMetadata(update.metadata),
+      };
     if (stored.meta.collectionKind === 'agents')
       validateAgentProfileRecord({
         id: docId,
@@ -2178,7 +2218,7 @@ export class CollectionRegistry {
     const doc = await this.updateDocument(collectionId, docId, {
       metadata: { enabled },
     });
-    return doc ? withEnabled(doc) : null;
+    return doc ? this.getDocument(collectionId, docId) : null;
   }
 
   /** Match one upload, including legacy uploads without an uploadId. */

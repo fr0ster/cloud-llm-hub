@@ -35,6 +35,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import type { CollectionMeta, RagDocument } from '../rag-collections';
+import { trustHistorySchema } from './trust';
 import { storageEnabled } from './usage/storage-values';
 
 /** Marks every catalog record this hub writes; restore opens only those. */
@@ -106,6 +107,10 @@ export function encodeAttributes(
     description: meta.description,
     enabled,
     source: meta.scope,
+    ...(meta.trust !== undefined ? { trust: meta.trust } : {}),
+    ...(meta.trustHistory
+      ? { trustHistory: meta.trustHistory.slice(-20) }
+      : {}),
     ...(meta.collectionKind ? { collectionKind: meta.collectionKind } : {}),
     ...(meta.agentsCopyPending ? { agentsCopyPending: true } : {}),
     embedder: embedderFp,
@@ -160,6 +165,12 @@ export function decodeRecord(
     typeof attrs.expiresAt === 'number' ? attrs.expiresAt : undefined;
   const meta: CollectionMeta = {
     id: collectionId,
+    ...(typeof attrs.trust === 'number' ? { trust: attrs.trust } : {}),
+    ...(trustHistorySchema.safeParse(attrs.trustHistory).success
+      ? {
+          trustHistory: trustHistorySchema.parse(attrs.trustHistory).slice(-20),
+        }
+      : {}),
     logicalId,
     displayName: str(attrs.displayName) ?? logicalId,
     description: str(attrs.description) ?? '',
@@ -413,6 +424,8 @@ export function restoredDocument(
 export function canonicalCollectionMeta(m: CollectionMeta): CollectionMeta {
   return {
     id: m.id,
+    ...(m.trust !== undefined ? { trust: m.trust } : {}),
+    ...(m.trustHistory ? { trustHistory: m.trustHistory.slice(-20) } : {}),
     logicalId: m.logicalId,
     displayName: m.displayName,
     description: m.description,
@@ -505,6 +518,8 @@ export function ownMetadata(
 ): Record<string, unknown> {
   const own: Record<string, unknown> = { ...(metadata ?? {}) };
   for (const k of PAYLOAD_BOOKKEEPING) delete own[k];
+  const history = trustHistorySchema.safeParse(own._trustHistory);
+  if (history.success) own._trustHistory = history.data.slice(-20);
   return canonicalMetadata(own);
 }
 
@@ -792,6 +807,7 @@ export function createCollectionPersistence(
           // The long-session records: the hub's, never a session collection.
           if (
             isSessionRecordStore(rec, prefix) ||
+            isTrustStore(rec, prefix) ||
             isRunRecordStore(rec, prefix) ||
             isDialogueStore(rec, prefix) ||
             isPlannerMemoryStore(rec, prefix)
@@ -861,6 +877,7 @@ export function createCollectionPersistence(
           if (
             isHistoryRecord(rec, prefix) ||
             isSessionRecordStore(rec, prefix) ||
+            isTrustStore(rec, prefix) ||
             isRunRecordStore(rec, prefix) ||
             isDialogueStore(rec, prefix) ||
             isPlannerMemoryStore(rec, prefix)
@@ -1460,4 +1477,22 @@ export class PersistentHistoryStore
       };
     return s.value.deleteWhere(filter, options);
   }
+}
+
+export function isTrustStore(
+  rec: RagCollectionRecord,
+  prefix?: string,
+): boolean {
+  return isHubStoreRecord(rec, prefix ? `${prefix}_h_trust` : 'h_trust');
+}
+export function ensureTrustStore(
+  provider: IRagProvider,
+  prefix?: string,
+): Promise<Result<IRag, RagError>> {
+  return ensureHubStore(provider, {
+    storeName: prefix ? `${prefix}_h_trust` : 'h_trust',
+    collectionName: 'h_trust',
+    source: 'trust',
+    label: 'trust store',
+  });
 }

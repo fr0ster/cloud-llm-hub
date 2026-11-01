@@ -7,6 +7,10 @@ import type {
 import { ProfilePlanAuthor } from '@mcp-abap-adt/llm-agent-libs';
 
 const briefs = new AsyncLocalStorage<string>();
+const modes = new AsyncLocalStorage<'create' | 'revise'>();
+export function planAuthorMode(): 'create' | 'revise' {
+  return modes.getStore() ?? 'create';
+}
 export function planAuthorBriefRequest() {
   return {
     id: 'plan-author-brief',
@@ -20,7 +24,7 @@ export class BriefPlanAuthor extends ProfilePlanAuthor {
   override create(brief: PlanBrief, options?: CallOptions) {
     return briefs.run(
       [brief.goal, brief.context].filter(Boolean).join('\n'),
-      () => super.create(brief, options),
+      () => modes.run('create', () => super.create(brief, options)),
     );
   }
   override revise(input: PlanRevisionInput, options?: CallOptions) {
@@ -28,7 +32,7 @@ export class BriefPlanAuthor extends ProfilePlanAuthor {
       [input.brief?.goal, input.change, input.brief?.context]
         .filter(Boolean)
         .join('\n'),
-      () => super.revise(input, options),
+      () => modes.run('revise', () => super.revise(input, options)),
     );
   }
 }

@@ -4,6 +4,8 @@ import type {
   ISmartAgent,
   ISubAgent,
 } from '@mcp-abap-adt/llm-agent';
+import { parseTrustDefaults } from '../../../srv/lib/trust';
+import { TrustResolver } from '../../../srv/lib/trust-resolver';
 
 /** Profile-aware adapters for fixtures whose workers/planner are supplied by the test. */
 export function fixtureProfileSource(
@@ -57,4 +59,8 @@ export function fixtureProfileRunner(
           };
     },
   };
+}
+
+export function fixtureTrustResolver(): TrustResolver {
+  return new TrustResolver(undefined, undefined, parseTrustDefaults(undefined));
 }

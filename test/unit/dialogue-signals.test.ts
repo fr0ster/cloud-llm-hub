@@ -7,6 +7,12 @@ import {
 } from '../../srv/lib/dialogue-signals';
 
 jest.mock('../../srv/agent-manager', () => ({
+  getTrustResolver: () =>
+    jest
+      .requireActual<typeof import('./helpers/agent-profiles')>(
+        './helpers/agent-profiles',
+      )
+      .fixtureTrustResolver(),
   createAgentProfileSource: () => ({
     list: async () => ({ ok: true, value: [] }),
     getPrompts: async () => ({
