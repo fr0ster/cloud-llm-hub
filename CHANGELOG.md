@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.2.0] - 2026-11-01
+
 ### Added
 
 - Dialogue coordinator with a stateless plan author using separate create/revise profiles and four read-only knowledge tools.
