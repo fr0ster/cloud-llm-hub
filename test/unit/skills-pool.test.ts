@@ -1,7 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildSkillsPool } from '../../srv/lib/skills-pool';
+import { FileSystemSkillManager } from '@mcp-abap-adt/llm-agent-libs';
+import cds from '@sap/cds';
+import { SkillKindConflict } from '../../srv/lib/composite-skill-manager';
+import { buildSkillsPool, logSkillsPool } from '../../srv/lib/skills-pool';
 
 function writeSkill(
   baseDir: string,
@@ -23,6 +26,85 @@ describe('buildSkillsPool', () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'skills-'));
   });
   afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  it.each([
+    ['base', 'informational'],
+    ['base', undefined],
+  ])(
+    'fails startup for kinds %s and %s within one source',
+    async (first, second) => {
+      for (const [index, kind] of [first, second].entries()) {
+        const dir = path.join(tmp, String(index));
+        fs.mkdirSync(dir);
+        fs.writeFileSync(
+          path.join(dir, 'SKILL.md'),
+          `---\nname: duplicate\ndescription: test\n${kind ? `kind: ${kind}\n` : ''}---\nbody`,
+        );
+      }
+      await expect(async () =>
+        logSkillsPool(buildSkillsPool({ dirs: [tmp] })),
+      ).rejects.toBeInstanceOf(SkillKindConflict);
+    },
+  );
+
+  it('allows duplicate declarations of the same kind', async () => {
+    for (const name of ['first', 'second']) {
+      writeSkill(tmp, name, 'test', name);
+      const file = path.join(tmp, name, 'SKILL.md');
+      fs.writeFileSync(
+        file,
+        fs
+          .readFileSync(file, 'utf8')
+          .replace(`name: ${name}`, 'name: duplicate'),
+      );
+    }
+    const pool = buildSkillsPool({ dirs: [tmp] });
+    await expect(logSkillsPool(pool)).resolves.toBeUndefined();
+    await expect(pool.listSkills()).resolves.toMatchObject({
+      ok: true,
+      value: [{ name: 'duplicate' }],
+    });
+  });
+
+  it('compares known plugin directories with preset directories', () => {
+    const pluginDir = path.join(tmp, 'plugin');
+    const presetDir = path.join(tmp, 'preset');
+    writeSkill(pluginDir, 'duplicate', 'test', 'plugin');
+    writeSkill(presetDir, 'duplicate', 'test', 'preset');
+    const file = path.join(pluginDir, 'duplicate', 'SKILL.md');
+    fs.writeFileSync(
+      file,
+      fs
+        .readFileSync(file, 'utf8')
+        .replace('description:', 'kind: base\ndescription:'),
+    );
+    expect(() =>
+      buildSkillsPool({ dirs: [presetDir], pluginDirs: [pluginDir] }),
+    ).toThrow(SkillKindConflict);
+  });
+
+  it('logs and skips an unrelated manager failure', async () => {
+    const warn = jest
+      .spyOn(cds.log('skills'), 'warn')
+      .mockImplementation(() => {});
+    const scan = jest
+      .spyOn(FileSystemSkillManager.prototype, 'listSkills')
+      .mockRejectedValue(
+        new Error('unrelated conflicting kind backend problem'),
+      );
+    try {
+      const pool = buildSkillsPool({ dirs: [tmp] });
+      await expect(logSkillsPool(pool)).resolves.toBeUndefined();
+      await expect(pool.listSkills()).resolves.toEqual({ ok: true, value: [] });
+      expect(warn).toHaveBeenCalledWith('skill source threw, skipping', {
+        source: `preset:${tmp}`,
+        error: 'Error: unrelated conflicting kind backend problem',
+      });
+    } finally {
+      scan.mockRestore();
+      warn.mockRestore();
+    }
+  });
 
   it('loads skills from the skills directory', async () => {
     writeSkill(

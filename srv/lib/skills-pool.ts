@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { type Dirent, existsSync, readdirSync, readFileSync } from 'node:fs';
 /**
  * The mandatory skill pool — composed here, fixed at deploy time.
  *
@@ -30,18 +30,62 @@ import type { TrustResolver } from './trust-resolver';
 /** Absolute path to the in-code skills directory (`srv/skills`). */
 export const SKILLS_DIR = path.join(__dirname, '..', 'skills');
 
+const skillDeclaration = z.object({
+  name: z.string(),
+  kind: z.enum(['base', 'informational']).default('informational'),
+});
+
+/** Compare declarations before library scanning can hide collisions in SkillError. */
+function validateDirectorySkillKinds(dirs: readonly string[]): void {
+  const kinds = new Map<string, 'base' | 'informational'>();
+  for (const dir of dirs) {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      let declaration: z.infer<typeof skillDeclaration>;
+      try {
+        const text = readFileSync(
+          path.join(dir, entry.name, 'SKILL.md'),
+          'utf8',
+        );
+        const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1];
+        if (!front) continue;
+        const parsed = skillDeclaration.safeParse(
+          load(front, { schema: JSON_SCHEMA }),
+        );
+        if (!parsed.success) continue;
+        declaration = parsed.data;
+      } catch {
+        // Leave unrelated read/parse failures to the source manager.
+        continue;
+      }
+      const previous = kinds.get(declaration.name);
+      if (previous !== undefined && previous !== declaration.kind)
+        throw new SkillKindConflict(declaration.name);
+      kinds.set(declaration.name, declaration.kind);
+    }
+  }
+}
+
 export function buildSkillsPool(opts?: {
   dirs?: string[];
+  /** Plugin skill directories known to the hub, already managed by pluginManager. */
+  pluginDirs?: string[];
   pluginManager?: ISkillManager;
   resolver?: () => TrustResolver;
 }): CompositeSkillManager {
   const dirs = opts?.dirs ?? [SKILLS_DIR];
+  validateDirectorySkillKinds([...(opts?.pluginDirs ?? []), ...dirs]);
   const sources: SkillSource[] = [];
   if (opts?.pluginManager) {
     sources.push({ source: 'plugin', manager: opts.pluginManager });
   }
   // Preset last: the product's own rules win a name collision.
-  // Compare kinds here: the library wraps directory collisions in generic SkillError.
   for (const dir of dirs) {
     sources.push({
       source: `preset:${dir}`,

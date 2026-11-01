@@ -23,9 +23,7 @@ test('preset directory collision fails startup from compared kinds', async () =>
       );
       return dir;
     });
-    await expect(
-      logSkillsPool(buildSkillsPool({ dirs })),
-    ).rejects.toBeInstanceOf(SkillKindConflict);
+    expect(() => buildSkillsPool({ dirs })).toThrow(SkillKindConflict);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
