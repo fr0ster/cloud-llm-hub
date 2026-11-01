@@ -12,7 +12,7 @@ import {
 import type { TrustStore } from './trust-store';
 
 export interface TrustRegistry {
-  currentMeta(id: string): CollectionMeta | undefined;
+  currentMeta?(id: string): CollectionMeta | undefined;
 }
 /** No resolved-value cache: every projection reads current metadata and stored overrides. */
 export class TrustResolver {
@@ -39,7 +39,7 @@ export class TrustResolver {
     return this.classDefault('system');
   }
   private meta(meta: CollectionMeta): CollectionMeta {
-    return this.registry?.currentMeta(meta.id) ?? meta;
+    return this.registry?.currentMeta?.(meta.id) ?? meta;
   }
   collection(meta: CollectionMeta): number {
     const current = this.meta(meta);
@@ -59,7 +59,7 @@ export class TrustResolver {
     return {
       trusted: true,
       class: current.scope,
-      source: `${current.scope}:${current.displayName}/${doc.id}`,
+      source: `${current.scope}:${current.displayName || current.logicalId || current.id}${doc.id ? `/${doc.id}` : ''}`,
       classTrust: this.classDefault(current.scope),
       ...(current.trust !== undefined
         ? { collectionTrust: current.trust }

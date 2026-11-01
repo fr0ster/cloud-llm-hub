@@ -30,7 +30,12 @@ import {
 } from './planner-memory-scope';
 import { turnOwner } from './session-history-rag';
 import { fingerprintHash } from './tool-corpus';
-import { runWithTrustResolver, type TrustResolver } from './trust-resolver';
+import {
+  resolverFor,
+  runWithTrustResolver,
+  type TrustResolver,
+} from './trust-resolver';
+import { trustedRetrievalStore } from './trusted-retrieval';
 
 let sharedPlannerMemoryRag: IRag | undefined;
 
@@ -90,12 +95,13 @@ export async function plannerSessionOptions(
       memory: () => {
         const rag = getSharedPlannerMemoryRag();
         return rag
-          ? resolver
-            ? roleRetrievalStore(
-                scopedPlannerMemory(rag, turnOwner(userId, key), key),
-                resolver,
-              )
-            : scopedPlannerMemory(rag, turnOwner(userId, key), key)
+          ? trustedRetrievalStore(
+              scopedPlannerMemory(rag, turnOwner(userId, key), key),
+              async () =>
+                typeof resolver === 'function'
+                  ? resolver()
+                  : (resolver ?? resolverFor(getCollectionRegistry())),
+            )
           : undefined;
       },
       embedding: embedding
@@ -129,8 +135,16 @@ export async function plannerSessionOptions(
           'user',
         );
         const rag = id ? await registry.getRagStore(id) : null;
-        if (!rag || !resolver) return rag;
-        return roleRetrievalStore(rag, resolver);
+        const meta = id ? await registry.getCollection(id) : null;
+        if (!rag || !meta) return rag;
+        return trustedRetrievalStore(
+          rag,
+          async () =>
+            typeof resolver === 'function'
+              ? resolver()
+              : (resolver ?? resolverFor(registry)),
+          meta,
+        );
       },
       warn: (message) => cds.log('planner-memory').warn(message),
     });
@@ -211,6 +225,13 @@ export async function planAuthorContextNotes(
                 sourceId: meta.sourceId,
                 offset: meta.offset,
                 text: entry.text,
+                trust:
+                  typeof meta.trust === 'number'
+                    ? meta.trust
+                    : resolverFor({
+                        currentMeta: () => undefined,
+                      }).classDefault('session'),
+                source: 'session',
               });
               if (memory.length >= (config.memoryK ?? 8)) break;
             }

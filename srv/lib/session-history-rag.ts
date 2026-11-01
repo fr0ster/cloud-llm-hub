@@ -1,3 +1,4 @@
+import { resolverFor, type TrustResolver } from './trust-resolver';
 /**
  * Semantic recall of earlier turns.
  *
@@ -78,6 +79,7 @@ export function parseTurnOwner(
 }
 
 export interface SessionHistoryOptions {
+  trustResolver?: () => TrustResolver;
   storageBackend?: string;
   /** Where best-effort failures of the persistent path are reported. */
   log?: { warn(message: string, data?: unknown): void };
@@ -357,7 +359,19 @@ export class SessionHistoryRag implements IRag {
     // No owner means no conversation to recall for. Fail closed: returning
     // everything here would hand one caller another's turns.
     if (!owner) return [];
-    return rows.filter((r) => r.metadata.owner === owner);
+    return rows
+      .filter((r) => r.metadata.owner === owner)
+      .map((r) => ({
+        ...r,
+        metadata: {
+          ...r.metadata,
+          source: 'session',
+          trust: (
+            this.options.trustResolver?.() ??
+            resolverFor({ currentMeta: () => undefined })
+          ).classDefault('session'),
+        },
+      }));
   }
 
   async query(

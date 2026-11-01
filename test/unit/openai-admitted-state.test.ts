@@ -222,7 +222,15 @@ describe('the RAG stores a request names', () => {
     await handleChatCompletions(req, fakeRes() as unknown as Response);
 
     expect(prompt).toContain('The office cat is called Pixel.');
-    expect(agentSearch).toEqual({ ok: true, value: [doc] });
+    expect(agentSearch).toEqual({
+      ok: true,
+      value: [
+        {
+          ...doc,
+          metadata: { ...doc.metadata, source: 'user:col-1/d1', trust: 3 },
+        },
+      ],
+    });
   });
 
   it('are never installed for a request refused at the door (RAG)', async () => {

@@ -1,4 +1,5 @@
-import type { IUsageRecorder, Message } from '@mcp-abap-adt/llm-agent';
+import type { IRag, IUsageRecorder, Message } from '@mcp-abap-adt/llm-agent';
+import { formatTrustTag } from '@mcp-abap-adt/llm-agent';
 import type cds from '@sap/cds';
 import type { Request } from 'express';
 import { getCollectionRegistry, getQueryEmbedder } from '../agent-manager';
@@ -7,6 +8,8 @@ import { CollectionSearchRag } from '../rag-collections';
 import { CollectionBackendError } from './collection-persistence';
 import { collectionEnabled } from './collection-toggle';
 import { withRagContext } from './rag-context-marker';
+import { resolverFor } from './trust-resolver';
+import { trustedRetrievalStore } from './trusted-retrieval';
 import { retrievalRecord } from './usage/hub-records';
 import { usageRuntime } from './usage/runtime';
 
@@ -32,9 +35,10 @@ export function requestedCollectionIds(
  * Interleaved admitted runs still share deps, a pre-existing race until stores
  * become per-request. CollectionSearchRag excludes tool/destination filters.
  */
-export function collectionRetrieval(agent: unknown) {
-  // biome-ignore lint/suspicious/noExplicitAny: access internal deps for RAG injection
-  const deps = (agent as any).deps;
+export function collectionRetrieval(agent: object) {
+  const deps = Reflect.get(agent, 'deps') as {
+    ragStores: Record<string, IRag>;
+  };
   const originalRagStores = deps.ragStores;
   return {
     restore() {
@@ -194,7 +198,13 @@ export function collectionRetrieval(agent: unknown) {
         if (injected.length > 0) {
           const mergedStores = { ...originalRagStores };
           for (const [key, store] of Object.entries(dynamicStores)) {
-            mergedStores[key] = new CollectionSearchRag(store);
+            const meta = await registry.getCollection(key);
+            if (meta)
+              mergedStores[key] = trustedRetrievalStore(
+                new CollectionSearchRag(store),
+                () => resolverFor(registry),
+                meta,
+              );
           }
           deps.ragStores = mergedStores;
           log.info('Dynamic RAG collections injected', {
@@ -246,7 +256,13 @@ export function collectionRetrieval(agent: unknown) {
             // Degraded collections were refused above, before the turn started.
             const store = await registry.getRagStore(colId);
             if (!store) continue;
-            const result = await store.query(embedding, 3);
+            const meta = await registry.getCollection(colId);
+            if (!meta) continue;
+            const result = await trustedRetrievalStore(
+              store,
+              () => resolverFor(registry),
+              meta,
+            ).query(embedding, 3);
             if (result.ok) {
               for (const r of result.value) {
                 log.info('RAG search result', {
@@ -257,7 +273,9 @@ export function collectionRetrieval(agent: unknown) {
                 const threshold =
                   Number(process.env.RAG_SCORE_THRESHOLD) || 0.15;
                 if (r.score >= threshold) {
-                  relevantTexts.push(r.text);
+                  relevantTexts.push(
+                    `${formatTrustTag(String(r.metadata.source), Number(r.metadata.trust))}\n${r.text}`,
+                  );
                 }
               }
             }

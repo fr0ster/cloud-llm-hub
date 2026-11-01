@@ -663,6 +663,8 @@ async function runRagTool(
       title?: string;
       text: string;
       score: number;
+      source?: string;
+      trust?: number;
     }[] = [];
     const unavailable: { collection: string; error: string }[] = [];
     for (const id of ids) {
@@ -697,6 +699,15 @@ async function runRagTool(
               title: doc.text.split(/\r?\n/, 1)[0].slice(0, 120),
               text: doc.text,
               score: hit.score,
+              ...(() => {
+                const attributes = recordAttributes(
+                  doc,
+                  resolverFor(registry).inputFor(doc, meta),
+                );
+                return attributes.trusted
+                  ? { source: attributes.source, trust: attributes.trust }
+                  : {};
+              })(),
             });
         }
         hits.push(...collectionHits);

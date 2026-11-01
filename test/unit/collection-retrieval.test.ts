@@ -4,7 +4,11 @@ jest.mock('../../srv/agent-manager', () => ({
 }));
 jest.mock('../../srv/collection-ids', () => ({ resolveRouteId: jest.fn() }));
 
-import type { Message } from '@mcp-abap-adt/llm-agent';
+import {
+  type IRag,
+  type Message,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { getCollectionRegistry } from '../../srv/agent-manager';
 import { resolveRouteId } from '../../srv/collection-ids';
@@ -25,6 +29,7 @@ const req = (header?: string, body: unknown = {}) => ({
 });
 const query = jest.fn();
 const registry = {
+  currentMeta: () => undefined,
   ready: Promise.resolve(),
   heldPresetFor: jest.fn((): string | undefined => undefined),
   getEnabled: jest.fn((): boolean | undefined => undefined),
@@ -32,6 +37,7 @@ const registry = {
     async (): Promise<{
       id: string;
       logicalId: string;
+      displayName: string;
       scope: string;
       owner: string;
       sessionId?: string;
@@ -39,6 +45,7 @@ const registry = {
     }> => ({
       id: 'physical',
       logicalId: 'selected',
+      displayName: 'Notes',
       scope: 'user',
       owner: 'alice',
     }),
@@ -60,7 +67,13 @@ beforeEach(() => {
   registry.getEnabled.mockReturnValue(undefined);
   query.mockResolvedValue({
     ok: true,
-    value: [{ text: 'knowledge', score: 1 }],
+    value: [
+      {
+        text: 'knowledge',
+        score: 1,
+        metadata: { id: 'r1', source: 'system:x', trust: 5 },
+      },
+    ],
   });
 });
 
@@ -131,7 +144,7 @@ it('reads header or body ids, with header precedence', () => {
 });
 
 it('resolves ids, appends context with provenance, and restores stores', async () => {
-  const original = {};
+  const original: Record<string, IRag> = {};
   const agent = { deps: { ragStores: original } };
   const step = collectionRetrieval(agent);
   const messages: Message[] = [{ role: 'user', content: 'question' }];
@@ -151,7 +164,7 @@ it('resolves ids, appends context with provenance, and restores stores', async (
       false,
     );
     expect(result.messages?.[0].content).toBe(
-      `question${RAG_CONTEXT_MARKER}knowledge`,
+      `question${RAG_CONTEXT_MARKER}[source: user:Notes/r1; trust 3]\nknowledge`,
     );
     if (!result.messages) throw new Error('unexpected refusal');
     expect(userTextOf(result.messages[0])).toBe('question');
@@ -160,6 +173,15 @@ it('resolves ids, appends context with provenance, and restores stores', async (
       selected: expect.any(CollectionSearchRag),
     });
     expect(query).toHaveBeenCalledWith(expect.anything(), 3);
+    const injected = await agent.deps.ragStores.selected.query(
+      new TextOnlyEmbedding('question'),
+      1,
+    );
+    if (!injected.ok) throw injected.error;
+    expect(injected.value[0].metadata).toMatchObject({
+      source: 'user:Notes/r1',
+      trust: 3,
+    });
   } finally {
     step.restore();
   }
@@ -169,7 +191,7 @@ it('resolves ids, appends context with provenance, and restores stores', async (
 it('keeps the original messages when no result passes the threshold', async () => {
   query.mockResolvedValue({
     ok: true,
-    value: [{ text: 'irrelevant', score: -1 }],
+    value: [{ text: 'irrelevant', score: -1, metadata: { id: 'r1' } }],
   });
   const step = collectionRetrieval({ deps: { ragStores: {} } });
   const messages: Message[] = [{ role: 'user', content: 'question' }];
@@ -290,6 +312,7 @@ it('allows explicitly attached session uploads for that request', async () => {
   registry.getEnabled.mockReturnValue(false);
   registry.getCollection.mockResolvedValueOnce({
     id: 'physical',
+    displayName: 'Notes',
     logicalId: 'uploads',
     scope: 'session',
     owner: 'alice',
@@ -309,6 +332,7 @@ it('allows explicitly attached session uploads for that request', async () => {
 it('explicit agents selections never reach knowledge stores or degraded checks', async () => {
   registry.getCollection.mockResolvedValueOnce({
     id: 'physical',
+    displayName: 'Notes',
     logicalId: 'agents',
     scope: 'user',
     owner: 'alice',

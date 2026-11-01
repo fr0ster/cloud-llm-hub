@@ -6,7 +6,7 @@ import {
   type ExecutorStepArgs,
   runExecutorStep as executeExecutorStep,
 } from './lib/executor-step';
-import { TrustResolver } from './lib/trust-resolver';
+import { resolverFor, TrustResolver } from './lib/trust-resolver';
 import { TrustStore } from './lib/trust-store';
 
 export function runExecutorStep(...args: ExecutorStepArgs) {
@@ -1452,7 +1452,10 @@ export function getSharedHistoryRag(): SessionHistoryRag | undefined {
       stores.create('session', 'history'),
       currentTurnOwner,
       undefined,
-      { storageBackend: kind },
+      {
+        storageBackend: kind,
+        trustResolver: () => resolverFor(getCollectionRegistry()),
+      },
     );
     return sharedHistoryRag;
   }
@@ -1471,7 +1474,11 @@ export function getSharedHistoryRag(): SessionHistoryRag | undefined {
     ),
     currentTurnOwner,
     undefined,
-    { storageBackend: kind, log },
+    {
+      storageBackend: kind,
+      log,
+      trustResolver: () => resolverFor(getCollectionRegistry()),
+    },
   );
   return sharedHistoryRag;
 }
