@@ -69,6 +69,8 @@ Repo `C:\Users\OleksiiKyslytsia\projects\llm-agent`, branch `feat/trust-tag` fro
   `tool-trace-render.ts` (checker evidence); and a `get_task` response projection in `planner-tools-client.ts`
   (~420) that tags each `toolTrace` result in a copy, never the board's stored task. Stored traces, outcome
   parsing and truncation counts stay untagged; a result is tagged once.
+- Rerankers: `reranker/llm-reranker.ts` (~128) and `reranker/decision-reranker.ts` (~155) render candidates with
+  the same tag when `metadata.trust` is a number; relevance scoring is unchanged (no trust-based filtering).
 - Changeset: minor for both packages.
 
 **Interfaces:**
@@ -105,6 +107,7 @@ test('toolTrust tags model-facing tool results only', () => {
   // recorded invocation untagged; truncated result tagged once; tool without toolTrust answer untagged;
   // ContextAssembler history, checker evidence and get_task projection tagged once; board task unchanged
 });
+test('rerankers show the trust tag and keep relevance scoring', () => {});
 test('ContextAssembler tags results with metadata.trust', () => {
   // RagResult { text: 'x', metadata: { trust: 3, source: 'user:Notes/r1' }, score: 0.9 } → "- [source: user:Notes/r1; trust 3] x"
   // without metadata.trust → "- x"; non-number trust → "- x"
@@ -171,8 +174,8 @@ derives provenance from the collection context instead. Content updates preserve
 
 **Interfaces:**
 - Produces: `documentView(doc: RagDocument, collection: CollectionMeta, defaults): (RagDocument & { enabled: boolean; trusted: true; trust: number; trustOverride?: number; source: string }) | (RagDocument & { enabled: boolean; trusted: false })`
-  — `trusted: false` without trust fields for agent-preset collections; `recordAttributes` follows the same
-  discriminated shape
+  — `trusted: false` without trust fields for agent-preset collections. `RecordTrustView = { trusted: true; trust: number; trustOverride?: number; source: string } | { trusted: false }`
+  is the one shared union; `defaults: Record<TrustClass, number>`.
   — the one projection for REST document listings and reads (`srv/rag-handler.ts` ~708, ~911) and the virtual
   `@skills` listing; `recordAttributes` (MCP) uses the same resolution.
 - Produces: `collectionView(meta: CollectionMeta, defaults): (CollectionMeta & { trusted: true; trust: number; trustOverride?: number; trustClass: TrustClass }) | (CollectionMeta & { trusted: false })`
@@ -180,8 +183,10 @@ derives provenance from the collection context instead. Content updates preserve
   — the one response projection for `GET /rag/collections` (ordinary and virtual rows) and collection tools;
   it never writes defaults back to persisted metadata.
 - Produces: `TrustHistoryEntry = { from: number | null; to: number | null; actor: string; at: string }`
-  (max 20, newest last); `recordAttributes(doc: RagDocument, collection: CollectionMeta, defaults: Record<TrustClass, number>): { enabled: boolean; trust: number; trustOverride?: number; source: string }`
-  where `trust` is effective and `source` is `<class>:<collection displayName>/<record id>`.
+  (max 20, newest last); `recordAttributes(doc: RagDocument, collection: CollectionMeta, defaults: Record<TrustClass, number>): { enabled: boolean } & RecordTrustView`
+  (was `recordAttributes(metadata)`; callers to update: `rag_read`, hidden-record reads and `collection_records` in
+  `srv/agent-mcp-rag.ts`, and any other caller found by `grep recordAttributes`) where `trust` is effective and
+  `source` is `<class>:<collection displayName>/<record id>`.
 
 - [ ] **Step 1: Failing tests:** round-trip collection `trust: 4` + `trustHistory` and record `_trust: 1.5` +
   `_trustHistory` through PGlite restore (restart keeps values and the last 20 history entries); a content update keeps the record override; add / update / bulk / upload with
@@ -198,7 +203,8 @@ derives provenance from the collection context instead. Content updates preserve
 ### Task 4: Global informational skills and the trust store
 
 **Files:**
-- Create: `srv/lib/trust-store.ts` (hub-internal store `h_trust`, same provider pattern as `h_sessions`)
+- Create: `srv/lib/trust-store.ts` (hub-internal store `h_trust`, same provider pattern as `h_sessions`),
+  `srv/lib/trust-resolver.ts` (contract in the cache section below)
 - Modify: `srv/lib/skills-pool.ts` (read front matter `kind: base | informational`, default `informational`),
   `srv/lib/collection-persistence.ts` orphan-sweep exclusion lists (~lines 794–797 and 863–866: add the
   `h_trust` predicate, including prefixed provider names)
@@ -223,8 +229,15 @@ derives provenance from the collection context instead. Content updates preserve
 Cache contract (applies to Tasks 3–7): effective trust is resolved live on every read through one
 `TrustResolver` created at startup with the registry, the `TrustStore` (initialized on the same RAG provider as
 the other `h_*` stores) and the defaults. Collection trust is read from the registry's current meta, never
-captured when a long-lived store wrapper is built. The registry and `TrustStore` are the only caches; a write
-updates its own entry (record, collection or source) and nothing else.
+captured when a long-lived store wrapper is built. `TrustStore` is a persistence facade without its own cache:
+caching stays in the DB provider (cache-only-in-DB-provider rule) with key-scoped invalidation, so a write
+invalidates only its own record, collection or source entry.
+
+`TrustResolver` (`srv/lib/trust-resolver.ts`, created in Task 4, wired at startup in `srv/agent-manager.ts` next to
+the registry): `classDefault(c: TrustClass): number` and `systemTool(name: string): number` are synchronous
+(defaults only — `ToolTrust` is synchronous); `collection(meta: CollectionMeta): number`,
+`record(doc: RagDocument, meta: CollectionMeta): number` are synchronous over the registry's current meta and the
+stored `_trust`; `skill(name: string): Promise<number>` awaits `TrustStore`.
 
 ### Task 5: Admin setters (REST + MCP)
 
@@ -263,8 +276,11 @@ updates its own entry (record, collection or source) and nothing else.
   `user` (Task 6); agents collection → `TRUST_FIXED`; base skill → `TRUST_FIXED`;
   values `"5"`, `4.55`, `-1`, `5.1`, `NaN` → `INVALID_TRUST`; `null` on `record_set_trust` clears;
   malformed values asserted through REST dispatch and MCP tool dispatch (status / error code), not only
-  through the schema; both tools listed on agent MCP and internal tool lists (parity test); a pending agent copy and another
-  user's collection stay `NOT_FOUND` for admin and non-admin alike.
+  through the schema; both tools are listed by `eligibleRagTools()` wherever the other write RAG tools are
+  (agent MCP and internal catalogues; parity test), and, like them, are hidden in read-only mode and by profile
+  ceilings (the same-tools rule keeps ceilings); a non-admin sees them and gets `FORBIDDEN` on call; a pending agent copy and another
+  user's agents collection stay `NOT_FOUND` for admin and non-admin alike; another user's ordinary collection
+  stays visible to the admin (existing policy) and returns `TRUST_FIXED`.
 - [ ] **Step 2–4:** Fail, implement, pass.
 - [ ] **Step 5:** Commit `feat(trust): admin trust setters`.
 
@@ -293,7 +309,7 @@ updates its own entry (record, collection or source) and nothing else.
   `source: 'system:x'` is rendered with its real source; both chat auto-retrieval and library pipeline retrieval
   (`ContextAssembler`) show the tag; coordinator retrieval, `search_knowledge` and planner-create/revise context
   show it for old records without trust and for records with spoofed metadata; after an admin changes a
-  collection's or the `@skills` source's trust, an already-built agent's next retrieval shows the new value; coordinator recall of
+  collection's or the `@skills` source's trust, an already-built agent's next retrieval shows the new value (record and source writes, no second cache); coordinator recall of
   planner-memory records written before this change shows `; trust 2`.
 - [ ] **Step 2–4:** Fail, implement, pass.
 - [ ] **Step 5:** Commit `feat(trust): tag RAG paths`.
