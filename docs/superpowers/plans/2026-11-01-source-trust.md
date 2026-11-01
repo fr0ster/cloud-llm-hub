@@ -63,12 +63,17 @@ Repo `C:\Users\OleksiiKyslytsia\projects\llm-agent`, branch `feat/trust-tag` fro
 - Tool-result trust (one contract, all in this task): `ToolTrust = (toolName: string) => { source: string; trust: number } | undefined`
   exported from `@mcp-abap-adt/llm-agent`. Plumbing: `SmartAgentConfig.toolTrust?: ToolTrust` (set via
   `SmartAgentBuilder.withToolTrust(fn)`), `DialogueSessionOptions.toolTrust?: ToolTrust` (passed on to
-  `PlannerToolsClient` and `tool-trace-render.ts`). Applied only when building model-facing text, after trace
-  capture: the tool message content in `pipeline/handlers/tool-loop-core.ts` (~335) and
-  `mixed-tool-call-handler.ts` (~72) after `recordToolInvocation`; `ContextAssembler` tool-history rendering;
+  `PlannerToolsClient` and `tool-trace-render.ts`). Raw and model-facing values stay separate: availability checks, session logging, execution callbacks, trace
+  capture and pending-result storage keep the raw `text`; the tag is applied only where the tool message for
+  the model is constructed (`pipeline/handlers/tool-loop-core.ts` ~491) and where pending results are injected
+  as messages (mixed-tool-call path). `ToolTrust` is wired through the tool-loop interfaces,
+  `ContextAssemblerConfig` and `default-pipeline.ts`; `ContextAssembler` tool-history rendering;
   `tool-trace-render.ts` (checker evidence); and a `get_task` response projection in `planner-tools-client.ts`
   (~420) that tags each `toolTrace` result in a copy, never the board's stored task. Stored traces, outcome
   parsing and truncation counts stay untagged; a result is tagged once.
+- Skill discovery: `skills/skill-utils.ts` `scanDirsForSkills` reports a name that appears in several directories
+  with different front matter `kind` as an error before deduplication (`byName.set`), instead of silently keeping
+  one.
 - Rerankers: `reranker/llm-reranker.ts` (~128) and `reranker/decision-reranker.ts` (~155) render candidates with
   the same tag when `metadata.trust` is a number; relevance scoring is unchanged (no trust-based filtering).
 - Changeset: minor for both packages.
@@ -93,7 +98,7 @@ test('normalizeTrust', () => {
 // libs
 test('planner knowledge label carries trust', () => {
   const [block] = renderPlannerRetrieval({ memory: [], knowledge: [{ collection: 'kb', id: 'r1', text: 't', trust: 4 }] });
-  assert.match(block, /\(kb\/r1; trust 4\) t/);
+  assert.match(block, /\(user:kb\/r1; trust 4\) t/); // entry.source replaces the collection/id label when present
 });
 test('planner label without trust is unchanged', () => { /* (kb/r1) t */ });
 test('memory label carries trust', () => { /* (planner-input s1 q1 offset 0; trust 2) text */ });
@@ -103,11 +108,13 @@ test('planner retrieval keeps trust and source from metadata', async () => {
 });
 test('hard-mode skill selection loads nothing when no skill matches (pipeline and rag-orchestrator)', () => { /* was: all skills */ });
 test('toolTrust tags model-facing tool results only', () => {
-  // tool-loop-core and mixed-tool-call-handler: model message '[source: system:GetClass; trust 4.5]\n<result>',
+  // tool-loop-core message construction and pending-result injection: model message '[source: system:GetClass; trust 4.5]\n<result>',
+  // internal consumers (availability check, session log, callbacks, pending store) see the raw text,
   // recorded invocation untagged; truncated result tagged once; tool without toolTrust answer untagged;
   // ContextAssembler history, checker evidence and get_task projection tagged once; board task unchanged
 });
 test('rerankers show the trust tag and keep relevance scoring', () => {});
+test('skill discovery rejects one name with base and informational kinds across two directories', () => {});
 test('ContextAssembler tags results with metadata.trust', () => {
   // RagResult { text: 'x', metadata: { trust: 3, source: 'user:Notes/r1' }, score: 0.9 } → "- [source: user:Notes/r1; trust 3] x"
   // without metadata.trust → "- x"; non-number trust → "- x"
@@ -300,15 +307,20 @@ stored `_trust`; `skill(name: string): Promise<number>` awaits `TrustStore`.
   gets `trust`/`source` too), `srv/lib/planner-context.ts`. Enrichment always resolves effective trust
   (`_trust` → collection → default) and overwrites any `metadata.trust`/`metadata.source`, so old records without
   trust and records with spoofed provenance render correctly.
+- Modify: `srv/lib/dialogue-attachments.ts` and `srv/lib/dialogue-planner-content.ts` (~72, `[attached files]`):
+  each attached document preview starts with its tag (provenance from the collection meta via
+  `TrustResolver`); the tag counts toward the preview budget and is never truncated.
 - Test: `test/unit/trust-tags-rag.test.ts`
 
 - [ ] **Step 1: Failing tests:** exact strings — chat retrieval block contains
   `[source: user:Notes/r1; trust 3]\n<text>`; `rag_search` hit JSON has `"source":"user:Notes/r1","trust":3`;
-  planner block line `(Notes/r1; trust 3) <text>`; session history item `[source: session; trust 2]`; a record
+  planner block line `(user:Notes/r1; trust 3) <text>` (coordinator, plan author and `search_knowledge`
+  output); session history item `[source: session; trust 2]`; a record
   override 1 beats collection 4; a name with `[x]` is escaped; a record whose free-form metadata claims
   `source: 'system:x'` is rendered with its real source; both chat auto-retrieval and library pipeline retrieval
   (`ContextAssembler`) show the tag; coordinator retrieval, `search_knowledge` and planner-create/revise context
-  show it for old records without trust and for records with spoofed metadata; after an admin changes a
+  show it for old records without trust and for records with spoofed metadata; each `[attached files]` entry
+  carries a whole tag even when the preview is truncated; after an admin changes a
   collection's or the `@skills` source's trust, an already-built agent's next retrieval shows the new value (record and source writes, no second cache); coordinator recall of
   planner-memory records written before this change shows `; trust 2`.
 - [ ] **Step 2–4:** Fail, implement, pass.
@@ -323,6 +335,9 @@ stored `_trust`; `skill(name: string): Promise<number>` awaits `TrustStore`.
 - Modify: inject it everywhere a builder or dialogue session is created: `configureDestinationAgentBuilder`
   (~2736, `withToolTrust`), planner construction (~2882), destination recording (~3130), executor/checker workers
   and `DialogueSession.open` (`toolTrust`). No client decorator; recording clients are unchanged.
+- Modify: `srv/lib/step-reviewer.ts` (~69–137): `describeTool()` and `renderHistory()` add the system tag to
+  embedded-tool outcomes in the critic messages they build; `parseToolOutcome()`, recordings and truncation
+  measurements stay raw.
 - Create: `srv/lib/trusted-skill.ts` — `withSkillTrust(skill: ISkill, trust: () => Promise<number>): ISkill`, a
   wrapper preserving every other skill method and metadata, whose `getContent` prefixes
   `[source: global:skills/<name>; trust n]` resolved live (no cached value).
@@ -340,7 +355,8 @@ stored `_trust`; `skill(name: string): Promise<number>` awaits `TrustStore`.
   `[source: system:GetClass; trust 4.5]\n<result>`; the recorded result and reviewer `parseToolOutcome` input
   are untagged; a truncated result has the tag once and the same truncation marker; RAG and orchestration tool
   results are untagged; replayed tool history and checker evidence / `get_task` traces of
-  an embedded SAP call show the tag once, stored traces do not; informational skill content starts with `[source: global:skills/<name>; trust 4.5]`,
+  an embedded SAP call show the tag once, stored traces do not; the step reviewer's critic messages show the tag
+  for embedded-tool outcomes; informational skill content starts with `[source: global:skills/<name>; trust 4.5]`,
   base skill content has no tag; after `setRecord` on an
   already-built agent the next `getContent` and the next retrieved `skill:<name>` description both show the new
   trust; tool-group entries in the same store stay untagged.
@@ -356,7 +372,8 @@ file skills go through semantic selection (library `pipeline/handlers/skill-sele
 - Modify: `srv/lib/skills-pool.ts` / `srv/lib/composite-skill-manager.ts` — two views over the same pool:
   `informationalSkills(): ISkillManager` (passed to `SmartAgentBuilder`, which vectorizes only what it is given)
   and `baseSkills(): readonly ISkill[]` (used for system-content assembly). Plugin-provided skills follow their own
-  front matter (default informational). A name that exists as both kinds fails startup with a clear error.
+  front matter (default informational). A name that exists as both kinds fails startup with a clear error (library discovery check from Task 1 for
+  one file-system manager, hub check across managers).
 - Modify: `srv/agent-manager.ts` system-content assembly for every role — `configureDestinationAgentBuilder`
   (chat/executor), `buildPlannerAgent` (coordinator), plan-author construction (planner-create/revise) and the
   profile/worker paths (executor, checker): base skill content is appended after the profile system prompt and
