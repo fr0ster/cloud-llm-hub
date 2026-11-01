@@ -12,6 +12,8 @@
  *
  * Skills are identified by id. Equal display names do not hide other skills.
  */
+import { createHash } from 'node:crypto';
+import path from 'node:path';
 import type { ISkill, ISkillManager } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 
@@ -119,11 +121,40 @@ export class CompositeSkillManager implements ISkillManager {
           });
           continue;
         }
-        for (const [index, skill] of result.value.entries()) {
+        const identities = result.value.map((skill) => {
+          const location = skillLocation(skill);
+          const key = location ? path.posix.basename(location) : skill.name;
           const id =
             typeof skill.meta.id === 'string'
               ? skill.meta.id
-              : JSON.stringify([source, index]);
+              : `${source}/${key}`;
+          return { skill, location, id };
+        });
+        for (const entry of identities) {
+          const { skill, location } = entry;
+          let id = entry.id;
+          if (identities.filter((other) => other.id === id).length > 1) {
+            // Locations distinguish equal directory names and explicit ids without
+            // tying persisted trust or cached bodies to discovery order.
+            const content = location ? undefined : await skill.getContent();
+            const discriminator =
+              location ??
+              JSON.stringify([
+                skill.name,
+                skill.description,
+                skill.meta,
+                content?.ok ? content.value : '',
+              ]);
+            id = `${id}/${createHash('sha256').update(discriminator).digest('hex')}`;
+            cds
+              .log('skills')
+              .warn('skill identity collision, using stable disambiguator', {
+                source,
+                id: entry.id,
+                location,
+                resolvedId: id,
+              });
+          }
           byId.set(id, {
             name: skill.name,
             description: skill.description,
@@ -179,4 +210,19 @@ export class CompositeSkillManager implements ISkillManager {
       ),
     };
   }
+}
+
+/** Library filesystem skills expose dir; plugins may expose location metadata. */
+function skillLocation(skill: ISkill): string | undefined {
+  const directory = 'dir' in skill ? skill.dir : undefined;
+  for (const value of [
+    directory,
+    skill.meta.relativePath,
+    skill.meta.path,
+    skill.meta.dir,
+  ]) {
+    if (typeof value === 'string' && value.length > 0)
+      return value.replaceAll('\\', '/').replace(/\/$/, '');
+  }
+  return undefined;
 }

@@ -18,6 +18,7 @@ import { RagWriteError } from './rag-write-error';
 import { buildSkillsPool } from './skills-pool';
 import { trustWriteError } from './trust-guard';
 import { resolverFor } from './trust-resolver';
+import { skillId } from './trusted-skill';
 
 export { RagWriteError } from './rag-write-error';
 
@@ -35,7 +36,7 @@ export async function setRagTrust(
     const skill =
       input.record === undefined
         ? undefined
-        : skills.value.find((s) => s.name === input.record);
+        : skills.value.find((s) => skillId(s) === input.record);
     const refusal = trustWriteError({
       admin: identity.admin,
       value: input.trust,

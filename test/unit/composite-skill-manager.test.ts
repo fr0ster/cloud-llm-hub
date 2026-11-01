@@ -1,9 +1,17 @@
-import { type ISkillManager, SkillError } from '@mcp-abap-adt/llm-agent';
+import {
+  InMemoryRag,
+  type ISkill,
+  type ISkillManager,
+  SkillError,
+} from '@mcp-abap-adt/llm-agent';
 import {
   CompositeSkillManager,
   type SkillSource,
 } from '../../srv/lib/composite-skill-manager';
 import { logSkillsPool } from '../../srv/lib/skills-pool';
+import { parseTrustDefaults } from '../../srv/lib/trust';
+import { TrustResolver } from '../../srv/lib/trust-resolver';
+import { TrustStore } from '../../srv/lib/trust-store';
 
 test.each(['returned', 'thrown'])(
   'unrelated conflicting kind error (%s) does not fail startup',
@@ -140,4 +148,74 @@ describe('CompositeSkillManager', () => {
     if (!r.ok) throw new Error('matchSkills failed');
     expect(r.value.map((s) => s.name)).toEqual(['creating-draft-table']);
   });
+});
+
+test('plugin identities, trust overrides and cached base bodies survive reordering', async () => {
+  const store = new TrustStore(new InMemoryRag(), 3);
+  const resolver = new TrustResolver({}, store, parseTrustDefaults(undefined));
+  const make = (name: string, kind: string): ISkill => ({
+    ...skill(name, '', name),
+    meta: { name, description: '', kind },
+  });
+  const skills = [
+    make('alpha', 'informational'),
+    make('beta', 'informational'),
+    make('base-a', 'base'),
+    make('base-b', 'base'),
+  ];
+  const pool = new CompositeSkillManager(
+    [
+      src('plugin', {
+        ...manager([]),
+        listSkills: async () => ({ ok: true, value: skills }),
+      }),
+    ],
+    () => resolver,
+  );
+  await store.setRecord('skills', 'plugin/alpha', 2, 'alice');
+  expect(await pool.baseSkillContents()).toEqual(['base-a', 'base-b']);
+  skills.reverse();
+  skills.push(make('new', 'informational'));
+  expect(await pool.baseSkillContents()).toEqual(['base-b', 'base-a']);
+  const alpha = await pool.getSkill('plugin/alpha');
+  if (!alpha.ok) throw alpha.error;
+  expect(alpha.value?.name).toBe('alpha');
+  expect(await alpha.value?.getContent()).toMatchObject({
+    value: '[source: global:skills/plugin/alpha; trust 2]\nalpha',
+  });
+  const beta = await pool.getSkill('plugin/beta');
+  if (!beta.ok) throw beta.error;
+  expect(beta.value?.name).toBe('beta');
+});
+
+test('colliding plugin directory names retain stable location-derived ids', async () => {
+  const skills = ['one/shared', 'two/shared'].map((dir) => ({
+    ...skill('Same', '', dir),
+    dir,
+    meta: { name: 'Same', description: '' },
+  }));
+  const pool = new CompositeSkillManager([
+    src('plugin', {
+      ...manager([]),
+      listSkills: async () => ({ ok: true, value: skills }),
+    }),
+  ]);
+  const before = await pool.listSkills();
+  skills.reverse();
+  const after = await pool.listSkills();
+  if (!before.ok || !after.ok) throw new Error('list failed');
+  expect(before.value).toHaveLength(2);
+  expect(new Set(before.value.map((s) => s.meta.id)).size).toBe(2);
+  expect(after.value.map((s) => s.meta.id)).toEqual(
+    before.value.map((s) => s.meta.id).reverse(),
+  );
+});
+
+test('plugin explicit ids retain their existing identity', async () => {
+  const pool = new CompositeSkillManager([
+    src('plugin', manager([skill('Display', '', 'body', 'stable-id')])),
+  ]);
+  const result = await pool.getSkill('stable-id');
+  if (!result.ok) throw result.error;
+  expect(result.value?.name).toBe('Display');
 });

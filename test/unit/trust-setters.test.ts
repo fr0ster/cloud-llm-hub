@@ -12,6 +12,7 @@ import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
 import express from 'express';
 import { userCollectionId } from '../../srv/collection-ids';
 import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
+import { CompositeSkillManager } from '../../srv/lib/composite-skill-manager';
 import {
   buildRagToolSchemas,
   eligibleRagTools,
@@ -22,6 +23,7 @@ import { buildSkillsPool } from '../../srv/lib/skills-pool';
 import { parseTrustDefaults } from '../../srv/lib/trust';
 import { TrustResolver } from '../../srv/lib/trust-resolver';
 import { TrustStore } from '../../srv/lib/trust-store';
+import { skillId } from '../../srv/lib/trusted-skill';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { registerRagRoutes } from '../../srv/rag-handler';
 import {
@@ -60,7 +62,8 @@ beforeEach(async () => {
   }
   const skills = await buildSkillsPool().listSkills();
   if (!skills.ok) throw skills.error;
-  skill = skills.value.find((s) => s.meta.kind !== 'base')?.name ?? '';
+  const informational = skills.value.find((s) => s.meta.kind !== 'base');
+  skill = informational ? skillId(informational) : '';
   expect(skill).not.toBe('');
   const app = express();
   app.use(express.json());
@@ -283,10 +286,10 @@ test('base skills are fixed and missing skill/collection/record is NOT_FOUND', a
     ok: true,
     value: [{ ...first, meta: { ...first.meta, kind: 'base' } }],
   }));
-  expect((await rest('@skills', 3, first.name)).status).toBe(409);
-  expect((await mcp('@skills', 3, first.name)).structuredContent).toMatchObject(
-    { error: { code: 'TRUST_FIXED' } },
-  );
+  expect((await rest('@skills', 3, skillId(first))).status).toBe(409);
+  expect(
+    (await mcp('@skills', 3, skillId(first))).structuredContent,
+  ).toMatchObject({ error: { code: 'TRUST_FIXED' } });
   for (const [collection, record] of [
     ['@skills', 'absent'],
     ['global', 'absent'],
@@ -333,4 +336,59 @@ test('record trust writes touch only their own record and virtual store key', as
   expect(sourceWrite).not.toHaveBeenCalled();
   expect((await mcp('@skills', null, skill)).isError).toBeUndefined();
   expect(await registry.trustResolver?.skill(skill)).toBe(3);
+});
+
+test('REST and MCP address same-name skills by id and model reads use the override', async () => {
+  const make = (id: string, kind: string) => ({
+    name: 'Shared display name',
+    description: '',
+    meta: { id, kind, name: 'Shared display name', description: '' },
+    getContent: async () => ({ ok: true as const, value: 'body' }),
+    listResources: async () => ({ ok: true as const, value: [] }),
+    readResource: async () => ({ ok: true as const, value: '' }),
+  });
+  const pool = new CompositeSkillManager(
+    [
+      {
+        source: 'plugin',
+        manager: {
+          listSkills: async () => ({
+            ok: true,
+            value: [make('base-id', 'base'), make('info-id', 'informational')],
+          }),
+          getSkill: async () => ({ ok: true, value: undefined }),
+          matchSkills: async () => ({ ok: true, value: [] }),
+        },
+      },
+    ],
+    () => {
+      if (!registry.trustResolver) throw new Error('missing resolver');
+      return registry.trustResolver;
+    },
+  );
+  jest.spyOn(skillsPool, 'buildSkillsPool').mockReturnValue(pool);
+  for (const transport of ['rest', 'mcp'] as const) {
+    if (transport === 'rest') {
+      expect((await rest('@skills', 2, 'info-id')).status).toBe(200);
+      expect((await rest('@skills', 2, 'Shared display name')).status).toBe(
+        404,
+      );
+      expect((await rest('@skills', 2, 'base-id')).status).toBe(409);
+    } else {
+      expect((await mcp('@skills', 1, 'info-id')).isError).toBeUndefined();
+      for (const [id, code] of [
+        ['Shared display name', 'NOT_FOUND'],
+        ['base-id', 'TRUST_FIXED'],
+      ])
+        expect((await mcp('@skills', 2, id)).structuredContent).toMatchObject({
+          error: { code },
+        });
+    }
+    const read = await pool.informationalSkills().getSkill('info-id');
+    if (!read.ok) throw read.error;
+    expect(await read.value?.getContent()).toMatchObject({
+      value: `[source: global:skills/info-id; trust ${transport === 'rest' ? 2 : 1}]\nbody`,
+    });
+  }
+  expect(await store.getRecordHistory('skills', 'base-id')).toEqual([]);
 });
