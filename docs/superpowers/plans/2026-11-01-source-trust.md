@@ -21,8 +21,9 @@ trust (record → collection → class default from `LLM_AGENT_TRUST_DEFAULTS`),
   `<n>` printed without trailing `.0` (5, 4.5). Brackets in names escaped as `&#91;` / `&#93;`.
 - Classes: `global`, `user`, `session`, `system`, `docs`. Built-in defaults
   `global=4.5,system=4.5,docs=3.5,user=3,session=2`; env `LLM_AGENT_TRUST_DEFAULTS` overrides per class.
-- Agent preset (system prompt, base skills, corrections, agents collections incl. user copies) and MCP tool
-  groups are never tagged and never carry trust.
+- Agent preset (system prompt, base skills, corrections; `collectionKind === 'agents'` collections incl. user
+  copies) and MCP tool groups are never tagged and never carry trust. Informational presets
+  (`CollectionMeta.preset === true`, user scope) are ordinary class `user`: tagged and trusted.
 - Only `MCP_Admin` changes trust, only on global informational sources; other sources → `TRUST_FIXED`.
 - Same tools on every connection (agent MCP, OpenAI/Anthropic endpoints, WebUI, internal LLM).
 - Static typing: no any/unknown except narrowed caught errors, no `as unknown as`, no silencing casts.
@@ -55,6 +56,9 @@ Repo `C:\Users\OleksiiKyslytsia\projects\llm-agent`, branch `feat/trust-tag` fro
   `packages/llm-agent-libs/src/coordinator/dialogue/planner-context-builder.ts` (labels),
   `packages/llm-agent-libs/src/context/context-assembler.ts:88-93` (`formatRagEntry`)
 - Test: `packages/llm-agent-libs/src/__tests__/trust-tag.test.ts`
+- Modify: `packages/llm-agent-libs/src/pipeline/handlers/skill-select.ts` (~line 78): in hard mode, when no skill
+  name matches, load no skills instead of all skills (informational skills are semantic-only); add an option
+  only if an existing consumer depends on the old fallback (check and document).
 - Changeset: minor for both packages.
 
 **Interfaces:**
@@ -85,6 +89,7 @@ test('planner retrieval keeps trust and source from metadata', async () => {
   // knowledge result metadata { id: 'r1', trust: 4, source: 'user:kb/r1' } → entry.trust 4, entry.source 'user:kb/r1';
   // same through search_knowledge rendering and planner-create/revise context
 });
+test('hard-mode skill selection loads nothing when no skill matches', () => { /* was: all skills */ });
 test('ContextAssembler tags results with metadata.trust', () => {
   // RagResult { text: 'x', metadata: { trust: 3, source: 'user:Notes/r1' }, score: 0.9 } → "- [source: user:Notes/r1; trust 3] x"
   // without metadata.trust → "- x"; non-number trust → "- x"
@@ -131,9 +136,10 @@ expect(effectiveTrust({ scope: 'session' }, d)).toBe(2);
 ### Task 3: Persist collection and record trust
 
 **Files:**
-- Modify: `srv/rag-collections.ts:165-196` (`CollectionMeta.trust?: number`, `trustHistory?`),
+- Modify: `srv/rag-collections.ts:165-196` (`CollectionMeta.trust?: number`, `trustHistory?: TrustHistoryEntry[]`),
   `srv/lib/collection-persistence.ts` (`encodeAttributes` `:96`, `decodeRecord` `:129`,
-  `canonicalCollectionMeta` `:413`; record payload `:482`, `restoredDocument`),
+  `canonicalCollectionMeta` `:413` — all three handle both `trust` and `trustHistory` (JSON array, last 20);
+  value and history are written in one update; record payload `:482`, `restoredDocument`),
   `srv/lib/record-policy.ts:27` (new signature below) and every caller of `recordAttributes`
 
 Record trust is stored in dedicated payload fields `_trust` / `_trustHistory`, written only by the trust
@@ -145,6 +151,9 @@ derives provenance from the collection context instead. Content updates preserve
 - Test: `test/unit/collection-trust-persistence.test.ts` (PGlite)
 
 **Interfaces:**
+- Produces: `documentView(doc: RagDocument, collection: CollectionMeta, defaults): RagDocument & { enabled: boolean; trust: number; trustOverride?: number; source: string }`
+  — the one projection for REST document listings and reads (`srv/rag-handler.ts` ~708, ~911) and the virtual
+  `@skills` listing; `recordAttributes` (MCP) uses the same resolution.
 - Produces: `collectionView(meta: CollectionMeta, defaults): CollectionMeta & { trust: number; trustOverride?: number; trustClass: TrustClass }`
   — the one response projection for `GET /rag/collections` (ordinary and virtual rows) and collection tools;
   it never writes defaults back to persisted metadata.
@@ -152,10 +161,11 @@ derives provenance from the collection context instead. Content updates preserve
   (max 20, newest last); `recordAttributes(doc: RagDocument, collection: CollectionMeta, defaults: Record<TrustClass, number>): { enabled: boolean; trust: number; trustOverride?: number; source: string }`
   where `trust` is effective and `source` is `<class>:<collection displayName>/<record id>`.
 
-- [ ] **Step 1: Failing tests:** round-trip collection `trust: 4` and record `_trust: 1.5` through PGlite
-  restore (restart keeps both); a content update keeps the record override; add / update / bulk / upload with
+- [ ] **Step 1: Failing tests:** round-trip collection `trust: 4` + `trustHistory` and record `_trust: 1.5` +
+  `_trustHistory` through PGlite restore (restart keeps values and the last 20 history entries); a content update keeps the record override; add / update / bulk / upload with
   metadata `{ trust: 5 }` do not store it; upload keeps `metadata.source` (file name) and source toggles, chunk
-  grouping and export still work; collection stored without `trust` restores with `trust` undefined and `recordAttributes` reports the
+  grouping and export still work; REST document listing shows inherited trust, a record override, and inherited
+  again after the override is cleared; collection stored without `trust` restores with `trust` undefined and `recordAttributes` reports the
   class default; record added with metadata `{ trust: 5, trustHistory: [] }` stores neither key (stripped);
   history keeps the last 20 entries.
 - [ ] **Step 2–4:** Fail, implement, pass; full jest for persistence suites.
@@ -175,12 +185,13 @@ derives provenance from the collection context instead. Content updates preserve
   `TrustStore.setSource(source: 'skills', trust: number, actor: string): Promise<void>`,
   `TrustStore.getRecord(source: 'skills', record: string): Promise<number | undefined>`,
   `TrustStore.setRecord(source: 'skills', record: string, trust: number | null, actor: string): Promise<void>`
-  (each keeps history like Task 3); resolution record override → source value → `global` default;
+  (value and history written in one record; `getSourceHistory` / `getRecordHistory` return the last 20);
+  resolution record override → source value → `global` default;
   `skillKind(name: string): 'base' | 'informational'`.
 
 - [ ] **Step 1: Failing tests:** set/get/clear round-trip on PGlite for source and record; a record override
   does not change sibling records; clearing a record override falls back to the source value; a write
-  invalidates only that key; orphan sweep keeps `h_trust`; skill without `kind` is informational; `kind: base`
+  invalidates only that key; orphan sweep keeps `h_trust`; history survives a restart; skill without `kind` is informational; `kind: base`
   is reported base.
 - [ ] **Step 2–4:** Fail, implement, pass.
 - [ ] **Step 5:** Commit `feat(trust): trust store and skill kinds`.
@@ -188,12 +199,14 @@ derives provenance from the collection context instead. Content updates preserve
 ### Task 5: Admin setters (REST + MCP)
 
 **Files:**
-- Create: `srv/lib/trust-guard.ts` — `trustWriteError(input: { admin: boolean; target: TrustTarget; value: number | null; allowNull: boolean }): { status: 400 | 403 | 404 | 409; code: 'INVALID_TRUST' | 'FORBIDDEN' | 'NOT_FOUND' | 'TRUST_FIXED' } | undefined`,
+- Create: `srv/lib/trust-guard.ts` — `parseTrustInput(raw: unknown, allowNull: boolean): { ok: true; value: number | null } | { ok: false }`
+  at the request/tool-argument boundary (zod; the only place raw input is narrowed), then
+  `trustWriteError(input: { admin: boolean; target: TrustTarget; value: number | null; allowNull: boolean }): { status: 400 | 403 | 404 | 409; code: 'INVALID_TRUST' | 'FORBIDDEN' | 'NOT_FOUND' | 'TRUST_FIXED' } | undefined`,
   the only policy used by REST and MCP (not `collectionAccessError`, which lets owners write)
 - Modify: `srv/rag-handler.ts` (`PUT /rag/collections/:id` accepts `trust`; new
-  `PATCH /rag/collections/:id/documents/:did/trust`; virtual source `skills` is routed before the registry
+  `PATCH /rag/collections/:id/documents/:did/trust`; virtual source `@skills` is routed before the registry
   middleware: `GET /rag/collections` lists it (class `global`, effective trust),
-  `GET /rag/collections/skills/documents` lists informational skills with `trust` / `trustOverride`, and both
+  `GET /rag/collections/@skills/documents` lists informational skills with `trust` / `trustOverride`, and both
   setters accept it), `srv/lib/rag-tool-catalogue.ts` (two tools),
   `srv/agent-mcp-rag.ts` (handlers), `srv/lib/rag-write-operations.ts` (shared write path),
   `srv/rag-collections.ts:1224` (`updateCollection` accepts trust)
@@ -202,14 +215,16 @@ derives provenance from the collection context instead. Content updates preserve
 **Interfaces:**
 - Produces: MCP `collection_set_trust({ collection: string, trust: number })`,
   `record_set_trust({ collection: string, record: string, trust: number | null })`, effect `write`.
-  `collection: 'skills'` addresses global informational skills (record = skill name) via Task 4.
-  Errors: non-admin → `FORBIDDEN` (403); non-global or preset source (agents collections, base skills, MCP tool
-  groups) → `TRUST_FIXED` (409); invalid value → `INVALID_TRUST` (400); unknown → `NOT_FOUND` (404).
+  `collection: '@skills'` addresses global informational skills (record = skill name) via Task 4.
+  Errors: non-admin → `FORBIDDEN` (403); non-global or agent-preset source (`collectionKind === 'agents'`, base skills, MCP tool groups) and
+  user/session collections including informational presets → `TRUST_FIXED` (409); invalid value → `INVALID_TRUST` (400); unknown → `NOT_FOUND` (404).
 
-- [ ] **Step 1: Failing tests:** admin sets source `skills` to 3 → every informational skill effective 3;
-  admin sets `skills/<informational>` to 2 → that one 2, siblings 3; `collection_set_trust` with `null` →
-  `INVALID_TRUST`; non-admin → 403 /
-  `FORBIDDEN`; user collection → `TRUST_FIXED`; agents collection → `TRUST_FIXED`; base skill → `TRUST_FIXED`;
+- [ ] **Step 1: Failing tests:** admin sets source `@skills` to 3 → every informational skill effective 3;
+  admin sets `@skills/<informational>` to 2 → that one 2, siblings 3; `collection_set_trust` with `null` →
+  `INVALID_TRUST`; a real user collection with logical id `skills` stays reachable and unaffected through REST and
+  MCP (`@skills` cannot collide: logical ids match `^[a-z0-9][a-z0-9_-]*$`); non-admin → 403 /
+  `FORBIDDEN`; user collection → `TRUST_FIXED`; informational preset (`preset: true`) → `TRUST_FIXED` but its hits are tagged
+  `user` (Task 6); agents collection → `TRUST_FIXED`; base skill → `TRUST_FIXED`;
   values `"5"`, `4.55`, `-1`, `5.1`, `NaN` → `INVALID_TRUST`; `null` on `record_set_trust` clears;
   both tools listed on agent MCP and internal tool lists (parity test).
 - [ ] **Step 2–4:** Fail, implement, pass.
@@ -224,7 +239,9 @@ derives provenance from the collection context instead. Content updates preserve
   overwrite `metadata.trust` / `metadata.source` with derived values, so stored metadata cannot impersonate
   `system`),
   `srv/lib/session-history-rag.ts` (class `session`), `srv/lib/planner-memory.ts`
-  (`plannerSessionOptions()` wraps each `registry.getRagStore(id)` in the same trust-enriching store as chat
+  (`scopedPlannerMemory(...)` ~line 89 — the coordinator's memory store — is wrapped so every query result gets
+  class `session` trust and source, overwriting stored values; `plannerSessionOptions()` wraps each
+  `registry.getRagStore(id)` in the same trust-enriching store as chat
   retrieval instead of passing it raw; `planAuthorContextNotes()` ~line 201 builds its own memory entries and
   gets `trust`/`source` too), `srv/lib/planner-context.ts`. Enrichment always resolves effective trust
   (`_trust` → collection → default) and overwrites any `metadata.trust`/`metadata.source`, so old records without
@@ -237,7 +254,8 @@ derives provenance from the collection context instead. Content updates preserve
   override 1 beats collection 4; a name with `[x]` is escaped; a record whose free-form metadata claims
   `source: 'system:x'` is rendered with its real source; both chat auto-retrieval and library pipeline retrieval
   (`ContextAssembler`) show the tag; coordinator retrieval, `search_knowledge` and planner-create/revise context
-  show it for old records without trust and for records with spoofed metadata.
+  show it for old records without trust and for records with spoofed metadata; coordinator recall of
+  planner-memory records written before this change shows `; trust 2`.
 - [ ] **Step 2–4:** Fail, implement, pass.
 - [ ] **Step 5:** Commit `feat(trust): tag RAG paths`.
 
@@ -306,7 +324,7 @@ the sources conflict instead of choosing silently."
 
 **Files:**
 - Modify: `app/chat/webapp/index.html` (MANAGE rows show effective trust and class; document rows show
-  `trustOverride` distinct from inherited trust; admin sees the `skills` source and its skills with
+  `trustOverride` distinct from inherited trust; admin sees the `@skills` source and its skills with
   inline-editable trust using the Task 5 REST routes),
   `docs/` (configuration: `LLM_AGENT_TRUST_DEFAULTS`; agent MCP API: two tools; RAG API: routes),
   `CHANGELOG.md [Unreleased]`
