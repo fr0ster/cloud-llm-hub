@@ -18,7 +18,7 @@ export class TrustStore {
   private tail: Promise<void> = Promise.resolve();
   constructor(
     private readonly rag: IRag,
-    private readonly dimension: number,
+    private readonly dimension: number | (() => number),
   ) {}
   static async open(
     provider: IRagProvider,
@@ -71,7 +71,11 @@ export class TrustStore {
       const result = await writer.upsertPrecomputedRaw(
         key,
         text,
-        new Array<number>(this.dimension).fill(0),
+        new Array<number>(
+          typeof this.dimension === 'function'
+            ? this.dimension()
+            : this.dimension,
+        ).fill(0),
         {},
       );
       if (!result.ok) throw result.error;

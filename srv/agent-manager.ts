@@ -1317,11 +1317,7 @@ export async function startCollectionRestore(
   const { collections, stores, embedding } = getProviders();
   if (!trustStoreInstance) {
     const kind = stores.backendOf('persistent');
-    const dimension =
-      kind === 'qdrant' && embedding
-        ? (await embedding.retrieval.embedDocument('dimension probe')).vector
-            .length
-        : PROVIDER_DEFAULT_DIMENSION;
+    let dimension = PROVIDER_DEFAULT_DIMENSION;
     trustStoreInstance = collections
       ? new TrustStore(
           new PersistentHistoryStore(collections, cds.log('trust-store'), {
@@ -1330,8 +1326,14 @@ export async function startCollectionRestore(
               getAgentConfig().rag.qdrant?.prefix,
             ),
             storeName: 'h_trust',
+            beforeOpen: async () => {
+              if (kind === 'qdrant' && embedding)
+                dimension = (
+                  await embedding.retrieval.embedDocument('dimension probe')
+                ).vector.length;
+            },
           }),
-          dimension,
+          () => dimension,
         )
       : new TrustStore(new InMemoryRag(), dimension);
     trustResolverInstance = new TrustResolver(

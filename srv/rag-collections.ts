@@ -1953,9 +1953,12 @@ export class CollectionRegistry {
     assertCollectionWrite(stored.meta);
     if (stored.persistent) refuseWhileDeleting(stored, 'add document');
     if (stored.meta.collectionKind !== 'agents') {
-      // Retain known trust on replacement without reading storage on the add
-      // path. Updates read the authoritative record before preserving trust.
-      const previous = stored.documents.get(doc.id);
+      // A replacement must preserve live trust, including externally cleared
+      // overrides. New records need no preservation read.
+      const previous =
+        stored.persistent && stored.documents.has(doc.id)
+          ? await readPersistentDocument(stored, doc.id)
+          : stored.documents.get(doc.id);
       doc = {
         ...doc,
         metadata: {
