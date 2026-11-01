@@ -2170,7 +2170,7 @@
                                         const op = { name: record.call.name, args: record.call.arguments, ok: !result.isError, response };
                                         const node = document.createElement('div');
                                         node.className = 'message';
-                                        node.textContent = 'RAG OP: ' + op.name + ' ' + (op.ok ? 'OK' : 'ERR') + ' ' + JSON.stringify({ collection: op.args?.collection, record: op.args?.record || op.args?.id, ...response });
+                                        node.textContent = ragOpSummary(op);
                                         if (op.ok && response.collection && response.record && (op.name === 'record_add' || op.name === 'record_update')) {
                                             const button = document.createElement('button');
                                             button.textContent = 'DL';
@@ -2367,6 +2367,38 @@
             chatWindow.scrollTop = chatWindow.scrollHeight;
         }
         // ---------------------------------------------------------------
+        /** One line per RAG tool call: what ran and its outcome, never the returned texts. */
+        function ragOpSummary(op) {
+            const response = op.response || {};
+            const parts = ['RAG: ' + op.name, op.ok ? 'OK' : 'ERR'];
+            if (!op.ok) {
+                const error = response.error;
+                const detail = (error && (error.code || error.message)) || response.result;
+                if (detail) parts.push(String(detail).slice(0, 200));
+                return parts.join(' · ');
+            }
+            if (Array.isArray(response.hits)) {
+                const collections = [...new Set(response.hits.map(hit => hit.collection).filter(Boolean))];
+                parts.push(response.hits.length + ' hits');
+                if (collections.length) parts.push(collections.join(', '));
+                if (Array.isArray(response.unavailable) && response.unavailable.length)
+                    parts.push(response.unavailable.length + ' unavailable');
+                return parts.join(' · ');
+            }
+            if (Array.isArray(response.records)) {
+                parts.push((response.total ?? response.records.length) + ' records');
+            } else if (Array.isArray(response.collections)) {
+                parts.push(response.collections.length + ' collections');
+            }
+            const collection = response.collection || op.args?.collection;
+            const record = response.record || response.id || op.args?.record || op.args?.id;
+            if (collection) parts.push(collection + (record ? '/' + record : ''));
+            else if (record) parts.push(record);
+            if (typeof response.offset === 'number' && typeof response.total === 'number')
+                parts.push('offset ' + response.offset + ' of ' + response.total);
+            return parts.join(' · ');
+        }
+
         // Quick file attach (from input area)
         // ---------------------------------------------------------------
         const attachedFiles = [];

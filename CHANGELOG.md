@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- WebUI shows each RAG tool call as one summary line (tool, outcome, hit or record count, collections, error code) instead of the raw JSON with all returned texts.
+
 ## [10.2.1] - 2026-11-01
 
 ### Fixed

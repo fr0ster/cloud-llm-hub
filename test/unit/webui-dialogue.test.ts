@@ -1646,6 +1646,60 @@ test('server RAG errors appear in framed chat without browser execution', async 
   ).toBe(false);
 });
 
+test('RAG search results show one summary line without the returned texts', async () => {
+  const ui = harness();
+  const record = {
+    call: { name: 'rag_search', arguments: { query: 'program list' } },
+    result: {
+      isError: false,
+      structuredContent: {
+        hits: [
+          {
+            collection: 'specs__u_alice',
+            id: 'a',
+            title: 'T',
+            text: 'SECRET LONG TEXT\r\nrow\tvalue',
+            score: 0.8,
+          },
+          {
+            collection: 'specs__u_alice',
+            id: 'b',
+            title: 'U',
+            text: 'more text',
+            score: 0.7,
+          },
+          {
+            collection: 'notes__u_alice',
+            id: 'c',
+            title: 'V',
+            text: 'other',
+            score: 0.6,
+          },
+        ],
+        unavailable: [{ collection: 'x', error: 'down' }],
+      },
+    },
+  };
+  ui.fetch.mockResolvedValue(
+    stream(
+      `: message-id rag\n\n: tool-result ${JSON.stringify(record)}\n\n: turn-end\n\n`,
+    ),
+  );
+  ui.userInput.value = 'find';
+  await ui.sendMessage();
+  const line = ui.nodes.find((node: MessageNode) =>
+    node.textContent?.startsWith('RAG: rag_search'),
+  );
+  expect(line?.textContent).toBe(
+    'RAG: rag_search · OK · 3 hits · specs__u_alice, notes__u_alice · 1 unavailable',
+  );
+  expect(
+    ui.nodes.some((node: MessageNode) =>
+      node.textContent?.includes('SECRET LONG TEXT'),
+    ),
+  ).toBe(false);
+});
+
 test.each([false, true])(
   'RAG add results retain ids and downloads (framed=%s)',
   async (framed: boolean) => {
