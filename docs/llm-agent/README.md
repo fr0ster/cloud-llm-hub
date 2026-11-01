@@ -2,7 +2,7 @@
 
 SmartAgent configuration, integration, and testing.
 
-Chat uses the adaptive coordinator by default (`@mcp-abap-adt/llm-agent-libs`, `^30.5.0`), with executor and checker workers. `LLM_AGENT_CHAT_COORDINATOR=fixed` restores the previous one-step DAG. `NoticeFinalizer` checks completed answers against captured tool results and can append an `UNVERIFIED_WRITE:` notice. The agent MCP `execute_step` runs the executor directly with the same honesty reviewer. See [Architecture](../architecture/ARCHITECTURE.md), sections 7 and 16.
+Chat uses the adaptive coordinator by default (`@mcp-abap-adt/llm-agent-libs`, `^30.24.0`), with executor and checker workers. `LLM_AGENT_CHAT_COORDINATOR=fixed` restores the previous one-step DAG. `NoticeFinalizer` checks completed answers against captured tool results and can append an `UNVERIFIED_WRITE:` notice. Long-session dialogue uses a coordinator and stateless create/revise plan author. Agent MCP exposes the same plan and task orchestration for external coordinators; `execute_step` accepts a worker profile (default `executor`) and uses the same honesty reviewer. See [Architecture](../architecture/ARCHITECTURE.md), sections 7 and 16.
 
 ## Documents
 

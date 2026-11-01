@@ -47,8 +47,10 @@ test('shipped seeds validate and executor alone owns storage/retry rules', async
     '_worker-base',
     'analyst',
     'checker',
+    'coordinator',
     'executor',
-    'planner',
+    'planner-create',
+    'planner-revise',
   ]);
   for (const record of seeds) {
     expect(record.text.includes('fails twice')).toBe(record.id === 'executor');
@@ -77,8 +79,8 @@ test.each([
 );
 test('empty body is preserved and duplicate filenames rejected', () => {
   const file = {
-    filename: 'planner.md',
-    content: '---\nkind: planner\nname: planner\n---\n',
+    filename: 'coordinator.md',
+    content: '---\nkind: coordinator\nname: coordinator\n---\n',
   };
   expect(parseAgentProfileSeeds([file])[0]?.text).toBe('');
   expect(() => parseAgentProfileSeeds([file, file])).toThrow('duplicate name');
@@ -95,22 +97,22 @@ test('missing-only insertion preserves edits and disabled records across concurr
     createdAt: '',
   });
   await Promise.all([
-    seedAgentProfiles(f.adapter, seeds, 'planner'),
-    seedAgentProfiles(f.adapter, seeds, 'planner'),
+    seedAgentProfiles(f.adapter, seeds, 'coordinator'),
+    seedAgentProfiles(f.adapter, seeds, 'coordinator'),
   ]);
-  expect(f.documents.size).toBe(5);
+  expect(f.documents.size).toBe(7);
   expect(f.documents.get('executor')).toMatchObject({
     text: 'edited',
     metadata: { enabled: false },
   });
   f.upsert.mockClear();
-  await seedAgentProfiles(f.adapter, seeds, 'planner');
+  await seedAgentProfiles(f.adapter, seeds, 'coordinator');
   expect(f.upsert).not.toHaveBeenCalled();
 });
 test('invalid seeds and existing records fail without seed writes; backend failure propagates', async () => {
   const seeds = await loadAgentProfileSeeds();
   const f = store();
-  await expect(seedAgentProfiles(f.adapter, [], 'planner')).rejects.toThrow(
+  await expect(seedAgentProfiles(f.adapter, [], 'coordinator')).rejects.toThrow(
     'Missing required',
   );
   expect(f.upsert).not.toHaveBeenCalled();
@@ -120,26 +122,26 @@ test('invalid seeds and existing records fail without seed writes; backend failu
     metadata: {},
     createdAt: '',
   });
-  await expect(seedAgentProfiles(f.adapter, seeds, 'planner')).rejects.toThrow(
-    'Invalid agent record',
-  );
+  await expect(
+    seedAgentProfiles(f.adapter, seeds, 'coordinator'),
+  ).rejects.toThrow('Invalid agent record');
   expect(f.upsert).not.toHaveBeenCalled();
   f.documents.clear();
   f.upsert.mockRejectedValue(new Error('backend unavailable'));
-  await expect(seedAgentProfiles(f.adapter, seeds, 'planner')).rejects.toThrow(
-    'backend unavailable',
-  );
+  await expect(
+    seedAgentProfiles(f.adapter, seeds, 'coordinator'),
+  ).rejects.toThrow('backend unavailable');
 });
 test('memory registry seeds global agents once and excludes configuration from search', async () => {
   const registry = new CollectionRegistry();
   await Promise.all([
-    registry.seedAgentConfiguration('agents', 'planner'),
-    registry.seedAgentConfiguration('agents', 'planner'),
+    registry.seedAgentConfiguration('agents', 'coordinator'),
+    registry.seedAgentConfiguration('agents', 'coordinator'),
   ]);
   expect(await registry.getCollection('agents')).toMatchObject({
     scope: 'global',
     collectionKind: 'agents',
-    documentCount: 5,
+    documentCount: 7,
   });
   expect(await registry.getRagStore('agents')).toBeNull();
   expect(await registry.getRagStores(['agents'])).toEqual({});
@@ -148,7 +150,7 @@ test('memory registry seeds global agents once and excludes configuration from s
   ).find((seed) => seed.id === 'executor');
   if (!record) throw new Error('Missing fixture');
   await registry.updateDocument('agents', 'executor', { text: 'edited' });
-  await registry.seedAgentConfiguration('agents', 'planner');
+  await registry.seedAgentConfiguration('agents', 'coordinator');
   expect(await registry.getDocument('agents', 'executor')).toMatchObject({
     text: 'edited',
   });
@@ -156,7 +158,7 @@ test('memory registry seeds global agents once and excludes configuration from s
 
 test('global agents collection metadata survives catalog encoding', async () => {
   const registry = new CollectionRegistry();
-  await registry.seedAgentConfiguration('agents', 'planner');
+  await registry.seedAgentConfiguration('agents', 'coordinator');
   const meta = await registry.getCollection('agents');
   if (!meta) throw new Error('Missing fixture');
   const attributes = encodeAttributes(meta, true, 'fp');
@@ -172,4 +174,30 @@ test('global agents collection metadata survives catalog encoding', async () => 
   expect(decoded).toMatchObject({
     meta: { id: 'agents', scope: 'global', collectionKind: 'agents' },
   });
+});
+
+test.each(['coordinator', 'planner-create', 'planner-revise'])(
+  'startup requires %s before writing seeds',
+  async (name: string) => {
+    const seeds = (await loadAgentProfileSeeds()).filter(
+      (seed) => seed.id !== name,
+    );
+    const f = store();
+    await expect(
+      seedAgentProfiles(f.adapter, seeds, 'coordinator'),
+    ).rejects.toThrow(`Missing required agent seed: ${name}`);
+    expect(f.upsert).not.toHaveBeenCalled();
+  },
+);
+
+test('new prompt kinds are not worker profiles and old planner records need no seed', async () => {
+  const seeds = await loadAgentProfileSeeds();
+  expect(seeds.find((seed) => seed.id === 'coordinator')?.metadata.kind).toBe(
+    'coordinator',
+  );
+  for (const name of ['planner-create', 'planner-revise'])
+    expect(seeds.find((seed) => seed.id === name)?.metadata.kind).toBe(
+      'planner-author',
+    );
+  expect(seeds.some((seed) => seed.id === 'planner')).toBe(false);
 });

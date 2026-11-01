@@ -44,11 +44,15 @@ import {
 import { liveSession } from './helpers/canonical-rag';
 
 let plannerText = '';
+let authorTexts: string[] = [];
 beforeAll(async () => {
   const seeds = await loadAgentProfileSeeds();
-  plannerText = seeds.find((seed) => seed.id === 'planner')?.text ?? '';
+  plannerText = seeds.find((seed) => seed.id === 'coordinator')?.text ?? '';
+  authorTexts = seeds
+    .filter((seed) => seed.metadata.kind === 'planner-author')
+    .map((seed) => seed.text);
 });
-test('planner seed retains delegation, briefing and verification guidance without executor storage/retry rules', () => {
+test('coordinator seed retains delegation, briefing and verification guidance without executor storage/retry rules', () => {
   expect(plannerText).toContain('Every delegate_task is a brief');
   expect(plannerText).toContain('A [check] note is not user agreement.');
   expect(plannerText).not.toContain('fails twice');
@@ -119,7 +123,7 @@ function llm(model: string) {
   };
   return { agent, tools, messages };
 }
-test('hard planner sends all nine control tools, hub prompt, and follows getSmartAgent model hot-swap', async () => {
+test('hard planner retains library turn tools and hub control tools, hub prompt, and follows getSmartAgent model hot-swap', async () => {
   const first = llm('first');
   const second = llm('second');
   jest.mocked(makeHubLlm).mockResolvedValue(first.agent);
@@ -133,13 +137,17 @@ test('hard planner sends all nine control tools, hub prompt, and follows getSmar
         ...ragToolNames,
         'delegate_task',
         'deliver',
+        'new_request',
+        'search_knowledge',
+        'execute_step',
+        'list_destinations',
+        'plan_create',
+        'plan_revise',
         'get_task',
-        'get_plan',
+        'plan_get',
         'list_tasks',
         'stop_task',
-        'update_plan',
-        'search_knowledge',
-        'new_request',
+        'plan_update',
       ].sort(),
     );
     expect(first.messages.join('\n')).toContain(plannerText);
@@ -286,7 +294,7 @@ test('dialogue tool-loop offers hub storage to executor and only readback to che
     agent: { ...config.agent, chatCoordinator: 'dialogue', skillRagK: 0 },
   };
   initProviders(await startProviders(dialogueConfig));
-  await getCollectionRegistry().seedAgentConfiguration('agents', 'planner');
+  await getCollectionRegistry().seedAgentConfiguration('agents', 'coordinator');
   await getSmartAgent('worker');
   const handle = await buildAgentForDestination(
     {
@@ -329,16 +337,15 @@ test('dialogue tool-loop offers hub storage to executor and only readback to che
   );
 });
 
-test('planner defines independently checkable results and paged enumeration', () => {
-  expect(plannerText).toContain(
-    'A step states the result it must produce, not how to produce it; the worker chooses the tools and the way.',
-  );
-  expect(plannerText).toContain(
-    'Make each step a result one worker run can deliver and that can be checked on its own.',
-  );
-  expect(plannerText).toContain(
-    'To process all items of a kind that do not fit one worker run: first one step that returns only their identifiers, page by page (for example 20 at a time); then steps per item or per batch that fit a worker run; plan the check the risk needs.',
-  );
+test('planner authors define checkable results and paged enumeration', () => {
+  expect(authorTexts).toHaveLength(2);
+  for (const prompt of authorTexts) {
+    expect(prompt).toContain(
+      'Each step states a result one worker run can deliver and its done criterion',
+    );
+    expect(prompt).toContain('page by page (for example 20 at a time)');
+    expect(prompt).toContain('then per-item or batch steps');
+  }
 });
 
 test.each(['adaptive', 'dialogue'] as const)(
@@ -391,7 +398,10 @@ test.each(['adaptive', 'dialogue'] as const)(
       },
     };
     initProviders(await startProviders(cappedConfig));
-    await getCollectionRegistry().seedAgentConfiguration('agents', 'planner');
+    await getCollectionRegistry().seedAgentConfiguration(
+      'agents',
+      'coordinator',
+    );
     await getSmartAgent(modelName);
     const registry = new CollectionRegistry();
     const inner = {
@@ -466,7 +476,7 @@ test.each([undefined, 7])(
 );
 
 test('planner prompt allows skipping only with user agreement', () => {
-  for (const prompt of [DIALOGUE_PLANNER_SYSTEM, plannerText]) {
+  for (const prompt of [DIALOGUE_PLANNER_SYSTEM]) {
     expect(prompt).not.toContain('skip them with a reason');
     expect(prompt).not.toContain(
       'Use skipped with a note explaining why instead of silently dropping steps.',
@@ -476,7 +486,7 @@ test('planner prompt allows skipping only with user agreement', () => {
     );
   }
   expect(plannerText).toContain(
-    "Skip a step, drop items, sample or otherwise narrow the user's scope only after asking the user",
+    'Skip steps, drop items, sample or narrow scope only after plan_update sets status waiting_user with a question and the user answers.',
   );
   expect(plannerText).toContain('A [check] note is not user agreement.');
 });
@@ -594,4 +604,32 @@ test('fresh arbitrary worker composes base, profile, then one invariant library 
   ).toHaveLength(1);
   expect(text).not.toContain('fails twice');
   expect(text).not.toContain('Storing, collecting or remembering');
+});
+
+test('per-call SAP authors skip validation for repeated and switched models', async () => {
+  const authorClient = {
+    listTools: async () => ({ ok: true as const, value: [] }),
+    callTool: async () => ({ ok: true as const, value: { content: [] } }),
+  };
+  for (const modelName of ['author-first', 'author-first', 'author-second']) {
+    const model = llm(modelName);
+    const chat = jest.spyOn(model.agent, 'chat');
+    jest.mocked(makeHubLlm).mockResolvedValue(model.agent);
+    const author = await buildPlannerAgent(
+      {
+        ...config,
+        llm: { ...config.llm, provider: 'sap-ai-sdk', plannerModel: modelName },
+      },
+      'Write a plan',
+      authorClient,
+    );
+    try {
+      expect(chat).not.toHaveBeenCalled();
+      const result = await author.process('Create a plan');
+      expect(result.ok && result.value.content).toBe(modelName);
+      expect(model.messages.join('\n')).not.toContain('Reply with OK');
+    } finally {
+      releasePlannerAgent(author);
+    }
+  }
 });

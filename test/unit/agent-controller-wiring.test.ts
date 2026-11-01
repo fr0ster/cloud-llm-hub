@@ -140,7 +140,7 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     agentManager.initProviders(await startProviders(config));
     await agentManager
       .getCollectionRegistry()
-      .seedAgentConfiguration('agents', 'planner');
+      .seedAgentConfiguration('agents', 'coordinator');
   });
 
   beforeEach(() => {

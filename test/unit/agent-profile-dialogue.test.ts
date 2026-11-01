@@ -15,7 +15,7 @@ import { profileToolAllowed } from '../../srv/request-session';
 
 test('dialogue discovers arbitrary names, resolves planner variants and executes a legacy checker plan', async () => {
   const registry = new CollectionRegistry();
-  await registry.seedAgentConfiguration('agents', 'planner');
+  await registry.seedAgentConfiguration('agents', 'coordinator');
   await registry.addDocument('agents', {
     id: 'research_42',
     text: 'CUSTOM_BODY',
@@ -29,19 +29,19 @@ test('dialogue discovers arbitrary names, resolves planner variants and executes
     },
   });
   await registry.addDocument('agents', {
-    id: 'planner-custom',
+    id: 'coordinator-custom',
     text: 'VARIANT_BODY',
     metadata: {
-      canonicalKey: 'planner-custom',
-      name: 'planner-custom',
-      kind: 'planner',
+      canonicalKey: 'coordinator-custom',
+      name: 'coordinator-custom',
+      kind: 'coordinator',
     },
   });
   const source = new AgentProfileSource(registry, {
     userId: 'reader',
     globalCollectionId: 'agents',
     selectedCollectionId: () => 'agents',
-    plannerRecord: 'planner-custom',
+    plannerRecord: 'coordinator-custom',
     timeoutMs: 3000,
   });
   const trace: ToolTrace = {
@@ -84,7 +84,7 @@ test('dialogue discovers arbitrary names, resolves planner variants and executes
       const tools = new PlannerToolsClient();
       if (phase === 0) {
         phase = 1;
-        const plan = await tools.callTool('update_plan', {
+        const plan = await tools.callTool('plan_update', {
           status: 'active',
           steps: [
             {
@@ -227,9 +227,10 @@ test('dialogue discovers arbitrary names, resolves planner variants and executes
       built.every((entry) => !entry.preamble.includes('fails twice')),
     ).toBe(true);
     expect(plannerTexts.length).toBeGreaterThan(0);
-    expect(plannerTexts.every((text) => text.startsWith('VARIANT_BODY'))).toBe(
-      true,
-    );
+    expect(await source.getPrompts()).toMatchObject({
+      ok: true,
+      value: { coordinator: 'VARIANT_BODY' },
+    });
   } finally {
     await session.close();
   }

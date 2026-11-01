@@ -5,7 +5,16 @@ import type { RagDocument } from '../rag-collections';
 export const profileName = z
   .string()
   .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/)
-  .refine((name) => name !== 'planner' && !name.startsWith('planner-'));
+  .refine(
+    (name) =>
+      name !== 'planner' &&
+      !name.startsWith('planner-') &&
+      name !== 'coordinator' &&
+      !name.startsWith('coordinator-'),
+  );
+export const coordinatorName = z
+  .string()
+  .regex(/^coordinator(?:-[A-Za-z0-9_-]+)?$/);
 export const plannerName = z.string().regex(/^planner(?:-[A-Za-z0-9_-]+)?$/);
 export const profileToolPolicy = z.union([
   z.literal('all'),
@@ -36,7 +45,18 @@ export const profileFrontmatter = z.discriminatedUnion('kind', [
       enabled,
     })
     .strict(),
+  // Existing records are preserved by missing-only seeding.
   z.object({ kind: z.literal('planner'), name: plannerName, enabled }).strict(),
+  z
+    .object({ kind: z.literal('coordinator'), name: coordinatorName, enabled })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('planner-author'),
+      name: z.enum(['planner-create', 'planner-revise']),
+      enabled,
+    })
+    .strict(),
 ]);
 export type ProfileFrontmatter = z.infer<typeof profileFrontmatter>;
 export type AgentProfileRecord = {

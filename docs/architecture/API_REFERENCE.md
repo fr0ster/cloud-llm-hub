@@ -726,10 +726,45 @@ session and opens a new one; the chat history and session collections stay.
 
 **Agent MCP.** On `/mcp/agent/stream/http` the same session is reached through
 tools: `session_open({ destination? })` returns `{ session, ttlSeconds,
-destination }`, `execute_step({ session, task, destination? })` runs in it (a
+destination }`, `execute_step({ session, task, destination?, worker? })` runs in it (a
 `destination` other than the session's is refused), and
 `session_close({ session })` closes it. Errors come back as tool errors with the
 codes above.
+
+Agent MCP lists 23 tools: the eleven RAG tools, `list_destinations`,
+`session_open`, `session_close`, `execute_step`, and these eight orchestration tools.
+The former plan tool names `get_plan` and `update_plan` are now `plan_get` and
+`plan_update`; no aliases are registered.
+Their argument schemas and descriptions come from the library's `PlannerToolsClient`;
+MCP adds optional `session` and `destination` routing arguments, and a structured
+`plan` argument for `plan_revise`.
+
+| Tool | Arguments from the orchestration library | Session |
+|---|---|---|
+| `plan_create` | `goal`, optional `context`, `references` | Optional; stores the plan when supplied |
+| `plan_revise` | `change`, optional `context`, MCP `plan` | Optional; revises and stores the current session plan |
+| `plan_get` | Optional `state`, `offset`, `limit` | Required |
+| `plan_update` | Optional `plan`, `steps`, `question`, `status` | Required |
+| `delegate_task` | `worker`, `goal`, optional `context`, `step_id` (required for a structured session plan) | Required |
+| `get_task` | `task_id` | Required |
+| `list_tasks` | None | Required |
+| `stop_task` | `task_id` | Required |
+
+Without a session, planning calls return an authored plan and save no dialogue state.
+Stateless `plan_revise` requires `plan`, the structured object returned by
+`plan_create` / `plan_get`, together with `change`. It uses the stored-plan schema
+and size limits. With a session, `plan` is ignored and the current session plan is
+used. `context` remains plain context text. `execute_step` defaults `worker` to `executor`; another profile such as
+`checker` is resolved under the caller's exposition grants and profile ceilings.
+Missing required sessions return `SESSION_REQUIRED`; unknown, closed or foreign keys
+receive the same refusals as RAG tools. A session's destination remains fixed.
+
+The external agent uses the long session's existing dialogue plan and task board,
+opened without a coordinator turn. It shares its `DialogueSession` with WebUI and
+OpenAI/Anthropic clients on the same key. Calls during an active dialogue turn return
+a tool error. Background work uses the same executor limits, shared pool and persisted
+store; running tasks restore as interrupted after restart. Tool and worker usage is
+recorded on channel `mcp-agent` with the request trace and session identity.
 
 All channels share the same eleven RAG tools. The five content/collection writes below
 use strict objects and accept an optional nonempty `session` argument. A live,
@@ -1080,7 +1115,11 @@ Agents record creation uses `POST /v1/rag/collections/:id/documents` with
 `{ id, text, metadata }`. `id`, `metadata.canonicalKey` and `metadata.name` must
 match exactly. An existing canonical id returns 409. Replace a record explicitly
 with `PUT /v1/rag/collections/:id/documents/:did`; text may be empty. Metadata uses
-the strict profile, worker-base or planner schema in the agent profiles design.
+the strict worker profile, worker-base, coordinator or planner-author schema.
+The coordinator record is `coordinator`; plan author records are `planner-create`
+and `planner-revise`. `LLM_AGENT_PLANNER_RECORD` selects the coordinator record.
+Edited legacy `planner` prompts must be split into conversation/orchestration rules
+for the coordinator and planning rules for both author records.
 Unknown fields, malformed tool policies, reserved-name violations and mismatched
 ids return 400. Individual record enablement and deletion use the existing record
 routes. Generic chunked uploads, bulk imports, source toggles and collection

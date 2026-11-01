@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { InMemoryRag, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
   createUsageRecorder,
   directTransport,
@@ -8,6 +10,7 @@ import { executeRagTool } from '../../srv/agent-mcp-rag';
 import { chatStream, streamDialogue } from '../../srv/lib/chat-stream';
 import { dialogueChat } from '../../srv/lib/dialogue-chat';
 import { followDialogue } from '../../srv/lib/dialogue-follow';
+import * as plannerMemory from '../../srv/lib/planner-memory';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { sumPlannerUsage } from '../../srv/lib/usage-wire';
 import { CollectionRegistry } from '../../srv/rag-collections';
@@ -42,6 +45,7 @@ import type {
 import {
   DialogueSession,
   PlannerToolsClient,
+  SemaphorePool,
   SmartAgentBuilder,
   SmartAgentSubAgent,
 } from '@mcp-abap-adt/llm-agent-libs';
@@ -55,6 +59,7 @@ import {
   type DialogueEvent,
   dialogueFor,
   dialoguePlan,
+  headlessDialogueFor,
   lookupDialogue,
   onDialogueCreated,
   sharedExecutorPool,
@@ -80,6 +85,7 @@ const mockRelease = jest.fn();
 const mockDrain = jest.fn(async () => {});
 const mockDrop = jest.fn();
 const mockPlannerTurns: string[] = [];
+const mockAuthorTurns: string[] = [];
 const mockEnvironments: string[] = [];
 let mockGoal = 'read';
 let mockPlannerHook: ((text: string) => Promise<void>) | undefined;
@@ -151,7 +157,7 @@ jest.mock('../../srv/agent-manager', () => ({
       mockPlannerTurns.push(text);
       await mockPlannerHook?.(text);
       if (mockPlan) {
-        await new PlannerToolsClient().callTool('update_plan', mockPlan);
+        await new PlannerToolsClient().callTool('plan_update', mockPlan);
         return {
           ok: true,
           value: { content: 'Plan updated', usage: mockPlanUsage },
@@ -185,6 +191,24 @@ jest.mock('../../srv/agent-manager', () => ({
   })),
   getSmartAgent: jest.fn(async () => ({
     profileRunner: {
+      preparePlanAuthor: async () => ({
+        ok: true,
+        value: {
+          process: async (input: string) => {
+            mockAuthorTurns.push(input);
+            return {
+              ok: true,
+              value: {
+                content: '{"steps":[],"status":"done"}',
+                iterations: 1,
+                toolCallCount: 0,
+                stopReason: 'stop',
+              },
+            };
+          },
+          streamProcess: async function* () {},
+        },
+      }),
       createWorker: async () => ({
         ok: true,
         value: {
@@ -1231,7 +1255,7 @@ test('a queued task cancelled before start releases the hold', async () => {
     expect(mockRun).not.toHaveBeenCalled();
     // Cancellation leaves the planner turn holding the session until it ends.
     expect(h.state().turnActive).toBe(true);
-    expect(registry.get('alice', 'key')?.lastActivity).toBe(0);
+    expect(registry.get('alice', 'key')?.lastActivity).toBe(2000);
     setTime(3000);
     expect(await registry.sweep()).toBe(0);
     await until(() => !h.state().turnActive);
@@ -1683,7 +1707,7 @@ test.each([
       return { output: 'saved' };
     });
     mockPlannerHook = async () => {
-      await new PlannerToolsClient().callTool('update_plan', {
+      await new PlannerToolsClient().callTool('plan_update', {
         plan: 'Save record',
         status: 'active',
       });
@@ -2020,3 +2044,291 @@ test.each(['queued', 'running'] as const)(
     }
   },
 );
+
+test('dialogue opens with a stateless profile plan author and environment notes', async () => {
+  const open = jest.spyOn(DialogueSession, 'open');
+  const search = jest.fn(async () => [
+    { collection: 'planning', id: 'rule', text: 'Headless planning guidance' },
+  ]);
+  const setup = jest
+    .spyOn(plannerMemory, 'plannerSessionOptions')
+    .mockResolvedValue({ plannerKnowledge: [{ name: 'planning', search }] });
+  const retrieval = jest.spyOn(plannerMemory, 'planAuthorContextNotes');
+  try {
+    const h = await dialogueFor('alice', 'author-wiring', 'TEST');
+    const options = open.mock.calls.at(-1)?.[0];
+    expect(options?.planAuthor).toBeDefined();
+    expect(options?.profileSource).toBeDefined();
+    expect(options?.profileRunner).toBeDefined();
+    const result = await options?.planAuthor?.create({
+      goal: 'Read the requested objects',
+    });
+    expect(result?.ok).toBe(true);
+    expect(mockAuthorTurns.at(-1)).toContain('Environment');
+    expect(mockAuthorTurns.at(-1)).toContain('Destination: TEST');
+    expect(mockAuthorTurns.at(-1)).toContain('[worker profiles]');
+    expect(mockAuthorTurns.at(-1)).toContain('executor');
+    await h.session.callTool('plan_create', {
+      goal: 'External coordinator request',
+    });
+    expect(retrieval).toHaveBeenLastCalledWith(
+      expect.anything(),
+      'author-wiring',
+      expect.objectContaining({ text: 'External coordinator request' }),
+      expect.anything(),
+    );
+    expect(mockAuthorTurns.at(-1)).toContain('Headless planning guidance');
+    await h.session.callTool('plan_revise', {
+      change: 'Revise external plan',
+      context: 'Preserve scope',
+    });
+    expect(retrieval).toHaveBeenLastCalledWith(
+      expect.anything(),
+      'author-wiring',
+      expect.objectContaining({
+        text: expect.stringContaining('Revise external plan'),
+      }),
+      expect.anything(),
+    );
+  } finally {
+    retrieval.mockRestore();
+    setup.mockRestore();
+    open.mockRestore();
+  }
+});
+
+test('author gets planning knowledge and memory for the current open request', async () => {
+  const search = jest.fn(async () => [
+    { collection: 'planning', id: 'rule', text: 'Use the planning rule' },
+  ]);
+  const rag = new InMemoryRag();
+  const memoryQuery = jest.spyOn(rag, 'query').mockResolvedValue({
+    ok: true,
+    value: [
+      {
+        text: 'Remember the previous decision',
+        score: 1,
+        metadata: {
+          id: 'memory',
+          sessionId: 'author-context',
+          requestId: 'previous',
+          sourceId: 'source',
+          offset: 0,
+          kind: 'planner-reply',
+        },
+      },
+    ],
+  });
+  const embedding = symmetricEmbedder({
+    embed: async () => ({ vector: [1, 0] }),
+  });
+  const setup = jest
+    .spyOn(plannerMemory, 'plannerSessionOptions')
+    .mockResolvedValue({
+      plannerMemory: {
+        rag,
+        queryEmbedder: embedding,
+        documentEmbedder: embedding,
+      },
+      plannerKnowledge: [{ name: 'planning', search }],
+    });
+  const retrieve = jest.spyOn(plannerMemory, 'planAuthorContextNotes');
+  const open = jest.spyOn(DialogueSession, 'open');
+  try {
+    const h = await dialogueFor('alice', 'author-context', 'TEST');
+    const author = open.mock.calls.at(-1)?.[0].planAuthor;
+    mockPlannerHook = async () => {
+      const result = await author?.create({ goal: 'A different author goal' });
+      expect(result?.ok).toBe(true);
+    };
+    await h.session.send('Find objects for my request');
+    await until(
+      () =>
+        retrieve.mock.calls.length > 0 &&
+        mockAuthorTurns.some((text) => text.includes('Use the planning rule')),
+    );
+    expect(retrieve.mock.calls[0][2].text).toBe('Find objects for my request');
+    expect(search).toHaveBeenCalledWith(
+      { text: 'Find objects for my request' },
+      4,
+      expect.anything(),
+    );
+    expect(mockAuthorTurns.at(-1)).toContain('[planning knowledge]');
+    expect(mockAuthorTurns.at(-1)).toContain('Remember the previous decision');
+    expect(memoryQuery).toHaveBeenCalled();
+  } finally {
+    setup.mockRestore();
+    retrieve.mockRestore();
+    open.mockRestore();
+  }
+});
+
+test('headless MCP opens the shared dialogue without a turn and restores interrupted tasks', async () => {
+  const request = Object.assign(express.request, {
+    headers: { authorization: 'Bearer test' },
+  });
+  const stored: HubDialogueState = {
+    toolContractVersion: DIALOGUE_TOOL_CONTRACT_VERSION,
+    conversation: [],
+    pending: [],
+    savedAt: Date.now(),
+    tasks: [
+      {
+        id: 'running-headless',
+        worker: 'executor',
+        goal: 'Read',
+        state: 'running',
+        createdAt: 1,
+      },
+    ],
+    plan: {
+      version: 1,
+      status: 'active',
+      steps: [
+        {
+          id: 'read',
+          goal: 'Read',
+          state: 'running',
+          taskIds: ['running-headless'],
+          workTaskId: 'running-headless',
+        },
+      ],
+    },
+  };
+  await getDialogueStoreBackend().save('alice', 'key', stored);
+  const h = await headlessDialogueFor(request, 'alice', 'key', 'TEST');
+  expect(await dialogueFor('alice', 'key', 'TEST')).toBe(h);
+  expect(mockPlannerTurns).toEqual([]);
+  expect(h.session.snapshot().tasks[0].state).toBe('interrupted');
+  expect(dialoguePlan(h.session.snapshot())?.steps?.[0].note).toContain(
+    'interrupted',
+  );
+  expect(mockRun).not.toHaveBeenCalled();
+  const result = await h.session.callTool('plan_get', {});
+  expect(result.ok).toBe(true);
+  expect(
+    (await getDialogueStoreBackend().load('alice', 'key'))?.tasks[0].state,
+  ).toBe('interrupted');
+});
+
+test('MCP-only deferred outcomes release the inactivity hold', async () => {
+  const { registry, setTime } = lifetimeRegistry();
+  let finish = () => {};
+  mockRun.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({ output: 'done' });
+      }),
+  );
+  const { h } = await ready();
+  await h.session.callTool('delegate_task', {
+    worker: 'executor',
+    goal: 'Read',
+  });
+  await until(() =>
+    h.session.snapshot().tasks.some((task) => task.state === 'running'),
+  );
+  setTime(2000);
+  expect(await registry.sweep()).toBe(0);
+  finish();
+  await until(() =>
+    h.session.snapshot().tasks.every((task) => task.state === 'done'),
+  );
+  expect(h.state().queuedInputs).toBeGreaterThan(0);
+  setTime(3001);
+  expect(await registry.sweep()).toBe(1);
+});
+
+test('synchronous steps acquire and release session leases, bind connection and exposition, and cap execution at three', async () => {
+  const { h, connection } = await ready();
+  const bound = new AsyncLocalStorage<IAbapConnection>();
+  const binding = jest
+    .mocked(runWithRequestConnection)
+    .mockImplementation((conn, run) => bound.run(conn, run));
+  const slots = new SemaphorePool(3);
+  const hub = jest
+    .spyOn(sharedExecutorPool(), 'acquire')
+    .mockImplementation((signal) => slots.acquire(signal));
+  const releases: jest.Mock[] = [];
+  const acquire = jest.spyOn(h.pool, 'acquire').mockImplementation(async () => {
+    const release = jest.fn(async () => {});
+    releases.push(release);
+    return {
+      connection,
+      system: { responsible: 'OWNER' },
+      dumpScope: undefined,
+      version: 1,
+      release,
+    };
+  });
+  const finishes: Array<() => void> = [];
+  const step = () =>
+    runWithSessionId(
+      'key',
+      () =>
+        h.runStep(async () => {
+          expect(bound.getStore()).toBe(connection);
+          expect(getRequestContext()?.responsible).toBe('OWNER');
+          expect(getRequestUserId()).toBe('alice');
+          expect(getRequestSessionId()).toBe('key');
+          expect(currentAdmission()).toBe(mockRegister);
+          await new Promise<void>((resolve) => finishes.push(resolve));
+          return { ok: true };
+        }),
+      [],
+      'alice',
+    );
+  const calls = [step(), step(), step(), step()];
+  try {
+    await until(() => finishes.length === 3);
+    expect(acquire).toHaveBeenCalledTimes(3);
+    finishes[0]();
+    await until(() => finishes.length === 4);
+    finishes.forEach((finish) => {
+      finish();
+    });
+    await Promise.all(calls);
+    expect(acquire).toHaveBeenCalledTimes(4);
+    for (const release of releases) expect(release).toHaveBeenCalledWith(true);
+    expect(binding).toHaveBeenCalledWith(
+      connection,
+      expect.any(Function),
+      undefined,
+      ['readonly', 'search', 'system'],
+    );
+    expect(mockDrain).toHaveBeenCalledTimes(4);
+    expect(mockRelease).toHaveBeenCalledTimes(4);
+  } finally {
+    finishes.forEach((finish) => {
+      finish();
+    });
+    hub.mockRestore();
+    acquire.mockRestore();
+    binding.mockImplementation((_conn, run) => run());
+  }
+});
+
+test('synchronous steps share the hub slot with delegated tasks and release it after failure', async () => {
+  const { h } = await ready();
+  let finish: (() => void) | undefined;
+  mockRun.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({ output: 'done' });
+      }),
+  );
+  await h.session.send('go');
+  await until(() => !!finish);
+  let entered = false;
+  const step = h.runStep(async () => {
+    entered = true;
+    throw new Error('step failed');
+  });
+  const checked = expect(step).rejects.toThrow('step failed');
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(entered).toBe(false);
+  finish?.();
+  await checked;
+  expect(entered).toBe(true);
+  expect(await h.runStep(async () => ({ ok: true }))).toEqual({ ok: true });
+});

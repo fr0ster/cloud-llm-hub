@@ -7,7 +7,6 @@ import type {
   IConcurrencyPool,
   ISmartAgent,
   ISubAgent,
-  ISubAgentResult,
   IUsageRecorder,
   Message,
   PlannerMessage,
@@ -18,6 +17,7 @@ import type {
 import { addTokenUsage } from '@mcp-abap-adt/llm-agent';
 import { DialogueSession, SemaphorePool } from '@mcp-abap-adt/llm-agent-libs';
 import cds from '@sap/cds';
+import type { Request } from 'express';
 import { getAgentConfig } from '../agent-config';
 import {
   createAgentProfileSource,
@@ -32,7 +32,9 @@ import {
   runWithSessionId,
   runWithToolGateBypass,
 } from '../request-session';
+import { BriefPlanAuthor, planAuthorBriefRequest } from './brief-plan-author';
 import { runWithContextCapture } from './context-capture';
+import { withCoordinatorRun } from './coordinator-tools-client';
 import { DialogueOutbox, type OutboxEntry } from './dialogue-outbox';
 import {
   plannerWithAttachments,
@@ -54,7 +56,10 @@ import { admitBackground, type PipelineSession } from './gatekeeper';
 import { longSessionsIfReady } from './long-session';
 import { stripNoMessage } from './no-message';
 import { renderNotice } from './notify-policy';
-import { plannerSessionOptions } from './planner-memory';
+import {
+  planAuthorContextNotes,
+  plannerSessionOptions,
+} from './planner-memory';
 import { runWithRequestSystem } from './request-system-context';
 import { getReviewSignals } from './review-scope';
 import {
@@ -131,6 +136,9 @@ export interface DialogueHandle {
     settledSeq: number;
     lastFailedSeq: number;
   };
+  runStep<T extends { ok: boolean }>(
+    run: (signal: AbortSignal | undefined) => Promise<T>,
+  ): Promise<T>;
   plannerCounts(counts: PlannerCounts): void;
   hasSubscribers(): boolean;
   drainPending(): Promise<void>;
@@ -200,6 +208,21 @@ export function sharedExecutorPool(): IConcurrencyPool {
 }
 const slot = (userId: string, key: string) => JSON.stringify([userId, key]);
 
+/** Open the shared board without sending a coordinator message. */
+export async function headlessDialogueFor(
+  req: Request,
+  userId: string,
+  key: string,
+  destination: string,
+): Promise<DialogueHandle> {
+  const handle = await dialogueFor(userId, key, destination);
+  await handle.factory.refresh(
+    { headers: req.headers, user: cds.context?.user },
+    destination,
+  );
+  return handle;
+}
+
 export function dialogueFor(
   userId: string,
   key: string,
@@ -267,27 +290,24 @@ async function open(
   // the reply so live subscribers see it on first emission.
   const replyUsage = new WeakMap<object, TokenUsage>();
   let turnReplyUsage: TokenUsage | undefined;
+  const environment = () => {
+    const connection = longSessionsIfReady()?.get(userId, key)?.connection;
+    const identity = connection ? cachedSystemIdentity(connection) : undefined;
+    return [
+      'Environment',
+      `Destination: ${destination}`,
+      ...factory.environment(destination),
+      ...(identity?.masterSystem
+        ? [`SAP system id: ${identity.masterSystem}`]
+        : []),
+      ...(identity?.responsible ? [`SAP login: ${identity.responsible}`] : []),
+      `Concurrency limit: ${config.agent.dialogue.executors} (shared executor pool: ${config.agent.dialogue.executorPool})`,
+    ].join('\n');
+  };
   const decoratePlanner = (planner: ISmartAgent) =>
     plannerWithEnvironment(
       plannerWithAttachments(plannerWithParagraphs(planner), attachments),
-      () => {
-        const connection = longSessionsIfReady()?.get(userId, key)?.connection;
-        const identity = connection
-          ? cachedSystemIdentity(connection)
-          : undefined;
-        return [
-          'Environment',
-          `Destination: ${destination}`,
-          ...factory.environment(destination),
-          ...(identity?.masterSystem
-            ? [`SAP system id: ${identity.masterSystem}`]
-            : []),
-          ...(identity?.responsible
-            ? [`SAP login: ${identity.responsible}`]
-            : []),
-          `Concurrency limit: ${config.agent.dialogue.executors} (shared executor pool: ${config.agent.dialogue.executorPool})`,
-        ].join('\n');
-      },
+      environment,
     );
   const pool = new SessionConnectionPool(
     factory,
@@ -330,6 +350,50 @@ async function open(
     taskStates.set(task.id, task.state);
     emit({ kind: 'task', task: taskView(task) });
   };
+  // Shared by TaskBoard.wrapRun and synchronous coordinator steps.
+  async function runAdmitted<
+    T extends {
+      ok?: boolean;
+      errorClass?: string;
+      stopped?: boolean;
+      status?: string;
+    },
+  >(
+    run: (lease: ConnectionLease, pipeline: PipelineSession) => Promise<T>,
+  ): Promise<T> {
+    let lease: ConnectionLease | undefined;
+    let pipeline: PipelineSession | undefined;
+    let healthy = false;
+    try {
+      lease = await pool.acquire(lifetime.signal);
+      const admission = await admitBackground(userId, key, lifetime.signal);
+      if (!('admitted' in admission))
+        throw new Error(
+          'Background task admission refused: session closed or unavailable',
+        );
+      pipeline = admission.admitted;
+      const acquiredLease = lease;
+      const admitted = pipeline;
+      const result = await admitted.run(() => run(acquiredLease, admitted));
+      healthy =
+        !lifetime.signal.aborted &&
+        result.ok !== false &&
+        result.errorClass !== 'epicfail' &&
+        !result.stopped &&
+        result.status !== 'awaiting-external';
+      return result;
+    } finally {
+      try {
+        await pipeline?.drain();
+      } finally {
+        try {
+          pipeline?.release();
+        } finally {
+          await lease?.release(healthy);
+        }
+      }
+    }
+  }
   // Carry task admission into the worker callback and rebuild its request scope.
   // Dialogue workers receive only their brief; no request history is injected.
   const scope = new AsyncLocalStorage<{
@@ -524,11 +588,8 @@ async function open(
   const unsubscribeActivity = signals.on(
     'dialogue.activity',
     ({ payload }) => {
-      if (
-        payload.running > 0 ||
-        payload.turnActive ||
-        payload.queuedInputs > 0
-      ) {
+      // running includes queued tasks; queuedInputs also includes deferred outcomes.
+      if (payload.running > 0 || payload.turnActive) {
         if (!releaseHold && longSession)
           releaseHold = registry?.hold(longSession);
       } else releaseLifetime();
@@ -611,16 +672,40 @@ async function open(
       for (const task of session?.snapshot().tasks ?? []) emitTask(task);
     }
   };
+  const source = createAgentProfileSource(
+    userId,
+    () =>
+      longSessionsIfReady()?.get(userId, key)?.agentsCollectionId ??
+      savedState?.agentsCollectionId ??
+      config.profiles?.collectionId ??
+      'agents',
+  );
   try {
+    const retrieval = await plannerSessionOptions(userId, key);
     session = await DialogueSession.open({
-      profileSource: createAgentProfileSource(
-        userId,
-        () =>
-          longSessionsIfReady()?.get(userId, key)?.agentsCollectionId ??
-          savedState?.agentsCollectionId ??
-          config.profiles?.collectionId ??
-          'agents',
-      ),
+      profileSource: source,
+      planAuthor: new BriefPlanAuthor({
+        source,
+        runner: profileRunner,
+        notes: async (options) => {
+          const workers = await source.list(options);
+          if (!workers.ok) throw new Error(workers.error.message);
+          const request = session
+            ?.snapshot()
+            .requests?.find((record) => record.closedAt === undefined);
+          const context = await planAuthorContextNotes(
+            retrieval,
+            key,
+            request ?? planAuthorBriefRequest(),
+            options,
+          );
+          return [
+            ...context,
+            environment(),
+            `[worker profiles] ${JSON.stringify(workers.value)}`,
+          ];
+        },
+      }),
       profileTimeoutMs: config.profiles?.timeoutMs ?? 3000,
       profileRunner: {
         createWorker: async (input, options) => {
@@ -630,7 +715,11 @@ async function open(
             : result;
         },
         preparePlanner: async (input, options) => {
-          const result = await profileRunner.preparePlanner(input, options);
+          const result = await withCoordinatorRun(
+            async (run) =>
+              (await dialogueFor(userId, key, destination)).runStep(run),
+            () => profileRunner.preparePlanner(input, options),
+          );
           if (!result.ok) return result;
           const prepared = result.value;
           return {
@@ -647,7 +736,9 @@ async function open(
         },
       },
       timeZone: config.timeZone,
-      ...(await plannerSessionOptions(userId, key)),
+      // The coordinator still needs this context for conversational turns that
+      // do not invoke plan_create or plan_revise.
+      ...retrieval,
       ...(usage ? { usage } : {}),
       id: key,
       signals,
@@ -725,30 +816,15 @@ async function open(
             worker: task.worker,
             goalChars: task.goal.length,
           });
-          let lease: ConnectionLease | undefined;
-          let pipeline: PipelineSession | undefined;
-          let healthy = false;
           let state: TaskRecord['state'] = 'failed';
           const traceId = randomUUID();
           emitTask(task);
           try {
-            const acquiredLease = await pool.acquire(lifetime.signal);
-            lease = acquiredLease;
-            const admission = await admitBackground(
-              userId,
-              key,
-              lifetime.signal,
-            );
-            if (!('admitted' in admission))
-              throw new Error(
-                'Background task admission refused: session closed or unavailable',
-              );
-            pipeline = admission.admitted;
-            const result: ISubAgentResult = await pipeline.run(() =>
+            const result = await runAdmitted(async (acquiredLease, pipeline) =>
               scope.run(
                 {
                   lease: acquiredLease,
-                  pipeline: admission.admitted,
+                  pipeline,
                   traceId,
                   taskId: task.id,
                   ...caller,
@@ -760,7 +836,7 @@ async function open(
                   ),
               ),
             );
-            healthy =
+            const healthy =
               !lifetime.signal.aborted &&
               result.errorClass !== 'epicfail' &&
               !result.stopped &&
@@ -769,38 +845,25 @@ async function open(
             return result;
           } finally {
             try {
-              await pipeline?.drain();
-            } finally {
-              try {
-                pipeline?.release();
-              } finally {
-                try {
-                  await lease?.release(healthy);
-                } finally {
-                  try {
-                    recMcp.dropRequest(traceId);
-                  } catch (error) {
-                    cds.log('dialogue-sessions').warn('dropRequest failed', {
-                      errorType:
-                        error instanceof Error ? error.name : typeof error,
-                    });
-                  }
-                  emitTask({ ...task, state });
-                  log().info('task finished', {
-                    id: task.id,
-                    state,
-                    durationMs: Date.now() - startedAt,
-                  });
-                  if (stopped)
-                    log().info('close progress', {
-                      keyHash: keyHash(key),
-                      tasksRemaining: [...taskStates.values()].filter(
-                        (s) => s === 'running' || s === 'queued',
-                      ).length,
-                    });
-                }
-              }
+              recMcp.dropRequest(traceId);
+            } catch (error) {
+              cds.log('dialogue-sessions').warn('dropRequest failed', {
+                errorType: error instanceof Error ? error.name : typeof error,
+              });
             }
+            emitTask({ ...task, state });
+            log().info('task finished', {
+              id: task.id,
+              state,
+              durationMs: Date.now() - startedAt,
+            });
+            if (stopped)
+              log().info('close progress', {
+                keyHash: keyHash(key),
+                tasksRemaining: [...taskStates.values()].filter(
+                  (s) => s === 'running' || s === 'queued',
+                ).length,
+              });
           }
         },
       },
@@ -866,6 +929,23 @@ async function open(
       };
     },
     drainPending,
+    async runStep(run) {
+      const release = await sharedExecutorPool().acquire(lifetime.signal);
+      try {
+        return await runAdmitted((lease, pipeline) =>
+          runWithRequestSystem(lease.system, () =>
+            runWithRequestConnection(
+              lease.connection,
+              () => run(pipeline.signal),
+              lease.dumpScope,
+              factory.exposition,
+            ),
+          ),
+        );
+      } finally {
+        release();
+      }
+    },
     plannerCounts: (counts) => emit({ kind: 'planner', ...counts }),
     hasSubscribers: () => subscribers.size > 0,
     factory,

@@ -250,3 +250,23 @@ receives the assistant's text exactly as it streamed, including
 - [`MCP_CONNECTION.md`](MCP_CONNECTION.md) — the alternative integration path (MCP
   server registration in the client).
 - [`GETTING_STARTED.md`](GETTING_STARTED.md) — broader onboarding for new users.
+
+## Coordinating a long session over agent MCP
+
+An external agent can coordinate through `/mcp/agent/stream/http`. Its 23 tools
+include eleven RAG tools, destination/session tools, `execute_step`, and eight
+orchestration tools: `plan_create`, `plan_revise`, `plan_get`, `plan_update`,
+`delegate_task`, `get_task`, `list_tasks`, `stop_task`.
+
+Open a session with `session_open` and pass the returned `session` key to keep a
+plan and task board. Use `plan_create` to author a plan, `delegate_task` to start a
+worker, and `get_task` / `list_tasks` to follow it. `plan_revise` calls the stateless
+author for substantial changes; `plan_update` edits plan state directly. The former
+`get_plan` / `update_plan` names have no aliases. Planning without a session returns
+a plan without saving it; stateless revision requires the structured `plan`.
+`execute_step` waits for one result and accepts `worker` (default `executor`),
+including `checker` when permitted by caller grants.
+
+The session shares dialogue state with WebUI and protocol clients; orchestration
+calls are refused while a dialogue turn runs. See the [API reference](../architecture/API_REFERENCE.md#long-sessions)
+for schemas, limits and error behavior.

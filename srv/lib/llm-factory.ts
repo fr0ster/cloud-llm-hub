@@ -29,7 +29,7 @@ import { usageRuntime } from './usage/runtime';
 
 export interface HubLlmConfig {
   provider: LlmProvider;
-  component?: 'chat' | 'other';
+  component?: 'chat' | 'other' | 'planner-author';
   contextCapture?: 'off' | 'stats';
   /** API key for openai / anthropic / deepseek. Unused for sap-ai-sdk. */
   apiKey?: string;
@@ -180,7 +180,7 @@ export async function makeHubLlm(
     }
   }
 
-  return captureLlm(
+  const llm = captureLlm(
     new LlmAdapter(new LlmProviderBridge(provider), {
       model: provider.model,
       getModels: () => provider.getModels?.() ?? Promise.resolve([]),
@@ -190,4 +190,31 @@ export async function makeHubLlm(
     cfg.component,
     cfg.contextCapture,
   );
+  if (cfg.component !== 'planner-author') return llm;
+  // SmartAgent supplies its tool-loop component in CallOptions. Attribute at
+  // the LLM boundary, after the pipeline has selected that recorder.
+  return new Proxy(llm, {
+    get(target, property) {
+      if (property === 'chat')
+        return (...[messages, tools, options]: Parameters<ILlm['chat']>) =>
+          target.chat(messages, tools, {
+            ...options,
+            usage: (options?.usage ?? usage)?.with({
+              component: 'planner-author',
+            }),
+          });
+      if (property === 'streamChat')
+        return (
+          ...[messages, tools, options]: Parameters<ILlm['streamChat']>
+        ) =>
+          target.streamChat(messages, tools, {
+            ...options,
+            usage: (options?.usage ?? usage)?.with({
+              component: 'planner-author',
+            }),
+          });
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
 }

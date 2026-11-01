@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- Dialogue coordinator with a stateless plan author using separate create/revise profiles and four read-only knowledge tools.
+- Agent MCP orchestration tools: `plan_create`, `plan_revise`, `plan_get`, `plan_update`, `delegate_task`, `get_task`, `list_tasks`, `stop_task`, sharing the long session's plan and task board.
+- Optional `execute_step.worker` for selecting a worker profile under the caller's grants (default `executor`).
+- Optional `LLM_AGENT_COORDINATOR_MODEL`; when unset, the coordinator uses the planner model.
+
+### Changed
+
+- Split the `planner` record into `coordinator`, `planner-create` and `planner-revise`. `LLM_AGENT_PLANNER_RECORD` now names the coordinator record and defaults to `coordinator`.
+- Renamed plan tools `get_plan` to `plan_get` and `update_plan` to `plan_update`, without aliases. Dialogue tool contract v2 keeps saved v1 plans and tasks and migrates transcript tool names; pre-canonical states retain the interrupt migration.
+- Depend on `@mcp-abap-adt/llm-agent` 30.25.0 and `@mcp-abap-adt/llm-agent-libs` 30.24.0.
+- Operators with an edited `planner` record must carry conversation/orchestration edits into `coordinator` and planning edits into both `planner-create` and `planner-revise`. Missing-only seeding does not migrate custom prompt text.
+
 ## [10.1.0] - 2026-10-31
 
 ### Changed

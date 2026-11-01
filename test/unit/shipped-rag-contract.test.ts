@@ -206,3 +206,74 @@ it('validates JavaScript literals and checks keys even with symbolic values', ()
   ])
     expect(() => validatePrompt(example)).toThrow();
 });
+
+it('ships separate coordinator and stateless planner prompts', () => {
+  const read = (name: string) =>
+    readFileSync(path.join('srv/agent-profiles', `${name}.md`), 'utf8');
+  const coordinator = read('coordinator');
+  for (const tool of ['plan_create', 'plan_revise', 'plan_get', 'plan_update'])
+    expect(coordinator).toContain(tool);
+  expect(coordinator).not.toMatch(/get_plan|update_plan/);
+  for (const name of ['planner-create', 'planner-revise']) {
+    const author = read(name);
+    expect(author).toContain('JSON');
+    expect(author).toContain('waiting_user');
+    expect(author).not.toMatch(
+      /\b(?:Get[A-Z]\w*|Create[A-Z]\w*|Update[A-Z]\w*|Delete[A-Z]\w*|record_add|record_update|delegate_task|plan_update)\b/,
+    );
+  }
+  expect(read('planner-revise')).toContain('Keep done steps');
+});
+
+it.each(['coordinator', 'planner-create', 'planner-revise'])(
+  '%s preserves check output and verification planning contracts',
+  (name: string) => {
+    const prompt = readFileSync(
+      path.join('srv/agent-profiles', `${name}.md`),
+      'utf8',
+    );
+    expect(prompt).toContain(
+      name === 'coordinator'
+        ? 'For delegated check briefs, require'
+        : 'For check step goals, require',
+    );
+    expect(prompt).toContain(
+      'batch checks must return JSON with verdict and a numeric count',
+    );
+    expect(prompt).toContain(
+      'Return JSON {"verdict":"pass"|"fail","count":number,"note":"optional reason"} or PASS/FAIL. Missing or short batch counts and unusable verdicts fail the check step; plan a fix step and a new check.',
+    );
+    expect(prompt).toContain(
+      'Skills and planning guidance may define other or deeper verification for their kind of work.',
+    );
+    expect(prompt).toContain(
+      'Do not add checks the plan did not foresee unless a result shows a concrete problem.',
+    );
+    if (name !== 'coordinator') {
+      expect(prompt).toContain(
+        'Follow planning guidance when it fits the request',
+      );
+      expect(prompt).toContain(
+        'Add a later search or read wave only for a gap found in the results.',
+      );
+      expect(prompt).toContain(
+        'paged collection_records and rag_read using actual IDs',
+      );
+      expect(prompt).toContain('reversible retirement by disabling records');
+      expect(prompt).toContain(
+        'split only for parallel work, size limits or a result that needs its own check',
+      );
+    } else {
+      expect(prompt).toContain('never write ABAP implementation details');
+      expect(prompt).toContain(
+        'Select workers by their discovered exact profile names and descriptions.',
+      );
+      expect(prompt).toContain(
+        're-delegate only for a failure or a concrete gap, saying what is missing',
+      );
+      expect(prompt).toContain(
+        'Sequence steps touching the same object, locks or transport',
+      );
+    }
+  },
+);

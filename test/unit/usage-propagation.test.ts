@@ -1634,6 +1634,20 @@ test('real MCP agent tool loop correlates request, LLM and dispatched MCP record
     .withMcpClients([mcp])
     .build();
   mockStepAgent = built.agent;
+  mockWorkers.set('executor', {
+    name: 'executor',
+    capabilities: { contextPolicy: 'optional' },
+    run: async (input) => {
+      const result = await built.agent.process(input.task, {
+        usage: input.usage,
+        signal: input.signal,
+        trace: input.trace,
+        sessionId: input.sessionId,
+      });
+      if (!result.ok) throw result.error;
+      return { output: result.value.content, usage: result.value.usage };
+    },
+  });
   const registry = new LongSessionRegistry(
     { ttlMs: 60000, maxSessions: 10, maxPerUser: 10, queueLength: 3 },
     lifecycleHooks(),

@@ -95,6 +95,8 @@ export async function seedAgentProfiles(
     'checker',
     '_worker-base',
     plannerRecord,
+    'planner-create',
+    'planner-revise',
   ])
     if (
       !names.has(required) &&
@@ -113,6 +115,8 @@ export async function seedAgentProfiles(
     'checker',
     '_worker-base',
     plannerRecord,
+    'planner-create',
+    'planner-revise',
   ])
     if (!stored.some((record) => record.id === required))
       throw new Error(`Missing required agent record: ${required}`);

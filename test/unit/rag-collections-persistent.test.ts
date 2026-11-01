@@ -1970,7 +1970,7 @@ test('record enabled metadata survives PGlite restart and excludes disabled reco
 });
 
 test('partial agent updates preserve authoritative edits and toggle records created by another instance', async () => {
-  await reg.seedAgentConfiguration('agents', 'planner');
+  await reg.seedAgentConfiguration('agents', 'coordinator');
   const other = newRegistry();
   await other.restore();
   await other.updateDocument('agents', 'executor', {
@@ -2024,8 +2024,8 @@ test('partial agent updates preserve authoritative edits and toggle records crea
 });
 
 test('persistent agent startup upserts only missing complete records and preserves edited disabled records', async () => {
-  await reg.seedAgentConfiguration('agents', 'planner');
-  expect((await reg.readAgentCollection('agents'))?.documents).toHaveLength(5);
+  await reg.seedAgentConfiguration('agents', 'coordinator');
+  expect((await reg.readAgentCollection('agents'))?.documents).toHaveLength(7);
   await reg.updateDocument('agents', 'executor', {
     text: 'edited executor',
     metadata: { enabled: false },
@@ -2034,7 +2034,7 @@ test('persistent agent startup upserts only missing complete records and preserv
   const restarted = newRegistry();
   await restarted.restore();
   const add = jest.spyOn(restarted, 'addDocument');
-  await restarted.seedAgentConfiguration('agents', 'planner');
+  await restarted.seedAgentConfiguration('agents', 'coordinator');
   expect(add).toHaveBeenCalledTimes(1);
   expect(add).toHaveBeenCalledWith(
     'agents',
@@ -2053,12 +2053,12 @@ test('persistent agent startup upserts only missing complete records and preserv
     ),
   ).toMatchObject({ text: 'edited executor', metadata: { enabled: false } });
   add.mockClear();
-  await restarted.seedAgentConfiguration('agents', 'planner');
+  await restarted.seedAgentConfiguration('agents', 'coordinator');
   expect(add).not.toHaveBeenCalled();
 });
 
 test('agent copies and unpublished-copy markers survive provider restoration', async () => {
-  await reg.seedAgentConfiguration('agents', 'planner');
+  await reg.seedAgentConfiguration('agents', 'coordinator');
   await reg.setDocumentEnabled('agents', 'analyst', false);
   const meta = {
     ...userMeta('agents-copy', 'alice'),
@@ -2073,9 +2073,10 @@ test('agent copies and unpublished-copy markers survive provider restoration', a
   expect(
     (await restored.getDocument(meta.id, 'analyst'))?.metadata.enabled,
   ).toBe(false);
-  await restored.updateDocument(meta.id, 'planner', { text: '' });
+  await restored.updateDocument(meta.id, 'coordinator', { text: '' });
   expect(
-    (await newRegistry(newProvider()).getDocument(meta.id, 'planner'))?.text,
+    (await newRegistry(newProvider()).getDocument(meta.id, 'coordinator'))
+      ?.text,
   ).toBe('');
   const pendingMeta = {
     ...userMeta('incomplete-agents', 'alice'),

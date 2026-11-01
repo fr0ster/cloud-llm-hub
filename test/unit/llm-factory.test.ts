@@ -1,3 +1,8 @@
+import type { UsageRecord } from '@mcp-abap-adt/llm-agent';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import { createUsageRecorder } from '@mcp-abap-adt/llm-usage';
+import { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
+
 /**
  * Unit tests for the hub's LLM composition root (srv/lib/llm-factory.ts).
  *
@@ -111,4 +116,103 @@ describe('llm-factory', () => {
     );
     expect(llm.model).toBe('anthropic--claude-4.5-sonnet');
   });
+});
+
+test('real SmartAgent author calls retain their LLM component after the tool loop', async () => {
+  const records: UsageRecord[] = [];
+  const usage = createUsageRecorder({
+    transport: {
+      send: async (batch) => {
+        records.push(...batch);
+      },
+      close: async () => {},
+    },
+  });
+  const chat = jest
+    .spyOn(OpenAIProvider.prototype, 'chat')
+    .mockImplementation(async (_messages, _tools, options) => {
+      options?.usage?.record({
+        kind: 'llm.call',
+        context: {},
+        outcome: 'ok',
+        durationMs: 1,
+        operationId: 'author-call',
+        physicalSeq: 1,
+        outerAttempt: 1,
+        providerAttempt: 1,
+        granularity: 'request',
+        retriesVisible: true,
+        provider: 'openai',
+        model: 'test',
+        stream: false,
+        tokensSource: 'unknown',
+      });
+      return { content: 'Plan', finishReason: 'stop' };
+    });
+  const stream = jest
+    .spyOn(OpenAIProvider.prototype, 'streamChat')
+    .mockImplementation(async function* (messages, tools, options) {
+      yield await OpenAIProvider.prototype.chat(messages, tools, options);
+    });
+  try {
+    const llm = await makeHubLlm(
+      {
+        provider: 'openai',
+        apiKey: 'fake',
+        model: 'test',
+        component: 'planner-author',
+      },
+      0,
+    );
+    const { agent } = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withMainLlm(llm)
+      .withClassification(false)
+      .withMode('hard')
+      .build();
+    const result = await agent.process('Create a plan', {
+      usage: usage.with({ component: 'planner', sessionId: 'author-session' }),
+    });
+    expect(result).toMatchObject({ ok: true, value: { content: 'Plan' } });
+    expect(stream).toHaveBeenCalledTimes(1);
+    await usage.close(1000);
+    expect(
+      records
+        .filter((record) => record.kind === 'llm.call')
+        .map((record) => record.context),
+    ).toEqual([
+      expect.objectContaining({
+        component: 'planner-author',
+        sessionId: 'author-session',
+      }),
+    ]);
+  } finally {
+    await usage.close(1000);
+    chat.mockRestore();
+    stream.mockRestore();
+  }
+});
+
+test('author usage wrapper preserves adapter model and model discovery', async () => {
+  const models = [{ id: 'test' }, { id: 'other' }];
+  const getModels = jest
+    .spyOn(OpenAIProvider.prototype, 'getModels')
+    .mockResolvedValue(models);
+  try {
+    const config = {
+      provider: 'openai' as const,
+      apiKey: 'fake',
+      model: 'test',
+    };
+    const original = await makeHubLlm(config, 0);
+    const wrapped = await makeHubLlm(
+      { ...config, component: 'planner-author' },
+      0,
+    );
+    expect(wrapped.model).toBe(original.model);
+    expect(wrapped.getModels).toEqual(expect.any(Function));
+    expect(await wrapped.getModels?.()).toEqual(await original.getModels?.());
+    expect(getModels).toHaveBeenCalledTimes(2);
+  } finally {
+    getModels.mockRestore();
+  }
 });

@@ -129,7 +129,10 @@ const config: AgentConfig = {
 describe('buildExecutorWorker', () => {
   beforeAll(async () => {
     initProviders(await startProviders(config));
-    await getCollectionRegistry().seedAgentConfiguration('agents', 'planner');
+    await getCollectionRegistry().seedAgentConfiguration(
+      'agents',
+      'coordinator',
+    );
   });
 
   beforeEach(() => {
@@ -251,7 +254,7 @@ describe('compatibility profile cancellation', () => {
                 ...config,
                 profiles: {
                   collectionId: 'agents',
-                  plannerRecord: 'planner',
+                  plannerRecord: 'coordinator',
                   timeoutMs: 25,
                 },
                 agent: { ...config.agent, chatCoordinator: 'adaptive' },
@@ -322,7 +325,7 @@ describe('compatibility profile cancellation', () => {
           ...config,
           profiles: {
             collectionId: 'agents',
-            plannerRecord: 'planner',
+            plannerRecord: 'coordinator',
             timeoutMs: 25,
           },
         },
@@ -343,7 +346,7 @@ describe('compatibility profile cancellation', () => {
                 ...config,
                 profiles: {
                   collectionId: 'agents',
-                  plannerRecord: 'planner',
+                  plannerRecord: 'coordinator',
                   timeoutMs: 25,
                 },
                 agent: { ...config.agent, chatCoordinator: 'adaptive' },

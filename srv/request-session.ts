@@ -141,3 +141,11 @@ export function hasProfileToolScope(): boolean {
     requiredProfileTools.getStore() === true
   );
 }
+
+const statelessKnowledge = new AsyncLocalStorage<boolean>();
+export function runWithStatelessKnowledge<T>(fn: () => T): T {
+  return statelessKnowledge.run(true, () => runWithReadOnlyTools(fn));
+}
+export function isStatelessKnowledge(): boolean {
+  return statelessKnowledge.getStore() === true;
+}

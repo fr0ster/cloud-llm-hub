@@ -38,15 +38,30 @@ export type HubDialogueState = DialogueState & {
   agentsCollectionId?: string;
 };
 
-export const DIALOGUE_TOOL_CONTRACT_VERSION = 1;
+export const DIALOGUE_TOOL_CONTRACT_VERSION = 2;
 
-/** Old contracts have no safe argument translation. Replan all unfinished work. */
+/** v1 only renames planning calls; pre-canonical contracts require replanning. */
 export function migrateDialogueToolContract(
   state: HubDialogueState,
 ): HubDialogueState {
   if (state.toolContractVersion === DIALOGUE_TOOL_CONTRACT_VERSION)
     return state;
   const migrated = structuredClone(state);
+  for (const message of [
+    ...migrated.conversation,
+    ...(migrated.requests?.flatMap((request) => request.transcript ?? []) ??
+      []),
+  ]) {
+    for (const call of message.tool_calls ?? []) {
+      if (call.function.name === 'get_plan') call.function.name = 'plan_get';
+      if (call.function.name === 'update_plan')
+        call.function.name = 'plan_update';
+    }
+  }
+  if (state.toolContractVersion === 1) {
+    migrated.toolContractVersion = DIALOGUE_TOOL_CONTRACT_VERSION;
+    return migrated;
+  }
   const note =
     'Tool catalogue changed; replan with canonical RAG tools and existing record IDs. Verify unsettled writes before retrying; never replay completed writes.';
   for (const task of migrated.tasks) {
@@ -240,6 +255,12 @@ const structuredPlan = planSchema(
     note: str.optional(),
   } satisfies Shape<Plan>),
 );
+export const revisionPlanSchema = structuredPlan.refine(
+  (plan) =>
+    Buffer.byteLength(JSON.stringify(plan), 'utf8') <= dialogueByteLimit(),
+  { message: 'Plan exceeds configured byte limit' },
+);
+
 const plannerMessage = z.object({
   id,
   text: str,
@@ -303,6 +324,37 @@ const toolTrace = z.object({
   omittedCount: z.number().int().nonnegative(),
   complete: z.boolean(),
 } satisfies Shape<ToolTrace>);
+const taskRecord = z.object({
+  id: str,
+  worker: str,
+  goal: str,
+  result: z.enum(['report', 'verdict']).optional(),
+  state: z.enum([
+    'queued',
+    'running',
+    'done',
+    'failed',
+    'stopped',
+    'interrupted',
+  ]),
+  usage: tokenUsage.optional(),
+  toolTrace: toolTrace.optional(),
+  budgetExhausted: z.boolean().optional(),
+  toolsSelected: num.optional(),
+  toolsAvailable: num.optional(),
+  toolCalls: num.optional(),
+  maxToolCalls: num.optional(),
+  output: str.optional(),
+  error: str.optional(),
+  createdAt: num,
+  startedAt: num.optional(),
+  finishedAt: num.optional(),
+} satisfies Shape<TaskRecord>);
+type TaskEvent = NonNullable<DialogueState['pendingEvents']>[number];
+const taskEvent = z.object({
+  kind: z.enum(['started', 'done', 'failed', 'stopped', 'long_running']),
+  task: taskRecord,
+} satisfies Shape<TaskEvent>);
 const schema = z.object({
   requests: z.array(request).max(200).optional(),
   requestSeq: num.optional(),
@@ -321,42 +373,15 @@ const schema = z.object({
         });
     })
     .optional(),
-  tasks: z
-    .array(
-      z.object({
-        id: str,
-        worker: str,
-        goal: str,
-        result: z.enum(['report', 'verdict']).optional(),
-        state: z.enum([
-          'queued',
-          'running',
-          'done',
-          'failed',
-          'stopped',
-          'interrupted',
-        ]),
-        usage: tokenUsage.optional(),
-        toolTrace: toolTrace.optional(),
-        budgetExhausted: z.boolean().optional(),
-        toolsSelected: num.optional(),
-        toolsAvailable: num.optional(),
-        toolCalls: num.optional(),
-        maxToolCalls: num.optional(),
-        output: str.optional(),
-        error: str.optional(),
-        createdAt: num,
-        startedAt: num.optional(),
-        finishedAt: num.optional(),
-      } satisfies Shape<TaskRecord>),
-    )
-    .superRefine((tasks, ctx) => {
-      if (tasks.length > dialogueMaxTasks())
-        ctx.addIssue({
-          code: 'custom',
-          message: 'Dialogue task limit exceeded',
-        });
-    }),
+  tasks: z.array(taskRecord).superRefine((tasks, ctx) => {
+    if (tasks.length > dialogueMaxTasks())
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Dialogue task limit exceeded',
+      });
+  }),
+  // Outcomes deferred while an external coordinator drives the session.
+  pendingEvents: z.array(taskEvent).max(1000).optional(),
   pending: z.array(plannerMessage),
   savedAt: num,
 } satisfies Shape<DialogueState>);

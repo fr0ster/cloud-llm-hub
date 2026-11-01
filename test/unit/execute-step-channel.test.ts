@@ -1,3 +1,4 @@
+const mockCreateWorker = jest.fn();
 jest.mock(
   '@sap/cds',
   () => ({
@@ -12,9 +13,19 @@ jest.mock(
   { virtual: true },
 );
 jest.mock('../../srv/env-setup', () => ({}));
-jest.mock('../../srv/agent-manager', () =>
-  require('./helpers/channel-harness').agentManagerMock(),
-);
+jest.mock('../../srv/agent-manager', () => ({
+  ...require('./helpers/channel-harness').agentManagerMock(),
+  getSmartAgent: async (...args: unknown[]) => ({
+    ...(await require('./helpers/channel-harness')
+      .agentManagerMock()
+      .getSmartAgent(...args)),
+    profileRunner: { createWorker: mockCreateWorker },
+  }),
+  createAgentProfileSource: () => ({
+    list: async () => ({ ok: true, value: [] }),
+    getPrompts: async () => ({ ok: true, value: {} }),
+  }),
+}));
 jest.mock('../../srv/lib/request-connection', () =>
   require('./helpers/channel-harness').requestConnectionMock(),
 );
@@ -108,6 +119,26 @@ const step = () => executeStep(req, caller, { task: 'read class ZCL_X' });
 
 beforeEach(() => harness.reset());
 afterEach(() => configure());
+
+test.each([undefined, 'executor'])(
+  'executor %s retains HEAD result metadata with a profile runner',
+  async (worker) => {
+    harness.process = async () => ({
+      ok: true,
+      value: {
+        content: '',
+        iterations: 3,
+        toolCallCount: 2,
+        stopReason: 'stop',
+      },
+    });
+    const result = await executeStep(req, caller, { task: 'read', worker });
+    expect(result.content[0].text).toContain(
+      'iterations=3 toolCallCount=2 stopReason=stop',
+    );
+    expect(mockCreateWorker).not.toHaveBeenCalled();
+  },
+);
 
 describe('execute_step at the door', () => {
   it('refuses with the prefixed line, after resolving the agent', async () => {

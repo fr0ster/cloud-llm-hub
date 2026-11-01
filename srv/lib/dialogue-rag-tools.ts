@@ -15,6 +15,7 @@ import {
   getRequestSessionId,
   getRequestUserId,
   isReadOnlyTools,
+  isStatelessKnowledge,
 } from '../request-session';
 import { currentAdmission } from './admission-scope';
 import { currentContextTaskId } from './context-capture';
@@ -89,6 +90,7 @@ export class LocalRagMcpClient implements IMcpClient {
         admin: identity.admin,
         sessionKey,
         internal: true,
+        statelessRead: isStatelessKnowledge(),
         trustedAdmission: currentAdmission() !== undefined,
         permissions,
         readOnly: isReadOnlyTools(),

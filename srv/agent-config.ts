@@ -30,7 +30,7 @@ import type { IThrottleStrategy } from '@mcp-abap-adt/llm-agent';
 import { WaitAsTold } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { validateConfiguredCollectionId } from './collection-ids';
-import { plannerName } from './lib/agent-profile-records';
+import { coordinatorName } from './lib/agent-profile-records';
 import { BuildValidationError } from './lib/build-validation-error';
 import { readPositiveIntFrom } from './lib/env-int';
 import {
@@ -154,8 +154,8 @@ export interface AgentProfilesConfig {
 export function parseAgentProfilesConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): AgentProfilesConfig {
-  const planner = plannerName.safeParse(
-    env.LLM_AGENT_PLANNER_RECORD ?? 'planner',
+  const planner = coordinatorName.safeParse(
+    env.LLM_AGENT_PLANNER_RECORD ?? 'coordinator',
   );
   if (!planner.success) throw new Error('Invalid LLM_AGENT_PLANNER_RECORD');
   return {
@@ -187,9 +187,11 @@ export interface AgentConfig {
      */
     classifierModel: string;
 
-    /** Optional independent dialogue planner model: LLM_AGENT_PLANNER_MODEL.
+    /** Optional plan author and default coordinator model: LLM_AGENT_PLANNER_MODEL.
      * Unset follows the main model, including per-request model selection. */
     plannerModel?: string;
+    /** Optional coordinator override; defaults to the planner model. */
+    coordinatorModel?: string;
 
     /** Temperature (0.0 - 2.0) */
     temperature: number;
@@ -659,6 +661,8 @@ export function loadAgentConfig(): AgentConfig {
       model,
       classifierModel: process.env.LLM_AGENT_CLASSIFIER_MODEL || model,
       plannerModel: process.env.LLM_AGENT_PLANNER_MODEL?.trim() || undefined,
+      coordinatorModel:
+        process.env.LLM_AGENT_COORDINATOR_MODEL?.trim() || undefined,
       temperature,
       maxTokens,
       apiKey: apiKey || undefined,

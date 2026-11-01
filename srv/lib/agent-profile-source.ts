@@ -107,7 +107,7 @@ export class AgentProfileSource implements IAgentProfileSource {
   private record(
     documents: RagDocument[],
     name: string,
-    kind: 'profile' | 'worker-base' | 'planner',
+    kind: AgentProfileRecord['metadata']['kind'],
   ): AgentProfileRecord {
     const document = documents.find((entry) => entry.id === name);
     if (!document) throw new ProfileFailure('missing');
@@ -245,8 +245,21 @@ export class AgentProfileSource implements IAgentProfileSource {
       const documents = await this.read(call, options);
       return {
         workerBase: this.record(documents, '_worker-base', 'worker-base').text,
-        planner: this.record(documents, this.selection.plannerRecord, 'planner')
-          .text,
+        coordinator: this.record(
+          documents,
+          this.selection.plannerRecord,
+          'coordinator',
+        ).text,
+        plannerCreate: this.record(
+          documents,
+          'planner-create',
+          'planner-author',
+        ).text,
+        plannerRevise: this.record(
+          documents,
+          'planner-revise',
+          'planner-author',
+        ).text,
       };
     }, options);
   }

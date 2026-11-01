@@ -12,9 +12,23 @@ jest.mock(
   { virtual: true },
 );
 jest.mock('../../srv/env-setup', () => ({}));
-jest.mock('../../srv/agent-manager', () =>
-  require('./helpers/channel-harness').agentManagerMock(),
-);
+jest.mock('../../srv/agent-manager', () => ({
+  ...require('./helpers/channel-harness').agentManagerMock(),
+  createAgentProfileSource: () => ({
+    list: async () => ({ ok: true, value: [] }),
+    getPrompts: async () => ({ ok: true, value: {} }),
+    get: async (name: string) => ({
+      ok: true,
+      value: {
+        name,
+        description: '',
+        systemPrompt: '',
+        tools: name === 'writer' ? { allow: ['write'] } : 'read-only',
+        result: name === 'checker' ? 'verdict' : 'report',
+      },
+    }),
+  }),
+}));
 jest.mock('../../srv/lib/request-connection', () =>
   require('./helpers/channel-harness').requestConnectionMock(),
 );
@@ -48,19 +62,25 @@ jest.mock('../../srv/lib/principal', () => ({
 // `registerTool` was handed, so a test can call it the way the SDK does —
 // with the request's `extra`, whose signal the transport aborts on close.
 jest.mock('@modelcontextprotocol/sdk/server/mcp.js', () => {
+  const definitions = new Map<
+    string,
+    { description: string; inputSchema: object }
+  >();
   const tools = new Map<
     string,
     (args: unknown, extra: { signal: AbortSignal }) => unknown
   >();
   return {
     tools,
+    definitions,
     McpServer: class {
       registerTool(
         name: string,
-        _config: unknown,
+        config: { description: string; inputSchema: object },
         cb: (args: unknown, extra: { signal: AbortSignal }) => unknown,
       ) {
         tools.set(name, cb);
+        definitions.set(name, config);
       }
       async connect() {}
     },
@@ -610,3 +630,229 @@ test('execute_step ignores agents selection supplied as an extra execution field
     'agents',
   );
 });
+
+it('agent MCP lists all 23 tools including orchestration', async () => {
+  const { coordinatorToolsClient } = await import(
+    '../../srv/lib/coordinator-tools-client'
+  );
+  const { DialogueRagMcpClient } = await import(
+    '../../srv/lib/dialogue-rag-tools'
+  );
+  const internal = await new DialogueRagMcpClient(
+    coordinatorToolsClient(coordinatorDependencies()),
+  ).listTools();
+  if (!internal.ok) throw new Error(internal.error.message);
+  expect(internal.value.map((tool) => tool.name).sort()).toEqual(
+    [...tools.keys(), 'deliver', 'new_request', 'search_knowledge']
+      .filter((name) => name !== 'session_open' && name !== 'session_close')
+      .sort(),
+  );
+  const { PlannerToolsClient } = await import('@mcp-abap-adt/llm-agent-libs');
+  const library = await new PlannerToolsClient().listTools();
+  if (!library.ok) throw new Error(library.error.message);
+  const catalogue = await coordinatorToolsClient(
+    coordinatorDependencies(),
+  ).listTools();
+  if (!catalogue.ok) throw new Error(catalogue.error.message);
+  for (const tool of library.value)
+    expect(catalogue.value).toContainEqual(tool);
+  expect(tools.size).toBe(23);
+  const {
+    executeStepSchema,
+    EXECUTE_STEP_DESCRIPTION,
+    listDestinationsDefinition,
+  } = await import('../../srv/lib/coordinator-tool-definitions');
+  const { definitions } = jest.requireMock<{
+    definitions: Map<string, { description: string; inputSchema: object }>;
+  }>('@modelcontextprotocol/sdk/server/mcp.js');
+  expect(definitions.get('execute_step')?.inputSchema).toBe(executeStepSchema);
+  expect(definitions.get('list_destinations')).toBe(listDestinationsDefinition);
+  expect(
+    internal.value.find((tool) => tool.name === 'execute_step'),
+  ).toMatchObject({
+    description: EXECUTE_STEP_DESCRIPTION,
+    inputSchema: z.toJSONSchema(z.object(executeStepSchema)),
+  });
+  expect(
+    internal.value.find((tool) => tool.name === 'list_destinations'),
+  ).toMatchObject({
+    description: listDestinationsDefinition.description,
+    inputSchema: z.toJSONSchema(
+      z.object(listDestinationsDefinition.inputSchema),
+    ),
+  });
+  for (const name of [
+    'plan_create',
+    'plan_revise',
+    'plan_get',
+    'plan_update',
+    'delegate_task',
+    'get_task',
+    'list_tasks',
+    'stop_task',
+  ])
+    expect(tools.has(name)).toBe(true);
+});
+
+it.each(['checker', 'writer'])(
+  'execute_step resolves %s through the profile runner and enforces its grants',
+  async (worker) => {
+    const manager = jest.requireMock<typeof import('../../srv/agent-manager')>(
+      '../../srv/agent-manager',
+    );
+    const { AgentProfileRunner } = await import(
+      '../../srv/lib/agent-profile-runner'
+    );
+    const { profileToolAllowed } = await import('../../srv/request-session');
+    const original = manager.getSmartAgent;
+    const runner = new AgentProfileRunner({
+      catalogue: () => [
+        { name: 'read', effect: 'read' },
+        { name: 'write', effect: 'write' },
+      ],
+      grants: () => new Set(['read']),
+      buildPlanner: async () => {
+        throw new Error('No coordinator turn expected');
+      },
+      buildWorker: async (profile) => ({
+        name: profile.name,
+        capabilities: { contextPolicy: 'optional' },
+        run: async () => {
+          if (profile.name === 'writer' && !profileToolAllowed('write'))
+            throw new Error('Worker tool forbidden by caller grants');
+          return { output: '{"verdict":"pass"}' };
+        },
+      }),
+    });
+    const spy = jest
+      .spyOn(manager, 'getSmartAgent')
+      .mockImplementation(async (...args) => ({
+        ...(await original(...args)),
+        profileRunner: runner,
+      }));
+    try {
+      const result = await executeStep(req, caller, { task: 'Check', worker });
+      const { coordinatorToolsClient } = await import(
+        '../../srv/lib/coordinator-tools-client'
+      );
+      const { runWithSessionId } = await import('../../srv/request-session');
+      const session = await opened();
+      const internal = runWithSessionId(
+        session,
+        () =>
+          coordinatorToolsClient(coordinatorDependencies()).callTool(
+            'execute_step',
+            {
+              task: 'Check',
+              worker,
+            },
+          ),
+        undefined,
+        'alice',
+      );
+      if (worker === 'checker') {
+        await expect(internal).resolves.toMatchObject({
+          ok: true,
+          value: { content: '{"verdict":"pass"}' },
+        });
+      } else {
+        await expect(internal).rejects.toThrow('forbidden by caller grants');
+      }
+
+      if (worker === 'checker') {
+        expect(result.isError).toBeUndefined();
+        expect(result.content[0].text).toContain('"verdict":"pass"');
+      } else {
+        expect(result.isError).toBe(true);
+        expect(result.content[0].text).toContain('forbidden by caller grants');
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  },
+);
+
+it('internal execute_step completes synchronously in the current session scope', async () => {
+  const { coordinatorToolsClient } = await import(
+    '../../srv/lib/coordinator-tools-client'
+  );
+  const { runWithSessionId, getRequestSessionId, getRequestUserId } =
+    await import('../../srv/request-session');
+  const manager = jest.requireMock<typeof import('../../srv/agent-manager')>(
+    '../../srv/agent-manager',
+  );
+  const original = manager.getSmartAgent;
+  const session = await opened();
+  let finish = () => {};
+  const spy = jest
+    .spyOn(manager, 'getSmartAgent')
+    .mockImplementation(async (...args) => ({
+      ...(await original(...args)),
+      executor: undefined,
+      agent: Object.assign((await original(...args)).agent, {
+        process: async () => {
+          expect(getRequestSessionId()).toBe(session);
+          expect(getRequestUserId()).toBe('alice');
+          await new Promise<void>((resolve) => {
+            finish = resolve;
+          });
+          return {
+            ok: true as const,
+            value: {
+              content: 'step done',
+              iterations: 1,
+              toolCallCount: 0,
+              stopReason: 'stop' as const,
+            },
+          };
+        },
+      }),
+    }));
+  try {
+    let settled = false;
+    const call = runWithSessionId(
+      session,
+      () =>
+        coordinatorToolsClient(coordinatorDependencies())
+          .callTool('execute_step', { task: 'Read' })
+          .then((result) => {
+            settled = true;
+            return result;
+          }),
+      undefined,
+      'alice',
+    );
+    for (let i = 0; i < 30 && spy.mock.calls.length === 0; i++)
+      await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    finish();
+    expect(await call).toMatchObject({
+      ok: true,
+      value: { content: 'step done', isError: false },
+    });
+  } finally {
+    finish();
+    spy.mockRestore();
+  }
+});
+
+function coordinatorDependencies() {
+  const manager = jest.requireMock<typeof import('../../srv/agent-manager')>(
+    '../../srv/agent-manager',
+  );
+  const { runExecutorStep } = jest.requireActual<
+    typeof import('../../srv/lib/executor-step')
+  >('../../srv/lib/executor-step');
+  return {
+    wrapRun: <T extends { ok: boolean }>(
+      run: (signal: AbortSignal | undefined) => Promise<T>,
+    ) => run(undefined),
+    getSmartAgent: manager.getSmartAgent,
+    runExecutorStep: (
+      ...args: Parameters<
+        typeof import('../../srv/agent-manager').runExecutorStep
+      >
+    ) => runExecutorStep(manager.createAgentProfileSource, ...args),
+  };
+}
