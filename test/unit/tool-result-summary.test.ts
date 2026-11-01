@@ -96,6 +96,11 @@ test('errors keep only a code, never message or result text', () => {
     summarizeToolResult(record({ result: 'backend said: row 42 text' }, true))
       .result.structuredContent,
   ).toEqual({ error: { code: 'ERROR' } });
+  expect(
+    summarizeToolResult(
+      record({ error: { code: 'FAILED: confidential document text' } }, true),
+    ).result.structuredContent,
+  ).toEqual({ error: { code: 'ERROR' } });
 });
 
 test('parses JSON content when structuredContent is absent', () => {

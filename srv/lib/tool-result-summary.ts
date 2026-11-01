@@ -7,9 +7,11 @@ const identifiers = z.object({
   id: z.string().optional(),
 });
 /** Error codes look like SESSION_REQUIRED; free text never crosses this channel. */
-const ERROR_CODE = /^[A-Z][A-Z0-9_]{2,63}/;
+const ERROR_CODE = /^([A-Z][A-Z0-9_]{2,63})(?::|$)/;
+const isErrorCode = (text: string | undefined): text is string =>
+  !!text && /^[A-Z][A-Z0-9_]{2,63}$/.test(text);
 const errorCode = (text: string | undefined): string | undefined =>
-  text ? ERROR_CODE.exec(text.trim())?.[0] : undefined;
+  text ? ERROR_CODE.exec(text.trim())?.[1] : undefined;
 const structured = identifiers.extend({
   total: z.number().optional(),
   offset: z.number().optional(),
@@ -59,7 +61,7 @@ export function summarizeToolResult(record: ToolCallRecord): ToolResultSummary {
   summary ??= {};
   // Messages may echo backend or document text: keep only an error code.
   const code =
-    summary.error?.code ??
+    (isErrorCode(summary.error?.code) ? summary.error?.code : undefined) ??
     errorCode(summary.error?.message) ??
     errorCode(summary.result);
   delete summary.result;
