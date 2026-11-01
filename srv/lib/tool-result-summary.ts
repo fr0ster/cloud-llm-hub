@@ -6,14 +6,17 @@ const identifiers = z.object({
   record: z.string().optional(),
   id: z.string().optional(),
 });
-const shortText = z.string().transform((value) => value.slice(0, 200));
+/** Error codes look like SESSION_REQUIRED; free text never crosses this channel. */
+const ERROR_CODE = /^[A-Z][A-Z0-9_]{2,63}/;
+const errorCode = (text: string | undefined): string | undefined =>
+  text ? ERROR_CODE.exec(text.trim())?.[0] : undefined;
 const structured = identifiers.extend({
   total: z.number().optional(),
   offset: z.number().optional(),
   error: z
-    .object({ code: z.string().optional(), message: shortText.optional() })
+    .object({ code: z.string().optional(), message: z.string().optional() })
     .optional(),
-  result: shortText.optional(),
+  result: z.string().optional(),
   hits: z
     .array(
       z.object({
@@ -50,13 +53,18 @@ export function summarizeToolResult(record: ToolCallRecord): ToolResultSummary {
       if (parsed.success) summary = parsed.data;
     } catch {
       summary =
-        isError && typeof content === 'string'
-          ? { result: content.slice(0, 200) }
-          : {};
+        isError && typeof content === 'string' ? { result: content } : {};
     }
   }
   summary ??= {};
-  if (!isError) delete summary.result;
+  // Messages may echo backend or document text: keep only an error code.
+  const code =
+    summary.error?.code ??
+    errorCode(summary.error?.message) ??
+    errorCode(summary.result);
+  delete summary.result;
+  delete summary.error;
+  if (isError) summary.error = { code: code ?? 'ERROR' };
   const args = identifiers.safeParse(record.call.arguments);
   return {
     call: { name: record.call.name, arguments: args.success ? args.data : {} },

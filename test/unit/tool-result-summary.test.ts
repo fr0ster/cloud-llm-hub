@@ -75,21 +75,27 @@ test('keeps record and collection identifiers, paging and write response IDs', (
   });
 });
 
-test('truncates error message and result to 200 characters', () => {
+test('errors keep only a code, never message or result text', () => {
   expect(
     summarizeToolResult(
       record(
         {
-          error: { code: 'FAILED', message: 'm'.repeat(250), text: 'secret' },
-          result: 'r'.repeat(250),
+          error: { code: 'FAILED', message: 'document text', text: 'secret' },
+          result: 'more text',
         },
         true,
       ),
     ).result.structuredContent,
-  ).toEqual({
-    error: { code: 'FAILED', message: 'm'.repeat(200) },
-    result: 'r'.repeat(200),
-  });
+  ).toEqual({ error: { code: 'FAILED' } });
+  expect(
+    summarizeToolResult(
+      record({ result: 'SESSION_REQUIRED: call session_open first' }, true),
+    ).result.structuredContent,
+  ).toEqual({ error: { code: 'SESSION_REQUIRED' } });
+  expect(
+    summarizeToolResult(record({ result: 'backend said: row 42 text' }, true))
+      .result.structuredContent,
+  ).toEqual({ error: { code: 'ERROR' } });
 });
 
 test('parses JSON content when structuredContent is absent', () => {
@@ -104,10 +110,14 @@ test('parses JSON content when structuredContent is absent', () => {
   ).toEqual({ hits: [{ collection: 'notes', id: 'r' }] });
 });
 
-test('keeps bounded plain content only for errors', () => {
+test('plain content becomes an error code or nothing', () => {
   expect(
-    summarizeToolResult(record('e'.repeat(250), true)).result.structuredContent,
-  ).toEqual({ result: 'e'.repeat(200) });
+    summarizeToolResult(record('NOT_FOUND: collection x', true)).result
+      .structuredContent,
+  ).toEqual({ error: { code: 'NOT_FOUND' } });
+  expect(
+    summarizeToolResult(record('free text', true)).result.structuredContent,
+  ).toEqual({ error: { code: 'ERROR' } });
   expect(
     summarizeToolResult(record('private text')).result.structuredContent,
   ).toEqual({});

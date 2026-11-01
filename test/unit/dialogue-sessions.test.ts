@@ -1817,7 +1817,7 @@ test.each(
             structuredContent: {
               collection: 'notes',
               record: 'saved-id',
-              ...(isError ? { result: 'Record added.' } : {}),
+              ...(isError ? { error: { code: 'ERROR' } } : {}),
             },
           },
         });

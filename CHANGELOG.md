@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
-- RAG tool-result SSE comments now require `x-clh-tool-results: summary` and contain compact metadata without returned texts; WebUI opts in.
+- RAG tool-result SSE comments now require `x-clh-tool-results: summary` and contain compact metadata (identifiers, counts, error codes) without returned texts or error messages; WebUI opts in.
 
 ### Fixed
 
