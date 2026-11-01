@@ -54,19 +54,29 @@ export function buildSkillsPool(opts?: {
     let skills: ISkill[] = [];
     const refresh = () => {
       const discovered: ISkill[] = [];
-      if (existsSync(dir)) {
-        for (const entry of readdirSync(dir, { withFileTypes: true })) {
-          if (!entry.isDirectory()) continue;
-          const skill = loadSkillFromDir(path.join(dir, entry.name));
-          if (!skill) continue;
-          skill.meta.id =
-            typeof skill.meta.id === 'string'
-              ? skill.meta.id
-              : isHub
-                ? entry.name
-                : `${source}/${entry.name}`;
-          discovered.push(skill);
+      try {
+        if (existsSync(dir)) {
+          for (const entry of readdirSync(dir, { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            const skill = loadSkillFromDir(path.join(dir, entry.name));
+            if (!skill) continue;
+            skill.meta.id =
+              typeof skill.meta.id === 'string'
+                ? skill.meta.id
+                : isHub
+                  ? entry.name
+                  : `${source}/${entry.name}`;
+            discovered.push(skill);
+          }
         }
+      } catch (error) {
+        cds.log('skills').warn('skills source unavailable; skipping source', {
+          source,
+          dir,
+          error: String(error),
+        });
+        skills = [];
+        return;
       }
       skills = discovered;
     };

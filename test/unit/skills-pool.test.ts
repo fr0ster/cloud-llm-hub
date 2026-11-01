@@ -25,6 +25,68 @@ describe('buildSkillsPool', () => {
   });
   afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
+  it.each([
+    [
+      'without front matter',
+      '# Plain instructions\r\nBody',
+      '# Plain instructions',
+    ],
+    [
+      'without a name',
+      '---\nkind: informational\n---\nFirst line\nBody',
+      'First line',
+    ],
+    ['with empty front matter', '---\n\n---\nEmpty metadata', 'Empty metadata'],
+  ])(
+    'loads a skill %s with directory defaults',
+    async (_label, raw, description) => {
+      const dir = path.join(tmp, 'fallback');
+      fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(dir, 'SKILL.md'), raw);
+      const result = await buildSkillsPool({
+        dirs: [{ dir: tmp, source: 'preset' }],
+      }).getSkill('preset/fallback');
+      if (!result.ok) throw result.error;
+      expect(result.value).toBeDefined();
+      expect(result.value?.name).toBe('fallback');
+      expect(result.value?.description).toBe(description);
+      expect(result.value?.meta.kind).toBe('informational');
+      expect(result.value?.meta.id).toBe('preset/fallback');
+      const content = await result.value?.getContent();
+      expect(content?.ok).toBe(true);
+      if (content?.ok) expect(content.value).not.toContain('\r');
+    },
+  );
+
+  it('warns and continues loading other sources when a source cannot be read', async () => {
+    const bad = path.join(tmp, 'unreadable');
+    const good = path.join(tmp, 'readable');
+    fs.mkdirSync(bad);
+    writeSkill(good, 'available', 'Available skill', 'body');
+    const error = new Error('EACCES: permission denied');
+    const warn = jest
+      .spyOn(cds.log('skills'), 'warn')
+      .mockImplementation(() => {});
+    const read = jest.spyOn(fs, 'readdirSync').mockImplementationOnce(() => {
+      throw error;
+    });
+    try {
+      const pool = buildSkillsPool({ dirs: [bad, good] });
+      const result = await pool.listSkills();
+      if (!result.ok) throw result.error;
+      expect(result.value.map((skill) => skill.meta.id)).toEqual([
+        'readable/available',
+      ]);
+      expect(warn).toHaveBeenCalledWith(
+        'skills source unavailable; skipping source',
+        { source: 'unreadable', dir: bad, error: String(error) },
+      );
+    } finally {
+      read.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
   it('keeps hub ids equal to directory names', async () => {
     const result = await buildSkillsPool().getSkill('activating-objects');
     if (!result.ok) throw result.error;

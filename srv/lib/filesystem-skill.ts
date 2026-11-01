@@ -8,8 +8,8 @@ import { z } from 'zod';
 const metadata = z
   .object({
     id: z.string().optional(),
-    name: z.string(),
-    description: z.string().default(''),
+    name: z.string().optional(),
+    description: z.string().optional(),
     kind: z.enum(['base', 'informational']).default('informational'),
   })
   .passthrough();
@@ -17,11 +17,20 @@ const metadata = z
 /** Load one directory without the library's display-name deduplication. */
 export function loadSkillFromDir(dir: string): ISkill | undefined {
   try {
-    const raw = readFileSync(path.join(dir, 'SKILL.md'), 'utf8');
+    const raw = readFileSync(path.join(dir, 'SKILL.md'), 'utf8').replace(
+      /\r\n/g,
+      '\n',
+    );
     const front = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n)?/.exec(raw);
-    if (!front) return undefined;
-    const meta = metadata.parse(load(front[1], { schema: JSON_SCHEMA }));
-    const body = raw.slice(front[0].length).trim();
+    const parsed = metadata.parse(
+      front?.[1].trim() ? (load(front[1], { schema: JSON_SCHEMA }) ?? {}) : {},
+    );
+    const body = (front ? raw.slice(front[0].length) : raw).trim();
+    const meta = {
+      ...parsed,
+      name: parsed.name ?? path.basename(dir),
+      description: parsed.description ?? body.split('\n')[0].slice(0, 120),
+    };
     return {
       name: meta.name,
       description: meta.description,
