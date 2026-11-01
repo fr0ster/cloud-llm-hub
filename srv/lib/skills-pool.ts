@@ -152,7 +152,10 @@ export async function informationalSkillDocuments(
   if (!skills.ok) throw skills.error;
   return Promise.all(
     skills.value
-      .filter((skill) => skill.meta.kind !== 'base')
+      .filter(
+        (skill) =>
+          skill.meta.kind !== 'base' && skill.meta.trustAmbiguous !== true,
+      )
       .map(async (skill) => {
         const content = await skill.getContent();
         if (!content.ok) throw content.error;

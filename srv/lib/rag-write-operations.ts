@@ -36,7 +36,10 @@ export async function setRagTrust(
     const skill =
       input.record === undefined
         ? undefined
-        : skills.value.find((s) => skillId(s) === input.record);
+        : skills.value.find(
+            (s) =>
+              skillId(s) === input.record && s.meta.trustAmbiguous !== true,
+          );
     const refusal = trustWriteError({
       admin: identity.admin,
       value: input.trust,

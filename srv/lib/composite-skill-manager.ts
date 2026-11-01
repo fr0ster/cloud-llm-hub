@@ -12,7 +12,6 @@
  *
  * Skills are identified by id. Equal display names do not hide other skills.
  */
-import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { ISkill, ISkillManager } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
@@ -26,6 +25,7 @@ export type SkillSource = {
 };
 
 export class CompositeSkillManager implements ISkillManager {
+  private readonly warnedAmbiguousIds = new Set<string>();
   private readonly baseContent = new Map<string, Promise<string>>();
 
   /** Reload source discovery and invalidate base bodies explicitly. */
@@ -39,13 +39,17 @@ export class CompositeSkillManager implements ISkillManager {
     return Promise.all(
       (await this.baseSkills()).map((skill) => {
         const id = skillId(skill);
-        let content = this.baseContent.get(id);
+        let content =
+          skill.meta.trustAmbiguous === true
+            ? undefined
+            : this.baseContent.get(id);
         if (!content) {
           content = skill.getContent().then((result) => {
             if (!result.ok) throw result.error;
             return result.value;
           });
-          this.baseContent.set(id, content);
+          if (skill.meta.trustAmbiguous !== true)
+            this.baseContent.set(id, content);
         }
         return content;
       }),
@@ -110,7 +114,7 @@ export class CompositeSkillManager implements ISkillManager {
   async listSkills(
     options?: Parameters<ISkillManager['listSkills']>[0],
   ): ReturnType<ISkillManager['listSkills']> {
-    const byId = new Map<string, ISkill>();
+    const loaded: ISkill[] = [];
     for (const { source, manager } of this.sources) {
       try {
         const result = await manager.listSkills(options);
@@ -123,7 +127,11 @@ export class CompositeSkillManager implements ISkillManager {
         }
         const identities = result.value.map((skill) => {
           const location = skillLocation(skill);
-          const key = location ? path.posix.basename(location) : skill.name;
+          const key = location
+            ? path.posix.isAbsolute(location) || /^[A-Za-z]:\//.test(location)
+              ? path.posix.basename(location)
+              : location
+            : skill.name;
           const id =
             typeof skill.meta.id === 'string'
               ? skill.meta.id
@@ -131,34 +139,22 @@ export class CompositeSkillManager implements ISkillManager {
           return { skill, location, id };
         });
         for (const entry of identities) {
-          const { skill, location } = entry;
-          let id = entry.id;
-          if (identities.filter((other) => other.id === id).length > 1) {
-            // Locations distinguish equal directory names and explicit ids without
-            // tying persisted trust or cached bodies to discovery order.
-            const content = location ? undefined : await skill.getContent();
-            const discriminator =
-              location ??
-              JSON.stringify([
-                skill.name,
-                skill.description,
-                skill.meta,
-                content?.ok ? content.value : '',
-              ]);
-            id = `${id}/${createHash('sha256').update(discriminator).digest('hex')}`;
+          const { skill, id } = entry;
+          const ambiguous =
+            identities.filter((other) => other.id === id).length > 1;
+          if (ambiguous && !this.warnedAmbiguousIds.has(id)) {
+            this.warnedAmbiguousIds.add(id);
             cds
               .log('skills')
-              .warn('skill identity collision, using stable disambiguator', {
+              .warn('Ambiguous skill id; add an explicit `id` to each skill', {
                 source,
-                id: entry.id,
-                location,
-                resolvedId: id,
+                id,
               });
           }
-          byId.set(id, {
+          loaded.push({
             name: skill.name,
             description: skill.description,
-            meta: { ...skill.meta, id },
+            meta: { ...skill.meta, id, trustAmbiguous: ambiguous },
             getContent: skill.getContent.bind(skill),
             listResources: skill.listResources.bind(skill),
             readResource: skill.readResource.bind(skill),
@@ -173,10 +169,14 @@ export class CompositeSkillManager implements ISkillManager {
     }
     return {
       ok: true as const,
-      value: [...byId.values()].map((skill) => {
+      value: loaded.map((skill) => {
         const resolve = this.resolver;
         return skill.meta.kind !== 'base'
-          ? withSkillTrust(skill, () => resolve().skill(skillId(skill)))
+          ? withSkillTrust(skill, async () =>
+              skill.meta.trustAmbiguous === true
+                ? resolve().classDefault('global')
+                : resolve().skill(skillId(skill)),
+            )
           : skill;
       }),
     };

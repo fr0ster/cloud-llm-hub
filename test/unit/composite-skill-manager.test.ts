@@ -4,11 +4,15 @@ import {
   type ISkillManager,
   SkillError,
 } from '@mcp-abap-adt/llm-agent';
+import cds from '@sap/cds';
 import {
   CompositeSkillManager,
   type SkillSource,
 } from '../../srv/lib/composite-skill-manager';
-import { logSkillsPool } from '../../srv/lib/skills-pool';
+import {
+  informationalSkillDocuments,
+  logSkillsPool,
+} from '../../srv/lib/skills-pool';
 import { parseTrustDefaults } from '../../srv/lib/trust';
 import { TrustResolver } from '../../srv/lib/trust-resolver';
 import { TrustStore } from '../../srv/lib/trust-store';
@@ -218,4 +222,97 @@ test('plugin explicit ids retain their existing identity', async () => {
   const result = await pool.getSkill('stable-id');
   if (!result.ok) throw result.error;
   expect(result.value?.name).toBe('Display');
+});
+
+test('fallback identities survive deployment moves, content edits and additions', async () => {
+  const make = (dir: string, body: string): ISkill => ({
+    ...skill('Same', '', body),
+    meta: { name: 'Same', description: '', dir },
+  });
+  const skills = [make('/old/plugin/alpha', 'original')];
+  const pool = new CompositeSkillManager([
+    {
+      source: 'plugin',
+      manager: {
+        ...manager([]),
+        listSkills: async () => ({ ok: true, value: skills }),
+      },
+    },
+  ]);
+  const ids = async () => {
+    const result = await pool.listSkills();
+    if (!result.ok) throw result.error;
+    return result.value.map((s) => s.meta.id);
+  };
+  expect(await ids()).toEqual(['plugin/alpha']);
+  skills[0] = make('/new/deployment/plugin/alpha', 'edited');
+  skills.push(make('/new/deployment/plugin/beta', 'another'));
+  expect(await ids()).toEqual(['plugin/alpha', 'plugin/beta']);
+});
+
+test('same-name skills without locations remain usable but ambiguous with class default trust', async () => {
+  const warn = jest
+    .spyOn(cds.log('skills'), 'warn')
+    .mockImplementation(() => {});
+  try {
+    const store = new TrustStore(new InMemoryRag(), 3);
+    const resolver = new TrustResolver(
+      {},
+      store,
+      parseTrustDefaults(undefined),
+    );
+    const make = (name: string, body: string): ISkill => ({
+      ...skill(name, '', body),
+      meta: { name, description: '' },
+    });
+    const skills = [make('Same', 'first'), make('Other', 'other')];
+    const pool = new CompositeSkillManager(
+      [
+        {
+          source: 'plugin',
+          manager: {
+            ...manager([]),
+            listSkills: async () => ({ ok: true, value: skills }),
+          },
+        },
+      ],
+      () => resolver,
+    );
+    await store.setSource('skills', 2, 'alice');
+    await store.setRecord('skills', 'plugin/Same', 1, 'alice');
+    await store.setRecord('skills', 'plugin/Other', 3, 'alice');
+    skills.push(make('Same', 'second'));
+    skills.reverse();
+    for (let i = 0; i < 2; i++) {
+      const result = await pool.listSkills();
+      if (!result.ok) throw result.error;
+      expect(result.value).toHaveLength(3);
+      const duplicates = result.value.filter((s) => s.name === 'Same');
+      expect(duplicates.map((s) => s.meta.id)).toEqual([
+        'plugin/Same',
+        'plugin/Same',
+      ]);
+      expect(duplicates.every((s) => s.meta.trustAmbiguous === true)).toBe(
+        true,
+      );
+      const bodies = await Promise.all(duplicates.map((s) => s.getContent()));
+      expect(bodies).toEqual([
+        {
+          ok: true,
+          value: '[source: global:skills/plugin/Same; trust 4.5]\nsecond',
+        },
+        {
+          ok: true,
+          value: '[source: global:skills/plugin/Same; trust 4.5]\nfirst',
+        },
+      ]);
+    }
+    const docs = await informationalSkillDocuments(resolver, pool);
+    expect(docs.map((d) => d.id)).toEqual(['plugin/Other']);
+    expect(await store.getRecord('skills', 'plugin/Other')).toBe(3);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain('explicit `id`');
+  } finally {
+    warn.mockRestore();
+  }
 });

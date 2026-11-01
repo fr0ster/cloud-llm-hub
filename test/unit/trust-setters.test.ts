@@ -392,3 +392,35 @@ test('REST and MCP address same-name skills by id and model reads use the overri
   }
   expect(await store.getRecordHistory('skills', 'base-id')).toEqual([]);
 });
+
+test('ambiguous fallback skills are NOT_FOUND for REST and MCP trust setters', async () => {
+  const make = (body: string) => ({
+    name: 'duplicate',
+    description: '',
+    meta: { name: 'duplicate', description: '' },
+    getContent: async () => ({ ok: true as const, value: body }),
+    listResources: async () => ({ ok: true as const, value: [] }),
+    readResource: async () => ({ ok: true as const, value: '' }),
+  });
+  const pool = new CompositeSkillManager([
+    {
+      source: 'plugin',
+      manager: {
+        listSkills: async () => ({
+          ok: true,
+          value: [make('one'), make('two')],
+        }),
+        getSkill: async () => ({ ok: true, value: undefined }),
+        matchSkills: async () => ({ ok: true, value: [] }),
+      },
+    },
+  ]);
+  jest.spyOn(skillsPool, 'buildSkillsPool').mockReturnValue(pool);
+  expect((await rest('@skills', 2, 'plugin/duplicate')).status).toBe(404);
+  expect(
+    (await mcp('@skills', 2, 'plugin/duplicate')).structuredContent,
+  ).toMatchObject({
+    error: { code: 'NOT_FOUND' },
+  });
+  expect(await store.getRecord('skills', 'plugin/duplicate')).toBeUndefined();
+});
