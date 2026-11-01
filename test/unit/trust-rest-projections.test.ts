@@ -15,7 +15,8 @@ import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
 import express from 'express';
 import { z } from 'zod';
 import { userCollectionId } from '../../srv/collection-ids';
-import { buildSkillsPool } from '../../srv/lib/skills-pool';
+import { loadSkillFromDir } from '../../srv/lib/filesystem-skill';
+import { buildSkillsPool, SKILLS_DIR } from '../../srv/lib/skills-pool';
 import { parseTrustDefaults } from '../../srv/lib/trust';
 import { TrustResolver } from '../../srv/lib/trust-resolver';
 import { TrustStore } from '../../srv/lib/trust-store';
@@ -96,6 +97,10 @@ test('REST and MCP virtual skill reads resolve live source and record trust', as
   if (!skills.ok) throw skills.error;
   const name = skills.value.find((skill) => skill.meta.kind !== 'base')?.name;
   if (!name) throw new Error('missing informational skill');
+  const original = await loadSkillFromDir(
+    `${SKILLS_DIR}/${name}`,
+  )?.getContent();
+  if (!original?.ok) throw new Error('missing original skill body');
   const read = () =>
     fetch(
       `${base}/rag/collections/@skills/documents/${encodeURIComponent(name)}`,
@@ -112,11 +117,24 @@ test('REST and MCP virtual skill reads resolve live source and record trust', as
     id: name,
   });
   expect(z.json().parse(JSON.parse(mcp.content[0].text))).toMatchObject({
+    text: original.value.slice(0, 8000),
     attributes: {
       trust: 1.5,
       trustOverride: 1.5,
       source: `global:skills/${name}`,
     },
+  });
+  expect(JSON.parse(mcp.content[0].text).text).not.toMatch(/^\[source:/);
+  const records = await callRag(registry, 'collection_records', {
+    collection: '@skills',
+  });
+  expect(JSON.parse(records.content[0].text)).toMatchObject({
+    records: expect.arrayContaining([
+      expect.objectContaining({
+        id: name,
+        title: original.value.split(/\r?\n/, 1)[0].slice(0, 120),
+      }),
+    ]),
   });
   await store.setSource('skills', 5, 'admin');
   await store.setRecord('skills', name, null, 'admin');

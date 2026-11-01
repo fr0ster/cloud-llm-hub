@@ -110,7 +110,7 @@ export const ragDescriptions: Record<RagMcpTool, string> = {
   collection_set_trust:
     'Set global informational source trust (0 to 5, one decimal). MCP_Admin required; @skills addresses informational skills.',
   record_set_trust:
-    'Set global informational record trust; null clears the override. MCP_Admin required; @skills records are skill names.',
+    'Set global informational record trust; null clears the override. MCP_Admin required; @skills records are skill ids (front-matter id, else directory, else <source>/<name>).',
   collection_create:
     'Create a user/session knowledge collection idempotently.' +
     writeConditions,

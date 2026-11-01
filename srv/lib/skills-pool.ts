@@ -22,7 +22,7 @@ import {
 import { loadSkillFromDir } from './filesystem-skill';
 import { collectionView, documentView } from './record-policy';
 import type { TrustResolver } from './trust-resolver';
-import { skillId } from './trusted-skill';
+import { skillId, untaggedSkillContent } from './trusted-skill';
 
 /** Absolute path to the in-code skills directory (`srv/skills`). */
 export const SKILLS_DIR = path.join(__dirname, '..', 'skills');
@@ -157,7 +157,7 @@ export async function informationalSkillDocuments(
           skill.meta.kind !== 'base' && skill.meta.trustAmbiguous !== true,
       )
       .map(async (skill) => {
-        const content = await skill.getContent();
+        const content = await untaggedSkillContent(skill);
         if (!content.ok) throw content.error;
         return skillDocumentView(
           {

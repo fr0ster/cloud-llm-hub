@@ -785,7 +785,7 @@ UTF-8 JSON-serialized arguments, including attributes and session, must fit in
 | `record_delete` | `collection: string`, `record: string` | `session` | `collection`, `record`, `deleted: true` |
 
 Trust setters require MCP_Admin and a global informational source. Use collection
-`@skills` for informational skills (record is the skill name); a real collection
+`@skills` for informational skills (record is the skill id: front-matter `id`, else directory, else `<source>/<name>`); a real collection
 named `skills` remains separate. Values must be numbers from 0 to 5 with at most
 one decimal; strings, nonfinite numbers and collection null return
 `INVALID_TRUST` (400). Record null clears the override. Visible non-global sources,
@@ -1077,7 +1077,7 @@ Trust administration routes (MCP_Admin only, global informational sources):
   with scope/trust class `global` and effective trust.
 - `GET /v1/rag/collections/@skills/documents` lists informational skills with
   effective `trust` and an optional `trustOverride`. Both trust setters accept
-  `@skills`; record IDs are skill names. Base skills are excluded from this list.
+  `@skills`; record IDs are skill ids (front-matter `id`, else directory, else `<source>/<name>`). Base skills are excluded from this list.
 
 The setters use the same values, access rules and error codes as the two MCP
 trust tools above. Effective record trust is record override, then collection or

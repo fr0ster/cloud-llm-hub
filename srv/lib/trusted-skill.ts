@@ -13,6 +13,13 @@ export function skillId(skill: ISkill): string {
 
 const originals = new WeakMap<ISkill, ISkill>();
 
+/** Tool projections expose the original body, with trust carried in attributes. */
+export function untaggedSkillContent(
+  skill: ISkill,
+): ReturnType<ISkill['getContent']> {
+  return (originals.get(skill) ?? skill).getContent();
+}
+
 /** Preserve the skill receiver, metadata and resources; resolve trust on each read. */
 export function withSkillTrust(
   skill: ISkill,
