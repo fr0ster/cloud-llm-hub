@@ -41,10 +41,13 @@ export function buildSkillsPool(opts?: {
     sources.push({ source: 'plugin', manager: opts.pluginManager });
   }
   // Preset last: the product's own rules win a name collision.
-  sources.push({
-    source: 'preset',
-    manager: new FileSystemSkillManager(dirs),
-  });
+  // Compare kinds here: the library wraps directory collisions in generic SkillError.
+  for (const dir of dirs) {
+    sources.push({
+      source: `preset:${dir}`,
+      manager: new FileSystemSkillManager([dir]),
+    });
+  }
   return new CompositeSkillManager(sources, opts?.resolver);
 }
 

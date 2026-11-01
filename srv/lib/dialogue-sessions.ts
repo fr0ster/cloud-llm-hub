@@ -13,6 +13,7 @@ import type {
   TaskRecord,
   TokenUsage,
   ToolCallRecord,
+  WorkerProfile,
 } from '@mcp-abap-adt/llm-agent';
 import { addTokenUsage } from '@mcp-abap-adt/llm-agent';
 import { DialogueSession, SemaphorePool } from '@mcp-abap-adt/llm-agent-libs';
@@ -65,7 +66,7 @@ import {
   plannerSessionOptions,
 } from './planner-memory';
 import { runWithRequestSystem } from './request-system-context';
-import { getReviewSignals } from './review-scope';
+import { captureReviewProfile, getReviewSignals } from './review-scope';
 import {
   type ConnectionLease,
   SessionConnectionFactory,
@@ -412,7 +413,10 @@ async function open(
     identity: RagCallerIdentity;
   }>();
   const workers = new Map<string, ISubAgent>();
-  const wrapWorker = (worker: ISubAgent): ISubAgent => {
+  const wrapWorker = (
+    worker: ISubAgent,
+    profile?: WorkerProfile,
+  ): ISubAgent => {
     const name = worker.name;
     return {
       name: worker.name,
@@ -438,24 +442,33 @@ async function open(
               runWithRequestConnection(
                 ctx.lease.connection,
                 async () => {
-                  const result = await runWithToolGateBypass(() =>
-                    runWithDialogueRagTools(() =>
-                      runWithContextCapture(
-                        {
-                          component:
-                            name === 'checker' ? 'checker' : 'executor',
-                          taskId: ctx.taskId,
-                          sessionKey: key,
-                        },
-                        () =>
-                          worker.run({
-                            ...input,
-                            trace: { traceId: ctx.traceId },
-                            signal: ctx.pipeline.signal,
-                          }),
+                  const { result, profile: resolvedProfile } =
+                    await captureReviewProfile(() =>
+                      runWithToolGateBypass(() =>
+                        runWithDialogueRagTools(() =>
+                          runWithContextCapture(
+                            {
+                              component:
+                                name === 'checker' ? 'checker' : 'executor',
+                              taskId: ctx.taskId,
+                              sessionKey: key,
+                            },
+                            () =>
+                              worker.run({
+                                ...input,
+                                trace: { traceId: ctx.traceId },
+                                signal: ctx.pipeline.signal,
+                              }),
+                          ),
+                        ),
                       ),
-                    ),
-                  );
+                    );
+                  const reviewedProfile = profile ?? resolvedProfile;
+                  const toolTrust = reviewedProfile?.trust
+                    ? (destinationHandle.toolTrustFor?.(
+                        trustResolver.forProfile(reviewedProfile),
+                      ) ?? destinationHandle.toolTrust)
+                    : destinationHandle.toolTrust;
                   if (
                     result.errorClass === 'epicfail' ||
                     result.stopped ||
@@ -463,7 +476,7 @@ async function open(
                   )
                     return result;
                   const verdict = await evaluateGated({
-                    toolTrust: destinationHandle.toolTrust,
+                    toolTrust,
                     usage: input.usage,
                     content: result.output,
                     records: recMcp.getToolRecords(ctx.traceId),
@@ -745,7 +758,7 @@ async function open(
         createWorker: async (input, options) => {
           const result = await profileRunner.createWorker(input, options);
           return result.ok
-            ? { ok: true, value: wrapWorker(result.value) }
+            ? { ok: true, value: wrapWorker(result.value, input.profile) }
             : result;
         },
         preparePlanner: async (input, options) => {

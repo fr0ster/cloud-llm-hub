@@ -2,7 +2,32 @@ import { type ISkillManager, SkillError } from '@mcp-abap-adt/llm-agent';
 import {
   CompositeSkillManager,
   type SkillSource,
+  validateSkillKinds,
 } from '../../srv/lib/composite-skill-manager';
+import { logSkillsPool } from '../../srv/lib/skills-pool';
+
+test.each(['returned', 'thrown'])(
+  'unrelated conflicting kind error (%s) does not fail startup',
+  async (mode) => {
+    const broken = failingManager();
+    broken.listSkills = async () => {
+      const error = new SkillError(
+        'unrelated conflicting kind backend problem',
+      );
+      if (mode === 'thrown') throw error;
+      return { ok: false, error };
+    };
+    const pool = new CompositeSkillManager([
+      src('broken', broken),
+      src('good', manager([skill('good', '', '')])),
+    ]);
+    await expect(logSkillsPool(pool)).resolves.toBeUndefined();
+    await expect(validateSkillKinds(pool)).resolves.toEqual({
+      ok: true,
+      value: undefined,
+    });
+  },
+);
 
 function skill(name: string, description: string, body: string) {
   return {

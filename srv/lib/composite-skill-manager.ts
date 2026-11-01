@@ -48,11 +48,6 @@ export async function validateSkillKinds(
     return { ok: true, value: undefined };
   } catch (error) {
     if (error instanceof SkillKindConflict) return { ok: false, error };
-    if (
-      error instanceof Error &&
-      /conflicting.*kind|kind.*conflict/i.test(error.message)
-    )
-      return { ok: false, error: new SkillKindConflict(error.message) };
     throw error;
   }
 }
@@ -115,11 +110,7 @@ export class CompositeSkillManager implements ISkillManager {
       try {
         const result = await manager.listSkills(options);
         if (!result.ok) {
-          if (
-            result.error instanceof SkillKindConflict ||
-            /conflicting.*kind|kind.*conflict/i.test(result.error.message)
-          )
-            throw new SkillKindConflict(result.error.message);
+          if (result.error instanceof SkillKindConflict) throw result.error;
           cds.log('skills').warn('skill source failed, skipping', {
             source,
             error: result.error.message,
@@ -138,11 +129,7 @@ export class CompositeSkillManager implements ISkillManager {
         }
       } catch (err) {
         if (err instanceof SkillKindConflict) throw err;
-        if (
-          err instanceof Error &&
-          /conflicting.*kind|kind.*conflict/i.test(err.message)
-        )
-          throw new SkillKindConflict(err.message);
+
         cds.log('skills').warn('skill source threw, skipping', {
           source,
           error: String(err),

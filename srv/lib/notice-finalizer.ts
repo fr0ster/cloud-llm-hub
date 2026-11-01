@@ -27,6 +27,7 @@ export class NoticeFinalizer implements IFinalizer {
     private readonly recMcp: RecordingMcpClient,
     private readonly criticLlm: ILlm,
     private readonly toolTrust?: ToolTrust,
+    private readonly resolveToolTrust?: () => ToolTrust | Promise<ToolTrust>,
   ) {}
 
   async finalize(input: FinalizerInput): Promise<FinalizerResult> {
@@ -38,7 +39,9 @@ export class NoticeFinalizer implements IFinalizer {
     const records = this.recMcp.getToolRecords(input.trace?.traceId);
 
     const verdict = await evaluateGated({
-      toolTrust: this.toolTrust,
+      toolTrust: this.resolveToolTrust
+        ? await this.resolveToolTrust()
+        : this.toolTrust,
       usage: input.usage,
       content: input.interpreterOutput,
       records,

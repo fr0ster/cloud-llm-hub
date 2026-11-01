@@ -131,7 +131,11 @@ import {
   requestSystemContextResolver,
   requestSystemContextRules,
 } from './lib/request-system-context';
-import { recordToolScore } from './lib/review-scope';
+import {
+  getReviewProfile,
+  recordReviewProfile,
+  recordToolScore,
+} from './lib/review-scope';
 import { getRunRecordStore } from './lib/run-record-store';
 import { SessionHistoryRag, turnOwner } from './lib/session-history-rag';
 import {
@@ -3312,6 +3316,34 @@ export async function buildAgentForDestination(
       },
     ],
   ]);
+  // Keep the build-time executor profile as a fallback when no worker has
+  // recorded a request-scoped profile yet.
+  // Optional: without an executor profile the notice uses deploy defaults.
+  const executorProfile = await prepareCompatibilityWorker(
+    config,
+    undefined,
+    async (options) => {
+      const source = createAgentProfileSource(
+        getRequestUserId() ?? 'anonymous',
+      );
+      const resolved = await source.get('executor', options);
+      return resolved.ok ? resolved.value : undefined;
+    },
+  ).catch(() => undefined);
+  const noticeFinalizer = new NoticeFinalizer(
+    recMcp,
+    criticLlm,
+    undefined,
+    () => {
+      const profile = getReviewProfile() ?? executorProfile;
+      return profile?.trust
+        ? systemToolTrust(
+            isEmbeddedSystemTool,
+            getTrustResolver().forProfile(profile),
+          )
+        : getSystemToolTrust();
+    },
+  );
   if (config.agent.chatCoordinator !== 'fixed') {
     const budget = Object.fromEntries(
       Object.entries(config.agent.planBudget ?? {}).filter(
@@ -3326,7 +3358,7 @@ export async function buildAgentForDestination(
           }),
         ),
         workers,
-        finalizer: new NoticeFinalizer(recMcp, criticLlm, getSystemToolTrust()),
+        finalizer: noticeFinalizer,
         runRecords: getRunRecordStore(),
         budget,
         fallbackWorker: 'executor',
@@ -3341,7 +3373,7 @@ export async function buildAgentForDestination(
       // interpreter throw PLAN_INVALID.
       workers: new Map([['executor', executorWorker]]),
       // Reads the SAME recMcp the worker was built with.
-      finalizer: new NoticeFinalizer(recMcp, criticLlm, getSystemToolTrust()),
+      finalizer: noticeFinalizer,
       // errorStrategy omitted -> AbortErrorStrategy default;
       // reviewer omitted -> no plan-gate (NoopReviewStrategy default).
     });
@@ -3412,6 +3444,7 @@ export async function buildExecutorWorker(
     const source = createAgentProfileSource(getRequestUserId() ?? 'anonymous');
     const resolved = await source.resolveWorker('executor', options);
     if (!resolved.ok) throw new Error('Executor profile unavailable');
+    recordReviewProfile(resolved.value.profile);
     return resolved.value;
   };
   const builder = await configureDestinationAgentBuilder(
@@ -3552,7 +3585,7 @@ export function withConversationHistory(agent: SmartAgent): SmartAgent {
  * `unreachable`: one exists but cannot be reached (the escape-hatch fallback).
  * The two need different remedies, so the prompt tells them apart.
  */
-async function buildLlmOnlyAgent(
+export async function buildLlmOnlyAgent(
   config: AgentConfig,
   why: 'waiting' | 'unreachable',
 ): Promise<SmartAgentHandle> {
@@ -3576,16 +3609,19 @@ async function buildLlmOnlyAgent(
       ragTranslateEnabled: false,
     },
     prompts: {
-      system: [
-        why === 'waiting'
-          ? 'You are a helpful AI assistant. No MCP tools are available — no SAP system destination is configured.'
-          : 'You are a helpful AI assistant. No MCP tools are available — the SAP system destination is unreachable.',
-        'Answer questions using your knowledge. No action of any kind (SAP operations, storing or searching collection documents via tools, checks, delegation) can run in this session. Never report an action as done or started.',
-        why === 'waiting'
-          ? 'Say plainly that the hub is waiting for SAP destinations, and that full functionality (ABAP tools) needs at least one SAP destination added to the BTP subaccount — it is picked up automatically once it exists.'
-          : 'Say plainly that the SAP destination exists but cannot be reached right now, and that its connectivity (the destination, the Cloud Connector) needs checking — do not suggest adding a destination.',
-        "Respond in the user's language. Code and object names always in English.",
-      ].join('\n'),
+      system: await appendBaseSkills(
+        [
+          why === 'waiting'
+            ? 'You are a helpful AI assistant. No MCP tools are available — no SAP system destination is configured.'
+            : 'You are a helpful AI assistant. No MCP tools are available — the SAP system destination is unreachable.',
+          'Answer questions using your knowledge. No action of any kind (SAP operations, storing or searching collection documents via tools, checks, delegation) can run in this session. Never report an action as done or started.',
+          why === 'waiting'
+            ? 'Say plainly that the hub is waiting for SAP destinations, and that full functionality (ABAP tools) needs at least one SAP destination added to the BTP subaccount — it is picked up automatically once it exists.'
+            : 'Say plainly that the SAP destination exists but cannot be reached right now, and that its connectivity (the destination, the Cloud Connector) needs checking — do not suggest adding a destination.',
+          "Respond in the user's language. Code and object names always in English.",
+        ].join('\n'),
+        buildSkillsPool(),
+      ),
     },
   })
     .withToolTrust(getSystemToolTrust())

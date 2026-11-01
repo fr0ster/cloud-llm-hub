@@ -1,13 +1,35 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { SkillKindConflict } from '../../srv/lib/composite-skill-manager';
 import {
   buildSkillsPool,
   informationalSkillDocuments,
+  logSkillsPool,
   skillKind,
 } from '../../srv/lib/skills-pool';
 import { parseTrustDefaults } from '../../srv/lib/trust';
 import { TrustResolver } from '../../srv/lib/trust-resolver';
+
+test('preset directory collision fails startup from compared kinds', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'skill-collision-'));
+  try {
+    const dirs = ['base', 'informational'].map((kind) => {
+      const dir = path.join(root, kind);
+      mkdirSync(path.join(dir, 'duplicate'), { recursive: true });
+      writeFileSync(
+        path.join(dir, 'duplicate', 'SKILL.md'),
+        `---\nname: duplicate\ndescription: test\nkind: ${kind}\n---\nbody`,
+      );
+      return dir;
+    });
+    await expect(
+      logSkillsPool(buildSkillsPool({ dirs })),
+    ).rejects.toBeInstanceOf(SkillKindConflict);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('unspecified skills are informational', () => {
   expect(skillKind('missing')).toBe('informational');

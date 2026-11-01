@@ -18,6 +18,7 @@ import {
   guardProfileWorker,
   type RegisteredProfileTool,
 } from './agent-profile-tools';
+import { recordReviewProfile } from './review-scope';
 import { runWithTrustResolver, type TrustResolver } from './trust-resolver';
 
 export interface AgentProfileRunnerHost {
@@ -115,6 +116,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
           description: worker.description,
           capabilities: worker.capabilities,
           run: (request) => {
+            recordReviewProfile(profile);
             return this.bind(profile, parent)(() => worker.run(request));
           },
         },

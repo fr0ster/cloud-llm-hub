@@ -12,8 +12,12 @@ import { dialogueChat } from '../../srv/lib/dialogue-chat';
 import { followDialogue } from '../../srv/lib/dialogue-follow';
 import * as plannerMemory from '../../srv/lib/planner-memory';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
+import { buildReviewMessages } from '../../srv/lib/step-reviewer';
+import { systemToolTrust } from '../../srv/lib/system-tool-trust';
+import type { TrustResolver } from '../../srv/lib/trust-resolver';
 import { sumPlannerUsage } from '../../srv/lib/usage-wire';
 import { CollectionRegistry } from '../../srv/rag-collections';
+import { fixtureTrustResolver } from './helpers/agent-profiles';
 import { liveSession } from './helpers/canonical-rag';
 
 jest.mock('../../srv/connections/destinationResolver', () => ({
@@ -88,6 +92,7 @@ const mockPlannerTurns: string[] = [];
 const mockAuthorTurns: string[] = [];
 const mockEnvironments: string[] = [];
 let mockGoal = 'read';
+let mockWorkerTrust: { system: number } | undefined;
 let mockPlannerHook: ((text: string) => Promise<void>) | undefined;
 let mockPlanUsage: TokenUsage | undefined;
 let mockPlan:
@@ -143,6 +148,7 @@ jest.mock('../../srv/agent-manager', () => ({
         name: 'executor',
         description: '',
         systemPrompt: '',
+        trust: mockWorkerTrust,
         tools: 'all',
         result: 'report',
       },
@@ -198,6 +204,9 @@ jest.mock('../../srv/agent-manager', () => ({
     },
   })),
   getSmartAgent: jest.fn(async () => ({
+    toolTrust: systemToolTrust(() => true, fixtureTrustResolver()),
+    toolTrustFor: (resolver: TrustResolver) =>
+      systemToolTrust(() => true, resolver),
     profileRunner: {
       preparePlanAuthor: async () => ({
         ok: true,
@@ -266,6 +275,7 @@ jest.mock('../../srv/lib/gatekeeper', () => ({
   })),
 }));
 jest.mock('../../srv/lib/step-reviewer', () => ({
+  ...jest.requireActual('../../srv/lib/step-reviewer'),
   evaluateGated: jest.fn(async () => ({ ok: true })),
 }));
 
@@ -657,6 +667,49 @@ test('honesty notice reaches task output and planner', async () => {
     message: h.outbox.pending()[0],
   });
 });
+
+test.each([5, undefined])(
+  'reviewer evidence uses worker profile system trust %s',
+  async (system) => {
+    mockWorkerTrust = system === undefined ? undefined : { system };
+    try {
+      const { h } = await ready();
+      mockRun.mockResolvedValue({ output: 'read done' });
+      await h.session.send('go');
+      await until(() => h.session.snapshot().tasks[0]?.state === 'done');
+      const args = jest.mocked(evaluateGated).mock.calls.at(-1)?.[0];
+      expect(args?.toolTrust?.('GetClass')).toEqual({
+        source: 'system:GetClass',
+        trust: system ?? 4.5,
+      });
+      const messages = buildReviewMessages({
+        task: 'read',
+        content: 'done',
+        executedTools: ['GetClass'],
+        toolTrust: args?.toolTrust,
+        history: [
+          {
+            role: 'assistant',
+            content: '',
+            tool_calls: [
+              {
+                id: 'sap',
+                type: 'function',
+                function: { name: 'GetClass', arguments: '{}' },
+              },
+            ],
+          },
+          { role: 'tool', tool_call_id: 'sap', content: 'raw' },
+        ],
+      });
+      expect(messages[1].content).toContain(
+        `[source: system:GetClass; trust ${system ?? 4.5}]`,
+      );
+    } finally {
+      mockWorkerTrust = undefined;
+    }
+  },
+);
 test('subscribers receive task events and messages; messages stay in outbox for both tabs until acknowledged', async () => {
   const { h } = await ready();
   const events: DialogueEvent[] = [];

@@ -1,4 +1,51 @@
+import { HandlerExporter } from '@mcp-abap-adt/lib/handlers';
+import { CompositeSkillManager } from '../../srv/lib/composite-skill-manager';
+import * as skillsPool from '../../srv/lib/skills-pool';
+import * as reviewer from '../../srv/lib/step-reviewer';
 import { isReadOnlyTools } from '../../srv/request-session';
+
+test.each(['waiting', 'unreachable'] as const)(
+  'LLM-only %s includes base instructions',
+  async (why) => {
+    const pool = new CompositeSkillManager([
+      {
+        source: 'test',
+        manager: {
+          listSkills: async () => ({
+            ok: true,
+            value: [
+              {
+                name: 'base',
+                description: '',
+                meta: { name: 'base', description: '', kind: 'base' },
+                getContent: async () => ({
+                  ok: true,
+                  value: 'Mandatory base instructions',
+                }),
+                listResources: async () => ({ ok: true, value: [] }),
+                readResource: async () => ({ ok: true, value: '' }),
+              },
+            ],
+          }),
+          getSkill: async () => ({ ok: true, value: undefined }),
+          matchSkills: async () => ({ ok: true, value: [] }),
+        },
+      },
+    ]);
+    const spy = jest.spyOn(skillsPool, 'buildSkillsPool').mockReturnValue(pool);
+    agentManager.initProviders(await startProviders(config));
+    buildMock.mockResolvedValue({ agent: workerAgent, ragStores: {} });
+    try {
+      await agentManager.buildLlmOnlyAgent(config, why);
+      const calls = jest.mocked(SmartAgentBuilder).mock.calls;
+      expect(calls.at(-1)?.[0]?.prompts?.system).toContain(
+        'Mandatory base instructions',
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  },
+);
 
 /**
  * Wiring contract for `buildAgentForDestination`: the DAG coordinator
@@ -243,6 +290,55 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
 
     expect(handle).toBeDefined();
   });
+
+  it.each(['fixed', 'adaptive'] as const)(
+    'notice uses executor profile trust with %s coordination',
+    async (chatCoordinator) => {
+      const registry = agentManager.getCollectionRegistry();
+      const collection = await registry.readAgentCollection('agents');
+      const executor = collection?.documents.find(
+        (doc) => doc.id === 'executor',
+      );
+      if (!executor) throw new Error('Missing executor fixture');
+      await registry.updateDocument('agents', 'executor', {
+        metadata: { ...executor.metadata, trust: { system: 5 } },
+      });
+      const spy = jest
+        .spyOn(reviewer, 'evaluateGated')
+        .mockResolvedValue({ ok: true });
+      try {
+        await agentManager.buildAgentForDestination({} as never, {} as never, {
+          ...config,
+          agent: { ...config.agent, chatCoordinator },
+        });
+        const wired = (
+          chatCoordinator === 'fixed'
+            ? withDagCoordinator
+            : withStepperCoordinator
+        ).mock.calls[0][0];
+        const deps = chatCoordinator === 'fixed' ? wired : wired.deps;
+        await deps.finalizer.finalize({
+          prompt: 'read',
+          objective: 'read',
+          interpreterOutput: 'done',
+          executionTrace: [],
+        });
+        const tool = new HandlerExporter(
+          agentManager.getHandlerExporterConfig(),
+        ).getToolNames()[0];
+        if (!tool) throw new Error('Missing embedded tool fixture');
+        expect(spy.mock.calls.at(-1)?.[0].toolTrust?.(tool)).toEqual({
+          source: `system:${tool}`,
+          trust: 5,
+        });
+      } finally {
+        spy.mockRestore();
+        await registry.updateDocument('agents', 'executor', {
+          metadata: executor.metadata,
+        });
+      }
+    },
+  );
 
   it('installs no tool-result cache on the destination agent or its worker — the MCP server owns caching', async () => {
     await agentManager.buildAgentForDestination(
