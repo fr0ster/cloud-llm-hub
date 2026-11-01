@@ -136,7 +136,7 @@ test('ContextAssembler tags results with metadata.trust', () => {
 - [ ] **Step 5:** Commit `feat(context): trust tag for planner retrieval and context assembler`. PR, Codex
   review, merge, release (version PR → signed tags → user publishes npm). Hub tasks use the new versions.
 
-### Task 2: Trust classes, defaults and agent trust map (hub)
+### Task 2: Trust classes, defaults and profile trust map (hub)
 
 Hub branch `feat/source-trust` from the reviewed `design/source-trust` head (spec + plan), rebased on current
 `main`.
@@ -164,7 +164,7 @@ Hub branch `feat/source-trust` from the reviewed `design/source-trust` head (spe
   `parseTrustDefaults(value: string | undefined): Record<TrustClass, number>` (throws
   `BuildValidationError` naming the bad entry); `classForScope(scope: 'global' | 'user' | 'session'): TrustClass`;
   `classTrust(agentMap: Partial<Record<TrustClass, number>> | undefined, defaults: Record<TrustClass, number>): Record<TrustClass, number>`
-  (agent map over defaults); `effectiveTrust(input: { record?: number; collection?: number; scope: 'global' | 'user' | 'session' }, classes: Record<TrustClass, number>): number`.
+  (profile map over defaults); `effectiveTrust(input: { record?: number; collection?: number; scope: 'global' | 'user' | 'session' }, classes: Record<TrustClass, number>): number`.
 
 - [ ] **Step 1: Failing tests**
 
@@ -213,7 +213,7 @@ derives provenance from the collection context instead. Content updates preserve
   — `trusted: false` without trust fields for agent-preset collections. `RecordTrustView = { trusted: true; trust: number; trustOverride?: number; source: string } | { trusted: false }`
   is the one shared union. Projections are synchronous over a pre-resolved input:
   `TrustInput = { trusted: true; class: TrustClass; source: string; classTrust: number; collectionTrust?: number; recordTrust?: number }`
-  where `classTrust` is filled by the role's resolver (agent map over deploy defaults); effective trust =
+  where `classTrust` is filled by the role's resolver (profile map over deploy defaults); effective trust =
   `recordTrust ?? collectionTrust ?? classTrust`, for catalog collections and `@skills` alike.
   Catalog collections build it from meta and `_trust`; the `@skills` source builds it with
   `await TrustStore.getSource/getRecord` before projecting, so REST and MCP share one projection for both.

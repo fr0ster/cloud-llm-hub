@@ -393,7 +393,8 @@ test('WebUI displays redacted disabled agents without accessing missing prompt t
   const end = html.indexOf('        async function toggleRecord', start);
   const list = { innerHTML: '' };
   const load: () => Promise<void> = runInNewContext(
-    `${html.slice(start, end)}; loadDocuments;`,
+    `${html.slice(html.indexOf('        function trustEditable('), html.indexOf('        async function loadCollections()'))}
+${html.slice(start, end)}; loadDocuments;`,
     {
       document: { getElementById: () => list },
       ragCurrentCollection: 'agents',

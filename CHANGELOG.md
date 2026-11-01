@@ -8,6 +8,18 @@ All notable changes to this project will be documented in this file. The format 
 
 - Admin trust setters for global informational collections, records and the virtual `@skills` source through REST and the `collection_set_trust` / `record_set_trust` MCP tools, with validation, bounded audit history and key-scoped writes.
 
+- Source classes and deployment defaults (`global=4.5,system=4.5,docs=3.5,user=3,session=2`), per-profile trust maps, persistent collection/record overrides and bounded audit history.
+- Virtual `@skills` source for informational skills with stable ids, source and record trust overrides, and live resolution.
+- MANAGE displays collection trust/class and inherited versus overridden document trust, with inline admin editing for global sources and informational skills.
+
+### Changed
+
+- All model-facing informational paths carry source/trust tags: retrieval, planner knowledge and memory, session recall, attachments, informational skills, rerankers, target-system results, replayed history and checker evidence. Stored tool traces remain raw.
+- Base skills load directly with profile system content; informational skills remain semantically selected. Profile instructions, corrections and tool groups stay outside the trust scale.
+- Coordinator, planner-create, planner-revise and worker-base prompts prefer higher-trust sources, identify the relied-on source, and disclose equal-trust conflicts.
+
+Operator note: Seeding is missing-only. Existing edited `planner` and profile records keep their text; add the trust rule manually to existing deployments where needed. Existing collections without stored trust inherit current defaults without writes on read. Existing skills default to informational; keep stable skill ids when renaming to preserve overrides.
+
 ## [10.2.2] - 2026-11-01
 
 ### Changed

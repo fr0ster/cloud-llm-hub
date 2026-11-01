@@ -352,3 +352,21 @@ resolution and require `MCP_Admin` where reachable. All thirteen canonical RAG t
 Create the target explicitly with `collection_create({ name: "result", scope: "user" })`, then call `record_add({ collection: "result", record: "tech-spec", text: "..." })`. Use user scope for durable results and session scope only for scratch. `record` is the optional stable physical ID; omission generates a UUID. Add is create-only: `RECORD_EXISTS` (409) requires reading the existing record and using `record_update({ collection, record, text })`. Read back with paged `collection_records` and `rag_read` using actual IDs; verify count and scope. Retire reversibly with `record_set_enabled({ collection, id, enabled: false })`; use `record_delete({ collection, record })` only for explicit permanent removal. Updates preserve ID and metadata but add no correction reason, audit history or supersede chain. Disabling does not free an ID. A live owned long session is required for every RAG call.
 
 Plain OpenAI and Anthropic chat clients must open a live caller-owned long session with `POST /v1/session` and bind its returned key with the top-level string body field `session`, `x-clh-session`, or the `clh_session` cookie, in that precedence order. The body field is validated and removed before forwarding upstream; invalid types return 400 and unknown, closed or foreign keys return `SESSION_NOT_FOUND`, as with the header. All thirteen RAG tools stay listed but return `SESSION_REQUIRED` without that session. WebUI sends `x-clh-tool-results: summary` on chat requests to receive compact `: tool-result` SSE comments (identifiers, counts and error codes, without returned texts or error messages). The header value is case-insensitive; absent or other values emit no tool-result comments, including dialogue follow-up streams. WebUI executes RAG on the server and renders server tool results; browsers must not dispatch them again. Removed tool names in client tool definitions, forced choices or calls return 400 with migration guidance; REST tool dispatch returns 404. Cross-instance `RECORD_EXISTS` protection is not atomic: providers offer upsert without conditional insert; serialization applies within one process.
+
+## Source trust configuration
+
+`LLM_AGENT_TRUST_DEFAULTS` is a comma-separated class map, for example `global=4.5,system=4.5,docs=3.5,user=3,session=2`. These are also the built-in defaults; omitted classes retain them. Unknown classes, nonnumeric values, values outside 0 to 5, or more than one decimal fail startup.
+
+Profile front matter accepts an optional `trust` map:
+
+```yaml
+trust:
+  user: 4
+  docs: 3.5
+```
+
+Each role uses its own profile map over deployment defaults. Effective informational trust resolves record override, then collection/source override, then profile class default, then deployment/built-in default. Unknown classes or invalid values reject a profile.
+
+Skill front matter accepts `kind: base` or `kind: informational` (default) and a stable `id`. Keep the id unchanged across renames: trust overrides and editing address ids, never display names. When omitted, hub directory names supply ids; external directory sources use source-qualified directory ids. Equal display names are valid. Base skills load directly into every role's system content after its profile prompt and before corrections, without semantic search or trust tags. Informational skills load through semantic retrieval and carry trust. Existing shipped skills remain informational.
+
+An **assistant** is the future memory-and-learning entity; an **agent** performs a role described by a **profile**, within a **pipeline**.

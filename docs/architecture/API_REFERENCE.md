@@ -1189,3 +1189,25 @@ keep their snapshots. Agents collections never participate in knowledge context.
 Create the target explicitly with `collection_create({ name: "result", scope: "user" })`, then call `record_add({ collection: "result", record: "tech-spec", text: "..." })`. Use user scope for durable results and session scope only for scratch. `record` is the optional stable physical ID; omission generates a UUID. Add is create-only: `RECORD_EXISTS` (409) requires reading the existing record and using `record_update({ collection, record, text })`. Read back with paged `collection_records` and `rag_read` using actual IDs; verify count and scope. Retire reversibly with `record_set_enabled({ collection, id, enabled: false })`; use `record_delete({ collection, record })` only for explicit permanent removal. Updates preserve ID and metadata but add no correction reason, audit history or supersede chain. Disabling does not free an ID. A live owned long session is required for every RAG call.
 
 Plain OpenAI and Anthropic chat clients must open a live caller-owned long session with `POST /v1/session` and bind its returned key with the top-level string body field `session`, `x-clh-session`, or the `clh_session` cookie, in that precedence order. The body field is validated and removed before forwarding upstream; invalid types return 400 and unknown, closed or foreign keys return `SESSION_NOT_FOUND`, as with the header. All thirteen RAG tools stay listed but return `SESSION_REQUIRED` without that session. WebUI sends `x-clh-tool-results: summary` on chat requests to receive compact `: tool-result` SSE comments (identifiers, counts and error codes, without returned texts or error messages). The header value is case-insensitive; absent or other values emit no tool-result comments, including dialogue follow-up streams. WebUI executes RAG on the server and renders server tool results; browsers must not dispatch them again. Removed tool names in client tool definitions, forced choices or calls return 400 with migration guidance; REST tool dispatch returns 404. Cross-instance `RECORD_EXISTS` protection is not atomic: providers offer upsert without conditional insert; serialization applies within one process.
+
+### Source trust: agent MCP and RAG REST
+
+The agent MCP tools `collection_set_trust({ collection, trust })` and `record_set_trust({ collection, record, trust })` set informational trust. The same catalogue is used across agent MCP, model endpoints, internal agents and WebUI, subject to read-only mode and profile tool ceilings. Only `MCP_Admin` can write trust, and only for global informational sources.
+
+REST routes (under `/v1`):
+
+| Method and path | JSON body | Effect |
+|---|---|---|
+| `PUT /rag/collections/:id` | `{ "trust": 4 }` | Set collection/source trust |
+| `PATCH /rag/collections/:id/documents/:did/trust` | `{ "trust": 2.5 }` | Set record override |
+| `PATCH /rag/collections/:id/documents/:did/trust` | `{ "trust": null }` | Clear override and inherit |
+
+Trust is a number from 0 to 5 with at most one decimal; strings are rejected. Collection trust cannot be null. Errors are `INVALID_TRUST` (400), `FORBIDDEN` (403), `NOT_FOUND` (404), and `TRUST_FIXED` (409: user/session sources, agent profiles or base skills). Existing visibility checks run first; hidden sources remain `NOT_FOUND`.
+
+`@skills` is the reserved virtual global source for informational skills. Admin collection listings include it; `GET /rag/collections/@skills/documents` lists its informational skills. Both REST setters and MCP tools accept `@skills`; record ids are stable skill ids, not display names. Ordinary collections named `skills` remain independent. Base skills are excluded.
+
+Collection listings expose `trusted: true`, effective `trust`, `trustClass`, and optional `trustOverride`. Document list/read and MCP record attributes expose `trusted: true`, effective `trust`, optional `trustOverride`, and derived provenance `source`. MCP search hits carry `trust` and `source`. An absent record override means inherited trust. Agent collections and records expose `trusted: false` without trust fields. Upload metadata `source` remains the filename; top-level trust provenance is derived separately.
+
+Model-facing informational content uses `[source: <class>:<name>; trust <n>]`, or `[source: <class>; trust <n>]` without a name. Integers have no trailing `.0`; brackets in names are escaped as `&#91;` and `&#93;`. Planner retrieval labels carry the same source and trust. Tags appear in RAG retrieval, session recall, planner memory/knowledge, attachments, informational skills, reranker candidates, embedded target-system results, replayed tool history and checker evidence. Stored tool traces stay raw. Profiles, base skills, corrections, tool groups and hub orchestration results are not tagged.
+
+MANAGE shows effective collection trust and class, and distinguishes inherited document trust from overrides. Admins can edit global trust inline, including `@skills`; clearing a record input restores inheritance. Chunked uploads retain source grouping with per-chunk trust controls.
