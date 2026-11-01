@@ -108,7 +108,9 @@ export class CompositeSkillManager implements ISkillManager {
   async baseSkills(): Promise<readonly ISkill[]> {
     const result = await this.listSkills();
     if (!result.ok) throw result.error;
-    return result.value.filter((s) => s.meta.kind === 'base');
+    return result.value.filter(
+      (s) => s.meta.kind === 'base' && s.meta.enabled !== false,
+    );
   }
 
   async listSkills(

@@ -124,3 +124,12 @@ test('concurrent agent builds share base content by id until refresh', async () 
   await appendBaseSkills('three', pool);
   expect(getContent).toHaveBeenCalledTimes(2);
 });
+
+test('disabled base skills stay out of the base set', async () => {
+  const disabled = skill('off', 'base');
+  disabled.meta.enabled = false;
+  const pool = new CompositeSkillManager([
+    { source: 'plugin', manager: manager([skill('on', 'base'), disabled]) },
+  ]);
+  expect((await pool.baseSkills()).map((s) => s.name)).toEqual(['on']);
+});
