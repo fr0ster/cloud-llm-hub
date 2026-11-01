@@ -60,6 +60,15 @@ Repo `C:\Users\OleksiiKyslytsia\projects\llm-agent`, branch `feat/trust-tag` fro
   `packages/llm-agent-libs/src/agent/rag-orchestrator.ts` (~line 300): in hard mode, when no skill name matches,
   load no skills instead of all skills (informational skills are semantic-only); add an option
   only if an existing consumer depends on the old fallback (check and document).
+- Tool-result trust (one contract, all in this task): `ToolTrust = (toolName: string) => { source: string; trust: number } | undefined`
+  exported from `@mcp-abap-adt/llm-agent`. Plumbing: `SmartAgentConfig.toolTrust?: ToolTrust` (set via
+  `SmartAgentBuilder.withToolTrust(fn)`), `DialogueSessionOptions.toolTrust?: ToolTrust` (passed on to
+  `PlannerToolsClient` and `tool-trace-render.ts`). Applied only when building model-facing text, after trace
+  capture: the tool message content in `pipeline/handlers/tool-loop-core.ts` (~335) and
+  `mixed-tool-call-handler.ts` (~72) after `recordToolInvocation`; `ContextAssembler` tool-history rendering;
+  `tool-trace-render.ts` (checker evidence); and a `get_task` response projection in `planner-tools-client.ts`
+  (~420) that tags each `toolTrace` result in a copy, never the board's stored task. Stored traces, outcome
+  parsing and truncation counts stay untagged; a result is tagged once.
 - Changeset: minor for both packages.
 
 **Interfaces:**
@@ -91,6 +100,11 @@ test('planner retrieval keeps trust and source from metadata', async () => {
   // same through search_knowledge rendering and planner-create/revise context
 });
 test('hard-mode skill selection loads nothing when no skill matches (pipeline and rag-orchestrator)', () => { /* was: all skills */ });
+test('toolTrust tags model-facing tool results only', () => {
+  // tool-loop-core and mixed-tool-call-handler: model message '[source: system:GetClass; trust 4.5]\n<result>',
+  // recorded invocation untagged; truncated result tagged once; tool without toolTrust answer untagged;
+  // ContextAssembler history, checker evidence and get_task projection tagged once; board task unchanged
+});
 test('ContextAssembler tags results with metadata.trust', () => {
   // RagResult { text: 'x', metadata: { trust: 3, source: 'user:Notes/r1' }, score: 0.9 } → "- [source: user:Notes/r1; trust 3] x"
   // without metadata.trust → "- x"; non-number trust → "- x"
@@ -107,7 +121,8 @@ test('ContextAssembler tags results with metadata.trust', () => {
 
 ### Task 2: Trust classes and defaults (hub)
 
-Hub branch `feat/source-trust` from `main`.
+Hub branch `feat/source-trust` from the reviewed `design/source-trust` head (spec + plan), rebased on current
+`main`.
 
 **Files:**
 - Create: `srv/lib/trust.ts`, `test/unit/trust.test.ts`
@@ -155,7 +170,9 @@ derives provenance from the collection context instead. Content updates preserve
 - Test: `test/unit/collection-trust-persistence.test.ts` (PGlite)
 
 **Interfaces:**
-- Produces: `documentView(doc: RagDocument, collection: CollectionMeta, defaults): RagDocument & { enabled: boolean; trust: number; trustOverride?: number; source: string }`
+- Produces: `documentView(doc: RagDocument, collection: CollectionMeta, defaults): (RagDocument & { enabled: boolean; trusted: true; trust: number; trustOverride?: number; source: string }) | (RagDocument & { enabled: boolean; trusted: false })`
+  — `trusted: false` without trust fields for agent-preset collections; `recordAttributes` follows the same
+  discriminated shape
   — the one projection for REST document listings and reads (`srv/rag-handler.ts` ~708, ~911) and the virtual
   `@skills` listing; `recordAttributes` (MCP) uses the same resolution.
 - Produces: `collectionView(meta: CollectionMeta, defaults): (CollectionMeta & { trusted: true; trust: number; trustOverride?: number; trustClass: TrustClass }) | (CollectionMeta & { trusted: false })`
@@ -171,7 +188,8 @@ derives provenance from the collection context instead. Content updates preserve
   metadata `{ trust: 5, trustHistory: [], _trust: 5, _trustHistory: [] }` store none of them, while an existing
   override survives update, restart and content replacement; upload keeps `metadata.source` (file name) and source toggles, chunk
   grouping and export still work; REST document listing shows inherited trust, a record override, and inherited
-  again after the override is cleared; an agents collection lists as `trusted: false` without trust fields; collection stored without `trust` restores with `trust` undefined and `recordAttributes` reports the
+  again after the override is cleared; an agents collection lists as `trusted: false` without trust fields, and its documents (REST list/read, MCP
+  `rag_read` / `collection_records`) carry no trust fields either; collection stored without `trust` restores with `trust` undefined and `recordAttributes` reports the
   class default; record added with metadata `{ trust: 5, trustHistory: [] }` stores neither key (stripped);
   history keeps the last 20 entries.
 - [ ] **Step 2–4:** Fail, implement, pass; full jest for persistence suites.
@@ -216,7 +234,9 @@ updates its own entry (record, collection or source) and nothing else.
   schemas where they enter (the MCP tool definitions already validate with zod), and only the inferred types
   travel further. Then
   `trustWriteError(input: { admin: boolean; target: TrustTarget; value: number | null; allowNull: boolean }): { status: 400 | 403 | 404 | 409; code: 'INVALID_TRUST' | 'FORBIDDEN' | 'NOT_FOUND' | 'TRUST_FIXED' } | undefined`,
-  the trust policy used by REST, MCP and `@skills`. It runs after the existing `collectionAccessError`
+  the trust policy used by REST, MCP and `@skills`. Validation failures of these schemas (wrong type, out of
+  range, two decimals, `null` on the collection setter) are mapped explicitly to `INVALID_TRUST` (REST 400; MCP
+  tool error code `INVALID_TRUST`), not to the generic argument-validation error. It runs after the existing `collectionAccessError`
   visibility/ownership check (pending agent copies stay hidden, inaccessible collections stay `NOT_FOUND`), and
   adds the stricter admin + global-informational rule on top
 - Modify: `srv/rag-handler.ts` (`PUT /rag/collections/:id` accepts `trust`; new
@@ -242,7 +262,8 @@ updates its own entry (record, collection or source) and nothing else.
   `FORBIDDEN`; user collection → `TRUST_FIXED`; informational preset (`preset: true`) → `TRUST_FIXED` but its hits are tagged
   `user` (Task 6); agents collection → `TRUST_FIXED`; base skill → `TRUST_FIXED`;
   values `"5"`, `4.55`, `-1`, `5.1`, `NaN` → `INVALID_TRUST`; `null` on `record_set_trust` clears;
-  both tools listed on agent MCP and internal tool lists (parity test); a pending agent copy and another
+  malformed values asserted through REST dispatch and MCP tool dispatch (status / error code), not only
+  through the schema; both tools listed on agent MCP and internal tool lists (parity test); a pending agent copy and another
   user's collection stay `NOT_FOUND` for admin and non-admin alike.
 - [ ] **Step 2–4:** Fail, implement, pass.
 - [ ] **Step 5:** Commit `feat(trust): admin trust setters`.
@@ -280,13 +301,12 @@ updates its own entry (record, collection or source) and nothing else.
 ### Task 7: Tag target-system results and informational skills
 
 **Files:**
-- Create: `srv/lib/trust-tag-client.ts` — `withSystemTrustTag(client: IMcpClient, isSystemTool: (name: string) => boolean, trust: () => number): IMcpClient`,
-  an outer decorator that tags only text the LLM receives; it exposes the wrapped client so code branching on
-  `instanceof RecordingMcpClient` keeps working (an unwrap helper is used at those branches)
-- Modify: every LLM client chain: `configureDestinationAgentBuilder` (~`srv/agent-manager.ts:2736`), planner
-  construction (~2882), destination recording (~3130), executor/checker workers. `isSystemTool` = the name is in
-  the embedded mcp-abap-adt registry (`buildEmbeddedMcpAdapter`, ~2367); hub RAG and orchestration tools are
-  never tagged.
+- Create: `srv/lib/system-tool-trust.ts` — `systemToolTrust(isSystemTool: (name: string) => boolean, resolver: TrustResolver): ToolTrust`
+  answering `{ source: 'system:<tool>', trust }` only for names in the embedded mcp-abap-adt registry
+  (`buildEmbeddedMcpAdapter`, ~`srv/agent-manager.ts:2367`); hub RAG and orchestration tools get `undefined`.
+- Modify: inject it everywhere a builder or dialogue session is created: `configureDestinationAgentBuilder`
+  (~2736, `withToolTrust`), planner construction (~2882), destination recording (~3130), executor/checker workers
+  and `DialogueSession.open` (`toolTrust`). No client decorator; recording clients are unchanged.
 - Create: `srv/lib/trusted-skill.ts` — `withSkillTrust(skill: ISkill, trust: () => Promise<number>): ISkill`, a
   wrapper preserving every other skill method and metadata, whose `getContent` prefixes
   `[source: global:skills/<name>; trust n]` resolved live (no cached value).
@@ -299,11 +319,6 @@ updates its own entry (record, collection or source) and nothing else.
   `rag-orchestrator.ts`), which calls `getContent` — test both paths.
 - Test: `test/unit/trust-tags-tools.test.ts`
 
-- Modify (library, ships in Task 1's release): `ContextAssembler` tool-history rendering and
-  `coordinator/dialogue/tool-trace-render.ts` (checker evidence, planner `get_task`) accept an optional
-  `trustFor(toolName: string): { source: string; trust: number } | undefined` callback and prefix the tag to
-  rendered results it returns a value for; stored records, outcome parsing and truncation counts stay untagged.
-  The hub passes a callback answering only for embedded mcp-abap-adt tools.
 - [ ] **Step 1: Failing tests (each chain: chat, planner, executor, checker):** an embedded SAP tool result
   reaches the LLM as
   `[source: system:GetClass; trust 4.5]\n<result>`; the recorded result and reviewer `parseToolOutcome` input
