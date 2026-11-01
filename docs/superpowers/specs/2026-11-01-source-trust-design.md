@@ -1,6 +1,6 @@
 # Source trust and provenance (minimum)
 
-Status: design, 2026-11-01. Roadmap step 3 (context classes and trust), the minimum needed for agents with
+Status: approved, 2026-11-01. Roadmap step 3 (context classes and trust), the minimum needed for agents with
 long-term memory and learning (step 4).
 
 ## Why
@@ -96,7 +96,7 @@ values). Invalid values fail startup with a clear error.
 
 Class resolution (my calls):
 
-- Short-term corrections live in session scope and long-term corrections in user scope (to confirm); both are
+- Short-term corrections live in session scope and long-term corrections in user scope (confirmed); both are
   part of the agent preset, so scope does not change their trust.
 - Presets are user-scope copies of informational collections; they are class `user`.
 - `system` is exactly the embedded mcp-abap-adt tool set, identified by its registry origin. RAG tools and
