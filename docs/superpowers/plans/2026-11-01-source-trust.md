@@ -149,10 +149,14 @@ Hub branch `feat/source-trust` from the reviewed `design/source-trust` head (spe
   validated with `normalizeTrust`; unknown class or invalid value rejects the record like other invalid front
   matter); `srv/lib/agent-profile-source.ts` (`getPrompts()` and worker lookup return the profile's `trust` map
   alongside the prompts instead of discarding front matter)
-- Library (ships in Task 1's release): `WorkerProfile` and `AgentPrompts` gain `trust?: Partial<Record<string, number>>`
-  (opaque pass-through, validated by the hub); `AgentProfileRunnerHost.buildPlanAuthor(input)` receives
-  `{ profile: string; mode: 'create' | 'revise'; trust?: Partial<Record<string, number>> }` so the hub can build the
-  author with that profile's resolver
+- Library (ships in Task 1's release): `type TrustMap = Partial<Record<string, number>>` (opaque, validated by the
+  hub). `WorkerProfile.trust?: TrustMap`. `AgentPrompts` carries one map per returned role:
+  `trust?: { coordinator?: TrustMap; plannerCreate?: TrustMap; plannerRevise?: TrustMap }`. The runner interfaces
+  pass the selected map: `preparePlanner(input: { systemPrompt: string; trust?: TrustMap }, …)` and
+  `preparePlanAuthor(input: { systemPrompt: string; mode: 'create' | 'revise'; trust?: TrustMap }, …)`, and
+  `AgentProfileRunnerHost.buildPlanAuthor(input: { systemPrompt: string; mode: 'create' | 'revise'; trust?: TrustMap })`;
+  `ProfilePlanAuthor` / `DialogueSession` pick `plannerCreate` or `plannerRevise` by mode. All callers and hub
+  implementations of these interfaces are updated
 - Modify: `srv/lib/dialogue-sessions.ts` — coordinator and plan author no longer share one retrieval
   configuration: each gets retrieval stores wrapped with its own role's resolver
 
@@ -208,8 +212,10 @@ derives provenance from the collection context instead. Content updates preserve
 **Interfaces:**
 - Produces: `documentView(doc: RagDocument, input: TrustInput | { trusted: false }): (RagDocument & { enabled: boolean; trusted: true; trust: number; trustOverride?: number; source: string }) | (RagDocument & { enabled: boolean; trusted: false })`
   — `trusted: false` without trust fields for agent-preset collections. `RecordTrustView = { trusted: true; trust: number; trustOverride?: number; source: string } | { trusted: false }`
-  is the one shared union; `defaults: Record<TrustClass, number>`. Projections are synchronous over a
-  pre-resolved input: `TrustInput = { class: TrustClass; source: string; collectionTrust?: number; recordTrust?: number }`.
+  is the one shared union. Projections are synchronous over a pre-resolved input:
+  `TrustInput = { trusted: true; class: TrustClass; source: string; classTrust: number; collectionTrust?: number; recordTrust?: number }`
+  where `classTrust` is filled by the role's resolver (agent map over deploy defaults); effective trust =
+  `recordTrust ?? collectionTrust ?? classTrust`, for catalog collections and `@skills` alike.
   Catalog collections build it from meta and `_trust`; the `@skills` source builds it with
   `await TrustStore.getSource/getRecord` before projecting, so REST and MCP share one projection for both.
   — the one projection for REST document listings and reads (`srv/rag-handler.ts` ~708, ~911) and the virtual
