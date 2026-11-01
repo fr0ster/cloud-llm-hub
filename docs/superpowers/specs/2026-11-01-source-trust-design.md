@@ -22,11 +22,12 @@ each context item is an effective, cheap way to make conflict resolution predict
 
 ## Goals
 
-1. Every RAG collection and every record has a trust score. It is mandatory: there is always an effective
-   value.
-2. Every item that reaches an LLM from a source carries its source class and effective trust in a short tag.
-3. An administrator (`MCP_Admin`) can set trust on global sources.
-4. Preconfigured global sources start at the highest trust.
+1. Every informational collection and every informational record has a trust score. It is mandatory: there is
+   always an effective value.
+2. Every informational item that reaches an LLM carries its source class and effective trust in a short tag.
+3. An administrator (`MCP_Admin`) can set trust on global informational collections and their records.
+4. The agent preset (system prompt, base skills, corrections) has the highest trust and is never compared by
+   trust.
 5. Prompts tell the model how to use the tags: prefer higher trust on conflict and say which source it relied
    on.
 
@@ -48,45 +49,61 @@ each context item is an effective, cheap way to make conflict resolution predict
 - Trust as an access-control mechanism. Trust never hides or blocks content; access stays with scopes/roles.
 - Heuristic or score-threshold filtering by trust (consistent with the tool gate principle: the model decides).
 
-## Scale and classes
+## Content model
+
+Records in collections fall into these groups (user's model, 2026-11-01):
+
+1. **System:** the system prompt and base skills.
+2. **Corrections of the system prompt:** additional notes under learning, long-term and short-term. They override
+   the system prompt and base skills. The learning process (step 4) decides whether a correction helps or harms
+   and then folds it into the base system prompt and skills.
+3. **MCP tool groups:** collections listing MCP tools — ABAP read-only, ABAP read-write, RAG tools, documentation
+   tools, and so on.
+4. **Informational skills and collections:** any other information.
+
+An **agent** is a preset of system collections (system prompt, base skills, corrections). There is a
+preconfigured variant of the system prompt and base skills, and an agent variant; the selected agent overrides
+the preconfigured settings.
+
+Independently, every collection has a visibility **scope**: global (preconfigured, visible to everyone; access
+may later be restricted by role), user (the user and the admin, persistent) and session (the same, temporary).
+
+Loading: the system prompt, base skills and corrections are loaded into the context directly, without semantic
+search. Everything else — tool groups, informational skills and collections — is found by semantic search in
+RAG. Tool results (target system, documentation) arrive through tool calls.
+
+## Trust
+
+- **Agent preset** (groups 1 and 2): highest trust. Its layers resolve by override order (agent over
+  preconfigured, correction over base), never by trust, and are not tagged.
+- **MCP tool groups** (group 3): affect only tool selection; not tagged.
+- **Informational records** (group 4) and **tool results**: trust applies here. This is where conflicting
+  items meet in one context and the model must resolve them.
 
 Trust is a number from 0 to 5 with at most one decimal (0 = unreliable, 5 = fully reliable).
 
-Visibility scopes decide where a collection is visible; trust follows the scope:
-
-- **global** — preconfigured sources everyone sees (access may later be restricted by role): the agent
-  configuration (system prompts, profiles), the MCP tools collection, preconfigured skills.
-- **user** — visible to the user and the admin, persistent.
-- **session** — the same, but temporary.
-
 | Class | Applies to | Default | Who changes it |
 |---|---|---|---|
-| `global` | global sources: agent configuration, MCP tools collection, preconfigured (file) skills | 5 | `MCP_Admin` per source / record |
+| `global` | global informational collections and records (preconfigured informational skills) | deploy config | `MCP_Admin` per collection / record |
+| `user` | user-scope informational collections and records (incl. presets) | deploy config | — (deferred) |
+| `session` | session-scope informational collections, session history recall, planner memory | deploy config | — |
 | `system` | results of target-system tools (embedded mcp-abap-adt) | deploy config | deploy config |
 | `docs` | results of documentation MCP servers (external MCP per role, separate spec) | deploy config | deploy config |
-| `user` | user-scope collections and records (incl. presets) | deploy config | — (deferred) |
-| `memory-long` | long-term agent memory (user scope, written by the learning process, step 4) | deploy config | — (step 4) |
-| `session` | session-scope collections, session history recall, planner memory (short-term memory) | deploy config | — |
 
 Deploy config: one variable `LLM_AGENT_TRUST_DEFAULTS`, comma list `class=value`, e.g.
-`system=4.5,docs=3.5,user=3,memory-long=3,session=2`. Missing classes take these built-in defaults (the example
-values). `global` is not configurable at deploy (it starts at 5 and changes only through the admin setter).
-Invalid values fail startup with a clear error.
+`global=4.5,system=4.5,docs=3.5,user=3,session=2`. Missing classes take these built-in defaults (the example
+values). Invalid values fail startup with a clear error.
 
 Class resolution (my calls):
 
-- Agent configuration (agents collections, including user copies) is instructions, not context: it is never
-  tagged per item. Its trust (global, 5 unless the admin lowers it) is stated once in the prompt rule.
-- The MCP tools collection feeds tool selection, not answers; it carries trust for completeness but is not
-  tagged in tool definitions.
-- Preconfigured skills are tagged in the `## Active Skills` block with their trust.
-- Presets are user-scope copies the user may edit; they are class `user` and their hits are tagged like any
-  other user collection.
+- Short-term corrections live in session scope and long-term corrections in user scope (to confirm); both are
+  part of the agent preset, so scope does not change their trust.
+- Presets are user-scope copies of informational collections; they are class `user`.
 - `system` is exactly the embedded mcp-abap-adt tool set, identified by its registry origin. RAG tools and
   hub-internal (orchestration, planning) tools are not tagged.
 
 Effective trust of a record = record trust if set, else its collection's trust, else the class default of the
-collection. Effective trust of a tool result = the class default of the tool's class (`system`, `docs`).
+collection's scope. Effective trust of a tool result = the class default of the tool's class (`system`, `docs`).
 
 ## How it reaches the model
 
@@ -111,12 +128,14 @@ Paths that must carry the tag (from the code survey):
 6. Target-system tool results (embedded mcp-abap-adt): the tool result text gets a first line with the tag.
    The tag is added at the LLM boundary only (my call): recording, result parsing (reviewer/checker) and the
    truncation count see the untagged result.
-7. Dependency results passed to workers and checkers (`[result of step …]`): carry no tag of their own; the
+7. Informational skills found by semantic selection (`## Active Skills` block): each skill gets the tag after its
+   `### Skill: <name>` header. Base skills are part of the agent preset and are not tagged.
+8. Dependency results passed to workers and checkers (`[result of step …]`): carry no tag of their own; the
    worker output keeps whatever tags the worker quoted. (My call: tagging derived results would need trust
    propagation rules, which belong to step 4.)
 
-Agent configuration is not tagged per item; the prompt rule states that the agent's own instructions outrank
-everything in context.
+The agent preset is not tagged; the prompt rule states that the agent's own instructions outrank everything in
+context.
 
 Prompt rule, added once to the coordinator, planner-create, planner-revise and the worker base profile:
 
@@ -131,16 +150,17 @@ conflict instead of choosing silently."
   `trust` reads as unset → class default. No data migration is needed.
 - Records: payload metadata key `trust` (number, optional), reserved like the other bookkeeping keys so users
   cannot spoof it through free-form metadata on add/update.
-- Global sources: effective trust comes from the trust store, default 5.
+- Global informational sources: effective trust comes from the trust store, else the `global` class default.
 - Validation in one helper used by every write path: 0 ≤ n ≤ 5, one decimal; else 400 / tool error
   `INVALID_TRUST`.
 
 ## Changing trust
 
-Only `MCP_Admin`, only on global sources and their records: the agents collection, the MCP tools collection and
-the preconfigured skills (a skill is addressed by its name as the record). Global trust is stored by the hub in a
-small persistent trust store keyed by source and record, because tools and file skills are not catalog
-collections; the agents collection may use the same store for uniformity (my call).
+Only `MCP_Admin`, only on global informational sources and their records. Today these are the preconfigured
+informational skills (file skills); a skill is addressed by its name as the record. File skills are not catalog
+collections, so global trust is stored by the hub in a small persistent trust store keyed by source and record
+(my call). Today's code does not separate base skills from informational skills; the builder adds that marker
+(skill front matter) so base skills join the agent preset and are excluded from trust.
 
 - REST: `PUT /v1/rag/collections/:id` accepts `trust`; new `PATCH /v1/rag/collections/:id/documents/:did/trust`
   `{ trust: number | null }` (null clears the record override).
@@ -154,8 +174,8 @@ collections; the agents collection may use the same store for uniformity (my cal
 
 ## WebUI
 
-MANAGE panel: each collection row shows its effective trust and class. Admins see the global sources (agents,
-tools, skills) with an inline-editable trust. Document rows show a record override when set. Verified via Playwright through the
+MANAGE panel: each collection row shows its effective trust and class. Admins see the global informational sources
+(informational skills) with an inline-editable trust. Document rows show a record override when set. Verified via Playwright through the
 approuter.
 
 ## Library (llm-agent) part
@@ -171,10 +191,10 @@ approuter.
   class default.
 - Admin/non-admin/non-global tests for both REST and MCP setters; spoofed `trust` in free-form record metadata
   is rejected or stripped.
-- `LLM_AGENT_TRUST_DEFAULTS` parsing tests (valid, partial, invalid, `global` rejected).
+- `LLM_AGENT_TRUST_DEFAULTS` parsing tests (valid, partial, invalid).
 - POC check: a user-collection record that contradicts a target-system read produces an answer that follows the
-  system (higher trust) and names the source; after the admin lowers a preconfigured skill's trust, a conflicting
-  user record with higher trust wins.
+  system (higher trust) and names the source; after the admin lowers a preconfigured informational skill's trust,
+  a conflicting user record with higher trust wins.
 
 ## Left to the builder
 
