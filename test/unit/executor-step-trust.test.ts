@@ -1,4 +1,6 @@
 import type { WorkerProfile } from '@mcp-abap-adt/llm-agent';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import { AgentProfileRunner } from '../../srv/lib/agent-profile-runner';
 import { runExecutorStep } from '../../srv/lib/executor-step';
 import { NoticeFinalizer } from '../../srv/lib/notice-finalizer';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
@@ -25,13 +27,27 @@ jest.mock('../../srv/lib/step-reviewer', () => ({
 test('executor-step and notice evidence use each reviewed profile without inheriting another worker map', async () => {
   const resolver = fixtureTrustResolver();
   let resolvedProfile: WorkerProfile;
-  const agent = {
-    process: async () => {
-      recordReviewProfile(resolvedProfile);
-      return { ok: true, value: { content: 'done' } };
-    },
+  const critic = {
+    chat: jest.fn(async () => ({
+      ok: true as const,
+      value: { content: 'OK', finishReason: 'stop' as const },
+    })),
+    streamChat: async function* () {},
   };
-  const critic = { chat: jest.fn(), streamChat: async function* () {} };
+  const baseHandle = await new SmartAgentBuilder().withMainLlm(critic).build();
+  const agent = baseHandle.agent;
+  jest.spyOn(agent, 'process').mockImplementation(async () => {
+    recordReviewProfile(resolvedProfile);
+    return {
+      ok: true,
+      value: {
+        content: 'done',
+        iterations: 1,
+        toolCallCount: 0,
+        stopReason: 'stop',
+      },
+    };
+  });
   const recMcp = new RecordingMcpClient({
     listTools: jest.fn(),
     callTool: jest.fn(),
@@ -64,6 +80,7 @@ test('executor-step and notice evidence use each reviewed profile without inheri
       get: async () => ({ ok: true as const, value: profile }),
     };
     const handle = {
+      ...baseHandle,
       agent,
       executor: agent,
       recMcp,
@@ -72,22 +89,19 @@ test('executor-step and notice evidence use each reviewed profile without inheri
       toolTrust: systemToolTrust(() => true, resolver),
       toolTrustFor: (role: typeof resolver) =>
         systemToolTrust(() => true, role),
-      profileRunner: {
-        createWorker: async () => ({
-          ok: true,
-          value: { name, run: async () => ({ output: 'done' }) },
+      profileRunner: new AgentProfileRunner({
+        catalogue: () => [],
+        grants: () => new Set(),
+        buildPlanner: async () => agent,
+        buildWorker: async () => ({
+          name,
+          capabilities: { contextPolicy: 'optional' },
+          run: async () => ({ output: 'done' }),
         }),
-      },
-    };
+      }),
+    } satisfies Parameters<typeof runExecutorStep>[1];
     const createSource = jest.fn(() => source);
-    await runExecutorStep(
-      createSource,
-      handle as never,
-      'user',
-      'read',
-      name,
-      {},
-    );
+    await runExecutorStep(createSource, handle, 'user', 'read', name, {});
     if (name === 'executor') expect(createSource).not.toHaveBeenCalled();
     const finalizer = new NoticeFinalizer(recMcp, critic, undefined, () =>
       systemToolTrust(

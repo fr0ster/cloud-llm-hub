@@ -1,4 +1,9 @@
 import { HandlerExporter } from '@mcp-abap-adt/lib/handlers';
+import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
+import {
+  MCPClientWrapper,
+  McpClientAdapter,
+} from '@mcp-abap-adt/llm-agent-mcp';
 import { CompositeSkillManager } from '../../srv/lib/composite-skill-manager';
 import * as skillsPool from '../../srv/lib/skills-pool';
 import * as reviewer from '../../srv/lib/step-reviewer';
@@ -307,10 +312,16 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
         .spyOn(reviewer, 'evaluateGated')
         .mockResolvedValue({ ok: true });
       try {
-        await agentManager.buildAgentForDestination({} as never, {} as never, {
-          ...config,
-          agent: { ...config.agent, chatCoordinator },
-        });
+        await agentManager.buildAgentForDestination(
+          new McpClientAdapter(
+            new MCPClientWrapper({ url: 'http://localhost' }),
+          ),
+          new agentManager.ExpositionFilteringRag(new InMemoryRag()),
+          {
+            ...config,
+            agent: { ...config.agent, chatCoordinator },
+          },
+        );
         const wired = (
           chatCoordinator === 'fixed'
             ? withDagCoordinator
