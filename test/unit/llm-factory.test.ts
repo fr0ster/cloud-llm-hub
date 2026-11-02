@@ -270,6 +270,48 @@ test.each([429, 503, 0])(
   },
 );
 
+test('spend is reported before the failure reaches the consumer, split usage summed', async () => {
+  const stream = jest
+    .spyOn(OpenAIProvider.prototype, 'streamChat')
+    .mockImplementation(async function* () {
+      // Input usage at the start, output usage at the end of one model call.
+      yield {
+        content: '',
+        usage: { promptTokens: 7, completionTokens: 0, totalTokens: 7 },
+      };
+      yield {
+        content: 'partial',
+        usage: { promptTokens: 0, completionTokens: 3, totalTokens: 3 },
+      };
+      throw Object.assign(new Error('private'), { response: { status: 503 } });
+    });
+  try {
+    const llm = await makeHubLlm(
+      { provider: 'openai', apiKey: 'fake', model: 'test' },
+      0,
+    );
+    const spent: import('@mcp-abap-adt/llm-agent').TokenUsage[] = [];
+    const seenAtFailure = await observeLlmSpend(
+      async () => {
+        for await (const chunk of llm.streamChat([]))
+          if (!chunk.ok) return spent.length;
+        return -1;
+      },
+      (usage) => spent.push(usage),
+    );
+    expect(seenAtFailure).toBe(1);
+    expect(spent).toEqual([
+      expect.objectContaining({
+        promptTokens: 7,
+        completionTokens: 3,
+        totalTokens: 10,
+      }),
+    ]);
+  } finally {
+    stream.mockRestore();
+  }
+});
+
 test('concurrent provider streams have independent unnamed retry budgets', async () => {
   const strategy = new WaitAsNeeded();
   const stream = jest

@@ -110,28 +110,39 @@ export function reliableLlm(inner: ILlm): ILlm {
             const next = throttleCallScope();
             return (async function* () {
               let spent: TokenUsage | undefined;
+              let reported = false;
+              // Before a failure is yielded: the consumer computes its final
+              // usage on that chunk, not after the iterator closes.
+              const report = () => {
+                if (reported || !spent) return;
+                reported = true;
+                reportLlmSpend(spent);
+              };
               try {
                 while (true) {
                   const item = await next(() => iterator.next());
                   if (item.done) return;
                   const result = item.value;
                   if (!result.ok) {
+                    report();
                     yield {
                       ok: false as const,
                       error: safeLlmError(result.error),
                     };
                     return;
                   }
-                  if (result.value.usage) spent = result.value.usage;
+                  if (result.value.usage)
+                    spent = mergeStreamUsage(spent, result.value.usage);
                   yield result;
                 }
               } catch (error) {
+                report();
                 yield {
                   ok: false as const,
                   error: safeLlmError(error),
                 };
               } finally {
-                if (spent) reportLlmSpend(spent);
+                report();
                 await iterator.return?.();
               }
             })();
@@ -168,4 +179,31 @@ export function isLlmFailure(error: unknown): boolean {
 export function failureMessage(error: unknown): string {
   if (isLlmFailure(error)) return llmFailure(error);
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * One model call may report usage in several chunks: split (input at the start,
+ * output at the end) or cumulative. The larger value per field covers both.
+ */
+export function mergeStreamUsage(
+  previous: TokenUsage | undefined,
+  next: TokenUsage,
+): TokenUsage {
+  if (!previous) return next;
+  const promptTokens = Math.max(previous.promptTokens, next.promptTokens);
+  const completionTokens = Math.max(
+    previous.completionTokens,
+    next.completionTokens,
+  );
+  return {
+    ...previous,
+    ...next,
+    promptTokens,
+    completionTokens,
+    totalTokens: Math.max(
+      previous.totalTokens,
+      next.totalTokens,
+      promptTokens + completionTokens,
+    ),
+  };
 }
