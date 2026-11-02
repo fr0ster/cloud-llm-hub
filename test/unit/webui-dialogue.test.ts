@@ -1976,3 +1976,21 @@ test('SSE frames for a no-longer-owned session do not render any event', async (
   expect(ui.ack('key')).toBeUndefined();
   subscription.stop();
 });
+
+test.each(['task', 'tasks'])(
+  'activity arriving before %s stays visible when the task appears',
+  async (event) => {
+    const ui = harness(180000);
+    const task = { id: 'late', worker: 'executor', state: 'queued' };
+    ui.fetch.mockResolvedValue(
+      stream(
+        'event: activity\ndata: {"taskId":"late","action":"queued (1 ahead)","at":60000}\n\n' +
+          `event: ${event}\ndata: ${JSON.stringify(event === 'tasks' ? [task] : task)}\n\n`,
+      ),
+    );
+    const sub = ui.subscribeDialogueEvents('key');
+    await flush();
+    expect(ui.active.innerHTML).toContain('queued (1 ahead)');
+    sub.stop();
+  },
+);

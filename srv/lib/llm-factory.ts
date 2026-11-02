@@ -11,6 +11,7 @@
  * provider's default quota bucket. Session calls override it with quotaScope.
  */
 
+import { createHash } from 'node:crypto';
 import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
 import { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
 import {
@@ -103,10 +104,11 @@ export function getAiCoreAccess(): AiCoreAccess {
 
 /** One credential per key, shared by every LLM and embedder on that account. */
 export function apiKeyCredential(key: string): IApiKeyCredential {
-  let credential = apiKeyCredentials.get(key);
+  const identity = createHash('sha256').update(key).digest('hex');
+  let credential = apiKeyCredentials.get(identity);
   if (!credential) {
     credential = staticApiKey(key);
-    apiKeyCredentials.set(key, credential);
+    apiKeyCredentials.set(identity, credential);
   }
   return credential;
 }
@@ -117,13 +119,40 @@ export function resetLlmCredentials(): void {
   apiKeyCredentials.clear();
 }
 
+const credentialIds = new WeakMap<object, number>();
+let nextCredentialId = 0;
+
+/** Cache identity contains configuration and an opaque credential identity only. */
+export function hubLlmKey(cfg: HubLlmConfig, temperature: number): string {
+  const credential =
+    cfg.provider === 'sap-ai-sdk'
+      ? getAiCoreAccess().credential
+      : apiKeyCredential(cfg.apiKey ?? '');
+  let credentialId = credentialIds.get(credential);
+  if (credentialId === undefined) {
+    credentialId = ++nextCredentialId;
+    credentialIds.set(credential, credentialId);
+  }
+  return JSON.stringify({
+    provider: cfg.provider,
+    model: cfg.model,
+    baseURL: cfg.baseURL,
+    resourceGroup: cfg.resourceGroup,
+    temperature,
+    maxTokens: cfg.maxTokens,
+    component: cfg.component,
+    quotaScope: cfg.quotaScope,
+    credentialId,
+  });
+}
+
 /** Build the provider for `cfg` and wrap it as an `ILlm`. */
 export async function makeHubLlm(
   cfg: HubLlmConfig,
   temperature: number,
 ): Promise<ILlm> {
   const llm = await createHubLlm(cfg, temperature);
-  const key = JSON.stringify([cfg, temperature]);
+  const key = hubLlmKey(cfg, temperature);
   return new Proxy(llm, {
     get(target, property) {
       if (property === 'chat')

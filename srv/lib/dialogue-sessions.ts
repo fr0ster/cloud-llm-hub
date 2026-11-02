@@ -406,6 +406,15 @@ async function open(
       }
     }
   };
+  const queue = new Map<string, TaskView>();
+  const queuedActivity = new Map<
+    string,
+    { currentAction: string; lastActivityAt: number }
+  >();
+  const withQueueActivity = (task: TaskView): TaskView => ({
+    ...task,
+    ...(task.state === 'queued' ? queuedActivity.get(task.id) : {}),
+  });
   const taskStates = new Map<string, TaskRecord['state']>();
   let lastPlan: DialoguePlan | undefined;
   const emitPlan = (state: DialogueState) => {
@@ -417,7 +426,7 @@ async function open(
   const emitTask = (task: TaskView) => {
     if (taskStates.get(task.id) === task.state) return;
     taskStates.set(task.id, task.state);
-    emit({ kind: 'task', task: taskView(task) });
+    emit({ kind: 'task', task: taskView(withQueueActivity(task)) });
   };
   // Shared by TaskBoard.wrapRun and synchronous coordinator steps.
   async function runAdmitted<
@@ -636,26 +645,28 @@ async function open(
   const unsubscribeTaskCaller = signals.on(
     'dialogue.task.state',
     ({ payload: { task, previous } }) => {
+      if (task.state === 'queued' || task.state === 'running')
+        queue.set(task.id, task);
+      else queue.delete(task.id);
+      let ahead = 0;
+      for (const entry of queue.values()) {
+        if (entry.state !== 'queued') continue;
+        const currentAction = `queued (${ahead++} ahead)`;
+        if (queuedActivity.get(entry.id)?.currentAction === currentAction)
+          continue;
+        const lastActivityAt = Date.now();
+        queuedActivity.set(entry.id, { currentAction, lastActivityAt });
+        emitTask(entry);
+        emit({
+          kind: 'activity',
+          taskId: entry.id,
+          worker: entry.worker,
+          action: currentAction,
+          at: lastActivityAt,
+        });
+      }
+      if (task.state !== 'queued') queuedActivity.delete(task.id);
       if (task.state === 'queued' && previous === undefined) {
-        const ahead =
-          session
-            ?.snapshot()
-            .tasks.filter(
-              (entry) =>
-                entry.id !== task.id &&
-                (entry.state === 'queued' || entry.state === 'running'),
-            ).length ?? 0;
-        if (ahead >= config.agent.dialogue.executors) {
-          const action = `queued (${ahead - config.agent.dialogue.executors} ahead)`;
-          session?.noteActivity(task.id, action);
-          emit({
-            kind: 'activity',
-            taskId: task.id,
-            worker: task.worker,
-            action,
-            at: Date.now(),
-          });
-        }
         taskCallers.set(task.id, {
           userId: getRequestUserId() ?? userId,
           identity: dialogueIdentity(),
@@ -1191,6 +1202,17 @@ async function open(
     await pool.closeAll();
     throw error;
   }
+  const snapshot = session.snapshot.bind(session);
+  session.snapshot = () => {
+    const state = snapshot();
+    return {
+      ...state,
+      tasks: state.tasks.map((task) => ({
+        ...task,
+        ...withQueueActivity(task),
+      })),
+    };
+  };
   lastPlan = dialoguePlan(session.snapshot());
   const callTool = session.callTool.bind(session);
   session.callTool = (...args) => llms.run(() => callTool(...args));

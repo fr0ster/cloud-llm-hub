@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { CallOptions, ILlm, Message } from '@mcp-abap-adt/llm-agent';
 import { trackCall } from './admission-scope';
+import { sessionLlms } from './session-llms';
 
 const ANALYZE_SYSTEM_PROMPT = `Return strict JSON {"translation": string, "needsAbapSystem": boolean}.
 The "translation" must be English. If the current request is already English, return it verbatim. Translate any other language faithfully to English for tool search, including transliterated text and Latin-script languages (German, Spanish, Ukrainian in Latin letters). Use specific action verbs (search, list, create, read, delete, execute, check). Preserve SAP/ABAP names, identifiers, abbreviations and code verbatim.
@@ -37,6 +38,7 @@ export class ToolQueryAnalyzer {
       .slice(-6)
       .map((m) => ({ role: m.role, content: (m.content ?? '').slice(0, 500) }));
     const key = JSON.stringify([
+      sessionLlms.getStore()?.quotaScope ?? 'non-session',
       text,
       translationOnly,
       createHash('sha256').update(JSON.stringify(context)).digest('hex'),
@@ -52,10 +54,13 @@ export class ToolQueryAnalyzer {
       return this.waitShared(key, pending, fallback, options?.signal);
     const owner = { controller: new AbortController(), waiters: 0 };
     this.owners.set(key, owner);
-    const work = this.request(text, context, {
-      ...options,
-      signal: owner.controller.signal,
-    });
+    const caller = sessionLlms.getStore();
+    const run = () =>
+      this.request(text, context, {
+        ...options,
+        signal: owner.controller.signal,
+      });
+    const work = caller ? caller.run(run) : run();
     const request = this.waitResult(
       work,
       { value: fallback, valid: false },

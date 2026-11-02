@@ -25,6 +25,7 @@ jest.mock(
 import {
   apiKeyCredential,
   getAiCoreAccess,
+  hubLlmKey,
   makeHubLlm,
   readAiCoreServiceKey,
   resetLlmCredentials,
@@ -413,4 +414,19 @@ it('cached LLM handles dispatch to lazily owned session providers', async () => 
     a.dispose();
     b.dispose();
   }
+});
+
+test('cache keys select public fields and opaque credential identities', () => {
+  const cfg = {
+    provider: 'openai' as const,
+    model: 'model',
+    apiKey: 'secret-key-sentinel',
+  };
+  const first = hubLlmKey(cfg, 0.1);
+  expect(first).not.toContain(cfg.apiKey);
+  expect(first).not.toContain('apiKey');
+  expect(hubLlmKey({ ...cfg }, 0.1)).toBe(first);
+  expect(hubLlmKey({ ...cfg, apiKey: 'different-secret' }, 0.1)).not.toBe(
+    first,
+  );
 });

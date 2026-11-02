@@ -4,6 +4,7 @@ import {
   createCallRegister,
   runWithAdmission,
 } from '../../srv/lib/admission-scope';
+import { SessionLlms, sessionLlms } from '../../srv/lib/session-llms';
 import { ToolQueryAnalyzer } from '../../srv/lib/tool-query-analyzer';
 
 const original = 'Створи домен для таблиці';
@@ -373,4 +374,42 @@ describe('analyzer cancellation', () => {
         expect(chat.mock.calls[0][2].signal.aborted).toBe(true);
     },
   );
+});
+
+test('a session waiting on a 429 retry does not hold another session query', async () => {
+  const a = new SessionLlms();
+  const b = new SessionLlms();
+  let release!: () => void;
+  const retryAfter = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const scopes: Array<string | undefined> = [];
+  const chat = jest.fn(async () => {
+    const scope = sessionLlms.getStore()?.quotaScope;
+    scopes.push(scope);
+    if (scope === a.quotaScope) await retryAfter;
+    return {
+      ok: true,
+      value: {
+        content: JSON.stringify({
+          translation: 'Read table',
+          needsAbapSystem: true,
+        }),
+      },
+    };
+  });
+  const analyzer = new ToolQueryAnalyzer(llmWith(chat));
+  const first = a.run(() => analyzer.analyze('Read table'));
+  try {
+    await expect(b.run(() => analyzer.analyze('Read table'))).resolves.toEqual({
+      text: 'Read table',
+      needsAbapSystem: true,
+    });
+    expect(scopes).toEqual([a.quotaScope, b.quotaScope]);
+    await analyzer.analyze('Read table');
+    expect(scopes).toHaveLength(3);
+  } finally {
+    release();
+    await first;
+  }
 });

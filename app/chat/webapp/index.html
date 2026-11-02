@@ -773,6 +773,17 @@
                     }).join('') + (plan.text ? markdownToHtml(plan.text) : '')
                     : markdownToHtml(plan.text);
             }
+            const pendingActivity = new Map();
+            function applyPendingActivity(task) {
+                const activity = pendingActivity.get(task.id);
+                if (activity) {
+                    if (!task.lastActivityAt || activity.at >= task.lastActivityAt) {
+                        task.currentAction = activity.action; task.lastActivityAt = activity.at;
+                    }
+                    pendingActivity.delete(task.id);
+                }
+                return task;
+            }
             async function connect() {
                 if (stopped || hubSignedOut) return;
                 try {
@@ -815,10 +826,15 @@
                             else if (event === 'activity') {
                                 const task = tasks.find(task => task.id === parsed.taskId);
                                 if (task) { task.currentAction = parsed.action; task.lastActivityAt = parsed.at; renderActiveAgents(tasks); }
+                                else {
+                                    pendingActivity.delete(parsed.taskId);
+                                    pendingActivity.set(parsed.taskId, parsed);
+                                    if (pendingActivity.size > 200) pendingActivity.delete(pendingActivity.keys().next().value);
+                                }
                             }
                             else if (event === 'plan') { renderPlan(parsed); }
                             else if (event === 'tasks' && Array.isArray(parsed)) {
-                                tasks = parsed.map(task => clearWaitOnStateChange(task, tasks.find(previous => previous.id === task.id)));
+                                tasks = parsed.map(task => applyPendingActivity(clearWaitOnStateChange(task, tasks.find(previous => previous.id === task.id))));
                                 renderActiveAgents(tasks);
                             }
                             else if (event === 'planner') {
@@ -840,6 +856,7 @@
                                 renderActiveAgents(tasks);
                             }
                             else if (event === 'task' && parsed.id) {
+                                parsed = applyPendingActivity(parsed);
                                 const index = tasks.findIndex(task => task.id === parsed.id);
                                 if (index < 0) tasks.push(parsed); else tasks[index] = clearWaitOnStateChange({ ...tasks[index], ...parsed }, tasks[index]);
                                 renderActiveAgents(tasks);

@@ -2658,7 +2658,10 @@ test('worker scope emits content-free activity and background turns identify com
     source: 'api',
     text: 'inspect',
   });
-  const activity = events.filter((event) => event.kind === 'activity');
+  const activity = events.filter(
+    (event) =>
+      event.kind === 'activity' && !event.action.startsWith('queued ('),
+  );
   expect(activity).toHaveLength(1);
   expect(activity[0]).toMatchObject({
     taskId: 't1',
@@ -2735,5 +2738,70 @@ test('sessions have independent queues by default and publish queued activity', 
       finish();
     });
     mockExecutorPool = 1;
+  }
+});
+
+test('hub queue labels update in snapshots without notifying the running-only board', async () => {
+  mockExecutorPool = 1;
+  const finishes: Array<() => void> = [];
+  mockRun.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finishes.push(() => resolve({ output: 'done' }));
+      }),
+  );
+  const { h } = await ready();
+  const note = jest.spyOn(h.session, 'noteActivity');
+  const events: DialogueEvent[] = [];
+  h.subscribe((event) => events.push(event));
+  try {
+    for (let index = 0; index < 3; index++) {
+      await h.session.callTool('delegate_task', {
+        worker: 'executor',
+        goal: 'Read',
+      });
+    }
+    await until(() => finishes.length === 1);
+    const queued = h.session
+      .snapshot()
+      .tasks.filter((task) => task.state === 'queued');
+    expect(queued.map((task) => task.currentAction)).toEqual([
+      'queued (0 ahead)',
+      'queued (1 ahead)',
+    ]);
+    expect(note).not.toHaveBeenCalled();
+    finishes[0]();
+    await until(() => finishes.length === 2);
+    expect(
+      h.session.snapshot().tasks.find((task) => task.id === queued[1].id)
+        ?.currentAction,
+    ).toBe('queued (0 ahead)');
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'activity',
+        taskId: queued[1].id,
+        action: 'queued (0 ahead)',
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'task',
+        task: expect.objectContaining({
+          id: queued[1].id,
+          currentAction: 'queued (1 ahead)',
+        }),
+      }),
+    );
+    finishes[1]();
+    await until(() => finishes.length === 3);
+    finishes[2]();
+    await until(() =>
+      h.session.snapshot().tasks.every((task) => task.state === 'done'),
+    );
+  } finally {
+    finishes.forEach((finish) => {
+      finish();
+    });
+    note.mockRestore();
   }
 });
