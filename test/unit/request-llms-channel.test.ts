@@ -6,6 +6,7 @@ import type {
 import { resetQuotaGates, runWithThrottleRetry } from '@mcp-abap-adt/llm-agent';
 import { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
 import type { Request, Response } from 'express';
+import express from 'express';
 
 jest.mock('../../srv/lib/logging-config', () => ({
   applyLoggingConfig: jest.fn(),
@@ -74,15 +75,24 @@ function open(userId: string): LongSession {
   return session;
 }
 function call(handler: typeof handleChatCompletions, session?: LongSession) {
-  const req = Object.assign(
-    fakeReq({
-      model: 'm',
-      max_tokens: 100,
-      messages: [{ role: 'user', content: 'hi' }],
-    }),
-    { longSession: session },
+  const request: Request = Object.create(express.request);
+  const response: Response = Object.create(express.response);
+  Object.defineProperties(
+    request,
+    Object.getOwnPropertyDescriptors(
+      fakeReq({
+        model: 'm',
+        max_tokens: 100,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    ),
   );
-  return handler(req as unknown as Request, fakeRes() as unknown as Response);
+  Object.assign(request, { longSession: session });
+  Object.defineProperties(
+    response,
+    Object.getOwnPropertyDescriptors(fakeRes()),
+  );
+  return handler(request, response);
 }
 beforeEach(() => {
   harness.reset();

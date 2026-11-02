@@ -1038,8 +1038,17 @@ async function open(
       // do not invoke plan_create or plan_revise.
       ...retrieval,
       ...(usage ? { usage } : {}),
-      id: slot(userId, key),
-      signals,
+      id: key,
+      // Keep the library's memory/usage identity logical; only the hub bus
+      // needs the user-scoped identity for routing and retirement.
+      signals: {
+        emit(name, payload, _source, entityKey) {
+          signals.emit(name, payload, slot(userId, key), entityKey);
+        },
+        retire() {
+          signals.retire(slot(userId, key));
+        },
+      },
       // Library close always deletes. The hub owns deletion by close reason:
       // shutdown preserves the last saved state for revival.
       store: {
