@@ -1,9 +1,11 @@
-import type { CallOptions } from '@mcp-abap-adt/llm-agent';
+import type { CallOptions, IMcpClient } from '@mcp-abap-adt/llm-agent';
 import { parseAgentProfilesConfig } from '../../srv/agent-config';
+import type { AgentProfileSelection } from '../../srv/lib/agent-profile-source';
 import {
   type AgentProfileReader,
   AgentProfileSource,
 } from '../../srv/lib/agent-profile-source';
+import { ExternalMcp, parseExternalMcp } from '../../srv/lib/external-mcp';
 import type { CollectionMeta, RagDocument } from '../../srv/rag-collections';
 
 const profile = (name: string, enabled = true): RagDocument => ({
@@ -29,7 +31,7 @@ const prompt = (
   createdAt: '',
   metadata: { canonicalKey: name, kind, name },
 });
-function fixture() {
+function fixture(selection: Partial<AgentProfileSelection> = {}) {
   let selected = 'agents';
   let meta: CollectionMeta = {
     id: 'agents',
@@ -67,6 +69,7 @@ function fixture() {
       selectedCollectionId: () => selected,
       plannerRecord: 'coordinator',
       timeoutMs: 30,
+      ...selection,
     },
   );
   return {
@@ -390,4 +393,56 @@ test('returns distinct trust maps for each prompt role and worker', async () => 
     ok: true,
     value: { trust: { user: 5 } },
   });
+});
+
+test('worker and planner resolutions use cached tools while discovery hangs, then recover', async () => {
+  jest.useFakeTimers();
+  try {
+    let reachable = false;
+    const external = new ExternalMcp(
+      parseExternalMcp({
+        LLM_AGENT_EXECUTOR_MCP: 'docs',
+        LLM_AGENT_CHECKER_MCP: 'docs',
+        LLM_AGENT_PLANNER_MCP: 'docs',
+      }),
+      () => [],
+      async (): Promise<IMcpClient> => {
+        if (!reachable) return new Promise<IMcpClient>(() => {});
+        return {
+          listTools: async () => ({
+            ok: true,
+            value: [{ name: 'search', description: '', inputSchema: {} }],
+          }),
+          callTool: async () => ({ ok: true, value: { content: '' } }),
+        };
+      },
+      jest.fn(),
+    );
+    const f = fixture({
+      prepareCatalogue: async () => external.refresh(),
+      catalogue: () => external.catalogue(),
+    });
+    f.records([
+      profile('executor'),
+      profile('checker'),
+      prompt('_worker-base', 'worker-base'),
+      prompt('coordinator', 'coordinator'),
+      prompt('planner-create', 'planner-author'),
+      prompt('planner-revise', 'planner-author'),
+    ]);
+    for (const name of ['executor', 'checker'])
+      expect(await f.source.resolveWorker(name)).toMatchObject({ ok: true });
+    expect(await f.source.getPrompts()).toMatchObject({ ok: true });
+    expect(external.catalogue()).toEqual([]);
+    await jest.advanceTimersByTimeAsync(10000);
+    reachable = true;
+    await jest.advanceTimersByTimeAsync(30001);
+    expect(await f.source.getPrompts()).toMatchObject({ ok: true });
+    await jest.advanceTimersByTimeAsync(0);
+    for (const name of ['executor', 'checker'])
+      expect(await f.source.resolveWorker(name)).toMatchObject({ ok: true });
+    expect(external.catalogue()).toEqual([{ name: 'search', effect: 'read' }]);
+  } finally {
+    jest.useRealTimers();
+  }
 });

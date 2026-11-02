@@ -3034,8 +3034,7 @@ export function createAgentProfileSource(
   const sessionId = getRequestSessionId();
   return new AgentProfileSource(getCollectionRegistry(), {
     prepareCatalogue: async () => {
-      for (const role of ['planner', 'executor', 'checker', 'analyst'])
-        await docsMcp().clients(role);
+      docsMcp().refresh();
     },
     catalogue: () => [
       ...[...getToolExpositionMap().keys()]

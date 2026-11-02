@@ -82,6 +82,7 @@ export class ExternalMcp {
     string,
     Promise<Connection | undefined>
   >();
+  private readonly cached = new Map<string, Connection>();
   private readonly retryAt = new Map<string, number>();
   private readonly owners = new Map<
     string,
@@ -128,47 +129,82 @@ export class ExternalMcp {
     const existing = this.connections.get(destination);
     if (existing) return existing;
     if ((this.retryAt.get(destination) ?? 0) > this.now())
-      return Promise.resolve(undefined);
+      return Promise.resolve(this.cached.get(destination));
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const pending = (async () => {
       try {
-        const client = await this.connect(destination);
-        const listed = await client.listTools();
+        const listedConnection = await Promise.race([
+          (async () => {
+            const client = await this.connect(destination);
+            return { client, listed: await client.listTools() };
+          })(),
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(
+              () => reject(new Error('Discovery timed out')),
+              10000,
+            );
+            timer.unref();
+          }),
+        ]);
+        const { client, listed } = listedConnection;
         if (!listed.ok) throw listed.error;
-        const reserved = new Set(this.reserved());
-        const staged = new Map<string, { destination: string; tool: string }>();
-        const tools = listed.value.map((tool) => {
-          let name = tool.name;
-          if (
-            reserved.has(name) ||
-            (this.owners.has(name) &&
-              this.owners.get(name)?.destination !== destination)
-          )
-            name = `${destination}__${name}`;
-          if (
-            reserved.has(name) ||
-            (this.owners.has(name) &&
-              this.owners.get(name)?.destination !== destination)
-          )
-            throw new Error('Ambiguous external MCP tool');
-          if (staged.has(name)) throw new Error('Duplicate external MCP tool');
-          staged.set(name, { destination, tool: tool.name });
-          return { ...tool, name };
-        });
-        for (const [name, owner] of staged) this.owners.set(name, owner);
-        return { client, tools };
+        const connection = { client, tools: listed.value };
+        this.cached.set(destination, connection);
+        this.rebuildOwners();
+        this.retryAt.set(destination, this.now() + 30000);
+        return connection;
       } catch {
         this.retryAt.set(destination, this.now() + 30000);
         this.connections.delete(destination);
         this.warn('External docs MCP unavailable', { destination });
         return undefined;
+      } finally {
+        clearTimeout(timer);
+        this.connections.delete(destination);
       }
     })();
     this.connections.set(destination, pending);
     return pending;
   }
+  private destinations(): string[] {
+    return [
+      ...new Set(roles.flatMap((role) => this.config.roles[role])),
+    ].sort();
+  }
+  private rebuildOwners(): void {
+    const reserved = new Set(this.reserved());
+    const counts = new Map<string, number>();
+    for (const connection of this.cached.values())
+      for (const name of new Set(connection.tools.map((tool) => tool.name)))
+        counts.set(name, (counts.get(name) ?? 0) + 1);
+    this.owners.clear();
+    for (const destination of this.destinations()) {
+      const connection = this.cached.get(destination);
+      if (!connection) continue;
+      for (const tool of connection.tools) {
+        const name =
+          reserved.has(tool.name) || (counts.get(tool.name) ?? 0) > 1
+            ? `${destination}__${tool.name}`
+            : tool.name;
+        // Reject ambiguous generated aliases as well as duplicate raw names.
+        if (reserved.has(name) || this.owners.has(name)) continue;
+        this.owners.set(name, { destination, tool: tool.name });
+      }
+    }
+  }
+  /** Start bounded discovery without delaying profile reads. */
+  refresh(): void {
+    for (const destination of this.destinations()) {
+      if ((this.retryAt.get(destination) ?? 0) <= this.now()) {
+        // Successful connections can be refreshed after the cooldown too.
+        void this.connection(destination);
+      }
+    }
+  }
   async clients(role: string): Promise<IMcpClient[]> {
     const selected = roles.find((value) => value === role);
     if (!selected) return [];
+    await Promise.all(this.destinations().map((name) => this.connection(name)));
     const clients: IMcpClient[] = [];
     for (const destination of this.config.roles[selected]) {
       const connection = await this.connection(destination);
@@ -177,7 +213,14 @@ export class ExternalMcp {
         cacheable: false,
         listTools: async () => ({
           ok: true,
-          value: connection.tools.filter((t) => profileToolAllowed(t.name)),
+          value: [...this.owners].flatMap(([name, owner]) => {
+            if (owner.destination !== destination || !profileToolAllowed(name))
+              return [];
+            const tool = connection.tools.find(
+              (tool) => tool.name === owner.tool,
+            );
+            return tool ? [{ ...tool, name }] : [];
+          }),
         }),
         callTool: async (name, args, options) => {
           const owner = this.owners.get(name);

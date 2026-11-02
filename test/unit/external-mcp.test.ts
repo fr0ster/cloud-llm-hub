@@ -154,3 +154,104 @@ test.each(['planner', 'executor', 'checker', 'analyst'])(
     });
   },
 );
+
+test.each([
+  ['A', 'B'],
+  ['B', 'A'],
+])(
+  'collisions are independent of discovery order %s then %s in every role',
+  async (first, second) => {
+    const pending = new Map<string, (client: IMcpClient) => void>();
+    const external = new ExternalMcp(
+      {
+        roles: {
+          planner: ['A', 'B'],
+          executor: ['A'],
+          checker: ['B'],
+          analyst: ['B', 'A'],
+        },
+        trust: {},
+      },
+      () => ['embedded'],
+      (destination) =>
+        new Promise<IMcpClient>((resolve) => {
+          pending.set(destination, resolve);
+        }),
+    );
+    const ready = external.clients('planner');
+    const client: IMcpClient = {
+      ...adapter,
+      listTools: async () => ({
+        ok: true,
+        value: ['search', 'embedded'].map((name) => ({
+          name,
+          description: '',
+          inputSchema: {},
+        })),
+      }),
+    };
+    pending.get(first)?.(client);
+    await Promise.resolve();
+    pending.get(second)?.(client);
+    await ready;
+    for (const role of ['planner', 'executor', 'checker', 'analyst'] as const) {
+      const destinations =
+        role === 'executor' ? ['A'] : role === 'checker' ? ['B'] : ['A', 'B'];
+      expect(
+        external
+          .catalogue(role)
+          .map((tool) => tool.name)
+          .sort(),
+      ).toEqual(
+        destinations
+          .flatMap((destination) => [
+            `${destination}__embedded`,
+            `${destination}__search`,
+          ])
+          .sort(),
+      );
+      const clients = await external.clients(role);
+      for (const client of clients) {
+        const listed = await client.listTools();
+        expect(listed.ok).toBe(true);
+        if (listed.ok)
+          for (const tool of listed.value)
+            expect(tool.name).toMatch(/^[AB]__(search|embedded)$/);
+      }
+    }
+  },
+);
+
+test('background discovery never waits for a hung destination and retries after cooldown', async () => {
+  jest.useFakeTimers();
+  try {
+    let reachable = false;
+    const external = new ExternalMcp(
+      parseExternalMcp({
+        LLM_AGENT_EXECUTOR_MCP: 'docs',
+        LLM_AGENT_CHECKER_MCP: 'docs',
+        LLM_AGENT_PLANNER_MCP: 'docs',
+      }),
+      () => [],
+      () =>
+        reachable
+          ? Promise.resolve(adapter)
+          : new Promise<IMcpClient>(() => {}),
+      jest.fn(),
+    );
+    external.refresh();
+    for (const role of ['executor', 'checker', 'planner'] as const)
+      expect(external.catalogue(role)).toEqual([]);
+    await jest.advanceTimersByTimeAsync(10000);
+    reachable = true;
+    await jest.advanceTimersByTimeAsync(30001);
+    external.refresh();
+    await jest.advanceTimersByTimeAsync(0);
+    for (const role of ['executor', 'checker', 'planner'] as const)
+      expect(external.catalogue(role)).toEqual([
+        { name: 'search', effect: 'read' },
+      ]);
+  } finally {
+    jest.useRealTimers();
+  }
+});
