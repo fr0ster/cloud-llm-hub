@@ -68,7 +68,8 @@ async function connectDestination(name: string): Promise<ExternalMcpClient> {
     await wrapper.connect();
     const adapter = new McpClientAdapter(wrapper);
     return {
-      listTools: (options) => adapter.listTools(options),
+      // A fresh adapter per listing: the adapter caches its first discovery.
+      listTools: (options) => new McpClientAdapter(wrapper).listTools(options),
       callTool: (name, args, options) => adapter.callTool(name, args, options),
       disconnect: () => wrapper.disconnect(),
     };
