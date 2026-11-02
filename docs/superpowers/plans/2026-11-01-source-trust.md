@@ -132,7 +132,7 @@ test('ContextAssembler tags results with metadata.trust', () => {
   globs) — new tests FAIL.
 - [ ] **Step 3:** Implement. `formatRagEntry` reads `typeof r.metadata.trust === 'number'` and
   `typeof r.metadata.source === 'string'`; provenance score annotation stays as is after the text.
-- [ ] **Step 4:** Tests, `npm run typecheck`, `npm run lint:check` pass.
+- [ ] **Step 4:** Tests, typecheck and lint of the llm-agent monorepo pass.
 - [ ] **Step 5:** Commit `feat(context): trust tag for planner retrieval and context assembler`. PR, Codex
   review, merge, release (version PR → signed tags → user publishes npm). Hub tasks use the new versions.
 
