@@ -391,12 +391,42 @@
         localStorage.removeItem('clh.session');
         let sessionOpening = null;
 
+        const tabId = crypto.randomUUID();
+        let ownsSession = false;
+        let copiedSession = false;
+        const sessionChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('clh.session-claims') : null;
+        function discardSession() {
+            sessionKey = '';
+            sessionStorage.removeItem('clh.session');
+            sessionStorage.removeItem('clh.session.owner');
+            ownsSession = false;
+        }
+        if (sessionChannel) sessionChannel.onmessage = ({ data }) => {
+            if (!data || data.tabId === tabId || data.key !== sessionKey) return;
+            if (data.type === 'who-owns' && ownsSession) {
+                sessionChannel.postMessage({ type: 'owned', key: sessionKey, tabId, target: data.tabId });
+            } else if (data.type === 'owned' && data.target === tabId) copiedSession = true;
+        };
+        const sessionClaim = (async () => {
+            if (!sessionKey) return;
+            if (sessionChannel) {
+                sessionChannel.postMessage({ type: 'who-owns', key: sessionKey, tabId });
+                await new Promise(resolve => setTimeout(resolve, 300));
+                if (copiedSession) { discardSession(); return; }
+            } else if (sessionStorage.getItem('clh.session.owner') !== tabId) {
+                discardSession(); return;
+            }
+            ownsSession = true;
+            sessionStorage.setItem('clh.session.owner', tabId);
+        })();
+
         function sessionHeaders() {
             sessionKey = sessionStorage.getItem('clh.session') || '';
             return { ...(sessionKey ? { 'x-clh-session': sessionKey } : {}), ...getSapCredHeaders() };
         }
 
         async function ensureSession() {
+            await sessionClaim;
             if (sessionOpening) return sessionOpening;
             sessionKey = sessionStorage.getItem('clh.session') || '';
             if (sessionKey) { if (typeof startDialogueEvents === 'function') startDialogueEvents(sessionKey); return; }
@@ -411,6 +441,8 @@
                 sessionKey = data.session;
                 if (data.agentsCollectionId) localStorage.setItem('clh.agentsCollectionId', data.agentsCollectionId);
                 sessionStorage.setItem('clh.session', sessionKey);
+                sessionStorage.setItem('clh.session.owner', tabId);
+                ownsSession = true;
                 if (typeof startDialogueEvents === 'function') startDialogueEvents(sessionKey);
             })();
             try { await sessionOpening; } finally { sessionOpening = null; }
@@ -419,6 +451,7 @@
         async function closeSession() {
             if (typeof stopDialogueEvents === 'function') stopDialogueEvents();
             try {
+                await sessionClaim;
                 if (sessionOpening) await sessionOpening;
                 sessionKey = sessionStorage.getItem('clh.session') || '';
                 if (!sessionKey) return;
@@ -612,10 +645,9 @@
                 void hubFetch('/v1/ping', { headers: { 'x-clh-session': sessionKey } }).catch(() => {});
             }, 300000);
         }
-        const ownTurns = [];
+        const ownTurns = new Set();
         function renderForeignTurn(turn) {
-            const own = ownTurns.indexOf(turn.text);
-            if (turn.source === 'webui' && own >= 0) { ownTurns.splice(own, 1); return; }
+            if (turn.clientTurnId && ownTurns.has(turn.clientTurnId)) return;
             const node = document.createElement('div');
             node.className = 'message user';
             node.textContent = '> USER [' + turn.source + ']: ' + turn.text;
@@ -2016,11 +2048,13 @@
             function releaseTurn() {
                 if (released) return;
                 released = true;
+                ownTurns.delete(clientTurnId);
                 unlockInput(sendToken);
                 refreshHubState();
             }
 
-            ownTurns.push(text.slice(0, 300));
+            const clientTurnId = crypto.randomUUID();
+            ownTurns.add(clientTurnId);
             conversationHistory.push({ role: 'user', content: text });
 
             const thinkingId = 'thinking-' + chatSendSequence;
@@ -2083,7 +2117,7 @@
                     mainRequests.push(mainRequest); renderActiveAgents(dialogueTasks);
                 }
                 const requestKey = sessionKey;
-                const headers = { 'Content-Type': 'application/json', 'x-clh-client': 'webui', 'x-clh-tool-results': 'summary', ...getSapCredHeaders(), 'x-clh-ack': sessionAcks.get(requestKey) || 'none' };
+                const headers = { 'Content-Type': 'application/json', 'x-clh-client': 'webui', 'x-clh-turn-id': clientTurnId, 'x-clh-tool-results': 'summary', ...getSapCredHeaders(), 'x-clh-ack': sessionAcks.get(requestKey) || 'none' };
                 if (selectedDest) headers['X-SAP-Destination'] = selectedDest;
 
                 // Include dynamic RAG collections via body (not header — headers don't support non-ASCII)

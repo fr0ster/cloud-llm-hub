@@ -10,7 +10,7 @@ import { executeRagTool } from '../../srv/agent-mcp-rag';
 import { chatStream, streamDialogue } from '../../srv/lib/chat-stream';
 import { dialogueChat } from '../../srv/lib/dialogue-chat';
 import { followDialogue } from '../../srv/lib/dialogue-follow';
-import { turnSource } from '../../srv/lib/dialogue-turn-source';
+import { clientTurnId, turnSource } from '../../srv/lib/dialogue-turn-source';
 import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import * as plannerMemory from '../../srv/lib/planner-memory';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
@@ -2670,10 +2670,13 @@ test('turn requests are truncated and retain their source', async () => {
   const { h } = await ready();
   const events: DialogueEvent[] = [];
   h.subscribe((event) => events.push(event));
-  await turnSource.run('webui', () => h.session.send('x'.repeat(350)));
+  await clientTurnId.run('request-123', () =>
+    turnSource.run('webui', () => h.session.send('x'.repeat(350))),
+  );
   expect(events).toContainEqual({
     kind: 'turn',
     source: 'webui',
     text: 'x'.repeat(300),
+    clientTurnId: 'request-123',
   });
 });

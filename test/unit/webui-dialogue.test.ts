@@ -31,7 +31,12 @@ interface UiApi {
   setBusy(busy: boolean): void;
   setTasks(tasks: Array<{ state: string }>): void;
   ownTurn(text: string): void;
-  renderForeignTurn(turn: { source: string; text: string }): void;
+  ownTurnCount(): number;
+  renderForeignTurn(turn: {
+    source: string;
+    text: string;
+    clientTurnId?: string;
+  }): void;
 }
 const html = readFileSync('app/chat/webapp/index.html', 'utf8');
 const flush = async () => {
@@ -65,6 +70,7 @@ function harness(
             }
           },
     fetch,
+    crypto: { randomUUID: () => 'test-turn-id' },
     ready: true,
     sessionKey: 'key',
     ensureSession: async () => {},
@@ -179,7 +185,7 @@ function harness(
   );
   const api: UiApi = runInNewContext(
     (realSessionRecovery
-      ? 'let sessionOpening = null;\n' +
+      ? 'let sessionOpening = null; const sessionClaim = Promise.resolve(); const tabId = "test-tab"; let ownsSession = true;\n' +
         html.slice(
           html.indexOf('        async function ensureSession()'),
           html.indexOf('        async function closeSession()'),
@@ -211,7 +217,7 @@ function harness(
         html.indexOf('        async function sendMessage()'),
         html.indexOf('        // Quick file attach'),
       ) +
-      ';({sendMessage, renderMessageVersion, subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml, runActiveProbe, fileArtifacts, replaceSession: key => { sessionKey = key; }, ack: key => sessionAcks.get(key), view: (key, id) => messageViews.get(key + ":" + id), setTasks: tasks => { dialogueTasks = tasks; updateKeepAlive(); }, ownTurn: text => ownTurns.push(text), renderForeignTurn, setBusy: busy => { streamingRequests = busy ? 1 : 0; updateKeepAlive(); }, signOut: () => { hubSignedOut = true; }})',
+      ';({sendMessage, renderMessageVersion, subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml, runActiveProbe, fileArtifacts, replaceSession: key => { sessionKey = key; }, ack: key => sessionAcks.get(key), view: (key, id) => messageViews.get(key + ":" + id), setTasks: tasks => { dialogueTasks = tasks; updateKeepAlive(); }, ownTurn: text => ownTurns.add(text), ownTurnCount: () => ownTurns.size, renderForeignTurn, setBusy: busy => { streamingRequests = busy ? 1 : 0; updateKeepAlive(); }, signOut: () => { hubSignedOut = true; }})',
     context,
   );
   return {
@@ -1795,8 +1801,31 @@ test('approuter keep-alive starts once while busy and stops when idle', async ()
 test('a tab suppresses its own turn and renders a turn from another WebUI', () => {
   const ui = harness();
   ui.ownTurn('local');
-  ui.renderForeignTurn({ source: 'webui', text: 'local' });
+  ui.renderForeignTurn({
+    source: 'webui',
+    text: 'local',
+    clientTurnId: 'local',
+  });
   expect(ui.nodes).toHaveLength(0);
-  ui.renderForeignTurn({ source: 'webui', text: 'remote' });
-  expect(ui.nodes[0].textContent).toBe('> USER [webui]: remote');
+  ui.renderForeignTurn({
+    source: 'webui',
+    text: 'local',
+    clientTurnId: 'remote',
+  });
+  expect(ui.nodes[0].textContent).toBe('> USER [webui]: local');
 });
+
+test.each([true, false])(
+  'request IDs are sent and cleaned after success=%s',
+  async (success) => {
+    const ui = harness();
+    ui.userInput.value = 'same text';
+    if (success) ui.fetch.mockResolvedValue(stream(''));
+    else ui.fetch.mockRejectedValue(new Error('offline'));
+    await ui.sendMessage();
+    expect(ui.fetch.mock.calls[0][1].headers['x-clh-turn-id']).toBe(
+      'test-turn-id',
+    );
+    expect(ui.ownTurnCount()).toBe(0);
+  },
+);

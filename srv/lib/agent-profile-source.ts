@@ -35,7 +35,7 @@ export interface AgentProfileSelection {
   readonly globalCollectionId: string;
   readonly selectedCollectionId: () => string | Promise<string>;
   readonly plannerRecord: string;
-  readonly timeoutMs: number;
+  readonly timeoutMs?: number;
 }
 class ProfileFailure extends Error {
   constructor(
@@ -57,7 +57,10 @@ export class AgentProfileSource implements IAgentProfileSource {
     private readonly reader: AgentProfileReader,
     private readonly selection: AgentProfileSelection,
   ) {
-    if (!Number.isSafeInteger(selection.timeoutMs) || selection.timeoutMs < 1)
+    if (
+      selection.timeoutMs !== undefined &&
+      (!Number.isSafeInteger(selection.timeoutMs) || selection.timeoutMs < 1)
+    )
       throw new Error('Invalid profile timeout');
   }
   private read(

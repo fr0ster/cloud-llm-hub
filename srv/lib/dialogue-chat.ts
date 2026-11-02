@@ -25,7 +25,11 @@ import {
   dialogueFor,
   type PlannerCounts,
 } from './dialogue-sessions';
-import { turnSource } from './dialogue-turn-source';
+import {
+  clientTurnId,
+  turnSource,
+  validatedClientTurnId,
+} from './dialogue-turn-source';
 import { failureMessage } from './llm-failure';
 import type { LongSession } from './long-session';
 import { NoMessageFilter, stripNoMessage } from './no-message';
@@ -144,7 +148,11 @@ export function dialogueChat(
     const send: typeof originalSend = (text, options) =>
       turnSource.run(
         req.headers['x-clh-client'] === 'webui' ? 'webui' : 'api',
-        () => originalSend(text, options),
+        () =>
+          clientTurnId.run(
+            validatedClientTurnId(req.headers['x-clh-turn-id']),
+            () => originalSend(text, options),
+          ),
       );
     return {
       send,

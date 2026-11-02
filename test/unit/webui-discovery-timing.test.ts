@@ -50,7 +50,8 @@ test('chat elapsed time includes synchronous transcript rendering before the req
     source + '\nstopTimer(); setStatus(elapsed()); }; sendMessage();',
     {
       chatSendSequence: 0,
-      ownTurns: [],
+      ownTurns: new Set(),
+      crypto: { randomUUID: () => 'test-turn-id' },
       streamingRequests: 0,
       updateKeepAlive: () => {},
       dialogueOpen: false,

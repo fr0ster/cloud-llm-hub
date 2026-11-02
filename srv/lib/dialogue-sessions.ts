@@ -59,7 +59,7 @@ import {
   migrateDialogueToolContract,
   touchDialogueState,
 } from './dialogue-store';
-import { turnSource } from './dialogue-turn-source';
+import { clientTurnId, turnSource } from './dialogue-turn-source';
 import { admitBackground, type PipelineSession } from './gatekeeper';
 import { isLlmFailure, llmFailure, observeLlmSpend } from './llm-failure';
 import { longSessionsIfReady } from './long-session';
@@ -108,6 +108,7 @@ export type DialogueEvent =
       kind: 'turn';
       source: 'webui' | 'api' | 'mcp' | 'background';
       text: string;
+      clientTurnId?: string;
     }
   | ({ kind: 'planner' } & PlannerCounts)
   | ({ kind: 'wait' } & DialogueSignals['dialogue.wait'])
@@ -931,9 +932,10 @@ async function open(
           ];
         },
       }),
-      // The library requires a positive deadline for preparation. Ten minutes
-      // is a compatibility safety net; operators may explicitly override it.
-      profileTimeoutMs: config.profiles?.timeoutMs ?? 600_000,
+      // Omission leaves preparation bounded only by caller cancellation.
+      ...(config.profiles?.timeoutMs === undefined
+        ? {}
+        : { profileTimeoutMs: config.profiles.timeoutMs }),
       profileRunner: {
         validateModel: (model) => profileRunner.validateModel(model),
         createWorker: async (input, options) => {
@@ -1163,6 +1165,9 @@ async function open(
     emit({
       kind: 'turn',
       source: turnSource.getStore() ?? 'mcp',
+      ...(clientTurnId.getStore()
+        ? { clientTurnId: clientTurnId.getStore() }
+        : {}),
       text: text.slice(0, 300),
     });
     // Each queued input owns its snapshot even if callers reuse a trace object.

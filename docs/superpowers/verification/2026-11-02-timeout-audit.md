@@ -19,9 +19,9 @@ Decisions: keep: 25, raise+log: 6, remove: 13, replace with caller abort: 7. Tot
 
 | File:line (baseline) | What it bounds | Category | Decision | Reason |
 | --- | --- | --- | --- | --- |
-| srv/agent-config.ts:168 | ProfileResolver whole preparation configuration | work-path deadline | raise+log | Positive value required by library: default 600000 ms; explicit env override preserved. Dialogue logger reports preparation/background failures at warn. |
-| srv/lib/dialogue-sessions.ts:884 | Library whole planner/worker preparation option | work-path deadline | raise+log | Same required compatibility safety net, not a three-second read budget. |
-| srv/agent-manager.ts:3039 | Fallback profile configuration and source wiring | work-path deadline | raise+log | Use the same 600000 ms compatibility default. |
+| srv/agent-config.ts:168 | ProfileResolver whole preparation configuration | work-path deadline | raise+log | Omitted by default (no timer); explicit valid env override preserved. Dialogue logger reports preparation/background failures at warn. |
+| srv/lib/dialogue-sessions.ts:884 | Library whole planner/worker preparation option | work-path deadline | raise+log | Omit profileTimeoutMs by default (no timer); forward only an explicit valid environment deadline. |
+| srv/agent-manager.ts:3039 | Fallback profile configuration and source wiring | work-path deadline | raise+log | Omit the timeout unless explicitly configured. |
 | srv/agent-manager.ts:3085 | Compatibility worker preparation | work-path deadline | replace with caller abort | Remove timer; retain signal forwarding, cancellation race and listener cleanup. |
 | srv/lib/agent-profile-source.ts:162 | Profile reads and catalogue preparation | work-path deadline | replace with caller abort | Database load must not look like unavailable configuration; retain caller cancellation race. |
 | srv/lib/llm-only-guard.ts:130 | Classifier LLM call | work-path deadline | replace with caller abort | Slow classification is valid work; abort only with caller. |
@@ -80,8 +80,8 @@ own default three-second retrieval budget; this audit removes the hub's author
 retrieval timer but does not patch node_modules. Those dependency policies require
 an upstream change to support truly unbounded work with caller cancellation.
 
-ProfileResolver likewise requires a positive timeout: the requested ten-minute
-compatibility safety net is used, with the explicit env override preserved.
+ProfileResolver in llm-agent-libs 30.28.0 accepts an omitted timeout (no timer).
+Only an explicit valid LLM_AGENT_PROFILE_TIMEOUT_MS enables a deadline.
 Background docs refresh is fire-and-forget; profiles and workers use only cached
 catalogues/clients. It cannot impose a request-waited discovery deadline.
 

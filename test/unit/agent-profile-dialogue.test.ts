@@ -237,14 +237,14 @@ test('dialogue discovers arbitrary names, resolves planner variants and executes
   }
 });
 
-test('planner preparation slower than three seconds completes the turn', async () => {
+test('planner preparation beyond ten minutes has no default deadline', async () => {
   jest.useFakeTimers();
   let session: DialogueSession | undefined;
   try {
     const registry = new CollectionRegistry();
     await registry.seedAgentConfiguration('agents', 'coordinator');
     const profiles = parseAgentProfilesConfig({});
-    expect(profiles.timeoutMs).toBe(600_000);
+    expect(profiles.timeoutMs).toBeUndefined();
     const process: ISmartAgent['process'] = jest.fn(
       async (): ReturnType<ISmartAgent['process']> => ({
         ok: true,
@@ -267,7 +267,7 @@ test('planner preparation slower than three seconds completes the turn', async (
         throw new Error('No worker needed');
       },
       buildPlanner: async () => {
-        await new Promise<void>((resolve) => setTimeout(resolve, 4_000));
+        await new Promise<void>((resolve) => setTimeout(resolve, 601_000));
         return planner;
       },
     });
@@ -286,7 +286,7 @@ test('planner preparation slower than three seconds completes the turn', async (
       maxCorrections: 0,
     });
     const turn = session.send('Hello');
-    await jest.advanceTimersByTimeAsync(3_001);
+    await jest.advanceTimersByTimeAsync(600_001);
     expect(process).not.toHaveBeenCalled();
     await jest.advanceTimersByTimeAsync(1_000);
     await turn;

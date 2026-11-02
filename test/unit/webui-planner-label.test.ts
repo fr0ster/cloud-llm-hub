@@ -90,7 +90,7 @@ function harness() {
   } = runInNewContext(
     source +
       population +
-      `\nfunction releaseTurn() {\n${html.slice(html.indexOf('                if (released) return;', html.indexOf('async function sendMessage()')), html.indexOf('\n            }', html.indexOf('                if (released) return;', html.indexOf('async function sendMessage()'))))}\n}\nlet released = false; const sendToken = ''; function unlockInput() {}\n({refresh: refreshHubState, sync: syncHubStatePolling, turn: releaseTurn})`,
+      `\nfunction releaseTurn() {\n${html.slice(html.indexOf('                if (released) return;', html.indexOf('async function sendMessage()')), html.indexOf('\n            }', html.indexOf('                if (released) return;', html.indexOf('async function sendMessage()'))))}\n}\nconst ownTurns = new Set(); const clientTurnId = 'test'; let released = false; const sendToken = ''; function unlockInput() {}\n({refresh: refreshHubState, sync: syncHubStatePolling, turn: releaseTurn})`,
     state,
   );
   return {

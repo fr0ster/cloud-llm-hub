@@ -146,6 +146,12 @@ function sessionHarness(key = '') {
   const fetch = jest.fn();
   const context = {
     fetch,
+    crypto: { randomUUID: () => 'test-tab' },
+    setTimeout: (resolve: () => void) => resolve(),
+    BroadcastChannel: class {
+      postMessage() {}
+    },
+
     hubFetch: fetch,
     hubSignedOut: false,
     localStorage: { removeItem: jest.fn() },
@@ -164,7 +170,7 @@ function sessionHarness(key = '') {
     window: { addEventListener: jest.fn() },
   };
   const source = html.slice(
-    html.indexOf("        localStorage.removeItem('clh.session');"),
+    html.indexOf('        let sessionKey = sessionStorage'),
     html.indexOf('        function stepSymbol('),
   );
   const api = runInNewContext(
@@ -443,4 +449,96 @@ test('tabs discard shared legacy keys and open independently without empty heade
   }
   expect(a.values.get('clh.session')).toBe('tab-a');
   expect(b.values.get('clh.session')).toBe('tab-b');
+});
+
+describe('tab ownership handshake', () => {
+  test.each([true, false])(
+    'stored key with live owner: %s',
+    async (liveOwner) => {
+      jest.useFakeTimers();
+      const storage = new Map([['clh.session', 'copied']]);
+      let receive: (event: { data: object }) => void = () => {};
+      const postMessage = jest.fn(
+        (data: { type: string; tabId: string; key: string }) => {
+          if (liveOwner && data.type === 'who-owns')
+            receive({
+              data: {
+                type: 'owned',
+                tabId: 'original',
+                target: data.tabId,
+                key: data.key,
+              },
+            });
+        },
+      );
+      const source = html.slice(
+        html.indexOf('        let sessionKey = sessionStorage'),
+        html.indexOf('        function sessionHeaders()'),
+      );
+      const api = runInNewContext(
+        source + '\n({ ready: sessionClaim, key: () => sessionKey })',
+        {
+          crypto: { randomUUID: () => 'duplicate' },
+          localStorage: { removeItem() {} },
+          sessionStorage: {
+            getItem: (key: string) => storage.get(key),
+            setItem: (key: string, value: string) => storage.set(key, value),
+            removeItem: (key: string) => storage.delete(key),
+          },
+          setTimeout,
+          BroadcastChannel: class {
+            postMessage = postMessage;
+            set onmessage(handler: typeof receive) {
+              receive = handler;
+            }
+          },
+        },
+      );
+      expect(postMessage).toHaveBeenCalledWith({
+        type: 'who-owns',
+        key: 'copied',
+        tabId: 'duplicate',
+      });
+      await jest.advanceTimersByTimeAsync(300);
+      await api.ready;
+      expect(api.key()).toBe(liveOwner ? '' : 'copied');
+      expect(storage.get('clh.session')).toBe(liveOwner ? undefined : 'copied');
+      if (!liveOwner) {
+        receive({
+          data: { type: 'who-owns', key: 'copied', tabId: 'next-tab' },
+        });
+        expect(postMessage).toHaveBeenLastCalledWith({
+          type: 'owned',
+          key: 'copied',
+          tabId: 'duplicate',
+          target: 'next-tab',
+        });
+      }
+      jest.useRealTimers();
+    },
+  );
+  test('without BroadcastChannel a copied owner is discarded', async () => {
+    const source = html.slice(
+      html.indexOf('        let sessionKey = sessionStorage'),
+      html.indexOf('        function sessionHeaders()'),
+    );
+    const storage = new Map([
+      ['clh.session', 'copied'],
+      ['clh.session.owner', 'original'],
+    ]);
+    const api = runInNewContext(
+      source + '\n({ ready: sessionClaim, key: () => sessionKey })',
+      {
+        crypto: { randomUUID: () => 'duplicate' },
+        localStorage: { removeItem() {} },
+        sessionStorage: {
+          getItem: (key: string) => storage.get(key),
+          removeItem: (key: string) => storage.delete(key),
+        },
+      },
+    );
+    await api.ready;
+    expect(api.key()).toBe('');
+    expect(storage.has('clh.session')).toBe(false);
+  });
 });
