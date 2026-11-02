@@ -103,7 +103,7 @@ Task 1's versions.
 **Files:**
 - Modify: `srv/agent-mcp-rag.ts` (`rag_read` default `limit` 32000)
 - Create: `srv/lib/read-dedup.ts` — per tool-loop record (scope: one agent tool loop, keyed by its trace) of reads
-  identified by `(collection, record, offset, limit, sha256(page text))` and the round index that returned the full
+  identified by `(collection, record, offset, limit, sha256(full record text))` and the round index that returned the full
   text. A repeat whose page hash matches and whose original round is still within the last N rounds returns the
   pointer; pointer responses never update that round index (they cannot extend the text's lifetime);
   a repeat inside the window returns `{ id, offset, total, alreadyRead: true, note: "already read above in this task: <record> offset n–m" }`
@@ -116,7 +116,8 @@ Task 1's versions.
 - Modify: `srv/agent-profiles/coordinator.md` — delegate document reading/analysis to an agent.
 - Test: `test/unit/read-dedup.test.ts`, extend `tool-result-summary`, `dialogue-planner-content` tests.
 
-- [ ] Steps: failing tests (pointer inside window, full text after it left, changed record re-read, page size,
+- [ ] Steps: failing tests (pointer inside window, full text after it left, changed record re-read incl. a change
+  on another page of the same record, page size,
   query kept, wrapper drops progress on stop) → implement → pass → commit `feat(rag): larger pages, read dedup,
   windowed tool loops`.
 
