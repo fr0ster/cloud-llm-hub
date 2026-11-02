@@ -185,7 +185,7 @@ function harness(
   );
   const api: UiApi = runInNewContext(
     (realSessionRecovery
-      ? 'let sessionOpening = null; const sessionClaim = Promise.resolve(); const tabId = "test-tab"; let ownsSession = true;\n' +
+      ? 'let sessionOpening = null; const sessionClaim = Promise.resolve(); let lockedSessionKey = "key"; async function claimSession() { return true; } function releaseSession() {} function discardSession() { sessionKey = ""; sessionStorage.removeItem("clh.session"); ownTurns.clear(); } const navigator = {};\n' +
         html.slice(
           html.indexOf('        async function ensureSession()'),
           html.indexOf('        async function closeSession()'),
@@ -217,7 +217,7 @@ function harness(
         html.indexOf('        async function sendMessage()'),
         html.indexOf('        // Quick file attach'),
       ) +
-      ';({sendMessage, renderMessageVersion, subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml, runActiveProbe, fileArtifacts, replaceSession: key => { sessionKey = key; }, ack: key => sessionAcks.get(key), view: (key, id) => messageViews.get(key + ":" + id), setTasks: tasks => { dialogueTasks = tasks; updateKeepAlive(); }, ownTurn: text => ownTurns.add(text), ownTurnCount: () => ownTurns.size, renderForeignTurn, setBusy: busy => { streamingRequests = busy ? 1 : 0; updateKeepAlive(); }, signOut: () => { hubSignedOut = true; }})',
+      ';({sendMessage, renderMessageVersion, subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml, runActiveProbe, fileArtifacts, replaceSession: key => { sessionKey = key; }, ack: key => sessionAcks.get(key), view: (key, id) => messageViews.get(key + ":" + id), setTasks: tasks => { dialogueTasks = tasks; updateKeepAlive(); }, ownTurn: text => rememberOwnTurn(text), ownTurnCount: () => ownTurns.size, renderForeignTurn, setBusy: busy => { streamingRequests = busy ? 1 : 0; updateKeepAlive(); }, signOut: () => { hubSignedOut = true; }})',
     context,
   );
   return {
@@ -1816,7 +1816,7 @@ test('a tab suppresses its own turn and renders a turn from another WebUI', () =
 });
 
 test.each([true, false])(
-  'request IDs are sent and cleaned after success=%s',
+  'request IDs suppress late events after release with success=%s',
   async (success) => {
     const ui = harness();
     ui.userInput.value = 'same text';
@@ -1826,6 +1826,26 @@ test.each([true, false])(
     expect(ui.fetch.mock.calls[0][1].headers['x-clh-turn-id']).toBe(
       'test-turn-id',
     );
-    expect(ui.ownTurnCount()).toBe(0);
+    expect(ui.ownTurnCount()).toBe(1);
+    const count = ui.nodes.length;
+    ui.renderForeignTurn({
+      source: 'webui',
+      text: 'same text',
+      clientTurnId: 'test-turn-id',
+    });
+    expect(ui.nodes).toHaveLength(count);
   },
 );
+
+test('own turn IDs evict in FIFO order after 200 entries', () => {
+  const ui = harness();
+  for (let i = 0; i < 201; i++) ui.ownTurn(String(i));
+  expect(ui.ownTurnCount()).toBe(200);
+  ui.renderForeignTurn({ source: 'webui', text: 'old', clientTurnId: '0' });
+  ui.renderForeignTurn({
+    source: 'webui',
+    text: 'retained',
+    clientTurnId: '1',
+  });
+  expect(ui.nodes).toHaveLength(1);
+});

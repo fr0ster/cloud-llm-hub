@@ -391,33 +391,36 @@
         localStorage.removeItem('clh.session');
         let sessionOpening = null;
 
-        const tabId = crypto.randomUUID();
-        let ownsSession = false;
-        let copiedSession = false;
-        const sessionChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('clh.session-claims') : null;
+        let lockedSessionKey = '';
+        let releaseSessionLock = null;
+        function releaseSession() {
+            releaseSessionLock?.();
+            releaseSessionLock = null;
+            lockedSessionKey = '';
+            if (typeof ownTurns !== 'undefined') ownTurns.clear();
+        }
         function discardSession() {
+            releaseSession();
             sessionKey = '';
             sessionStorage.removeItem('clh.session');
             sessionStorage.removeItem('clh.session.owner');
-            ownsSession = false;
         }
-        if (sessionChannel) sessionChannel.onmessage = ({ data }) => {
-            if (!data || data.tabId === tabId || data.key !== sessionKey) return;
-            if (data.type === 'who-owns' && ownsSession) {
-                sessionChannel.postMessage({ type: 'owned', key: sessionKey, tabId, target: data.tabId });
-            } else if (data.type === 'owned' && data.target === tabId) copiedSession = true;
-        };
+        function claimSession(key) {
+            if (!navigator.locks) return Promise.resolve(false);
+            return new Promise((resolve, reject) => {
+                navigator.locks.request('clh-session:' + key, { ifAvailable: true }, lock => {
+                    if (!lock) { resolve(false); return; }
+                    lockedSessionKey = key;
+                    return new Promise(release => {
+                        releaseSessionLock = release;
+                        resolve(true);
+                    });
+                }).catch(reject);
+            });
+        }
+        window.addEventListener('pagehide', releaseSession);
         const sessionClaim = (async () => {
-            if (!sessionKey) return;
-            if (sessionChannel) {
-                sessionChannel.postMessage({ type: 'who-owns', key: sessionKey, tabId });
-                await new Promise(resolve => setTimeout(resolve, 300));
-                if (copiedSession) { discardSession(); return; }
-            } else if (sessionStorage.getItem('clh.session.owner') !== tabId) {
-                discardSession(); return;
-            }
-            ownsSession = true;
-            sessionStorage.setItem('clh.session.owner', tabId);
+            if (sessionKey && !await claimSession(sessionKey)) discardSession();
         })();
 
         function sessionHeaders() {
@@ -429,6 +432,10 @@
             await sessionClaim;
             if (sessionOpening) return sessionOpening;
             sessionKey = sessionStorage.getItem('clh.session') || '';
+            if (sessionKey && sessionKey !== lockedSessionKey) {
+                releaseSession();
+                if (!await claimSession(sessionKey)) discardSession();
+            }
             if (sessionKey) { if (typeof startDialogueEvents === 'function') startDialogueEvents(sessionKey); return; }
             sessionOpening = (async () => {
                 const response = await hubFetch('/v1/session', {
@@ -441,8 +448,11 @@
                 sessionKey = data.session;
                 if (data.agentsCollectionId) localStorage.setItem('clh.agentsCollectionId', data.agentsCollectionId);
                 sessionStorage.setItem('clh.session', sessionKey);
-                sessionStorage.setItem('clh.session.owner', tabId);
-                ownsSession = true;
+                if (navigator.locks && !await claimSession(sessionKey)) {
+                    discardSession();
+                    throw new Error('New session is already owned by another tab');
+                }
+                lockedSessionKey = sessionKey;
                 if (typeof startDialogueEvents === 'function') startDialogueEvents(sessionKey);
             })();
             try { await sessionOpening; } finally { sessionOpening = null; }
@@ -460,8 +470,7 @@
             } catch (error) {
                 console.warn('Session close failed', error);
             } finally {
-                sessionKey = '';
-                sessionStorage.removeItem('clh.session');
+                discardSession();
             }
         }
 
@@ -488,8 +497,7 @@
                 const data = await response.clone().json().catch(() => null);
                 if (data?.error?.code === 'SESSION_NOT_FOUND') {
                     if (sessionStorage.getItem('clh.session') === requestedKey) {
-                        sessionKey = '';
-                        sessionStorage.removeItem('clh.session');
+                        discardSession();
                     }
                     await ensureSession();
                     showSessionNotice('Сесію перезапущено');
@@ -646,6 +654,10 @@
             }, 300000);
         }
         const ownTurns = new Set();
+        function rememberOwnTurn(id) {
+            ownTurns.add(id);
+            if (ownTurns.size > 200) ownTurns.delete(ownTurns.values().next().value);
+        }
         function renderForeignTurn(turn) {
             if (turn.clientTurnId && ownTurns.has(turn.clientTurnId)) return;
             const node = document.createElement('div');
@@ -2048,13 +2060,12 @@
             function releaseTurn() {
                 if (released) return;
                 released = true;
-                ownTurns.delete(clientTurnId);
                 unlockInput(sendToken);
                 refreshHubState();
             }
 
             const clientTurnId = crypto.randomUUID();
-            ownTurns.add(clientTurnId);
+            rememberOwnTurn(clientTurnId);
             conversationHistory.push({ role: 'user', content: text });
 
             const thinkingId = 'thinking-' + chatSendSequence;

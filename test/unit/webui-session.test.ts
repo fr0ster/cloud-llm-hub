@@ -140,7 +140,30 @@ describe('WebUI extended session protocol', () => {
   });
 });
 
-function sessionHarness(key = '') {
+function exclusiveLocks() {
+  const held = new Set<string>();
+  return {
+    held,
+    request: async (
+      name: string,
+      _options: { ifAvailable: boolean },
+      callback: (lock: { name: string } | null) => Promise<void> | void,
+    ) => {
+      if (held.has(name)) return callback(null);
+      held.add(name);
+      try {
+        await callback({ name });
+      } finally {
+        held.delete(name);
+      }
+    },
+  };
+}
+
+function sessionHarness(
+  key = '',
+  locks: ReturnType<typeof exclusiveLocks> | null = exclusiveLocks(),
+) {
   const values = new Map([['clh.session', key]]);
   const notices: string[] = [];
   const fetch = jest.fn();
@@ -148,9 +171,8 @@ function sessionHarness(key = '') {
     fetch,
     crypto: { randomUUID: () => 'test-tab' },
     setTimeout: (resolve: () => void) => resolve(),
-    BroadcastChannel: class {
-      postMessage() {}
-    },
+    navigator: { locks: locks ?? undefined },
+    ownTurns: new Set<string>(),
 
     hubFetch: fetch,
     hubSignedOut: false,
@@ -174,7 +196,7 @@ function sessionHarness(key = '') {
     html.indexOf('        function stepSymbol('),
   );
   const api = runInNewContext(
-    `${source}\n({ sessionFetch, closeSession });`,
+    `${source}\n({ sessionFetch, closeSession, ready: sessionClaim, releaseSession });`,
     context,
   );
   return {
@@ -183,6 +205,7 @@ function sessionHarness(key = '') {
     values,
     notices,
     legacyStorage: context.localStorage,
+    ownTurns: context.ownTurns,
   };
 }
 
@@ -282,10 +305,12 @@ describe('session request helper', () => {
 
 test('R16 rereads storage', async () => {
   const ui = sessionHarness('old');
+  ui.ownTurns.add('previous-turn');
   ui.values.set('clh.session', 'other');
   ui.fetch.mockResolvedValue(response(200));
   await ui.sessionFetch('/v1/models');
   expect(ui.fetch.mock.calls[0][1].headers['x-clh-session']).toBe('other');
+  expect(ui.ownTurns.size).toBe(0);
 });
 test('R24 failed delete forgets the key', async () => {
   const ui = sessionHarness('old');
@@ -295,22 +320,24 @@ test('R24 failed delete forgets the key', async () => {
 });
 test('R24 concurrent 404 including late response reopens only once', async () => {
   const ui = sessionHarness('old');
-  let late!: (r: unknown) => void;
+  let late!: (r: ReturnType<typeof response>) => void;
   let oldCalls = 0;
-  ui.fetch.mockImplementation((url: string, opts: any) => {
-    if (url === '/v1/session')
-      return Promise.resolve(response(201, { session: 'new' }));
-    if (opts.headers['x-clh-session'] === 'old') {
-      if (++oldCalls === 2)
-        return new Promise((resolve) => {
-          late = resolve;
-        });
-      return Promise.resolve(
-        response(404, { error: { code: 'SESSION_NOT_FOUND' } }),
-      );
-    }
-    return Promise.resolve(response(200));
-  });
+  ui.fetch.mockImplementation(
+    (url: string, opts: { headers: Record<string, string> }) => {
+      if (url === '/v1/session')
+        return Promise.resolve(response(201, { session: 'new' }));
+      if (opts.headers['x-clh-session'] === 'old') {
+        if (++oldCalls === 2)
+          return new Promise<ReturnType<typeof response>>((resolve) => {
+            late = resolve;
+          });
+        return Promise.resolve(
+          response(404, { error: { code: 'SESSION_NOT_FOUND' } }),
+        );
+      }
+      return Promise.resolve(response(200));
+    },
+  );
   const first = ui.sessionFetch('/v1/models');
   const second = ui.sessionFetch('/v1/models');
   await first;
@@ -451,94 +478,44 @@ test('tabs discard shared legacy keys and open independently without empty heade
   expect(b.values.get('clh.session')).toBe('tab-b');
 });
 
-describe('tab ownership handshake', () => {
-  test.each([true, false])(
-    'stored key with live owner: %s',
-    async (liveOwner) => {
-      jest.useFakeTimers();
-      const storage = new Map([['clh.session', 'copied']]);
-      let receive: (event: { data: object }) => void = () => {};
-      const postMessage = jest.fn(
-        (data: { type: string; tabId: string; key: string }) => {
-          if (liveOwner && data.type === 'who-owns')
-            receive({
-              data: {
-                type: 'owned',
-                tabId: 'original',
-                target: data.tabId,
-                key: data.key,
-              },
-            });
-        },
-      );
-      const source = html.slice(
-        html.indexOf('        let sessionKey = sessionStorage'),
-        html.indexOf('        function sessionHeaders()'),
-      );
-      const api = runInNewContext(
-        source + '\n({ ready: sessionClaim, key: () => sessionKey })',
-        {
-          crypto: { randomUUID: () => 'duplicate' },
-          localStorage: { removeItem() {} },
-          sessionStorage: {
-            getItem: (key: string) => storage.get(key),
-            setItem: (key: string, value: string) => storage.set(key, value),
-            removeItem: (key: string) => storage.delete(key),
-          },
-          setTimeout,
-          BroadcastChannel: class {
-            postMessage = postMessage;
-            set onmessage(handler: typeof receive) {
-              receive = handler;
-            }
-          },
-        },
-      );
-      expect(postMessage).toHaveBeenCalledWith({
-        type: 'who-owns',
-        key: 'copied',
-        tabId: 'duplicate',
-      });
-      await jest.advanceTimersByTimeAsync(300);
-      await api.ready;
-      expect(api.key()).toBe(liveOwner ? '' : 'copied');
-      expect(storage.get('clh.session')).toBe(liveOwner ? undefined : 'copied');
-      if (!liveOwner) {
-        receive({
-          data: { type: 'who-owns', key: 'copied', tabId: 'next-tab' },
-        });
-        expect(postMessage).toHaveBeenLastCalledWith({
-          type: 'owned',
-          key: 'copied',
-          tabId: 'duplicate',
-          target: 'next-tab',
-        });
-      }
-      jest.useRealTimers();
-    },
-  );
-  test('without BroadcastChannel a copied owner is discarded', async () => {
-    const source = html.slice(
-      html.indexOf('        let sessionKey = sessionStorage'),
-      html.indexOf('        function sessionHeaders()'),
-    );
-    const storage = new Map([
-      ['clh.session', 'copied'],
-      ['clh.session.owner', 'original'],
+describe('atomic tab ownership', () => {
+  test('concurrent tabs with the same copied key keep exactly one owner', async () => {
+    const locks = exclusiveLocks();
+    const a = sessionHarness('copied', locks);
+    const b = sessionHarness('copied', locks);
+    a.fetch.mockResolvedValue(response(200));
+    b.fetch
+      .mockResolvedValueOnce(response(201, { session: 'new-b' }))
+      .mockResolvedValue(response(200));
+    await Promise.all([
+      a.sessionFetch('/v1/models'),
+      b.sessionFetch('/v1/models'),
     ]);
-    const api = runInNewContext(
-      source + '\n({ ready: sessionClaim, key: () => sessionKey })',
-      {
-        crypto: { randomUUID: () => 'duplicate' },
-        localStorage: { removeItem() {} },
-        sessionStorage: {
-          getItem: (key: string) => storage.get(key),
-          removeItem: (key: string) => storage.delete(key),
-        },
-      },
+    expect(a.values.get('clh.session')).toBe('copied');
+    expect(b.values.get('clh.session')).toBe('new-b');
+    expect(locks.held).toEqual(
+      new Set(['clh-session:copied', 'clh-session:new-b']),
     );
-    await api.ready;
-    expect(api.key()).toBe('');
-    expect(storage.has('clh.session')).toBe(false);
+    await a.closeSession();
+    expect(locks.held.has('clh-session:copied')).toBe(false);
+    b.releaseSession();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(locks.held.size).toBe(0);
+  });
+
+  test('without Web Locks a stored key is discarded and a new session opens', async () => {
+    const ui = sessionHarness('copied', null);
+    ui.fetch
+      .mockResolvedValueOnce(response(201, { session: 'fresh' }))
+      .mockResolvedValue(response(200));
+    await ui.sessionFetch('/v1/models');
+    expect(ui.fetch.mock.calls[0][0]).toBe('/v1/session');
+    expect(ui.fetch.mock.calls[0][1].headers).not.toHaveProperty(
+      'x-clh-session',
+    );
+    expect(ui.values.get('clh.session')).toBe('fresh');
+    await ui.sessionFetch('/v1/models');
+    expect(ui.fetch).toHaveBeenCalledTimes(3);
+    expect(ui.fetch.mock.calls[2][1].headers['x-clh-session']).toBe('fresh');
   });
 });
