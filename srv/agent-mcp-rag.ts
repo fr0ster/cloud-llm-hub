@@ -26,12 +26,19 @@ import {
   RagWriteError,
   ragWriteFailure,
   resolveRagWriteTarget,
+  setRagTrust,
   updateRagRecord,
   validateRagText,
   validateRagWriteSize,
 } from './lib/rag-write-operations';
-import { recordAttributes, recordPolicy } from './lib/record-policy';
+import {
+  collectionView,
+  recordAttributes,
+  recordPolicy,
+} from './lib/record-policy';
 import { isRefusal } from './lib/session-retention';
+import { informationalSkillDocuments } from './lib/skills-pool';
+import { resolverFor } from './lib/trust-resolver';
 import { requestMeasurement } from './lib/usage/request-records';
 import { usageRuntime } from './lib/usage/runtime';
 import {
@@ -57,6 +64,7 @@ import {
 } from './lib/rag-tool-catalogue';
 
 type Args = {
+  trust?: z.infer<ReturnType<typeof z.json>>;
   name?: string;
   scope?: string;
   record?: string;
@@ -121,13 +129,19 @@ export interface RecordDeleteResult extends WriteFields {
   record: string;
   deleted: true;
 }
+interface TrustSetResult extends WriteFields {
+  result: string;
+  collection: string;
+  updated: true;
+}
 type WriteResult =
   | RagWriteErrorResult
   | CollectionCreateResult
   | CollectionDeleteResult
   | RecordAddResult
   | RecordUpdateResult
-  | RecordDeleteResult;
+  | RecordDeleteResult
+  | TrustSetResult;
 type Result = ReturnType<typeof ragTextResult> & {
   structuredContent?: WriteResult;
 };
@@ -163,6 +177,8 @@ function writeOutputSchema<T extends z.ZodRawShape>(fields: T) {
   );
 }
 export const ragWriteOutputSchemas = {
+  collection_set_trust: writeOutputSchema({ updated: z.literal(true) }),
+  record_set_trust: writeOutputSchema({ updated: z.literal(true) }),
   collection_create: writeOutputSchema({
     name: z.string(),
     scope: z.enum(['user', 'session']),
@@ -212,7 +228,12 @@ export function registerRagMcpTools(
       {
         description: ragDescriptions[name],
         annotations: { readOnlyHint: ragToolEffect(name) === 'read' },
-        inputSchema: ragMcpSchemas[name],
+        // Let trust reach our canonical zod parser so invalid values return
+        // INVALID_TRUST rather than the SDK's generic argument error.
+        inputSchema:
+          name === 'collection_set_trust' || name === 'record_set_trust'
+            ? ragMcpSchemas[name].extend({ trust: z.json().optional() })
+            : ragMcpSchemas[name],
         ...(isWriteTool(name)
           ? { outputSchema: ragWriteOutputSchemas[name] }
           : {}),
@@ -263,7 +284,14 @@ async function executeRagMcpToolImpl(
     return fail('TOOL_FORBIDDEN', 403, `TOOL_FORBIDDEN: ${name}`);
   const parsed = ragMcpSchemas[name].safeParse(input);
   if (!parsed.success)
-    return fail('INVALID_ARGUMENT', 400, parsed.error.message);
+    return fail(
+      (name === 'collection_set_trust' || name === 'record_set_trust') &&
+        parsed.error.issues.some((issue) => issue.path[0] === 'trust')
+        ? 'INVALID_TRUST'
+        : 'INVALID_ARGUMENT',
+      400,
+      parsed.error.message,
+    );
   const args: ValidatedArgs = parsed.data;
   if (
     name === 'record_set_enabled' &&
@@ -405,6 +433,23 @@ async function runRagTool(
   const registry = suppliedRegistry ?? ragHost().getCollectionRegistry();
   if (isWriteTool(name)) {
     const identity = { userId, sessionId: sid, admin };
+    if (name === 'collection_set_trust' || name === 'record_set_trust') {
+      const parsed = ragMcpSchemas[name].parse(args);
+      const result = await setRagTrust(
+        registry,
+        parsed.collection,
+        {
+          trust: parsed.trust,
+          ...('record' in parsed ? { record: parsed.record } : {}),
+        },
+        identity,
+      );
+      return writeResult({
+        result: 'Trust updated.',
+        collection: result.collection,
+        updated: true,
+      });
+    }
     if (name === 'collection_create') {
       const created = await createAgentKnowledgeCollection(
         registry,
@@ -513,6 +558,41 @@ async function runRagTool(
     if (refusal) throw new Error(refusal.message);
     return id;
   };
+  if (
+    args.collection === '@skills' &&
+    (name === 'rag_read' || name === 'collection_records')
+  ) {
+    const all = await informationalSkillDocuments(resolverFor(registry));
+    if (name === 'rag_read') {
+      const doc = all.find((item) => item.id === args.id);
+      if (!doc) throw new Error('Document not found');
+      const input = await resolverFor(registry).inputForSkill(doc.id);
+      const start = args.offset ?? 0;
+      const end = Math.min(doc.text.length, start + (args.limit ?? 8000));
+      return respond({
+        id: doc.id,
+        offset: start,
+        total: doc.text.length,
+        ...(end < doc.text.length ? { next: end } : {}),
+        text: doc.text.slice(start, end),
+        attributes: recordAttributes(doc, input),
+      });
+    }
+    const offset = args.offset ?? 0;
+    return respond({
+      total: all.length,
+      records: await Promise.all(
+        all.slice(offset, offset + (args.limit ?? 50)).map(async (doc) => ({
+          id: doc.id,
+          title: doc.text.split(/\r?\n/, 1)[0].slice(0, 120),
+          attributes: recordAttributes(
+            doc,
+            await resolverFor(registry).inputForSkill(doc.id),
+          ),
+        })),
+      ),
+    });
+  }
   if (name === 'collections_list') {
     const collections = await registry.listCollections(
       userId && userId !== 'anonymous' ? userId : undefined,
@@ -532,6 +612,25 @@ async function runRagTool(
           enabled: collectionEnabled(registry, userId, sid, c),
           defaultEnabled: collectionDefault(registry, userId, c),
           documents: c.documentCount,
+          ...(() => {
+            const view = collectionView(
+              c,
+              resolverFor(registry).inputFor(
+                { id: '', text: '', createdAt: '', metadata: {} },
+                c,
+              ),
+            );
+            return view.trusted
+              ? {
+                  trusted: true,
+                  trust: view.trust,
+                  trustClass: view.trustClass,
+                  ...(view.trustOverride !== undefined
+                    ? { trustOverride: view.trustOverride }
+                    : {}),
+                }
+              : { trusted: false };
+          })(),
         })),
     });
   }
@@ -564,6 +663,8 @@ async function runRagTool(
       title?: string;
       text: string;
       score: number;
+      source?: string;
+      trust?: number;
     }[] = [];
     const unavailable: { collection: string; error: string }[] = [];
     for (const id of ids) {
@@ -598,6 +699,15 @@ async function runRagTool(
               title: doc.text.split(/\r?\n/, 1)[0].slice(0, 120),
               text: doc.text,
               score: hit.score,
+              ...(() => {
+                const attributes = recordAttributes(
+                  doc,
+                  resolverFor(registry).inputFor(doc, meta),
+                );
+                return attributes.trusted
+                  ? { source: attributes.source, trust: attributes.trust }
+                  : {};
+              })(),
             });
         }
         hits.push(...collectionHits);
@@ -683,7 +793,10 @@ async function runRagTool(
       ?.documents[0];
     if (!doc) throw new Error('Document not found');
     const visibility = recordPolicy(doc.metadata, active);
-    const attributes = recordAttributes(doc.metadata);
+    const attributes = recordAttributes(
+      doc,
+      resolverFor(registry).inputFor(doc, meta),
+    );
     if (!visibility.visible)
       return respond({ id: doc.id, attributes, reason: visibility.reason });
     const start = args.offset ?? 0;
@@ -708,7 +821,10 @@ async function runRagTool(
       const visibility = recordPolicy(doc.metadata, active);
       return {
         id: doc.id,
-        attributes: recordAttributes(doc.metadata),
+        attributes: recordAttributes(
+          doc,
+          resolverFor(registry).inputFor(doc, meta),
+        ),
         ...(visibility.visible
           ? {
               title: doc.text.split(/\r?\n/, 1)[0].slice(0, 120),

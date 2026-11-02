@@ -10,23 +10,113 @@
  * skills are mandatory belongs here — and the pool is fixed at deploy time rather
  * than depending on what a user happened to enable.
  *
- * Collision rule: sources are merged in order and the LAST one wins, mirroring
- * `scanDirsForSkills` ("duplicate names from later directories override earlier
- * ones"). Callers pass the in-code preset last so a plugin cannot silently
- * redefine one of the product's own rules.
+ * Skills are identified by id. Equal display names do not hide other skills.
  */
+import path from 'node:path';
 import type { ISkill, ISkillManager } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 
-export type SkillSource = { source: string; manager: ISkillManager };
+import { resolverFor, type TrustResolver } from './trust-resolver';
+import { skillId, withSkillTrust } from './trusted-skill';
+
+export type SkillSource = {
+  source: string;
+  manager: ISkillManager & { refresh?: () => void | Promise<void> };
+};
 
 export class CompositeSkillManager implements ISkillManager {
-  constructor(private readonly sources: SkillSource[]) {}
+  private readonly warnedAmbiguousIds = new Set<string>();
+  private readonly baseContent = new Map<string, Promise<string>>();
+
+  /** Reload source discovery and invalidate base bodies explicitly. */
+  async refresh(): Promise<void> {
+    this.baseContent.clear();
+    await Promise.all(this.sources.map(({ manager }) => manager.refresh?.()));
+  }
+
+  /** Cache in-flight reads too, so concurrent agent builds share each body. */
+  async baseSkillContents(): Promise<readonly string[]> {
+    return Promise.all(
+      (await this.baseSkills()).map((skill) => {
+        const key = JSON.stringify([skill.meta.source, skillId(skill)]);
+        let content =
+          skill.meta.trustAmbiguous === true
+            ? undefined
+            : this.baseContent.get(key);
+        if (!content) {
+          content = skill.getContent().then((result) => {
+            if (!result.ok) throw result.error;
+            return result.value;
+          });
+          if (skill.meta.trustAmbiguous !== true)
+            this.baseContent.set(key, content);
+        }
+        return content;
+      }),
+    );
+  }
+
+  constructor(
+    private readonly sources: SkillSource[],
+    private readonly resolver: () => TrustResolver = () => resolverFor({}),
+  ) {}
+
+  informationalSkills(): ISkillManager {
+    const filter = async (
+      options?: Parameters<ISkillManager['listSkills']>[0],
+    ) => {
+      const result = await this.listSkills(options);
+      return result.ok
+        ? {
+            ...result,
+            value: result.value
+              .filter((s) => s.meta.kind !== 'base')
+              .map((skill) => ({
+                ...skill,
+                name: skillId(skill),
+                getContent: skill.getContent.bind(skill),
+                listResources: skill.listResources.bind(skill),
+                readResource: skill.readResource.bind(skill),
+              })),
+          }
+        : result;
+    };
+    return {
+      listSkills: filter,
+      getSkill: async (name, options) => {
+        const result = await filter(options);
+        return result.ok
+          ? { ok: true, value: result.value.find((s) => s.name === name) }
+          : result;
+      },
+      matchSkills: async (text, options) => {
+        const result = await filter(options);
+        const q = text.toLowerCase();
+        return result.ok
+          ? {
+              ...result,
+              value: result.value.filter(
+                (s) =>
+                  s.name.toLowerCase().includes(q) ||
+                  s.description.toLowerCase().includes(q),
+              ),
+            }
+          : result;
+      },
+    };
+  }
+  async baseSkills(): Promise<readonly ISkill[]> {
+    const result = await this.listSkills();
+    if (!result.ok) throw result.error;
+    return result.value.filter(
+      (s) => s.meta.kind === 'base' && s.meta.enabled !== false,
+    );
+  }
 
   async listSkills(
     options?: Parameters<ISkillManager['listSkills']>[0],
   ): ReturnType<ISkillManager['listSkills']> {
-    const byName = new Map<string, ISkill>();
+    const loaded: ISkill[] = [];
     for (const { source, manager } of this.sources) {
       try {
         const result = await manager.listSkills(options);
@@ -37,8 +127,30 @@ export class CompositeSkillManager implements ISkillManager {
           });
           continue;
         }
-        // Later source wins — see the collision rule above.
-        for (const skill of result.value) byName.set(skill.name, skill);
+        const identities = result.value.map((skill) => {
+          const location = skillLocation(skill);
+          const key = location
+            ? path.posix.isAbsolute(location) || /^[A-Za-z]:\//.test(location)
+              ? path.posix.basename(location)
+              : location
+            : skill.name;
+          const id =
+            typeof skill.meta.id === 'string'
+              ? skill.meta.id
+              : `${source}/${key}`;
+          return { skill, location, id };
+        });
+        for (const entry of identities) {
+          const { skill, id } = entry;
+          loaded.push({
+            name: skill.name,
+            description: skill.description,
+            meta: { ...skill.meta, source, id },
+            getContent: skill.getContent.bind(skill),
+            listResources: skill.listResources.bind(skill),
+            readResource: skill.readResource.bind(skill),
+          });
+        }
       } catch (err) {
         cds.log('skills').warn('skill source threw, skipping', {
           source,
@@ -46,7 +158,37 @@ export class CompositeSkillManager implements ISkillManager {
         });
       }
     }
-    return { ok: true as const, value: [...byName.values()] };
+    const counts = new Map<string, number>();
+    for (const skill of loaded) {
+      const id = skillId(skill);
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    for (const skill of loaded) {
+      const id = skillId(skill);
+      skill.meta.trustAmbiguous = (counts.get(id) ?? 0) > 1;
+      if (skill.meta.trustAmbiguous && !this.warnedAmbiguousIds.has(id)) {
+        this.warnedAmbiguousIds.add(id);
+        cds
+          .log('skills')
+          .warn('Ambiguous skill id; add an explicit `id` to each skill', {
+            id,
+          });
+      }
+    }
+    return {
+      ok: true as const,
+      value: loaded.map((skill) => {
+        const resolve = this.resolver;
+        return skill.meta.kind !== 'base'
+          ? withSkillTrust(skill, async () =>
+              resolve().skill(
+                skillId(skill),
+                skill.meta.trustAmbiguous === true,
+              ),
+            )
+          : skill;
+      }),
+    };
   }
 
   async getSkill(
@@ -55,7 +197,10 @@ export class CompositeSkillManager implements ISkillManager {
   ): ReturnType<ISkillManager['getSkill']> {
     const all = await this.listSkills(options);
     if (!all.ok) return all;
-    return { ok: true as const, value: all.value.find((s) => s.name === name) };
+    return {
+      ok: true as const,
+      value: all.value.find((s) => skillId(s) === name),
+    };
   }
 
   async matchSkills(
@@ -74,4 +219,19 @@ export class CompositeSkillManager implements ISkillManager {
       ),
     };
   }
+}
+
+/** Library filesystem skills expose dir; plugins may expose location metadata. */
+function skillLocation(skill: ISkill): string | undefined {
+  const directory = 'dir' in skill ? skill.dir : undefined;
+  for (const value of [
+    directory,
+    skill.meta.relativePath,
+    skill.meta.path,
+    skill.meta.dir,
+  ]) {
+    if (typeof value === 'string' && value.length > 0)
+      return value.replaceAll('\\', '/').replace(/\/$/, '');
+  }
+  return undefined;
 }

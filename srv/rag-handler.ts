@@ -1,3 +1,10 @@
+import { collectionView, documentView } from './lib/record-policy';
+import {
+  informationalSkillDocuments,
+  skillCollectionView,
+} from './lib/skills-pool';
+import { collectionTrustArgs, recordTrustArgs } from './lib/trust-guard';
+import { resolverFor } from './lib/trust-resolver';
 /**
  * RAG Management REST API — /v1/rag/*
  *
@@ -33,6 +40,8 @@ import {
   createRagCollection,
   deleteRagCollection,
   deleteRagRecord,
+  ragWriteFailure,
+  setRagTrust,
   updateRagRecord,
 } from './lib/rag-write-operations';
 import {
@@ -59,6 +68,28 @@ import {
 } from './session-id';
 
 const log = cds.log('rag-handler');
+function collectionTrustFields(
+  registry: CollectionRegistry,
+  meta: import('./rag-collections').CollectionMeta,
+) {
+  const resolver = resolverFor(registry);
+  const input = resolver.inputFor(
+    { id: '', text: '', metadata: {}, createdAt: '' },
+    meta,
+  );
+  const view = collectionView(meta, input);
+  return view.trusted
+    ? {
+        trusted: true,
+        trust: view.trust,
+        trustClass: view.trustClass,
+        ...(view.trustOverride !== undefined
+          ? { trustOverride: view.trustOverride }
+          : {}),
+      }
+    : { trusted: false };
+}
+
 const agentCopyInput = z
   .object({
     id: z.string().min(1),
@@ -182,6 +213,144 @@ export function registerRagRoutes(
     withCollectionRestScope(getUserId(), isAdmin(), next),
   );
 
+  // Trust setters resolve visibility themselves, including the virtual source.
+  const writeTrust = async (req: Request, res: Response, record?: string) => {
+    const parsed = (
+      record === undefined
+        ? collectionTrustArgs.extend({
+            displayName: z.string().optional(),
+            description: z.string().optional(),
+          })
+        : recordTrustArgs
+    ).safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: { code: 'INVALID_TRUST', message: parsed.error.message },
+      });
+      return;
+    }
+    try {
+      const result = await setRagTrust(
+        registry,
+        String(req.params.id),
+        {
+          trust: parsed.data.trust,
+          ...(record === undefined ? {} : { record }),
+        },
+        {
+          userId: getUserId(),
+          admin: isAdmin(),
+          sessionId: honouredSessionId(req),
+        },
+        {
+          ...('displayName' in parsed.data &&
+          typeof parsed.data.displayName === 'string'
+            ? { displayName: parsed.data.displayName }
+            : {}),
+          ...('description' in parsed.data &&
+          typeof parsed.data.description === 'string'
+            ? { description: parsed.data.description }
+            : {}),
+        },
+      );
+      if (result.collection === '@skills') {
+        if (record === undefined)
+          json(res, 200, await skillCollectionView(resolverFor(registry)));
+        else {
+          const documents = await informationalSkillDocuments(
+            resolverFor(registry),
+          );
+          json(
+            res,
+            200,
+            documents.find((doc) => doc.id === record),
+          );
+        }
+      } else {
+        const meta = await registry.getCollection(result.collection);
+        if (record === undefined && meta) {
+          json(
+            res,
+            200,
+            collectionView(
+              meta,
+              resolverFor(registry).inputFor(
+                { id: '', text: '', createdAt: '', metadata: {} },
+                meta,
+              ),
+            ),
+          );
+        } else {
+          json(
+            res,
+            200,
+            await registry.getDocument(result.collection, record ?? ''),
+          );
+        }
+      }
+    } catch (err) {
+      const failed = ragWriteFailure(
+        err instanceof Error ? err : new Error(String(err)),
+        500,
+      );
+      res
+        .status(failed.status)
+        .json({ error: { code: failed.code, message: failed.message } });
+    }
+  };
+  router.put(
+    '/rag/collections/:id',
+    async (req: Request, res: Response, next) => {
+      if (!Object.hasOwn(req.body ?? {}, 'trust')) {
+        next();
+        return;
+      }
+      await writeTrust(req, res);
+    },
+  );
+  router.patch(
+    '/rag/collections/:id/documents/:did/trust',
+    async (req: Request, res: Response) => {
+      await writeTrust(req, res, String(req.params.did));
+    },
+  );
+
+  // Virtual informational skill reads precede catalog-id resolution.
+  router.get(
+    '/rag/collections/@skills/documents',
+    async (req: Request, res: Response) => {
+      try {
+        const all = await informationalSkillDocuments(resolverFor(registry));
+        const offset = Math.max(0, Number(req.query.offset) || 0);
+        const limit = Math.min(Number(req.query.limit) || 50, 200);
+        json(res, 200, {
+          documents: all.slice(offset, offset + limit),
+          total: all.length,
+        });
+      } catch (err) {
+        failure(res, err, 500);
+      }
+    },
+  );
+  router.get(
+    '/rag/collections/@skills/documents/:did',
+    async (req: Request, res: Response) => {
+      try {
+        const documents = await informationalSkillDocuments(
+          resolverFor(registry),
+        );
+        const document = documents.find((item) => item.id === req.params.did);
+        if (!document) {
+          error(res, 404, 'Document not found');
+          return;
+        }
+        json(res, 200, document);
+      } catch (err) {
+        failure(res, err, 500);
+      }
+    },
+  );
+
   // GET /v1/rag/backends — list available backend types
   router.get('/rag/backends', (_req: Request, res: Response) => {
     json(res, 200, { backends: registry.listBackends() });
@@ -233,10 +402,21 @@ export function registerRagRoutes(
       ...(c.status ? { status: c.status, statusError: c.statusError } : {}),
       enabled: collectionEnabled(registry, effectiveUserId ?? '', sid, c),
       defaultEnabled: collectionDefault(registry, effectiveUserId ?? '', c),
+      ...collectionTrustFields(registry, c),
     }));
 
     json(res, 200, {
-      collections: mapped,
+      collections: [
+        ...mapped,
+        ...(isAdmin()
+          ? [
+              {
+                ...(await skillCollectionView(resolverFor(registry))),
+                writable: true,
+              },
+            ]
+          : []),
+      ],
       ...(unavailable ? { collectionsUnavailable: unavailable } : {}),
     });
   });
@@ -703,10 +883,9 @@ export function registerRagRoutes(
             ? {
                 documents: current.documents
                   .slice(offset, offset + limit)
-                  .map((document) => ({
-                    ...document,
-                    enabled: document.metadata.enabled !== false,
-                  })),
+                  .map((document) =>
+                    documentView(document, { trusted: false }),
+                  ),
                 total: current.documents.length,
               }
             : null;
@@ -727,7 +906,12 @@ export function registerRagRoutes(
           ...result,
           documents: result.documents.map((document) =>
             document.metadata.enabled === false
-              ? { id: document.id, enabled: false, reason: 'record-disabled' }
+              ? {
+                  id: document.id,
+                  enabled: false,
+                  trusted: false,
+                  reason: 'record-disabled',
+                }
               : document,
           ),
         });
@@ -907,9 +1091,7 @@ export function registerRagRoutes(
           const document = current?.documents.find(
             (entry) => entry.id === req.params.did,
           );
-          doc = document
-            ? { ...document, enabled: document.metadata.enabled !== false }
-            : null;
+          doc = document ? documentView(document, { trusted: false }) : null;
         } else {
           doc = await registry.getDocument(physId, req.params.did);
         }
@@ -926,6 +1108,7 @@ export function registerRagRoutes(
         json(res, 200, {
           id: doc.id,
           enabled: false,
+          trusted: false,
           reason: 'record-disabled',
         });
         return;

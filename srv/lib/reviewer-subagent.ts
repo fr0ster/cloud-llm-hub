@@ -5,6 +5,7 @@ import type {
   ISubAgentResult,
   SubAgentCapabilities,
   ToolCallRecord,
+  ToolTrust,
 } from '@mcp-abap-adt/llm-agent';
 import { getRequestHistory } from '../request-session';
 import { evaluateGated } from './step-reviewer';
@@ -16,6 +17,7 @@ export interface ReviewerSubAgentDeps {
    *  dependency on the concrete recording client here. */
   getToolRecords: (traceId?: string) => ToolCallRecord[];
   llm: ILlm;
+  toolTrust?: ToolTrust;
 }
 
 /**
@@ -45,6 +47,7 @@ export class ReviewerSubAgent implements ISubAgent {
     const content = input.context ?? input.task;
     const records = this.deps.getToolRecords(input.trace?.traceId);
     const verdict = await evaluateGated({
+      toolTrust: this.deps.toolTrust,
       usage: input.usage,
       content,
       records,

@@ -169,6 +169,7 @@ export function dialogueChat(
           attachmentRequest,
           userId,
           session.key,
+          () => handle.coordinatorResolver(),
         );
         if (context) handle.attachments.set(trace, context);
         const replyId = randomUUID();
@@ -272,6 +273,7 @@ export function dialogueChat(
         attachmentRequest,
         userId,
         session.key,
+        () => handle.coordinatorResolver(),
       );
       if (context) handle.attachments.set(trace, context);
       handle.replies.set(trace, { id: replyId, createdAt });

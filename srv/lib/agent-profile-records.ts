@@ -1,6 +1,7 @@
 import type { WorkerProfile } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import type { RagDocument } from '../rag-collections';
+import { trustMapSchema } from './trust';
 
 export const profileName = z
   .string()
@@ -27,12 +28,14 @@ export const profileToolPolicy = z.union([
     .strict(),
 ]);
 const enabled = z.boolean().optional();
+const trust = trustMapSchema.optional();
 export const profileFrontmatter = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('profile'),
       name: profileName,
       enabled,
+      trust,
       description: z.string(),
       tools: profileToolPolicy,
       result: z.enum(['report', 'verdict']),
@@ -43,18 +46,27 @@ export const profileFrontmatter = z.discriminatedUnion('kind', [
       kind: z.literal('worker-base'),
       name: z.literal('_worker-base'),
       enabled,
+      trust,
     })
     .strict(),
   // Existing records are preserved by missing-only seeding.
-  z.object({ kind: z.literal('planner'), name: plannerName, enabled }).strict(),
   z
-    .object({ kind: z.literal('coordinator'), name: coordinatorName, enabled })
+    .object({ kind: z.literal('planner'), name: plannerName, enabled, trust })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('coordinator'),
+      name: coordinatorName,
+      enabled,
+      trust,
+    })
     .strict(),
   z
     .object({
       kind: z.literal('planner-author'),
       name: z.enum(['planner-create', 'planner-revise']),
       enabled,
+      trust,
     })
     .strict(),
 ]);
@@ -98,5 +110,6 @@ export function workerProfile(
     systemPrompt: record.text,
     tools: metadata.tools,
     result: metadata.result,
+    ...(metadata.trust ? { trust: metadata.trust } : {}),
   };
 }

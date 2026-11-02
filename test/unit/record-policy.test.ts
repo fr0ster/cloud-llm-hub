@@ -18,7 +18,22 @@ test.each([
 );
 
 test('safe record attributes normalize enablement and exclude other metadata', () => {
-  expect(recordAttributes({ internal: 'private' })).toEqual({ enabled: true });
-  expect(recordAttributes({ enabled: true })).toEqual({ enabled: true });
-  expect(recordAttributes({ enabled: false })).toEqual({ enabled: false });
+  expect(
+    recordAttributes(
+      { id: 'r', text: '', createdAt: '', metadata: { internal: 'private' } },
+      { trusted: false },
+    ),
+  ).toEqual({ enabled: true, trusted: false });
+  expect(
+    recordAttributes(
+      { id: 'r', text: '', createdAt: '', metadata: { enabled: true } },
+      { trusted: false },
+    ),
+  ).toEqual({ enabled: true, trusted: false });
+  expect(
+    recordAttributes(
+      { id: 'r', text: '', createdAt: '', metadata: { enabled: false } },
+      { trusted: false },
+    ),
+  ).toEqual({ enabled: false, trusted: false });
 });

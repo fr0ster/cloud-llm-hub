@@ -5,6 +5,7 @@ import type {
   ISmartAgent,
   ISubAgent,
   Result,
+  TrustMap,
   WorkerProfile,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -17,8 +18,11 @@ import {
   guardProfileWorker,
   type RegisteredProfileTool,
 } from './agent-profile-tools';
+import { recordReviewProfile } from './review-scope';
+import { runWithTrustResolver, type TrustResolver } from './trust-resolver';
 
 export interface AgentProfileRunnerHost {
+  trustResolver?(): TrustResolver;
   catalogue(): readonly RegisteredProfileTool[];
   grants(): ReadonlySet<string>;
   buildWorker(
@@ -27,12 +31,17 @@ export interface AgentProfileRunnerHost {
     options?: CallOptions,
   ): Promise<ISubAgent>;
   buildPlanAuthor?(
-    systemPrompt: string,
+    input: {
+      systemPrompt: string;
+      mode: 'create' | 'revise';
+      trust?: TrustMap;
+    },
     options?: CallOptions,
   ): Promise<ISmartAgent>;
   buildPlanner(
     systemPrompt: string,
     options?: CallOptions,
+    trust?: TrustMap,
   ): Promise<ISmartAgent>;
 }
 
@@ -51,8 +60,14 @@ export class AgentProfileRunner implements IAgentProfileRunner {
       policy: profile.tools,
       parent,
     });
-    return <T>(run: () => T): T =>
-      runWithRequiredProfileTools(() => runWithProfileTools(permissions, run));
+    const resolver = this.host.trustResolver?.().forProfile(profile);
+    return <T>(run: () => T): T => {
+      const scoped = () =>
+        runWithRequiredProfileTools(() =>
+          runWithProfileTools(permissions, run),
+        );
+      return resolver ? runWithTrustResolver(resolver, scoped) : scoped();
+    };
   }
 
   async createWorker(
@@ -83,11 +98,14 @@ export class AgentProfileRunner implements IAgentProfileRunner {
     }
     try {
       options?.signal?.throwIfAborted();
+      const buildScope = this.bind(profile, parent);
       const worker = guardProfileWorker(
-        await this.host.buildWorker(
-          profile,
-          [input.workerBase ?? '', profile.systemPrompt].join('\n'),
-          options,
+        await buildScope(() =>
+          this.host.buildWorker(
+            profile,
+            [input.workerBase ?? '', profile.systemPrompt].join('\n'),
+            options,
+          ),
         ),
       );
       options?.signal?.throwIfAborted();
@@ -98,6 +116,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
           description: worker.description,
           capabilities: worker.capabilities,
           run: (request) => {
+            recordReviewProfile(profile);
             return this.bind(profile, parent)(() => worker.run(request));
           },
         },
@@ -111,7 +130,11 @@ export class AgentProfileRunner implements IAgentProfileRunner {
   }
 
   async preparePlanAuthor(
-    input: { systemPrompt: string; mode: 'create' | 'revise' },
+    input: {
+      systemPrompt: string;
+      mode: 'create' | 'revise';
+      trust?: TrustMap;
+    },
     options?: CallOptions,
   ): Promise<Result<ISmartAgent, AgentProfileError>> {
     try {
@@ -120,6 +143,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
         throw new Error('Plan author unavailable');
       const scope = this.bind({
         name: 'planner-author',
+        trust: input.trust,
         description: '',
         systemPrompt: input.systemPrompt,
         result: 'report',
@@ -133,7 +157,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
         },
       });
       const build = this.host.buildPlanAuthor;
-      const agent = await scope(() => build(input.systemPrompt, options));
+      const agent = await scope(() => build(input, options));
       options?.signal?.throwIfAborted();
       return {
         ok: true,
@@ -166,12 +190,20 @@ export class AgentProfileRunner implements IAgentProfileRunner {
   }
 
   async preparePlanner(
-    input: { systemPrompt: string },
+    input: { systemPrompt: string; trust?: TrustMap },
     options?: CallOptions,
   ): Promise<Result<ISmartAgent, AgentProfileError>> {
     try {
       options?.signal?.throwIfAborted();
-      const planner = await this.host.buildPlanner(input.systemPrompt, options);
+      const resolver = this.host.trustResolver?.().forProfile(input);
+      const scope = <T>(run: () => T): T =>
+        resolver ? runWithTrustResolver(resolver, run) : run();
+      const planner = scopedAgent(
+        await scope(() =>
+          this.host.buildPlanner(input.systemPrompt, options, input.trust),
+        ),
+        scope,
+      );
       options?.signal?.throwIfAborted();
       return { ok: true, value: planner };
     } catch {
@@ -181,4 +213,28 @@ export class AgentProfileRunner implements IAgentProfileRunner {
       };
     }
   }
+}
+
+function scopedAgent(
+  agent: ISmartAgent,
+  scope: <T>(run: () => T) => T,
+): ISmartAgent {
+  return {
+    process: (messages, options) =>
+      scope(() => agent.process(messages, options)),
+    streamProcess: async function* (messages, options) {
+      const iterator = scope(() => agent.streamProcess(messages, options))[
+        Symbol.asyncIterator
+      ]();
+      try {
+        for (;;) {
+          const next = await scope(() => iterator.next());
+          if (next.done) return;
+          yield next.value;
+        }
+      } finally {
+        await scope(() => iterator.return?.());
+      }
+    },
+  };
 }

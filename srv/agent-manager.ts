@@ -6,6 +6,8 @@ import {
   type ExecutorStepArgs,
   runExecutorStep as executeExecutorStep,
 } from './lib/executor-step';
+import { resolverFor, TrustResolver } from './lib/trust-resolver';
+import { TrustStore } from './lib/trust-store';
 
 export function runExecutorStep(...args: ExecutorStepArgs) {
   return executeExecutorStep(createAgentProfileSource, ...args);
@@ -129,7 +131,11 @@ import {
   requestSystemContextResolver,
   requestSystemContextRules,
 } from './lib/request-system-context';
-import { recordToolScore } from './lib/review-scope';
+import {
+  getReviewProfile,
+  recordReviewProfile,
+  recordToolScore,
+} from './lib/review-scope';
 import { getRunRecordStore } from './lib/run-record-store';
 import { SessionHistoryRag, turnOwner } from './lib/session-history-rag';
 import {
@@ -271,6 +277,7 @@ const isSkillId = (id: unknown): boolean =>
   typeof id === 'string' && id.startsWith('skill:');
 
 export class ExpositionFilteringRag implements IRag, IRagEditor {
+  private skillTrustPool?: ReturnType<typeof buildSkillsPool>;
   /**
    * Two collections, searched separately.
    *
@@ -688,10 +695,18 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       });
     }
 
+    this.skillTrustPool ??= buildSkillsPool();
     const perCollection = parts.map((r) =>
       (r.ok ? r.value : []).filter(isAllowed),
     );
-    return { ok: true as const, value: capPerCollection(perCollection) };
+    return {
+      ok: true as const,
+      value: await trustedSkillResults(
+        capPerCollection(perCollection),
+        currentTrustResolver(),
+        this.skillTrustPool,
+      ),
+    };
   }
 
   async healthCheck() {
@@ -872,8 +887,15 @@ import {
   collectionDimension,
   createCollectionProvider,
   isPersistentKind,
+  PROVIDER_DEFAULT_DIMENSION,
 } from './lib/rag-provider-factory';
-import { buildSkillsPool, logSkillsPool } from './lib/skills-pool';
+import {
+  appendBaseSkills,
+  buildSkillsPool,
+  logSkillsPool,
+} from './lib/skills-pool';
+import { systemToolTrust } from './lib/system-tool-trust';
+import { trustedSkillResults } from './lib/trusted-skill';
 import { CollectionRegistry } from './rag-collections';
 
 /**
@@ -922,6 +944,11 @@ export type DestinationAgentHandle = SmartAgentHandle & {
   criticLlm: ILlm;
   workers: ReadonlyMap<string, ISubAgent>;
   profileRunner: AgentProfileRunner;
+  trustResolver: TrustResolver;
+  toolTrust: ReturnType<typeof getSystemToolTrust>;
+  toolTrustFor: (
+    resolver: TrustResolver,
+  ) => ReturnType<typeof getSystemToolTrust>;
 };
 export type HubAgentHandle = SmartAgentHandle & Partial<DestinationAgentHandle>;
 const agentHandles = new Map<string, HubAgentHandle>();
@@ -1234,6 +1261,21 @@ export function isProvidersReady(): boolean {
 // ---------------------------------------------------------------------------
 
 let collectionRegistryInstance: CollectionRegistry | null = null;
+let trustResolverInstance: TrustResolver | undefined;
+let trustStoreInstance: TrustStore | undefined;
+export function getTrustResolver(): TrustResolver {
+  const registry = getCollectionRegistry();
+  if (!trustResolverInstance)
+    trustResolverInstance = new TrustResolver(
+      registry,
+      trustStoreInstance,
+      getAgentConfig().trust.defaults,
+    );
+  return trustResolverInstance;
+}
+export function getTrustStore(): TrustStore | undefined {
+  return trustStoreInstance;
+}
 
 /** Get or create the shared CollectionRegistry. */
 export function getCollectionRegistry(): CollectionRegistry {
@@ -1274,6 +1316,14 @@ export function getCollectionRegistry(): CollectionRegistry {
         : {}),
     });
   }
+  if (!collectionRegistryInstance.trustResolver) {
+    trustResolverInstance = new TrustResolver(
+      collectionRegistryInstance,
+      trustStoreInstance,
+      getAgentConfig().trust.defaults,
+    );
+    collectionRegistryInstance.trustResolver = trustResolverInstance;
+  }
   return collectionRegistryInstance;
 }
 
@@ -1284,10 +1334,39 @@ export function getCollectionRegistry(): CollectionRegistry {
  * promise resolves once restored; nothing need wait for it — the registry's
  * methods wait for the restore themselves, and /health reports it.
  */
-export function startCollectionRestore(
+export async function startCollectionRestore(
   opts: Omit<RetryRestoreOptions, 'log'> = {},
 ): Promise<void> {
   const registry = getCollectionRegistry();
+  const { collections, stores, embedding } = getProviders();
+  if (!trustStoreInstance) {
+    const kind = stores.backendOf('persistent');
+    let dimension = PROVIDER_DEFAULT_DIMENSION;
+    trustStoreInstance = collections
+      ? new TrustStore(
+          new PersistentHistoryStore(collections, cds.log('trust-store'), {
+            storePrefix: storePrefixFor(
+              kind,
+              getAgentConfig().rag.qdrant?.prefix,
+            ),
+            storeName: 'h_trust',
+            beforeOpen: async () => {
+              if (kind === 'qdrant' && embedding)
+                dimension = (
+                  await embedding.retrieval.embedDocument('dimension probe')
+                ).vector.length;
+            },
+          }),
+          () => dimension,
+        )
+      : new TrustStore(new InMemoryRag(), dimension);
+    trustResolverInstance = new TrustResolver(
+      registry,
+      trustStoreInstance,
+      getAgentConfig().trust.defaults,
+    );
+    registry.trustResolver = trustResolverInstance;
+  }
   if (registry.restoreStatus().state === 'off') return Promise.resolve();
   const log = cds.log('rag-collections');
   return retryRestore(() => registry.restore(), {
@@ -1397,7 +1476,10 @@ export function getSharedHistoryRag(): SessionHistoryRag | undefined {
       stores.create('session', 'history'),
       currentTurnOwner,
       undefined,
-      { storageBackend: kind },
+      {
+        storageBackend: kind,
+        trustResolver: () => resolverFor(getCollectionRegistry()),
+      },
     );
     return sharedHistoryRag;
   }
@@ -1416,7 +1498,11 @@ export function getSharedHistoryRag(): SessionHistoryRag | undefined {
     ),
     currentTurnOwner,
     undefined,
-    { storageBackend: kind, log },
+    {
+      storageBackend: kind,
+      log,
+      trustResolver: () => resolverFor(getCollectionRegistry()),
+    },
   );
   return sharedHistoryRag;
 }
@@ -1611,6 +1697,28 @@ export function getHandlerExporterConfig() {
 }
 
 /** Static, destination-free tool list from HandlerExporter (same config as buildEmbeddedMcpAdapter). */
+let embeddedToolNames: ReadonlySet<string> | undefined;
+export function isEmbeddedSystemTool(name: string): boolean {
+  embeddedToolNames ??= new Set(
+    new HandlerExporter(getHandlerExporterConfig()).getToolNames(),
+  );
+  return embeddedToolNames.has(name);
+}
+function currentTrustResolver(): TrustResolver {
+  return resolverFor(
+    collectionRegistryInstance ?? {
+      trustResolver: new TrustResolver(
+        undefined,
+        trustStoreInstance,
+        getAgentConfig().trust.defaults,
+      ),
+    },
+  );
+}
+export function getSystemToolTrust() {
+  return systemToolTrust(isEmbeddedSystemTool, currentTrustResolver());
+}
+
 function listToolDefsFromExporter(): ToolDocInput[] {
   const exporter = new HandlerExporter(getHandlerExporterConfig());
   const coreTools = exporter.getHandlerEntries().map((e) => ({
@@ -2695,6 +2803,10 @@ async function configureDestinationAgentBuilder(
   // Skip SAP AI SDK model validation for non-SAP providers (openai, anthropic, deepseek)
   const skipModelValidation = config.llm.provider !== 'sap-ai-sdk';
 
+  const roleResolver = resolverFor(getCollectionRegistry());
+  const skillsPool = buildSkillsPool({ resolver: () => roleResolver });
+  await logSkillsPool(skillsPool);
+  const system = await appendBaseSkills(opts?.systemPrompt ?? '', skillsPool);
   const builder = new SmartAgentBuilder({
     skipModelValidation,
     agent: {
@@ -2710,7 +2822,7 @@ async function configureDestinationAgentBuilder(
       ragTranslateEnabled: false,
     },
     prompts: {
-      system: opts?.systemPrompt ?? '',
+      system,
       classifier: [
         'You are a Semantic Intent Analyzer. Decompose the user message into logical tasks.',
         'For each task, identify:',
@@ -2730,6 +2842,7 @@ async function configureDestinationAgentBuilder(
       ].join('\n'),
     },
   })
+    .withToolTrust(systemToolTrust(isEmbeddedSystemTool, roleResolver))
     .withMainLlm(opts?.skipRetrieval ? mainLlm : trackedLlm(mainLlm, true))
     .withClassifierLlm(classifierLlm)
     .withMcpClients([
@@ -2767,9 +2880,7 @@ async function configureDestinationAgentBuilder(
   // every destination init and regresses cold-start; the executor worker
   // (which DOES run the tool-loop) keeps skills enabled.
   if (!opts?.skipSkills) {
-    const skillsPool = buildSkillsPool();
-    builder.withSkillManager(skillsPool);
-    await logSkillsPool(skillsPool);
+    builder.withSkillManager(skillsPool.informationalSkills());
   }
 
   // Share embedder across all RAG queries
@@ -2864,6 +2975,9 @@ export async function buildPlannerAgent(
       return typeof value === 'function' ? value.bind(model.current) : value;
     },
   });
+  const roleResolver = resolverFor(getCollectionRegistry());
+  const skillsPool = buildSkillsPool({ resolver: () => roleResolver });
+  const system = await appendBaseSkills(systemPrompt, skillsPool);
   const builder = new SmartAgentBuilder({
     // Authors are built per call; validation would send an unattributed completion.
     skipModelValidation:
@@ -2874,9 +2988,10 @@ export async function buildPlannerAgent(
       classificationEnabled: false,
     },
     prompts: {
-      system: systemPrompt,
+      system,
     },
   })
+    .withToolTrust(systemToolTrust(isEmbeddedSystemTool, roleResolver))
     .withMainLlm(forwardingLlm)
     .withMcpClients([
       new RecordingMcpClient(
@@ -2989,6 +3104,7 @@ function destinationProfileRunner(
     })),
   ];
   return new AgentProfileRunner({
+    trustResolver: getTrustResolver,
     catalogue,
     grants: () =>
       new Set(
@@ -3026,7 +3142,8 @@ function destinationProfileRunner(
         { description: profile.description },
       );
     },
-    buildPlanAuthor: async (systemPrompt, options) => {
+    buildPlanAuthor: async (input, options) => {
+      const { systemPrompt } = input;
       options?.signal?.throwIfAborted();
       const client = new DialogueRagMcpClient(
         {
@@ -3202,6 +3319,34 @@ export async function buildAgentForDestination(
       },
     ],
   ]);
+  // Keep the build-time executor profile as a fallback when no worker has
+  // recorded a request-scoped profile yet.
+  // Optional: without an executor profile the notice uses deploy defaults.
+  const executorProfile = await prepareCompatibilityWorker(
+    config,
+    undefined,
+    async (options) => {
+      const source = createAgentProfileSource(
+        getRequestUserId() ?? 'anonymous',
+      );
+      const resolved = await source.get('executor', options);
+      return resolved.ok ? resolved.value : undefined;
+    },
+  ).catch(() => undefined);
+  const noticeFinalizer = new NoticeFinalizer(
+    recMcp,
+    criticLlm,
+    undefined,
+    () => {
+      const profile = getReviewProfile() ?? executorProfile;
+      return profile?.trust
+        ? systemToolTrust(
+            isEmbeddedSystemTool,
+            getTrustResolver().forProfile(profile),
+          )
+        : getSystemToolTrust();
+    },
+  );
   if (config.agent.chatCoordinator !== 'fixed') {
     const budget = Object.fromEntries(
       Object.entries(config.agent.planBudget ?? {}).filter(
@@ -3216,7 +3361,7 @@ export async function buildAgentForDestination(
           }),
         ),
         workers,
-        finalizer: new NoticeFinalizer(recMcp, criticLlm),
+        finalizer: noticeFinalizer,
         runRecords: getRunRecordStore(),
         budget,
         fallbackWorker: 'executor',
@@ -3231,7 +3376,7 @@ export async function buildAgentForDestination(
       // interpreter throw PLAN_INVALID.
       workers: new Map([['executor', executorWorker]]),
       // Reads the SAME recMcp the worker was built with.
-      finalizer: new NoticeFinalizer(recMcp, criticLlm),
+      finalizer: noticeFinalizer,
       // errorStrategy omitted -> AbortErrorStrategy default;
       // reviewer omitted -> no plan-gate (NoopReviewStrategy default).
     });
@@ -3256,6 +3401,10 @@ export async function buildAgentForDestination(
     criticLlm,
     workers,
     profileRunner,
+    trustResolver: getTrustResolver(),
+    toolTrust: getSystemToolTrust(),
+    toolTrustFor: (resolver: TrustResolver) =>
+      systemToolTrust(isEmbeddedSystemTool, resolver),
   });
 
   return destinationHandle;
@@ -3298,6 +3447,7 @@ export async function buildExecutorWorker(
     const source = createAgentProfileSource(getRequestUserId() ?? 'anonymous');
     const resolved = await source.resolveWorker('executor', options);
     if (!resolved.ok) throw new Error('Executor profile unavailable');
+    recordReviewProfile(resolved.value.profile);
     return resolved.value;
   };
   const builder = await configureDestinationAgentBuilder(
@@ -3310,16 +3460,13 @@ export async function buildExecutorWorker(
     prepareCompatibilityWorker(config, options, async (callOptions) => {
       const resolved = await resolve(callOptions);
       callOptions?.signal?.throwIfAborted();
-      const freshBuilder = await configureDestinationAgentBuilder(
-        mcpAdapter,
-        toolsRag,
-        config,
-        {
+      const freshBuilder = await runner.bind(resolved.profile)(() =>
+        configureDestinationAgentBuilder(mcpAdapter, toolsRag, config, {
           systemPrompt: [
             resolved.workerBase ?? '',
             resolved.profile.systemPrompt,
           ].join('\n'),
-        },
+        }),
       );
       callOptions.signal?.throwIfAborted();
       const fresh = await freshBuilder.build();
@@ -3441,7 +3588,7 @@ export function withConversationHistory(agent: SmartAgent): SmartAgent {
  * `unreachable`: one exists but cannot be reached (the escape-hatch fallback).
  * The two need different remedies, so the prompt tells them apart.
  */
-async function buildLlmOnlyAgent(
+export async function buildLlmOnlyAgent(
   config: AgentConfig,
   why: 'waiting' | 'unreachable',
 ): Promise<SmartAgentHandle> {
@@ -3465,18 +3612,22 @@ async function buildLlmOnlyAgent(
       ragTranslateEnabled: false,
     },
     prompts: {
-      system: [
-        why === 'waiting'
-          ? 'You are a helpful AI assistant. No MCP tools are available — no SAP system destination is configured.'
-          : 'You are a helpful AI assistant. No MCP tools are available — the SAP system destination is unreachable.',
-        'Answer questions using your knowledge. No action of any kind (SAP operations, storing or searching collection documents via tools, checks, delegation) can run in this session. Never report an action as done or started.',
-        why === 'waiting'
-          ? 'Say plainly that the hub is waiting for SAP destinations, and that full functionality (ABAP tools) needs at least one SAP destination added to the BTP subaccount — it is picked up automatically once it exists.'
-          : 'Say plainly that the SAP destination exists but cannot be reached right now, and that its connectivity (the destination, the Cloud Connector) needs checking — do not suggest adding a destination.',
-        "Respond in the user's language. Code and object names always in English.",
-      ].join('\n'),
+      system: await appendBaseSkills(
+        [
+          why === 'waiting'
+            ? 'You are a helpful AI assistant. No MCP tools are available — no SAP system destination is configured.'
+            : 'You are a helpful AI assistant. No MCP tools are available — the SAP system destination is unreachable.',
+          'Answer questions using your knowledge. No action of any kind (SAP operations, storing or searching collection documents via tools, checks, delegation) can run in this session. Never report an action as done or started.',
+          why === 'waiting'
+            ? 'Say plainly that the hub is waiting for SAP destinations, and that full functionality (ABAP tools) needs at least one SAP destination added to the BTP subaccount — it is picked up automatically once it exists.'
+            : 'Say plainly that the SAP destination exists but cannot be reached right now, and that its connectivity (the destination, the Cloud Connector) needs checking — do not suggest adding a destination.',
+          "Respond in the user's language. Code and object names always in English.",
+        ].join('\n'),
+        buildSkillsPool(),
+      ),
     },
   })
+    .withToolTrust(getSystemToolTrust())
     .withMainLlm(mainLlm)
     .withClassifierLlm(classifierLlm)
     .withClassification(false)
@@ -3689,6 +3840,7 @@ export async function getSmartAgent(
  */
 export async function initSmartAgents(): Promise<void> {
   const log = cds.log('agent-manager');
+  await logSkillsPool(buildSkillsPool());
   initDestinationMapping();
   const config = getAgentConfig();
   const destName = config.mcp.destination;

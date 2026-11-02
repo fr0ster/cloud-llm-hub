@@ -14,6 +14,8 @@ import {
 } from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
 import { longSessions } from '../../srv/lib/long-session';
+import { parseTrustDefaults } from '../../srv/lib/trust';
+import { TrustResolver } from '../../srv/lib/trust-resolver';
 
 jest.mock(
   '@sap/cds',
@@ -29,6 +31,12 @@ jest.mock(
   { virtual: true },
 );
 jest.mock('../../srv/agent-manager', () => ({
+  getTrustResolver: () =>
+    jest
+      .requireActual<typeof import('./helpers/agent-profiles')>(
+        './helpers/agent-profiles',
+      )
+      .fixtureTrustResolver(),
   ...require('./helpers/channel-harness').agentManagerMock(),
   getQueryEmbedder: jest.fn(() => undefined),
 }));
@@ -117,6 +125,8 @@ beforeEach(() => {
   jest.mocked(dialogueFor).mockResolvedValue({
     plannerCounts,
     subscribe: () => () => {},
+    coordinatorResolver: async () =>
+      new TrustResolver(undefined, undefined, parseTrustDefaults(undefined)),
     attachments: turnContext,
     replies: new WeakMap(),
     factory: { refresh },
@@ -668,90 +678,105 @@ it.each(['NO_MESSAGE', 'NO_MESSAGE answer NO_MESSAGE'])(
   },
 );
 
-for (const anthropic of [false, true])
-  for (const stream of [false, true])
-    for (const retrieved of [false, true, 'uploads']) {
-      it(`planner receives current user text (anthropic=${anthropic}, stream=${stream}, retrieved=${retrieved})`, async () => {
-        const { getCollectionRegistry } = require('../../srv/agent-manager');
-        const retrieval = await import('../../srv/lib/collection-retrieval');
-        const retrieve = jest.spyOn(retrieval, 'collectionRetrieval');
-        const manager = await import('../../srv/agent-manager');
-        const embedder = jest.mocked(manager.getQueryEmbedder);
-        embedder.mockClear();
-        const plannerProcess = jest.fn(async () => ({
-          ok: true as const,
-          value: { content: 'answer' },
-        }));
-        send.mockImplementation(async (text, opts) => {
-          await plannerWithAttachments(
-            { process: plannerProcess },
-            turnContext,
-          ).process([{ role: 'user', content: text }], opts);
-          return { text: 'answer' };
+for (const sessionTrust of [undefined, 4])
+  for (const anthropic of [false, true])
+    for (const stream of [false, true])
+      for (const retrieved of [false, true, 'uploads']) {
+        it(`planner receives current user text (anthropic=${anthropic}, stream=${stream}, retrieved=${retrieved}, sessionTrust=${sessionTrust})`, async () => {
+          const { getCollectionRegistry } = require('../../srv/agent-manager');
+          const retrieval = await import('../../srv/lib/collection-retrieval');
+          const retrieve = jest.spyOn(retrieval, 'collectionRetrieval');
+          const manager = await import('../../srv/agent-manager');
+          const embedder = jest.mocked(manager.getQueryEmbedder);
+          embedder.mockClear();
+          const plannerProcess = jest.fn(async () => ({
+            ok: true as const,
+            value: { content: 'answer' },
+          }));
+          send.mockImplementation(async (text, opts) => {
+            await plannerWithAttachments(
+              { process: plannerProcess },
+              turnContext,
+            ).process([{ role: 'user', content: text }], opts);
+            return { text: 'answer' };
+          });
+          const handle = await dialogueFor('alice', session.key, 'SAP');
+          handle.coordinatorResolver = async () =>
+            new TrustResolver(
+              undefined,
+              undefined,
+              parseTrustDefaults(undefined),
+            ).forProfile({
+              trust:
+                sessionTrust === undefined
+                  ? undefined
+                  : { session: sessionTrust },
+            });
+          const registry = getCollectionRegistry();
+          jest.spyOn(registry, 'getCollection').mockResolvedValue({
+            id: 'docs__u_alice',
+            owner: 'alice',
+            scope: 'session',
+            sessionId: session.key,
+          });
+          jest.spyOn(registry, 'getDocument').mockResolvedValue({
+            id: 'file',
+            text: 'attached content',
+            metadata: {},
+            enabled: true,
+            createdAt: '2026-10-29',
+          });
+          jest.spyOn(registry, 'degradedOf').mockResolvedValue(undefined);
+          jest.spyOn(registry, 'getRagStores').mockResolvedValue({});
+          jest.spyOn(registry, 'getRagStore').mockResolvedValue({
+            query: async () => ({
+              ok: true,
+              value: [{ text: 'knowledge', score: 1 }],
+            }),
+          });
+          try {
+            const req = fakeReq(
+              {
+                model: 'm',
+                max_tokens: 100,
+                stream,
+                messages: [{ role: 'user', content: 'hi' }],
+              },
+              session.key,
+            ) as unknown as Request & { longSession: LongSession };
+            req.longSession = session;
+            if (retrieved === 'uploads')
+              req.body.attachment_document_ids = ['file'];
+            if (retrieved === 'uploads' && !stream)
+              req.body.rag_collections = ['uploads'];
+            else if (retrieved)
+              req.headers['x-rag-collections'] =
+                retrieved === 'uploads' ? 'uploads' : 'docs__u_alice';
+            await (anthropic ? handleAnthropicMessages : handleChatCompletions)(
+              req,
+              fakeRes() as unknown as Response,
+            );
+            expect(send).toHaveBeenCalledWith('hi', expect.anything());
+            const input = JSON.stringify(plannerProcess.mock.calls);
+            expect(input).not.toContain('[retrieved context]');
+            expect(input).not.toContain('knowledge');
+            if (retrieved === 'uploads') {
+              expect(input).toContain('[attached files]');
+              expect(input).toContain('attached content');
+              expect(input).toContain(`trust ${sessionTrust ?? 2}]`);
+            } else expect(input).not.toContain('[attached files]');
+            expect(retrieve).not.toHaveBeenCalled();
+            expect(embedder).not.toHaveBeenCalled();
+            expect(registry.getRagStore).not.toHaveBeenCalled();
+            expect(registry.getRagStores).not.toHaveBeenCalled();
+            expect(turnContext.has(send.mock.calls.at(-1)?.[1].trace)).toBe(
+              false,
+            );
+          } finally {
+            jest.restoreAllMocks();
+          }
         });
-        const registry = getCollectionRegistry();
-        jest.spyOn(registry, 'getCollection').mockResolvedValue({
-          id: 'docs__u_alice',
-          owner: 'alice',
-          scope: 'user',
-        });
-        jest.spyOn(registry, 'getDocument').mockResolvedValue({
-          id: 'file',
-          text: 'attached content',
-          metadata: {},
-          enabled: true,
-          createdAt: '2026-10-29',
-        });
-        jest.spyOn(registry, 'degradedOf').mockResolvedValue(undefined);
-        jest.spyOn(registry, 'getRagStores').mockResolvedValue({});
-        jest.spyOn(registry, 'getRagStore').mockResolvedValue({
-          query: async () => ({
-            ok: true,
-            value: [{ text: 'knowledge', score: 1 }],
-          }),
-        });
-        try {
-          const req = fakeReq(
-            {
-              model: 'm',
-              max_tokens: 100,
-              stream,
-              messages: [{ role: 'user', content: 'hi' }],
-            },
-            session.key,
-          ) as unknown as Request & { longSession: LongSession };
-          req.longSession = session;
-          if (retrieved === 'uploads')
-            req.body.attachment_document_ids = ['file'];
-          if (retrieved === 'uploads' && !stream)
-            req.body.rag_collections = ['uploads'];
-          else if (retrieved)
-            req.headers['x-rag-collections'] =
-              retrieved === 'uploads' ? 'uploads' : 'docs__u_alice';
-          await (anthropic ? handleAnthropicMessages : handleChatCompletions)(
-            req,
-            fakeRes() as unknown as Response,
-          );
-          expect(send).toHaveBeenCalledWith('hi', expect.anything());
-          const input = JSON.stringify(plannerProcess.mock.calls);
-          expect(input).not.toContain('[retrieved context]');
-          expect(input).not.toContain('knowledge');
-          if (retrieved === 'uploads') {
-            expect(input).toContain('[attached files]');
-            expect(input).toContain('attached content');
-          } else expect(input).not.toContain('[attached files]');
-          expect(retrieve).not.toHaveBeenCalled();
-          expect(embedder).not.toHaveBeenCalled();
-          expect(registry.getRagStore).not.toHaveBeenCalled();
-          expect(registry.getRagStores).not.toHaveBeenCalled();
-          expect(turnContext.has(send.mock.calls.at(-1)?.[1].trace)).toBe(
-            false,
-          );
-        } finally {
-          jest.restoreAllMocks();
-        }
-      });
-    }
+      }
 
 function directChat(ack?: string) {
   const req = fakeReq({}, session.key) as unknown as Request;

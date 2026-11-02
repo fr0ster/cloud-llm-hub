@@ -2587,6 +2587,39 @@
             }
         });
 
+        function trustEditable(collection) {
+            return collection?.trusted === true && collection.scope === 'global' && collection.writable === true;
+        }
+
+        function renderTrust(item, collection, recordId) {
+            if (item.trusted !== true) return '';
+            const record = recordId !== undefined;
+            const label = record ? (item.trustOverride === undefined ? 'inherited' : 'override') : item.trustClass;
+            const text = `<span>Trust ${escapeHtml(String(item.trust))} (${escapeHtml(label)})</span>`;
+            if (!trustEditable(collection)) return text;
+            return text + ` <input aria-label="${record ? 'Record trust override (blank inherits)' : 'Collection trust'}" type="number" min="0" max="5" step="0.1" value="${record ? (item.trustOverride ?? '') : item.trust}" data-collection="${escapeHtml(collection.id)}" ${record ? `data-record="${escapeHtml(recordId)}"` : ''} onchange="saveTrust(this)" style="width:60px" placeholder="inherit">`;
+        }
+
+        async function saveTrust(input) {
+            const record = input.dataset.record;
+            const raw = input.value.trim();
+            const trust = raw === '' && record !== undefined ? null : Number(raw);
+            if ((raw === '' && record === undefined) || (trust !== null && (!Number.isFinite(trust) || trust < 0 || trust > 5 || Math.round(trust * 10) !== trust * 10))) {
+                alert('Trust must be 0 to 5 with at most one decimal; blank clears a record override.');
+                return;
+            }
+            input.disabled = true;
+            try {
+                const path = `/v1/rag/collections/${encodeURIComponent(input.dataset.collection)}` + (record !== undefined ? `/documents/${encodeURIComponent(record)}/trust` : '');
+                const response = await ragFetch(path, { method: record !== undefined ? 'PATCH' : 'PUT', body: JSON.stringify({ trust }) });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error?.message || 'Trust update failed');
+                await loadCollections();
+                if (ragCurrentCollection) await loadDocuments();
+            } catch (error) { alert(error.message); }
+            finally { input.disabled = false; }
+        }
+
         async function loadCollections() {
             const list = document.getElementById('rag-collections-list');
             list.innerHTML = '<span style="color:#888">Loading...</span>';
@@ -2604,16 +2637,17 @@
                     '<button id="copy-agents-button">Copy global agents</button>' + ragCollectionsCache.map(c => `
                     <div style="display:flex;justify-content:space-between;align-items:center;background:#0c0c0c;border:1px solid #222;padding:10px 12px;margin-bottom:6px;border-radius:4px;border-left:3px solid ${c.enabled ? (c.scope === 'session' ? '#ffcc00' : '#00bfff') : '#555'}">
                         <div style="display:flex;align-items:center;gap:8px">
-                            <input type="checkbox" ${c.collectionKind === 'agents' ? 'hidden disabled' : ''} ${c.enabled ? 'checked' : ''} onchange="toggleCollection('${escapeHtml(c.id)}')" style="cursor:pointer;accent-color:#00ff00" title="Include in chat context">
+                            <input type="checkbox" ${c.collectionKind === 'agents' || c.id === '@skills' ? 'hidden disabled' : ''} ${c.enabled ? 'checked' : ''} onchange="toggleCollection('${escapeHtml(c.id)}')" style="cursor:pointer;accent-color:#00ff00" title="Include in chat context">
                             <span style="color:#fff;font-weight:bold">${escapeHtml(c.displayName)}</span>
                             <span style="color:#555;margin-left:8px">(${escapeHtml(c.logicalId || c.id)})</span>
                             <span style="color:#888;margin-left:8px;font-size:12px">${c.scope === 'session' ? '<span style="color:#ffcc00">session</span>' : escapeHtml(c.scope || 'user')} · ${c.backend || 'default'} · ${(c.sourceCount ?? c.documentCount) ?? 0} docs</span>
+                            ${renderTrust(c, c)}
                             ${c.description ? `<div style="color:#666;font-size:12px;margin-top:2px">${escapeHtml(c.description)}</div>` : ''}
                         </div>
                         <div style="display:flex;gap:6px">
                             <button onclick="openDocPanel('${escapeHtml(c.id)}','${escapeHtml(c.displayName)}')" style="background:#1a1a1a;color:#00bfff;border:1px solid #333;padding:3px 10px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">DOCS</button>
                             <button onclick="openExportModal('${escapeHtml(c.id)}','${escapeHtml(c.displayName)}')" style="background:#1a1a1a;color:#00ff88;border:1px solid #225522;padding:3px 10px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Export all documents as ZIP">EXP</button>
-                            <button ${c.writable === false ? 'disabled' : ''} onclick="deleteCollection('${escapeHtml(c.id)}')" style="background:#1a1a1a;color:#ff5555;border:1px solid #552222;padding:3px 10px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">DEL</button>
+                            <button ${c.writable === false || c.id === '@skills' ? 'disabled' : ''} onclick="deleteCollection('${escapeHtml(c.id)}')" style="background:#1a1a1a;color:#ff5555;border:1px solid #552222;padding:3px 10px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">DEL</button>
                         </div>
                     </div>
                 `).join('');
@@ -2677,7 +2711,7 @@
         async function openDocPanel(collectionId, name) {
             ragCurrentCollection = collectionId;
             const meta = ragCollectionsCache.find(c => c.id === collectionId);
-            const genericWrite = meta?.collectionKind !== 'agents' && meta?.writable !== false;
+            const genericWrite = collectionId !== '@skills' && meta?.collectionKind !== 'agents' && meta?.writable !== false;
             document.getElementById('rag-show-upload').hidden = !genericWrite;
             document.getElementById('rag-show-add').hidden = !genericWrite;
             document.getElementById('rag-doc-collection-name').textContent = name;
@@ -2733,6 +2767,7 @@
                                 source: src,
                                 firstChunk: d, // doc with chunkIndex 0 will overwrite below
                                 chunkIds: [],
+                                trustDocuments: [],
                                 enabledCount: 0,
                                 createdAt: d.createdAt,
                             };
@@ -2740,6 +2775,7 @@
                             rows.push(row);
                         }
                         row.chunkIds.push(d.id);
+                        row.trustDocuments.push(d);
                         if (d.enabled !== false) row.enabledCount++;
                         // Keep the chunkIndex-0 doc as the preview source if we see it.
                         if (d.metadata.chunkIndex === 0) row.firstChunk = d;
@@ -2758,9 +2794,10 @@
                             <div style="background:#0c0c0c;border:1px solid #222;padding:10px 12px;margin-bottom:4px;border-radius:4px">
                                 <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
                                     <span style="color:#00bfff;font-size:12px;font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis">${escapeHtml(d.id)}</span>
-                                    <button ${ragCollectionsCache.find(c => c.id === ragCurrentCollection)?.writable === false ? 'disabled' : ''} data-id="${escapeHtml(d.id)}" data-enabled="${d.enabled !== false}" onclick="toggleRecord(this)" style="background:#1a1a1a;color:#ffcc00;border:1px solid #554400;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">${d.enabled === false ? 'Disabled / Enable' : 'Enabled / Disable'}</button>
+                                    ${renderTrust(d, ragCollectionsCache.find(c => c.id === ragCurrentCollection), d.id)}
+                                    <button ${ragCollectionsCache.find(c => c.id === ragCurrentCollection)?.writable === false || ragCurrentCollection === '@skills' ? 'disabled' : ''} data-id="${escapeHtml(d.id)}" data-enabled="${d.enabled !== false}" onclick="toggleRecord(this)" style="background:#1a1a1a;color:#ffcc00;border:1px solid #554400;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">${d.enabled === false ? 'Disabled / Enable' : 'Enabled / Disable'}</button>
                                     <button ${d.reason === 'record-disabled' ? 'disabled' : ''} onclick="downloadRagDoc(ragCurrentCollection,'${escapeHtml(d.id)}')" style="background:#1a1a1a;color:#00bfff;border:1px solid #003355;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Download as text file">DL</button>
-                                    <button ${ragCollectionsCache.find(c => c.id === ragCurrentCollection)?.writable === false ? 'disabled' : ''} onclick="deleteDocument('${escapeHtml(d.id)}')" style="background:none;color:#ff5555;border:1px solid #552222;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">DEL</button>
+                                    <button ${ragCollectionsCache.find(c => c.id === ragCurrentCollection)?.writable === false || ragCurrentCollection === '@skills' ? 'disabled' : ''} onclick="deleteDocument('${escapeHtml(d.id)}')" style="background:none;color:#ff5555;border:1px solid #552222;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">DEL</button>
                                 </div>
                                 <div style="color:#aaa;font-size:12px;margin-top:4px;white-space:pre-wrap;max-height:80px;overflow:hidden">${escapeHtml(preview)}</div>
                                 <div style="color:#555;font-size:11px;margin-top:2px">${d.createdAt || ''}</div>
@@ -2777,6 +2814,7 @@
                             <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
                                 <span style="color:#00ff88;font-size:12px;font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(row.source)}">${escapeHtml(row.source)}</span>
                                 <span style="color:#555;font-size:11px">${chunkCount} chunk${chunkCount === 1 ? '' : 's'}</span>
+                                ${row.trustDocuments.map(d => `<div>${escapeHtml(d.id)}: ${renderTrust(d, ragCollectionsCache.find(c => c.id === ragCurrentCollection), d.id)}</div>`).join('')}
                                 <button data-source="${escapeHtml(row.source)}" data-upload="${escapeHtml(first.metadata.uploadId || '')}" data-enabled="${row.enabledCount === chunkCount}" onclick="toggleRecord(this)" style="background:#1a1a1a;color:#ffcc00;border:1px solid #554400;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px">${row.enabledCount === 0 ? 'Disabled / Enable' : row.enabledCount === chunkCount ? 'Enabled / Disable' : 'Mixed / Enable all'}</button>
                                 <button onclick="downloadSourceFile(ragCurrentCollection,'${escapeHtml(first.id)}')" style="background:#1a1a1a;color:#00ff88;border:1px solid #00553a;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Reassemble and download the whole source file (zip with body + .meta.json)">SRC</button>
                                 <button data-chunks="${escapeHtml(JSON.stringify(row.chunkIds))}" data-source="${escapeHtml(row.source)}" onclick="deleteSourceFile(this)" style="background:none;color:#ff5555;border:1px solid #552222;padding:2px 8px;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;border-radius:3px" title="Delete all chunks of this file">DEL</button>

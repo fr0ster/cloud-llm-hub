@@ -731,7 +731,7 @@ destination }`, `execute_step({ session, task, destination?, worker? })` runs in
 `session_close({ session })` closes it. Errors come back as tool errors with the
 codes above.
 
-Agent MCP lists 23 tools: the eleven RAG tools, `list_destinations`,
+Agent MCP lists 25 tools: the thirteen RAG tools, `list_destinations`,
 `session_open`, `session_close`, `execute_step`, and these eight orchestration tools.
 The former plan tool names `get_plan` and `update_plan` are now `plan_get` and
 `plan_update`; no aliases are registered.
@@ -766,7 +766,7 @@ a tool error. Background work uses the same executor limits, shared pool and per
 store; running tasks restore as interrupted after restart. Tool and worker usage is
 recorded on channel `mcp-agent` with the request trace and session identity.
 
-All channels share the same eleven RAG tools. The five content/collection writes below
+All channels share the same thirteen RAG tools. The five content/collection writes below
 use strict objects and accept an optional nonempty `session` argument. A live,
 caller-owned session is required even for user collections. Key precedence is
 `session`, `x-clh-session`, then the `clh_session` cookie; obtain the key with
@@ -777,10 +777,24 @@ UTF-8 JSON-serialized arguments, including attributes and session, must fit in
 | Tool | Required arguments | Optional attributes | Success fields besides `result` |
 |---|---|---|---|
 | `collection_create` | `name: string`, `scope: "user" \| "session"` | `session` | `collection`, normalized `name`, `scope`, `created: boolean` |
+| `collection_set_trust` | `collection: string`, `trust: number` | `session` | `collection`, `updated: true` |
+| `record_set_trust` | `collection: string`, `record: string`, `trust: number \| null` | `session` | `collection`, `updated: true` |
 | `collection_delete` | `collection: string` | `session` | `collection`, `deleted: true` |
 | `record_add` | `collection: string`, `text: string` | `record: string`, `title: string`, `source: string`, `session` | `collection`, `record`, `created: true` |
 | `record_update` | `collection: string`, `record: string`, `text: string` | `title: string`, `source: string`, `session` | `collection`, `record`, `updated: true` |
 | `record_delete` | `collection: string`, `record: string` | `session` | `collection`, `record`, `deleted: true` |
+
+Trust setters require MCP_Admin and a global informational source. Use collection
+`@skills` for informational skills (record is the skill id: front-matter `id`, else directory, else `<source>/<name>`); a real collection
+named `skills` remains separate. Values must be numbers from 0 to 5 with at most
+one decimal; strings, nonfinite numbers and collection null return
+`INVALID_TRUST` (400). Record null clears the override. Visible non-global sources,
+informational presets, agents collections and base skills return `TRUST_FIXED`
+(409); non-admin calls return `FORBIDDEN` (403). Inaccessible collections remain
+`NOT_FOUND` (404). Tools have write effect, remain visible to non-admins, and are
+hidden by read-only mode and profile ceilings like the other write RAG tools.
+Every change records actor, timestamp, previous and new override (last 20 entries).
+Writes invalidate only the affected record, collection or virtual source key.
 
 Required strings are nonempty; text is preserved verbatim. Empty optional title
 and source strings are allowed. Source is attribution only (no URL fetch).
@@ -1053,6 +1067,22 @@ Reconnects can pass `Last-Event-ID` to skip the rendered prefix.
 
 ### Session collection search toggle
 
+Trust administration routes (MCP_Admin only, global informational sources):
+
+- `PUT /v1/rag/collections/:id` accepts `{ "trust": 3 }`, alongside optional
+  `displayName` and `description`.
+- `PATCH /v1/rag/collections/:id/documents/:did/trust` accepts
+  `{ "trust": 2 }` or `{ "trust": null }` to clear the record override.
+- `GET /v1/rag/collections` includes the virtual `@skills` source for admins,
+  with scope/trust class `global` and effective trust.
+- `GET /v1/rag/collections/@skills/documents` lists informational skills with
+  effective `trust` and an optional `trustOverride`. Both trust setters accept
+  `@skills`; record IDs are skill ids (front-matter `id`, else directory, else `<source>/<name>`). Base skills are excluded from this list.
+
+The setters use the same values, access rules and error codes as the two MCP
+trust tools above. Effective record trust is record override, then collection or
+source override, then class default. Clearing an override restores inheritance.
+
 `PATCH /v1/rag/collections/:id/enabled` with `{ "enabled": false }` and the current session header (`x-clh-session`, or the session cookie) changes only that user's session. `GET /v1/rag/collections` returns `enabled` (effective session state) and `defaultEnabled`. Use `{ "enabled": false, "scope": "default" }` to edit the default with the existing owner/admin permissions. Without a session, PATCH and GET retain default behavior.
 
 Session overrides take precedence over collection defaults. They are deleted with session state. Long sessions persist overrides in their session record (SQLite/HANA/PG as configured) and restore them with the destination and history after restart; plain sessions keep overrides in memory, like their destination state.
@@ -1158,4 +1188,26 @@ keep their snapshots. Agents collections never participate in knowledge context.
 
 Create the target explicitly with `collection_create({ name: "result", scope: "user" })`, then call `record_add({ collection: "result", record: "tech-spec", text: "..." })`. Use user scope for durable results and session scope only for scratch. `record` is the optional stable physical ID; omission generates a UUID. Add is create-only: `RECORD_EXISTS` (409) requires reading the existing record and using `record_update({ collection, record, text })`. Read back with paged `collection_records` and `rag_read` using actual IDs; verify count and scope. Retire reversibly with `record_set_enabled({ collection, id, enabled: false })`; use `record_delete({ collection, record })` only for explicit permanent removal. Updates preserve ID and metadata but add no correction reason, audit history or supersede chain. Disabling does not free an ID. A live owned long session is required for every RAG call.
 
-Plain OpenAI and Anthropic chat clients must open a live caller-owned long session with `POST /v1/session` and bind its returned key with the top-level string body field `session`, `x-clh-session`, or the `clh_session` cookie, in that precedence order. The body field is validated and removed before forwarding upstream; invalid types return 400 and unknown, closed or foreign keys return `SESSION_NOT_FOUND`, as with the header. All eleven RAG tools stay listed but return `SESSION_REQUIRED` without that session. WebUI sends `x-clh-tool-results: summary` on chat requests to receive compact `: tool-result` SSE comments (identifiers, counts and error codes, without returned texts or error messages). The header value is case-insensitive; absent or other values emit no tool-result comments, including dialogue follow-up streams. WebUI executes RAG on the server and renders server tool results; browsers must not dispatch them again. Removed tool names in client tool definitions, forced choices or calls return 400 with migration guidance; REST tool dispatch returns 404. Cross-instance `RECORD_EXISTS` protection is not atomic: providers offer upsert without conditional insert; serialization applies within one process.
+Plain OpenAI and Anthropic chat clients must open a live caller-owned long session with `POST /v1/session` and bind its returned key with the top-level string body field `session`, `x-clh-session`, or the `clh_session` cookie, in that precedence order. The body field is validated and removed before forwarding upstream; invalid types return 400 and unknown, closed or foreign keys return `SESSION_NOT_FOUND`, as with the header. All thirteen RAG tools stay listed but return `SESSION_REQUIRED` without that session. WebUI sends `x-clh-tool-results: summary` on chat requests to receive compact `: tool-result` SSE comments (identifiers, counts and error codes, without returned texts or error messages). The header value is case-insensitive; absent or other values emit no tool-result comments, including dialogue follow-up streams. WebUI executes RAG on the server and renders server tool results; browsers must not dispatch them again. Removed tool names in client tool definitions, forced choices or calls return 400 with migration guidance; REST tool dispatch returns 404. Cross-instance `RECORD_EXISTS` protection is not atomic: providers offer upsert without conditional insert; serialization applies within one process.
+
+### Source trust: agent MCP and RAG REST
+
+The agent MCP tools `collection_set_trust({ collection, trust })` and `record_set_trust({ collection, record, trust })` set informational trust. The same catalogue is used across agent MCP, model endpoints, internal agents and WebUI, subject to read-only mode and profile tool ceilings. Only `MCP_Admin` can write trust, and only for global informational sources.
+
+REST routes (under `/v1`):
+
+| Method and path | JSON body | Effect |
+|---|---|---|
+| `PUT /rag/collections/:id` | `{ "trust": 4 }` | Set collection/source trust |
+| `PATCH /rag/collections/:id/documents/:did/trust` | `{ "trust": 2.5 }` | Set record override |
+| `PATCH /rag/collections/:id/documents/:did/trust` | `{ "trust": null }` | Clear override and inherit |
+
+Trust is a number from 0 to 5 with at most one decimal; strings are rejected. Collection trust cannot be null. Errors are `INVALID_TRUST` (400), `FORBIDDEN` (403), `NOT_FOUND` (404), and `TRUST_FIXED` (409: user/session sources, agent profiles or base skills). Existing visibility checks run first; hidden sources remain `NOT_FOUND`.
+
+`@skills` is the reserved virtual global source for informational skills. Admin collection listings include it; `GET /rag/collections/@skills/documents` lists its informational skills. Both REST setters and MCP tools accept `@skills`; record ids are stable skill ids, not display names. Ordinary collections named `skills` remain independent. Base skills are excluded.
+
+Collection listings expose `trusted: true`, effective `trust`, `trustClass`, and optional `trustOverride`. Document list/read and MCP record attributes expose `trusted: true`, effective `trust`, optional `trustOverride`, and derived provenance `source`. MCP search hits carry `trust` and `source`. An absent record override means inherited trust. Agent collections and records expose `trusted: false` without trust fields. Upload metadata `source` remains the filename; top-level trust provenance is derived separately.
+
+Model-facing informational content uses `[source: <class>:<name>; trust <n>]`, or `[source: <class>; trust <n>]` without a name. Integers have no trailing `.0`; brackets in names are escaped as `&#91;` and `&#93;`. Planner retrieval labels carry the same source and trust. Tags appear in RAG retrieval, session recall, planner memory/knowledge, attachments, informational skills, reranker candidates, embedded target-system results, replayed tool history and checker evidence. Stored tool traces stay raw. Profiles, base skills, corrections, tool groups and hub orchestration results are not tagged.
+
+MANAGE shows effective collection trust and class, and distinguishes inherited document trust from overrides. Admins can edit global trust inline, including `@skills`; clearing a record input restores inheritance. Chunked uploads retain source grouping with per-chunk trust controls.

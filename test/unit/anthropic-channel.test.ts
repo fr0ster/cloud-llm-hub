@@ -752,7 +752,9 @@ describe('selected collection retrieval', () => {
     harness.process = async (messages) => {
       const last = (messages as Array<{ content: string }>).at(-1);
       if (!last) throw new Error('missing user message');
-      expect(last.content).toBe(`hi${RAG_CONTEXT_MARKER}retrieved answer`);
+      expect(last.content).toBe(
+        `hi${RAG_CONTEXT_MARKER}[source: user:docs__u_alice; trust 3]\nretrieved answer`,
+      );
       expect(userTextOf(last)).toBe('hi');
       return { ok: true, value: { content: 'answer', stopReason: 'stop' } };
     };

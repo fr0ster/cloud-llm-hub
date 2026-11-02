@@ -249,10 +249,20 @@ test('REST disabled reads expose neither body nor description, including to owne
   const response = await request(`/rag/collections/${own}/documents/disabled`);
   expect(
     z
-      .object({ id: z.string(), enabled: z.boolean(), reason: z.string() })
+      .object({
+        id: z.string(),
+        enabled: z.boolean(),
+        trusted: z.literal(false),
+        reason: z.string(),
+      })
       .strict()
       .parse(await response.json()),
-  ).toEqual({ id: 'disabled', enabled: false, reason: 'record-disabled' });
+  ).toEqual({
+    id: 'disabled',
+    enabled: false,
+    trusted: false,
+    reason: 'record-disabled',
+  });
   const listing = await request(`/rag/collections/${own}/documents`);
   const text = await listing.text();
   expect(text.match(/private prompt body/g)).toHaveLength(1);
@@ -347,7 +357,12 @@ test.each(['analyst', 'disabled'])(
       expect(response.status).toBe(200);
       const body: object = await response.json();
       if (id === 'analyst')
-        expect(body).toEqual({ id, enabled: false, reason: 'record-disabled' });
+        expect(body).toEqual({
+          id,
+          enabled: false,
+          trusted: false,
+          reason: 'record-disabled',
+        });
       else
         expect(body).toMatchObject({
           id,

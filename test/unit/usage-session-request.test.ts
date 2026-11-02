@@ -817,7 +817,11 @@ test.each([
             chunks: relevant && hasUser ? 3 : 0,
             chars:
               relevant && hasUser
-                ? ['DOC_ONE', 'DOC_TWO', 'DOC_THREE'].join('\n---\n').length
+                ? [
+                    '[source: user:test; trust 3]\nDOC_ONE',
+                    '[source: user:test; trust 3]\nDOC_TWO',
+                    '[source: user:test; trust 3]\nDOC_THREE',
+                  ].join('\n---\n').length
                 : 0,
             injected: relevant && hasUser,
           },

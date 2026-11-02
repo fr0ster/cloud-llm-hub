@@ -12,6 +12,8 @@ import {
   DIALOGUE_ATTACHMENT_CHARS,
   dialogueAttachments,
 } from '../../srv/lib/dialogue-attachments';
+import { parseTrustDefaults } from '../../srv/lib/trust';
+import { TrustResolver } from '../../srv/lib/trust-resolver';
 import { CollectionRegistry } from '../../srv/rag-collections';
 
 jest.mock('../../srv/agent-manager', () => ({
@@ -83,7 +85,9 @@ test('explicit uploads read bounded content without semantic queries and exclude
   const query = jest.spyOn(store, 'query');
   const list = jest.spyOn(registry, 'listDocuments');
   const result = await dialogueAttachments(req(), 'alice', 'session');
-  expect(result).toContain('attached text');
+  expect(result).toContain(
+    '[source: user:Uploads/file; trust 3]\n--- file ---\nattached text',
+  );
   expect(result).not.toContain('hidden');
   expect(result).not.toContain('superseded content');
   expect(result?.length).toBeLessThanOrEqual(DIALOGUE_ATTACHMENT_CHARS);
@@ -143,3 +147,32 @@ test('collection selection alone does not attach earlier uploads', async () => {
   ).toBeUndefined();
   expect(get).not.toHaveBeenCalled();
 });
+
+test.each([undefined, 4])(
+  'session preview uses coordinator trust %s within the preview budget',
+  async (sessionTrust) => {
+    const id = await uploads('session');
+    await registry.addDocument(id, {
+      id: 'file',
+      metadata: {},
+      text: 'attachment'.repeat(DIALOGUE_ATTACHMENT_CHARS),
+    });
+    const resolver = new TrustResolver(
+      registry,
+      undefined,
+      parseTrustDefaults(undefined),
+    ).forProfile({
+      trust: sessionTrust === undefined ? undefined : { session: sessionTrust },
+    });
+    const result = await dialogueAttachments(
+      req(),
+      'alice',
+      'session',
+      resolver,
+    );
+    expect(result).toContain(
+      `[source: session:Uploads/file; trust ${sessionTrust ?? 2}]\n--- file ---\n`,
+    );
+    expect(result?.length).toBe(DIALOGUE_ATTACHMENT_CHARS);
+  },
+);

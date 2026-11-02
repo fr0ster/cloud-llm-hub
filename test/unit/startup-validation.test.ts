@@ -43,6 +43,7 @@ const restoreStatus: { value: { state: string; error?: string } } = {
 };
 // Set by a test to make the provider startup reject.
 const providersFailure: { error?: Error } = {};
+const agentsFailure: { error?: Error } = {};
 jest.mock('../../srv/lib/providers', () => ({
   startProviders: async () => {
     order.push('startProviders');
@@ -56,7 +57,9 @@ jest.mock('../../srv/agent-manager', () => ({
   // Initialisation fails here, as it does when AI Core is not reachable yet.
   initSmartAgents: () => {
     order.push('initSmartAgents');
-    return Promise.reject(new Error('AI Core not reachable'));
+    return Promise.reject(
+      agentsFailure.error ?? new Error('AI Core not reachable'),
+    );
   },
   getCollectionRegistry: () => ({
     sweepExpiredSessions: () => {},

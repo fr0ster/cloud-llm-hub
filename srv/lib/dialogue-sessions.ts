@@ -13,6 +13,7 @@ import type {
   TaskRecord,
   TokenUsage,
   ToolCallRecord,
+  WorkerProfile,
 } from '@mcp-abap-adt/llm-agent';
 import { addTokenUsage } from '@mcp-abap-adt/llm-agent';
 import { DialogueSession, SemaphorePool } from '@mcp-abap-adt/llm-agent-libs';
@@ -32,7 +33,11 @@ import {
   runWithSessionId,
   runWithToolGateBypass,
 } from '../request-session';
-import { BriefPlanAuthor, planAuthorBriefRequest } from './brief-plan-author';
+import {
+  BriefPlanAuthor,
+  planAuthorBriefRequest,
+  planAuthorMode,
+} from './brief-plan-author';
 import { runWithContextCapture } from './context-capture';
 import { withCoordinatorRun } from './coordinator-tools-client';
 import { DialogueOutbox, type OutboxEntry } from './dialogue-outbox';
@@ -61,7 +66,7 @@ import {
   plannerSessionOptions,
 } from './planner-memory';
 import { runWithRequestSystem } from './request-system-context';
-import { getReviewSignals } from './review-scope';
+import { captureReviewProfile, getReviewSignals } from './review-scope';
 import {
   type ConnectionLease,
   SessionConnectionFactory,
@@ -70,6 +75,7 @@ import {
 import { evaluateGated } from './step-reviewer';
 import { cachedSystemIdentity } from './system-identity-cache';
 import { type TaskView, taskView } from './task-view';
+import { resolverFor, type TrustResolver } from './trust-resolver';
 import { usageRuntime } from './usage/runtime';
 
 type Plan = Exclude<DialogueState['plan'], string | undefined>;
@@ -122,6 +128,7 @@ export interface DialogueHandle {
   destination: string;
   session: DialogueSession;
   usage?: IUsageRecorder;
+  coordinatorResolver(): Promise<TrustResolver>;
   attachments: WeakMap<object, string>;
   replies: WeakMap<object, { id: string; createdAt: number }>;
   outbox: DialogueOutbox;
@@ -277,6 +284,7 @@ async function open(
   )
     throw new Error('Destination profile runner unavailable');
   const { recMcp, criticLlm, profileRunner } = destinationHandle;
+  const trustResolver = destinationHandle.trustResolver ?? resolverFor({});
   const usage = usageRuntime()?.forSession({
     sessionId: key,
     userId,
@@ -405,7 +413,10 @@ async function open(
     identity: RagCallerIdentity;
   }>();
   const workers = new Map<string, ISubAgent>();
-  const wrapWorker = (worker: ISubAgent): ISubAgent => {
+  const wrapWorker = (
+    worker: ISubAgent,
+    profile?: WorkerProfile,
+  ): ISubAgent => {
     const name = worker.name;
     return {
       name: worker.name,
@@ -431,24 +442,33 @@ async function open(
               runWithRequestConnection(
                 ctx.lease.connection,
                 async () => {
-                  const result = await runWithToolGateBypass(() =>
-                    runWithDialogueRagTools(() =>
-                      runWithContextCapture(
-                        {
-                          component:
-                            name === 'checker' ? 'checker' : 'executor',
-                          taskId: ctx.taskId,
-                          sessionKey: key,
-                        },
-                        () =>
-                          worker.run({
-                            ...input,
-                            trace: { traceId: ctx.traceId },
-                            signal: ctx.pipeline.signal,
-                          }),
+                  const { result, profile: resolvedProfile } =
+                    await captureReviewProfile(() =>
+                      runWithToolGateBypass(() =>
+                        runWithDialogueRagTools(() =>
+                          runWithContextCapture(
+                            {
+                              component:
+                                name === 'checker' ? 'checker' : 'executor',
+                              taskId: ctx.taskId,
+                              sessionKey: key,
+                            },
+                            () =>
+                              worker.run({
+                                ...input,
+                                trace: { traceId: ctx.traceId },
+                                signal: ctx.pipeline.signal,
+                              }),
+                          ),
+                        ),
                       ),
-                    ),
-                  );
+                    );
+                  const reviewedProfile = profile ?? resolvedProfile;
+                  const toolTrust = reviewedProfile?.trust
+                    ? (destinationHandle.toolTrustFor?.(
+                        trustResolver.forProfile(reviewedProfile),
+                      ) ?? destinationHandle.toolTrust)
+                    : destinationHandle.toolTrust;
                   if (
                     result.errorClass === 'epicfail' ||
                     result.stopped ||
@@ -456,6 +476,7 @@ async function open(
                   )
                     return result;
                   const verdict = await evaluateGated({
+                    toolTrust,
                     usage: input.usage,
                     content: result.output,
                     records: recMcp.getToolRecords(ctx.traceId),
@@ -680,9 +701,22 @@ async function open(
       config.profiles?.collectionId ??
       'agents',
   );
+  const coordinatorResolver = async (): Promise<TrustResolver> => {
+    const prompts = await source.getPrompts();
+    return trustResolver.forProfile({
+      trust: prompts.ok ? prompts.value.trust?.coordinator : undefined,
+    });
+  };
   try {
-    const retrieval = await plannerSessionOptions(userId, key);
+    const retrieval = await plannerSessionOptions(
+      userId,
+      key,
+      coordinatorResolver,
+    );
+    let coordinatorToolResolver = await coordinatorResolver();
     session = await DialogueSession.open({
+      toolTrust: (name) =>
+        destinationHandle.toolTrustFor?.(coordinatorToolResolver)(name),
       profileSource: source,
       planAuthor: new BriefPlanAuthor({
         source,
@@ -693,8 +727,21 @@ async function open(
           const request = session
             ?.snapshot()
             .requests?.find((record) => record.closedAt === undefined);
+          const authorPrompts = await source.getPrompts(options);
+          const role =
+            planAuthorMode() === 'create' ? 'plannerCreate' : 'plannerRevise';
+          const authorResolver = trustResolver.forProfile({
+            trust: authorPrompts.ok
+              ? authorPrompts.value.trust?.[role]
+              : undefined,
+          });
+          const authorRetrieval = await plannerSessionOptions(
+            userId,
+            key,
+            authorResolver,
+          );
           const context = await planAuthorContextNotes(
-            retrieval,
+            authorRetrieval,
             key,
             request ?? planAuthorBriefRequest(),
             options,
@@ -711,10 +758,11 @@ async function open(
         createWorker: async (input, options) => {
           const result = await profileRunner.createWorker(input, options);
           return result.ok
-            ? { ok: true, value: wrapWorker(result.value) }
+            ? { ok: true, value: wrapWorker(result.value, input.profile) }
             : result;
         },
         preparePlanner: async (input, options) => {
+          coordinatorToolResolver = trustResolver.forProfile(input);
           const result = await withCoordinatorRun(
             async (run) =>
               (await dialogueFor(userId, key, destination)).runStep(run),
@@ -905,6 +953,7 @@ async function open(
     session,
     ...(usage ? { usage } : {}),
     attachments,
+    coordinatorResolver,
     replies,
     outbox,
     state() {

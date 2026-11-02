@@ -1,9 +1,11 @@
+import { formatTrustTag } from '@mcp-abap-adt/llm-agent';
 import type { Request } from 'express';
 import { getCollectionRegistry } from '../agent-manager';
 import { resolveRouteId } from '../collection-ids';
 import { requestedCollectionIds } from './collection-retrieval';
 import { collectionEnabled } from './collection-toggle';
 import { recordPolicy } from './record-policy';
+import { resolverFor, type TrustResolver } from './trust-resolver';
 
 export const DIALOGUE_ATTACHMENT_CHARS = 16_000;
 
@@ -19,6 +21,7 @@ export async function dialogueAttachments(
   >,
   userId: string,
   sessionId: string,
+  trustResolver?: TrustResolver | (() => Promise<TrustResolver>),
 ): Promise<string | undefined> {
   const documentIds = req.body?.attachment_document_ids;
   if (!Array.isArray(documentIds) || documentIds.length === 0) return undefined;
@@ -41,6 +44,12 @@ export async function dialogueAttachments(
   const enabled = collectionEnabled(registry, userId, sessionId, meta);
   const explicitSessionUpload =
     meta.scope === 'session' && meta.sessionId === sessionId;
+  const notice =
+    '\n[Attachment preview bounded to 16000 characters / 100 records; workers can read remaining uploads with RAG tools.]';
+  const resolver =
+    typeof trustResolver === 'function'
+      ? await trustResolver()
+      : (trustResolver ?? resolverFor(registry));
   let text = '';
   for (const documentId of [...new Set(documentIds)].slice(0, 100)) {
     const doc = await registry.getDocument(id, documentId);
@@ -58,14 +67,15 @@ export async function dialogueAttachments(
       continue;
     const source =
       typeof doc.metadata.source === 'string' ? doc.metadata.source : doc.id;
-    text += `\n--- ${source} ---\n${doc.text}`.slice(
-      0,
-      DIALOGUE_ATTACHMENT_CHARS - text.length,
-    );
-    if (text.length >= DIALOGUE_ATTACHMENT_CHARS) break;
+    const input = resolver.inputFor(doc, meta);
+    if (!input.trusted) continue;
+    const tag = formatTrustTag(input.source, resolver.record(doc, meta));
+    const heading = `\n${tag}\n--- ${source} ---\n`;
+    const remaining = DIALOGUE_ATTACHMENT_CHARS - notice.length - text.length;
+    if (heading.length > remaining) break;
+    text += heading + doc.text.slice(0, remaining - heading.length);
+    if (text.length >= DIALOGUE_ATTACHMENT_CHARS - notice.length) break;
   }
   if (!text) return undefined;
-  const notice =
-    '\n[Attachment preview bounded to 16000 characters / 100 records; workers can read remaining uploads with RAG tools.]';
-  return text.slice(0, DIALOGUE_ATTACHMENT_CHARS - notice.length) + notice;
+  return text + notice;
 }

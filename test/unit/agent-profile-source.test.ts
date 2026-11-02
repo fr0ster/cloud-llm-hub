@@ -349,3 +349,45 @@ test('legacy environment variable selects a coordinator record', () => {
     parseAgentProfilesConfig({ LLM_AGENT_PLANNER_RECORD: 'planner' }),
   ).toThrow('Invalid LLM_AGENT_PLANNER_RECORD');
 });
+
+test('returns distinct trust maps for each prompt role and worker', async () => {
+  const f = fixture();
+  const records = [
+    prompt('_worker-base', 'worker-base'),
+    prompt('coordinator', 'coordinator'),
+    prompt('planner-create', 'planner-author'),
+    prompt('planner-revise', 'planner-author'),
+    profile('executor'),
+    {
+      ...profile('checker'),
+      metadata: {
+        ...profile('checker').metadata,
+        tools: 'read-only',
+        result: 'verdict',
+      },
+    },
+  ];
+  records.forEach((record, index) => {
+    if (index) record.metadata.trust = { user: index };
+  });
+  f.records(records);
+  const prompts = await f.source.getPrompts();
+  expect(prompts).toMatchObject({
+    ok: true,
+    value: {
+      trust: {
+        coordinator: { user: 1 },
+        plannerCreate: { user: 2 },
+        plannerRevise: { user: 3 },
+      },
+    },
+  });
+  expect(await f.source.get('executor')).toMatchObject({
+    ok: true,
+    value: { trust: { user: 4 } },
+  });
+  expect(await f.source.get('checker')).toMatchObject({
+    ok: true,
+    value: { trust: { user: 5 } },
+  });
+});
