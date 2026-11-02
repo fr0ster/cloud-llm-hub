@@ -4,9 +4,10 @@ import type {
   ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
 import type { Delivery } from './dialogue-outbox';
-import type { DialogueHandle } from './dialogue-sessions';
+import type { DialogueEvent, DialogueHandle } from './dialogue-sessions';
 
 export type FollowItem =
+  | Extract<DialogueEvent, { kind: 'activity' | 'turn' }>
   | { kind: 'tool-result'; record: ToolCallRecord; written?: () => void }
   | { kind: 'message'; message: PlannerMessage; written(): void }
   | {
@@ -38,17 +39,7 @@ export async function supersedeFollow(handle: DialogueHandle): Promise<void> {
   const previous = follows.get(handle);
   if (!previous) return;
   previous.stop();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      previous.responseEnded ?? previous.ended,
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, 5000);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
+  await (previous.responseEnded ?? previous.ended);
 }
 
 export function followDialogue(
@@ -72,10 +63,8 @@ export function followDialogue(
   let forced: End | undefined;
   let wake = () => {};
   let started = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
   let unsubscribe = () => {};
   const cleanup = () => {
-    clearTimeout(timer);
     unsubscribe();
     opts.signal.removeEventListener('abort', abort);
     if (!opts.responseEnded && follows.get(handle) === current)
@@ -106,8 +95,6 @@ export function followDialogue(
   if (opts.signal.aborted) abort();
   const iterator = (async function* (): AsyncGenerator<FollowItem, void> {
     started = true;
-    const now = opts.now ?? Date.now;
-    const startedAt = now();
     let evaluate = true;
     const yielded = new Set<string>();
     try {
@@ -117,10 +104,18 @@ export function followDialogue(
         yield forced;
         return;
       }
-      const toolResults: Extract<FollowItem, { kind: 'tool-result' }>[] = [];
+      const toolResults: Extract<
+        FollowItem,
+        { kind: 'tool-result' | 'activity' | 'turn' }
+      >[] = [];
       unsubscribe = handle.subscribe(
         (event) => {
-          if (event.kind === 'tool-result') toolResults.push(event);
+          if (
+            event.kind === 'tool-result' ||
+            event.kind === 'activity' ||
+            event.kind === 'turn'
+          )
+            toolResults.push(event);
           if (event.kind === 'settled') {
             evaluate = true;
           }
@@ -128,21 +123,6 @@ export function followDialogue(
         },
         undefined,
         true,
-      );
-      timer = setTimeout(
-        () => {
-          const { done, total } = handle.state();
-          forced ??= {
-            kind: 'end',
-            reason: 'limit',
-            note:
-              total === 0
-                ? 'still running'
-                : `still running: ${done} of ${total} steps done`,
-          };
-          wake();
-        },
-        Math.max(0, opts.maxMs - (now() - startedAt)),
       );
       while (true) {
         // Install the waiter before inspecting state to avoid losing notifications.

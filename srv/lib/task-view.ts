@@ -15,9 +15,15 @@ export type TaskView = Pick<
   | 'toolsAvailable'
   | 'toolCalls'
   | 'maxToolCalls'
->;
+> & { lastActivityAt?: number; currentAction?: string };
 export function taskView(task: TaskView): TaskView {
   return {
+    ...(task.lastActivityAt === undefined
+      ? {}
+      : { lastActivityAt: task.lastActivityAt }),
+    ...(task.currentAction === undefined
+      ? {}
+      : { currentAction: task.currentAction }),
     ...(task.toolsSelected === undefined
       ? {}
       : { toolsSelected: task.toolsSelected }),

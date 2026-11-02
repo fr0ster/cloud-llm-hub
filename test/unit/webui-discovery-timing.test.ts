@@ -50,6 +50,11 @@ test('chat elapsed time includes synchronous transcript rendering before the req
     source + '\nstopTimer(); setStatus(elapsed()); }; sendMessage();',
     {
       chatSendSequence: 0,
+      ownTurns: new Set(),
+      rememberOwnTurn: jest.fn(),
+      crypto: { randomUUID: () => 'test-turn-id' },
+      streamingRequests: 0,
+      updateKeepAlive: () => {},
       dialogueOpen: false,
       ready: true,
       hubSignedOut: false,

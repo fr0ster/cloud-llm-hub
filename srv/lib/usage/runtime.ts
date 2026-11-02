@@ -231,8 +231,13 @@ export async function initUsage(
                   reject: (error: Error) => void,
                 ): void => {
                   timer = setTimeout(
-                    (): void => reject(new Error('HANA probe timed out')),
-                    deps.probeTimeoutMs ?? BACKEND_TIMEOUT_MS,
+                    (): void => {
+                      warn('HANA_PROBE_SAFETY_NET');
+                      reject(new Error('HANA probe timed out'));
+                    },
+                    // Startup/recovery has no caller signal. Release a truly hung
+                    // health probe after ten minutes; the outstanding query is reused.
+                    deps.probeTimeoutMs ?? 600_000,
                   );
                 },
               ),

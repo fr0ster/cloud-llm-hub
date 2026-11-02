@@ -200,6 +200,9 @@ modules:
         - route: ${APPROUTER_HOST}.${CF_LANDSCAPE}
     properties:
       TENANT_HOST_PATTERN: "^(.*)-cloud-llm-hub.${CF_LANDSCAPE}"
+      # Approuter idle session, in minutes. Matches the XSUAA token validity
+      # (24 h): a long agent run must not log the user out mid-work.
+      SESSION_TIMEOUT: 1440
     build-parameters:
       builder: custom
       commands:
@@ -212,7 +215,9 @@ modules:
           name: srv-api # must be used in xs-app.json as well
           url: ~{srv-url}
           forwardAuthToken: true
-          timeout: 300000
+          # Backend request timeout (ms). Long non-streaming agent runs must not be
+          # cut by the router; aligned with the session lifetime.
+          timeout: 86400000
       - name: cloud-llm-hub-auth
     provides:
       - name: app-api

@@ -411,3 +411,32 @@ test('planner counters are sent as transient SSE', async () => {
   );
   res.emit('close');
 });
+
+test('activity and turn events reach session observers without tool payloads', async () => {
+  const res = response();
+  await handleDialogueEvents(
+    request({ longSession: { userId: 'alice', key: 'key' } }),
+    res,
+  );
+  const activity: DialogueEvent = {
+    kind: 'activity',
+    taskId: 't1',
+    worker: 'executor',
+    action: 'tool ReadObject',
+    at: 123,
+  };
+  const turn: DialogueEvent = {
+    kind: 'turn',
+    source: 'api',
+    text: 'Read the object',
+  };
+  listener(activity);
+  listener(turn);
+  expect(res.write).toHaveBeenCalledWith(
+    `event: activity\ndata: ${JSON.stringify(activity)}\n\n`,
+  );
+  expect(res.write).toHaveBeenCalledWith(
+    `event: turn\ndata: ${JSON.stringify(turn)}\n\n`,
+  );
+  res.emit('close');
+});

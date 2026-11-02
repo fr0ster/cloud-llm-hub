@@ -425,15 +425,18 @@ describe('reviewStep', () => {
     );
     expect(v).toBeNull();
   });
-  it('fails open (null) on timeout when the reviewer hangs (ignores the signal)', async () => {
-    const hangLlm = {
+  it('fails open (null) on caller abort when the reviewer ignores the signal)', async () => {
+    const controller = new AbortController();
+    const hangLlm: ILlm = {
       chat: () => new Promise(() => {}), // never resolves, ignores abort
       streamChat: async function* () {},
     };
-    const v = await reviewStep(
+    const pending = reviewStep(
       { task: 't', executedTools: [], content: 'c' },
-      { llm: hangLlm as never, timeoutMs: 20 },
+      { llm: hangLlm, signal: controller.signal },
     );
+    controller.abort();
+    const v = await pending;
     expect(v).toBeNull();
   });
 });

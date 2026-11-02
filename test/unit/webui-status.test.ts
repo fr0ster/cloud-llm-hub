@@ -8,7 +8,7 @@ test('standalone status parser keeps latest states and escapes labels', () => {
     html.indexOf('        // Dialogue events'),
   );
   const api = runInNewContext(
-    source + ';({parseStepStatus, renderStepTrail})',
+    `${source};({parseStepStatus, renderStepTrail})`,
     {
       escapeHtml: (s: string) => s.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
     },
@@ -39,7 +39,7 @@ test.each([
     html.indexOf('        function stepSymbol('),
     html.indexOf('        // Dialogue events'),
   );
-  const api = runInNewContext(source + ';({stepSymbol})');
+  const api = runInNewContext(`${source};({stepSymbol})`);
   expect(api.stepSymbol({ state, verdict })).toBe(symbol);
 });
 
@@ -68,6 +68,9 @@ test('chat reader parses fragmented CRLF status comments and retains trail with 
       '})()',
     {
       TextDecoder,
+      streamController: new AbortController(),
+      streamKey: 'key',
+      ownsSession: (key: string) => key === 'key',
       response: {
         body: {
           getReader: () => ({

@@ -47,6 +47,7 @@ export class ReviewerSubAgent implements ISubAgent {
     const content = input.context ?? input.task;
     const records = this.deps.getToolRecords(input.trace?.traceId);
     const verdict = await evaluateGated({
+      signal: input.signal,
       toolTrust: this.deps.toolTrust,
       usage: input.usage,
       content,

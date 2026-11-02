@@ -22,6 +22,7 @@ import {
   type ToolEffectAnnotations,
 } from './tool-authorization';
 import { capToolResult } from './tool-result-cap';
+import { reportWorkerActivity } from './worker-activity';
 import { isWriteTool } from './write-guardrail';
 
 /**
@@ -196,6 +197,7 @@ export class RecordingMcpClient implements IMcpClient {
     };
     if (traceId && this.retainRecords) this.deltaFor(traceId).push(record);
 
+    reportWorkerActivity(`tool ${name}`);
     let res = await this.inner.callTool(name, args, options);
     if (res.ok) {
       const { ok, status, error } = parseToolOutcome({

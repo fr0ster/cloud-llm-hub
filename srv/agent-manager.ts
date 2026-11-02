@@ -17,6 +17,7 @@ import {
 } from './lib/model-policy';
 import { resolverFor, TrustResolver } from './lib/trust-resolver';
 import { TrustStore } from './lib/trust-store';
+import { reportWorkerActivity } from './lib/worker-activity';
 
 export function runExecutorStep(...args: ExecutorStepArgs) {
   return executeExecutorStep(createAgentProfileSource, ...args);
@@ -2657,6 +2658,7 @@ export async function buildEmbeddedMcpAdapter(
       // - length >= 2: (context, args) => ... (direct handlers)
       // - length === 1: (args) => ... (closure-based, uses group.context)
       // Match BaseMcpServer.registerHandlers() logic (line 283-301)
+      reportWorkerActivity(`tool ${name}`);
       const toolCall =
         handler.length >= 2
           ? handler(effectiveContext, args)
@@ -3036,7 +3038,6 @@ export function createAgentProfileSource(
   const profiles = getAgentConfig().profiles ?? {
     collectionId: 'agents',
     plannerRecord: 'coordinator',
-    timeoutMs: 3000,
   };
   const sessionId = getRequestSessionId();
   return new AgentProfileSource(getCollectionRegistry(), {
@@ -3072,9 +3073,9 @@ export function createAgentProfileSource(
   });
 }
 
-/** Bound compatibility preparation without retaining a deadline during execution. */
+/** Preparation is bounded only by caller cancellation. */
 async function prepareCompatibilityWorker<T>(
-  config: AgentConfig,
+  _config: AgentConfig,
   options: CallOptions | undefined,
   prepare: (options: CallOptions) => Promise<T>,
 ): Promise<T> {
@@ -3082,12 +3083,11 @@ async function prepareCompatibilityWorker<T>(
   const controller = new AbortController();
   const abort = (): void => controller.abort();
   options?.signal?.addEventListener('abort', abort, { once: true });
-  const timer = setTimeout(abort, config.profiles?.timeoutMs ?? 3000);
   let rejectAbort: (() => void) | undefined;
   try {
     const stopped = new Promise<never>((_resolve, reject) => {
       rejectAbort = () =>
-        reject(new Error('Agent profile preparation cancelled or timed out'));
+        reject(new Error('Agent profile preparation cancelled'));
       controller.signal.addEventListener('abort', rejectAbort, { once: true });
     });
     const value = await Promise.race([
@@ -3097,7 +3097,6 @@ async function prepareCompatibilityWorker<T>(
     controller.signal.throwIfAborted();
     return value;
   } finally {
-    clearTimeout(timer);
     options?.signal?.removeEventListener('abort', abort);
     if (rejectAbort)
       controller.signal.removeEventListener('abort', rejectAbort);
@@ -3763,8 +3762,7 @@ export async function buildLlmOnlyAgent(
  * Shared resources: LLM, embedder, facts/feedback/state RAG, metrics.
  */
 /**
- * How long `getSmartAgent` waits for a destination's lazy vectorization before
- * giving up. Env `LLM_AGENT_DESTINATION_INIT_WAIT_MS`; malformed/≤0 → 90 s.
+ * Legacy configuration parser (no longer bounds destination preparation). Env `LLM_AGENT_DESTINATION_INIT_WAIT_MS`; malformed/≤0 → 90 s.
  */
 export function getDestinationInitWaitMs(
   env: NodeJS.ProcessEnv = process.env,
@@ -3860,31 +3858,9 @@ export async function getSmartAgent(
 
   // Not ready and not terminal (absent / unknown / pending / vectorizing):
   // WAIT for this destination's vectorization instead of erroring. All callers
-  // share one init via ensureDestinationInit; the wait is bounded by
-  // LLM_AGENT_DESTINATION_INIT_WAIT_MS so a hung destination can't hold the
-  // request forever. This replaces the old immediate "agent not initialized".
+  // share one init via ensureDestinationInit; no hub deadline cuts preparation.
   if (!isTerminal(destinationStates.get(destName)?.status)) {
-    const waitMs = getDestinationInitWaitMs();
-    log.info('Destination not ready — waiting for vectorization', {
-      destination: destName,
-      status: destinationStates.get(destName)?.status ?? 'unknown',
-      waitMs,
-    });
-    // The bound's timer is cleared once the race is decided: left running it
-    // held the process (and Jest's workers) for the rest of `waitMs`, 90 s by
-    // default, after every init that finished in time.
-    let bound: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        // Swallow init errors here; the state re-read below decides the outcome.
-        ensureDestinationInit(destName).catch(() => undefined),
-        new Promise((resolve) => {
-          bound = setTimeout(resolve, waitMs);
-        }),
-      ]);
-    } finally {
-      clearTimeout(bound);
-    }
+    await ensureDestinationInit(destName).catch(() => undefined);
     handle = agentHandles.get(destName);
     if (handle) {
       return handle;

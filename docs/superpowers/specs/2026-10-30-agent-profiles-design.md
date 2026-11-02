@@ -276,7 +276,7 @@ Add to `srv/agent-config.ts` and document deployment configuration:
 | --- | --- |
 | `LLM_AGENT_PROFILES_COLLECTION` | `agents`; exact hub-owned global collection id. |
 | `LLM_AGENT_PLANNER_RECORD` | `planner`; exact planner-kind record (`planner-<variant>` allowed). Deployment selection, read fresh each call. |
-| `LLM_AGENT_PROFILE_TIMEOUT_MS` | `3000`; positive finite integer, wired as library `profileTimeoutMs`. |
+| `LLM_AGENT_PROFILE_TIMEOUT_MS` | No practical deadline; `600000` ms library compatibility safety net. Explicit positive integer override is opt-in; wired as library `profileTimeoutMs` over whole preparation. |
 | `LLM_AGENT_MODEL` | Existing main model configuration; the only model name that may be required. |
 | `LLM_AGENT_PLANNER_MODEL` | Existing optional override; absent uses main model. |
 | `LLM_AGENT_CLASSIFIER_MODEL` | Existing optional override; absent uses main model. |

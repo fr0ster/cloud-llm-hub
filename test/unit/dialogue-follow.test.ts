@@ -143,18 +143,15 @@ test('ends idle only on a settled state with nothing running', async () => {
 });
 
 test.each([5, 0])(
-  'limit ends with the exact status line, total %s',
+  'follow waits beyond the old limit until disconnected, total %s',
   async (total) => {
     const f = fixture();
     f.state.total = total;
     const iterator = f.start();
     const next = iterator.next();
     await jest.advanceTimersByTimeAsync(1000);
-    expect((await next).value).toEqual({
-      kind: 'end',
-      reason: 'limit',
-      note: total ? 'still running: 3 of 5 steps done' : 'still running',
-    });
+    f.controller.abort();
+    expect((await next).value).toEqual({ kind: 'end', reason: 'disconnected' });
     await iterator.next();
   },
 );
@@ -283,14 +280,17 @@ test('failure before delivery began does not end with error', async () => {
   expect((await iterator.next()).done).toBe(true);
 });
 
-test('supersede bounds waiting for a stuck response at five seconds', async () => {
+test('supersede waits for response completion beyond five seconds', async () => {
   const f = fixture();
+  let endResponse!: () => void;
   const iterator = followDialogue(f.handle, {
     delivery: f.delivery,
     since: 0,
     signal: f.controller.signal,
     maxMs: 10000,
-    responseEnded: new Promise<void>(() => {}),
+    responseEnded: new Promise<void>((resolve) => {
+      endResponse = resolve;
+    }),
   })[Symbol.asyncIterator]();
   const next = iterator.next();
   await Promise.resolve();
@@ -301,7 +301,9 @@ test('supersede bounds waiting for a stuck response at five seconds', async () =
   expect((await next).value).toMatchObject({ reason: 'superseded' });
   await jest.advanceTimersByTimeAsync(4999);
   expect(resolved).toBe(false);
-  await jest.advanceTimersByTimeAsync(1);
+  await jest.advanceTimersByTimeAsync(10_000);
+  expect(resolved).toBe(false);
+  endResponse();
   await superseding;
   expect(resolved).toBe(true);
   await iterator.return?.();

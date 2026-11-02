@@ -269,7 +269,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
       await executeHttpRequest(await this.sdkDestination(), {
         method: 'GET',
         url: `${baseUrl}/sap/bc/adt/compatibility/graph`,
-        timeout: 12_000,
+        timeout: 0,
         httpAgent: this.getHttpAgent(),
         headers: {
           ...(await this.getAuthHeaders()),
@@ -327,7 +327,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
       await executeHttpRequest(await this.sdkDestination(), {
         method: 'GET',
         url: `${baseUrl}/sap/public/bc/icf/logoff`,
-        timeout: 12_000,
+        timeout: 0,
         httpAgent: this.getHttpAgent(),
         headers: {
           ...(await this.getAuthHeaders()),
@@ -502,9 +502,8 @@ export class CloudSdkAbapConnection implements AbapConnection {
       const response = await executeHttpRequest(await this.sdkDestination(), {
         method: 'GET',
         url: `${baseUrl}${path}`,
-        // Server-side timeout: the browser AbortController only stops the UI
-        // wait, not this Cloud SDK request.
-        timeout: 12_000,
+        // No hub deadline: caller/connection cancellation owns this work.
+        timeout: 0,
         httpAgent: this.getHttpAgent(),
         headers: {
           ...(await this.getAuthHeaders()),
@@ -783,14 +782,11 @@ export class CloudSdkAbapConnection implements AbapConnection {
         // the system default. Seed sap-usercontext before the request.
         this.enforceClientCookie();
         const csrfCookie = this.getCookieHeader();
-        // Bound the CSRF fetch too — the SAP Cloud SDK does not time out on its
-        // own, so a hung CSRF request on a POST/PUT tool would otherwise block
-        // the whole call indefinitely. Uses SAP_TIMEOUT_CSRF (default 15 s).
-        const csrfTimeoutMs = Number(process.env.SAP_TIMEOUT_CSRF) || 15_000;
+        // No hub deadline on CSRF preparation; SAP controls its own limits.
         const response = await executeHttpRequest(await this.sdkDestination(), {
           method: 'GET',
           url: csrfUrl,
-          timeout: csrfTimeoutMs,
+          timeout: 0,
           httpAgent: this.getHttpAgent(),
           headers: {
             ...(await this.getAuthHeaders()),

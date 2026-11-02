@@ -12,10 +12,15 @@ export type ToolQueryAnalysis = { text: string; needsAbapSystem: boolean };
 export class ToolQueryAnalyzer {
   private readonly cache = new Map<string, ToolQueryAnalysis>();
   private readonly pending = new Map<string, Promise<ToolQueryAnalysis>>();
+  private readonly owners = new Map<
+    string,
+    { controller: AbortController; waiters: number }
+  >();
   private llmPromise?: Promise<ILlm>;
   constructor(
     private readonly llm: ILlm | (() => Promise<ILlm>),
-    private readonly timeoutMs = 4000,
+    /** @deprecated Work ends only on caller cancellation. */
+    _timeoutMs = 4000,
   ) {}
 
   async analyze(
@@ -44,22 +49,67 @@ export class ToolQueryAnalyzer {
     }
     const pending = this.pending.get(key);
     if (pending)
-      return trackCall(this.waitFor(pending, fallback, options?.signal));
-    const request = this.request(text, context, options).then(
-      ({ value, valid }) => {
-        this.pending.delete(key);
-        if (valid) {
-          this.cache.set(key, value);
-          if (this.cache.size > 500) {
-            const oldest = this.cache.keys().next().value;
-            if (oldest !== undefined) this.cache.delete(oldest);
-          }
-        } else this.llmPromise = undefined;
-        return value;
-      },
-    );
+      return this.waitShared(key, pending, fallback, options?.signal);
+    const owner = { controller: new AbortController(), waiters: 0 };
+    this.owners.set(key, owner);
+    const work = this.request(text, context, {
+      ...options,
+      signal: owner.controller.signal,
+    });
+    const request = this.waitResult(
+      work,
+      { value: fallback, valid: false },
+      owner.controller.signal,
+    ).then(({ value, valid }) => {
+      if (this.pending.get(key) === request) this.pending.delete(key);
+      if (valid) {
+        this.cache.set(key, value);
+        if (this.cache.size > 500) {
+          const oldest = this.cache.keys().next().value;
+          if (oldest !== undefined) this.cache.delete(oldest);
+        }
+      } else this.llmPromise = undefined;
+      return value;
+    });
     this.pending.set(key, request);
-    return trackCall(this.waitFor(request, fallback, options?.signal));
+    return this.waitShared(key, request, fallback, options?.signal);
+  }
+
+  private async waitResult<T>(
+    request: Promise<T>,
+    fallback: T,
+    signal: AbortSignal,
+  ): Promise<T> {
+    if (signal.aborted) return fallback;
+    let onAbort!: () => void;
+    const stopped = new Promise<T>((resolve) => {
+      onAbort = () => resolve(fallback);
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+      return await Promise.race([request, stopped]);
+    } finally {
+      signal.removeEventListener('abort', onAbort);
+    }
+  }
+
+  private waitShared(
+    key: string,
+    request: Promise<ToolQueryAnalysis>,
+    fallback: ToolQueryAnalysis,
+    signal?: AbortSignal,
+  ): Promise<ToolQueryAnalysis> {
+    const owner = this.owners.get(key);
+    if (owner) owner.waiters++;
+    return trackCall(
+      this.waitFor(request, fallback, signal).finally(() => {
+        if (owner && --owner.waiters === 0) {
+          owner.controller.abort();
+          if (this.pending.get(key) === request) this.pending.delete(key);
+          if (this.owners.get(key) === owner) this.owners.delete(key);
+        }
+      }),
+    );
   }
 
   private async waitFor(
@@ -83,38 +133,15 @@ export class ToolQueryAnalyzer {
 
   private async request(
     text: string,
-    context: unknown[],
+    context: Pick<Message, 'role' | 'content'>[],
     options?: CallOptions & { translationOnly?: boolean },
   ) {
-    const controller = new AbortController();
-    const fallback = { value: { text, needsAbapSystem: true }, valid: false };
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let stop!: () => void;
-    const stopped = new Promise<typeof fallback>((resolve) => {
-      stop = () => {
-        resolve(fallback);
-        controller.abort();
-      };
-      timer = setTimeout(stop, this.timeoutMs);
-      // Caller aborts only detach their waiter; shared work continues until
-      // completion or this deadline, even when every waiter has left.
-    });
-    try {
-      return await Promise.race([
-        stopped,
-        this.performRequest(text, context, {
-          ...options,
-          signal: controller.signal,
-        }),
-      ]);
-    } finally {
-      clearTimeout(timer);
-    }
+    return this.performRequest(text, context, options);
   }
 
   private async performRequest(
     text: string,
-    context: unknown[],
+    context: Pick<Message, 'role' | 'content'>[],
     options?: CallOptions & { translationOnly?: boolean },
   ) {
     let value = { text, needsAbapSystem: true };

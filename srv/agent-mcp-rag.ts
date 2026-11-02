@@ -887,7 +887,7 @@ export async function executeRagTool(
   return result;
 }
 
-/** External MCP preserves argument/header/cookie precedence and queue admission. */
+/** External MCP preserves argument/header precedence and queue admission. */
 export function executeRagMcpTool(
   req: Pick<Request, 'headers'>,
   userId: string,

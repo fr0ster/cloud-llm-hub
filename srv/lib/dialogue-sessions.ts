@@ -59,6 +59,7 @@ import {
   migrateDialogueToolContract,
   touchDialogueState,
 } from './dialogue-store';
+import { clientTurnId, turnSource } from './dialogue-turn-source';
 import { admitBackground, type PipelineSession } from './gatekeeper';
 import { isLlmFailure, llmFailure, observeLlmSpend } from './llm-failure';
 import { longSessionsIfReady } from './long-session';
@@ -81,6 +82,11 @@ import { cachedSystemIdentity } from './system-identity-cache';
 import { type TaskView, taskView } from './task-view';
 import { resolverFor, type TrustResolver } from './trust-resolver';
 import { usageRuntime } from './usage/runtime';
+import {
+  type ActivityEvent,
+  taskActivity,
+  withWorkerActivity,
+} from './worker-activity';
 
 type Plan = Exclude<DialogueState['plan'], string | undefined>;
 type PlanStep = Plan['steps'][number];
@@ -97,6 +103,13 @@ export interface PlannerCounts {
 }
 
 export type DialogueEvent =
+  | ActivityEvent
+  | {
+      kind: 'turn';
+      source: 'webui' | 'api' | 'mcp' | 'background';
+      text: string;
+      clientTurnId?: string;
+    }
   | ({ kind: 'planner' } & PlannerCounts)
   | ({ kind: 'wait' } & DialogueSignals['dialogue.wait'])
   | { kind: 'settled'; outcome: 'ok' | 'failed'; trigger: 'user' | 'event' }
@@ -170,6 +183,25 @@ interface LiveHandle extends DialogueHandle {
 }
 const handles = new Map<string, Promise<LiveHandle>>();
 const log = () => cds.log('dialogue');
+
+async function observeProfilePreparation<T>(
+  signal: AbortSignal | undefined,
+  prepare: () => Promise<T>,
+): Promise<T> {
+  const aborted = () => {
+    const reason = signal?.reason;
+    if (reason instanceof Error && /profile.*deadline/i.test(reason.message))
+      log().warn('Agent profile/preparation deadline observed');
+  };
+  signal?.addEventListener('abort', aborted, { once: true });
+  if (signal?.aborted) aborted();
+  try {
+    return await prepare();
+  } finally {
+    signal?.removeEventListener('abort', aborted);
+  }
+}
+
 const keyHash = (key: string) => createHash('sha256').update(key).digest('hex');
 const creationListeners = new Map<
   string,
@@ -496,6 +528,7 @@ async function open(
                   )
                     return result;
                   const verdict = await evaluateGated({
+                    signal: input.signal,
                     toolTrust,
                     usage: input.usage,
                     content: result.output,
@@ -589,6 +622,7 @@ async function open(
   };
   const taskCallers = new Map<string, TurnCaller>();
   const pendingEventCallers: TurnCaller[] = [];
+  const pendingEventTasks: string[] = [];
   let eventCaller: TurnCaller | undefined;
   const unsubscribeTaskCaller = signals.on(
     'dialogue.task.state',
@@ -603,6 +637,7 @@ async function open(
         task.state === 'failed' ||
         task.state === 'stopped'
       ) {
+        pendingEventTasks.push(task.id);
         const caller = taskCallers.get(task.id);
         if (caller) pendingEventCallers.push(caller);
         taskCallers.delete(task.id);
@@ -725,6 +760,21 @@ async function open(
   }
   let settledSeq = 0;
   let lastFailedSeq = 0;
+  const unsubscribeStarted = signals.on(
+    'dialogue.turn.started',
+    ({ payload: { trigger } }) => {
+      if (trigger === 'event')
+        emit({
+          kind: 'turn',
+          source: 'background',
+          text: `after task ${pendingEventTasks.splice(0).join(', ') || 'update'}`.slice(
+            0,
+            300,
+          ),
+        });
+    },
+    { source: key },
+  );
   const unsubscribeSettled = signals.on(
     'dialogue.turn.settled',
     async ({ payload: { outcome, trigger } }) => {
@@ -755,6 +805,7 @@ async function open(
     unsubscribeWait();
     unsubscribeActivity();
     unsubscribeClosed();
+    unsubscribeStarted();
     unsubscribeSettled();
     releaseLifetime();
   };
@@ -881,11 +932,16 @@ async function open(
           ];
         },
       }),
-      profileTimeoutMs: config.profiles?.timeoutMs ?? 3000,
+      // Omission leaves preparation bounded only by caller cancellation.
+      ...(config.profiles?.timeoutMs === undefined
+        ? {}
+        : { profileTimeoutMs: config.profiles.timeoutMs }),
       profileRunner: {
         validateModel: (model) => profileRunner.validateModel(model),
         createWorker: async (input, options) => {
-          const result = await profileRunner.createWorker(input, options);
+          const result = await observeProfilePreparation(options?.signal, () =>
+            profileRunner.createWorker(input, options),
+          );
           return result.ok
             ? { ok: true, value: wrapWorker(result.value, input.profile) }
             : result;
@@ -897,10 +953,16 @@ async function open(
               (await dialogueFor(userId, key, destination)).runStep(run),
             () =>
               withCoordinatorModel(selectedModel, () =>
-                profileRunner.preparePlanner(input, options),
+                observeProfilePreparation(options?.signal, () =>
+                  profileRunner.preparePlanner(input, options),
+                ),
               ),
           );
-          if (!result.ok) return result;
+          if (!result.ok) {
+            if (/timeout|timed out|deadline/i.test(result.error.message))
+              log().warn('Agent profile/preparation deadline observed');
+            return result;
+          }
           const prepared = result.value;
           return {
             ok: true,
@@ -913,6 +975,15 @@ async function open(
               },
             }),
           };
+        },
+      },
+      logger: {
+        warn(message) {
+          log().warn(
+            /profile|prepar|timeout|timed out|deadline/i.test(message)
+              ? 'Agent profile/preparation or background turn failure observed'
+              : 'Dialogue library warning',
+          );
         },
       },
       timeZone: config.timeZone,
@@ -1016,9 +1087,23 @@ async function open(
                     { component: 'other', taskId: task.id, sessionKey: key },
                     // Workers report spend on TaskRecord, outside the planner bucket.
                     () =>
-                      observeLlmSpend(run, (usage) => {
-                        spent = addTokenUsage(spent, usage);
-                      }),
+                      observeLlmSpend(
+                        () =>
+                          withWorkerActivity(
+                            taskActivity(
+                              task.id,
+                              task.worker,
+                              (action) => {
+                                session?.noteActivity(task.id, action);
+                              },
+                              emit,
+                            ),
+                            run,
+                          ),
+                        (usage) => {
+                          spent = addTokenUsage(spent, usage);
+                        },
+                      ),
                   ),
               ),
             );
@@ -1077,6 +1162,14 @@ async function open(
   lastPlan = dialoguePlan(session.snapshot());
   const send = session.send.bind(session);
   session.send = (text, options = {}) => {
+    emit({
+      kind: 'turn',
+      source: turnSource.getStore() ?? 'mcp',
+      ...(clientTurnId.getStore()
+        ? { clientTurnId: clientTurnId.getStore() }
+        : {}),
+      text: text.slice(0, 300),
+    });
     // Each queued input owns its snapshot even if callers reuse a trace object.
     const trace = options.trace
       ? { ...options.trace }

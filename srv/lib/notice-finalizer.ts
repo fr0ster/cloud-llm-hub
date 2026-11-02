@@ -39,6 +39,7 @@ export class NoticeFinalizer implements IFinalizer {
     const records = this.recMcp.getToolRecords(input.trace?.traceId);
 
     const verdict = await evaluateGated({
+      signal: input.signal,
       toolTrust: this.resolveToolTrust
         ? await this.resolveToolTrust()
         : this.toolTrust,

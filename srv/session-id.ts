@@ -1,17 +1,7 @@
 /**
- * Session identity.
- *
- * A session is one this service issued, together with the authenticated user:
- * a per-request id in the `clh_session` cookie, or a long-session key
- * (`POST /v1/session`), which the client sends back in `x-clh-session` or,
- * for cookie-based clients, in the cookie. `x-session-id`
- * and `mcp-session-id` are still not read: they named sessions this service
- * never issued.
- *
- * Reading `x-clh-session` is safe for the same reason the cookie is. Neither
- * is signed, so a caller can send any value; but the user half of the key
- * comes from the token, so a chosen key reaches its own author's sessions and
- * nobody else's. The header takes precedence over the shared cookie.
+ * Session identity: plain-mode ids use the cookie; long sessions require an
+ * explicit header (or the chat body session field). Authentication supplies
+ * the owner half of every session lookup.
  */
 
 /** Name of the HttpOnly session cookie issued by the session middleware. */
@@ -37,7 +27,7 @@ export type WithSession = IncomingHeaders & {
   sessionMinted?: boolean;
 };
 
-/** The `clh_session` cookie's value, or `undefined`. */
+/** The plain-mode cookie id; legacy long-session cookies are ignored. */
 export function resolveSessionId(req: IncomingHeaders): string | undefined {
   const cookieStr = req.headers.cookie;
   if (!cookieStr) return undefined;
@@ -46,29 +36,16 @@ export function resolveSessionId(req: IncomingHeaders): string | undefined {
     if (eq === -1) continue;
     if (part.slice(0, eq).trim() === SESSION_COOKIE) {
       const val = part.slice(eq + 1).trim();
-      return val || undefined;
+      return val && !val.startsWith(LONG_SESSION_PREFIX) ? val : undefined;
     }
   }
   return undefined;
 }
 
-/**
- * The long-session key this request presents.
- *
- * The header always names a long session. The cookie does only when it holds
- * a long-session key: a minted per-request id there is the plain mode's, and
- * the middleware handles it as before. The header wins over the cookie.
- */
+/** The explicit long-session key this request presents; cookies never select it. */
 export function resolveSessionKey(req: IncomingHeaders): { key?: string } {
   const raw = req.headers[SESSION_HEADER];
-  const header = (Array.isArray(raw) ? raw[0] : raw)?.trim() || undefined;
-  const cookie = resolveSessionId(req);
-  const key =
-    raw !== undefined
-      ? header
-      : cookie?.startsWith(LONG_SESSION_PREFIX)
-        ? cookie
-        : undefined;
+  const key = (Array.isArray(raw) ? raw[0] : raw)?.trim() || undefined;
   return { key };
 }
 

@@ -165,14 +165,18 @@ test('malformed visible records and duplicate keys are invalid without body leak
     error: { code: 'invalid' },
   });
 });
-test('deadline aborts backend signal and ignores late completion', async () => {
+test('caller cancellation aborts backend signal and ignores late completion', async () => {
   const f = fixture();
   let signal: AbortSignal | undefined;
   f.read.mockImplementation((_id: string, options?: CallOptions) => {
     signal = options?.signal;
     return new Promise<never>(() => {});
   });
-  expect(await f.source.list()).toMatchObject({
+  const controller = new AbortController();
+  const pending = f.source.list({ signal: controller.signal });
+  for (let i = 0; i < 10 && !signal; i++) await Promise.resolve();
+  controller.abort();
+  expect(await pending).toMatchObject({
     ok: false,
     error: { code: 'unavailable' },
   });
@@ -434,7 +438,7 @@ test('worker and planner resolutions use cached tools while discovery hangs, the
       expect(await f.source.resolveWorker(name)).toMatchObject({ ok: true });
     expect(await f.source.getPrompts()).toMatchObject({ ok: true });
     expect(external.catalogue()).toEqual([]);
-    await jest.advanceTimersByTimeAsync(10000);
+    await jest.advanceTimersByTimeAsync(600_000);
     reachable = true;
     await jest.advanceTimersByTimeAsync(30001);
     expect(await f.source.getPrompts()).toMatchObject({ ok: true });

@@ -119,7 +119,6 @@ export function guardLlmOnlyAgent<T extends ISmartAgent>(
     const abort = () => controller.abort();
     opts?.signal?.addEventListener('abort', abort, { once: true });
     if (opts?.signal?.aborted) abort();
-    let timer: ReturnType<typeof setTimeout> | undefined;
     let onAbort: (() => void) | undefined;
     try {
       const currentParts = current ? parts(userTextOf(current)) : [''];
@@ -127,7 +126,6 @@ export function guardLlmOnlyAgent<T extends ISmartAgent>(
         onAbort = () => reject(new Error('Classification aborted'));
         controller.signal.addEventListener('abort', onAbort, { once: true });
         if (controller.signal.aborted) onAbort();
-        timer = setTimeout(() => controller.abort(), 15_000);
       });
       const llm = resolveDecide();
       const decisions = await Promise.race([
@@ -172,7 +170,6 @@ export function guardLlmOnlyAgent<T extends ISmartAgent>(
       cds.log('llm-only-guard').warn('LLM-only request classification failed');
       return `${replies.en[why]} ${replies.en.failure}`;
     } finally {
-      clearTimeout(timer);
       opts?.signal?.removeEventListener('abort', abort);
       if (onAbort) controller.signal.removeEventListener('abort', onAbort);
       // Calls still running (a sibling part after another failed) would keep

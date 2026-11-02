@@ -6,6 +6,7 @@ import {
   preserveThrottled,
 } from '@mcp-abap-adt/llm-agent';
 import { throttleCallScope, withThrottleCall } from './throttle-strategy';
+import { reportWorkerActivity } from './worker-activity';
 
 // A failed planner result has no usage field. Observe completed model calls
 // here so already-spent tokens survive the library's failed-result envelope.
@@ -86,6 +87,7 @@ export function reliableLlm(inner: ILlm): ILlm {
         return (...args: Parameters<ILlm['chat']>) =>
           withThrottleCall(async () => {
             try {
+              reportWorkerActivity('llm call');
               const result = await target.chat(...args);
               if (result.ok && result.value.usage)
                 reportLlmSpend(result.value.usage);
@@ -106,6 +108,7 @@ export function reliableLlm(inner: ILlm): ILlm {
         return (...args: Parameters<ILlm['streamChat']>) => {
           // Async generators execute on next(), so enter the call scope around consumption.
           return withThrottleCall(() => {
+            reportWorkerActivity('llm call');
             const iterator = target.streamChat(...args)[Symbol.asyncIterator]();
             const next = throttleCallScope();
             return (async function* () {

@@ -105,7 +105,7 @@ export const ragToolNames: RagMcpTool[] = [
   'record_set_enabled',
 ];
 const writeConditions =
-  ' Eligible user/session knowledge collections; existing global mutations require MCP_Admin where REST resolves them; agents collections are excluded. Requires a live caller-owned session (argument, x-clh-session, or clh_session cookie). Maximum UTF-8 JSON arguments: 10 MiB.';
+  ' Eligible user/session knowledge collections; existing global mutations require MCP_Admin where REST resolves them; agents collections are excluded. Requires a live caller-owned session (argument or x-clh-session). Maximum UTF-8 JSON arguments: 10 MiB.';
 export const ragDescriptions: Record<RagMcpTool, string> = {
   collection_set_trust:
     'Set global informational source trust (0 to 5, one decimal). MCP_Admin required; @skills addresses informational skills.',

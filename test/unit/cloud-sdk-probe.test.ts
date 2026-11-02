@@ -8,7 +8,7 @@
  *   by ABAP → wrong mandant)
  * - sends a custom `sap-client` header: the Cloud SDK otherwise adds one from
  *   the destination's own sap-client, and ABAP honours it over the cookie
- * - passes a server-side timeout
+ * - disables the server-side deadline
  * - makes EXACTLY ONE executeHttpRequest call — no retry on any status
  *   (401/403 lockout safety; pointless to retry TLS/5xx for a diagnostic)
  */
@@ -55,7 +55,7 @@ describe('CloudSdkAbapConnection.probe', () => {
     expect(dest).toEqual({ destinationName: 'S4HANA_QAS' });
     expect(opts.method).toBe('GET');
     expect(opts.url).toBe('http://sap.example.com:44300/sap/bc/adt/discovery');
-    expect(opts.timeout).toBe(12_000);
+    expect(opts.timeout).toBe(0);
     expect(opts.headers.Authorization).toMatch(/^Basic /);
     expect(opts.headers['X-SAP-Client']).toBe('600');
     expect(opts.headers['sap-client']).toBe('600');

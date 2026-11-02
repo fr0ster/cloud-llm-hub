@@ -364,7 +364,7 @@ export default async function registerMcpProxyHandlers(
             {
               method: 'GET',
               url: '/sap/bc/adt/discovery',
-              timeout: 12_000,
+              timeout: 0,
             },
           );
           httpCode = response.status || 200;

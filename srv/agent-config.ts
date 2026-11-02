@@ -150,7 +150,7 @@ export function parseTimeZone(
 export interface AgentProfilesConfig {
   collectionId: string;
   plannerRecord: string;
-  timeoutMs: number;
+  timeoutMs?: number;
 }
 
 export function parseAgentProfilesConfig(
@@ -165,7 +165,7 @@ export function parseAgentProfilesConfig(
       env.LLM_AGENT_PROFILES_COLLECTION ?? 'agents',
     ),
     plannerRecord: planner.data,
-    timeoutMs: readPositiveIntFrom(env, 'LLM_AGENT_PROFILE_TIMEOUT_MS') ?? 3000,
+    timeoutMs: readPositiveIntFrom(env, 'LLM_AGENT_PROFILE_TIMEOUT_MS'),
   };
 }
 

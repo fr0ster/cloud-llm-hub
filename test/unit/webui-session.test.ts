@@ -127,7 +127,7 @@ describe('WebUI extended session protocol', () => {
   test('plain UI sends the session header and opens sessions explicitly', () => {
     expect(html).toContain('x-clh-session');
     expect(html).toMatch(/hubFetch\('\/v1\/session',\s*\{\s*method: 'POST'/);
-    expect(html).toContain("localStorage.setItem('clh.session'");
+    expect(html).toContain("sessionStorage.setItem('clh.session'");
   });
   test('R15 plain UI keeps sessions on pagehide and recovers by error code', () => {
     expect(html).not.toContain("sendBeacon('/v1/session/close'");
@@ -140,15 +140,45 @@ describe('WebUI extended session protocol', () => {
   });
 });
 
-function sessionHarness(key = '') {
+function exclusiveLocks() {
+  const held = new Set<string>();
+  return {
+    held,
+    request: async (
+      name: string,
+      _options: { ifAvailable: boolean },
+      callback: (lock: { name: string } | null) => Promise<void> | void,
+    ) => {
+      if (held.has(name)) return callback(null);
+      held.add(name);
+      try {
+        await callback({ name });
+      } finally {
+        held.delete(name);
+      }
+    },
+  };
+}
+
+function sessionHarness(
+  key = '',
+  locks: ReturnType<typeof exclusiveLocks> | null = exclusiveLocks(),
+) {
   const values = new Map([['clh.session', key]]);
   const notices: string[] = [];
   const fetch = jest.fn();
   const context = {
     fetch,
+    crypto: { randomUUID: () => 'test-tab' },
+    setTimeout: (resolve: () => void) => resolve(),
+    navigator: { locks: locks ?? undefined },
+    ownTurns: new Set<string>(),
+    rememberOwnTurn: (id: string) => context.ownTurns.add(id),
+
     hubFetch: fetch,
     hubSignedOut: false,
-    localStorage: {
+    localStorage: { removeItem: jest.fn() },
+    sessionStorage: {
       getItem: (name: string) => values.get(name),
       setItem: (name: string, value: string) => values.set(name, value),
       removeItem: (name: string) => values.delete(name),
@@ -163,14 +193,21 @@ function sessionHarness(key = '') {
     window: { addEventListener: jest.fn() },
   };
   const source = html.slice(
-    html.indexOf('        let sessionKey ='),
+    html.indexOf('        let sessionKey = sessionStorage'),
     html.indexOf('        function stepSymbol('),
   );
   const api = runInNewContext(
-    `${source}\n({ sessionFetch, closeSession });`,
+    `${source}\n({ sessionFetch, closeSession, ready: sessionClaim, releaseSession });`,
     context,
   );
-  return { ...api, fetch, values, notices };
+  return {
+    ...api,
+    fetch,
+    values,
+    notices,
+    legacyStorage: context.localStorage,
+    ownTurns: context.ownTurns,
+  };
 }
 
 function response(status: number, data = {}, notice = '') {
@@ -269,10 +306,12 @@ describe('session request helper', () => {
 
 test('R16 rereads storage', async () => {
   const ui = sessionHarness('old');
+  ui.ownTurns.add('previous-turn');
   ui.values.set('clh.session', 'other');
   ui.fetch.mockResolvedValue(response(200));
   await ui.sessionFetch('/v1/models');
   expect(ui.fetch.mock.calls[0][1].headers['x-clh-session']).toBe('other');
+  expect(ui.ownTurns.size).toBe(0);
 });
 test('R24 failed delete forgets the key', async () => {
   const ui = sessionHarness('old');
@@ -282,22 +321,24 @@ test('R24 failed delete forgets the key', async () => {
 });
 test('R24 concurrent 404 including late response reopens only once', async () => {
   const ui = sessionHarness('old');
-  let late!: (r: unknown) => void;
+  let late!: (r: ReturnType<typeof response>) => void;
   let oldCalls = 0;
-  ui.fetch.mockImplementation((url: string, opts: any) => {
-    if (url === '/v1/session')
-      return Promise.resolve(response(201, { session: 'new' }));
-    if (opts.headers['x-clh-session'] === 'old') {
-      if (++oldCalls === 2)
-        return new Promise((resolve) => {
-          late = resolve;
-        });
-      return Promise.resolve(
-        response(404, { error: { code: 'SESSION_NOT_FOUND' } }),
-      );
-    }
-    return Promise.resolve(response(200));
-  });
+  ui.fetch.mockImplementation(
+    (url: string, opts: { headers: Record<string, string> }) => {
+      if (url === '/v1/session')
+        return Promise.resolve(response(201, { session: 'new' }));
+      if (opts.headers['x-clh-session'] === 'old') {
+        if (++oldCalls === 2)
+          return new Promise<ReturnType<typeof response>>((resolve) => {
+            late = resolve;
+          });
+        return Promise.resolve(
+          response(404, { error: { code: 'SESSION_NOT_FOUND' } }),
+        );
+      }
+      return Promise.resolve(response(200));
+    },
+  );
   const first = ui.sessionFetch('/v1/models');
   const second = ui.sessionFetch('/v1/models');
   await first;
@@ -413,4 +454,84 @@ ${html.slice(start, end)}; loadDocuments;`,
   await load();
   expect(list.innerHTML).toContain('Disabled record');
   expect(list.innerHTML).not.toContain('Error:');
+});
+
+test('tabs discard shared legacy keys and open independently without empty headers', async () => {
+  const a = sessionHarness();
+  const b = sessionHarness();
+  a.fetch
+    .mockResolvedValueOnce(response(201, { session: 'tab-a' }))
+    .mockResolvedValue(response(200));
+  b.fetch
+    .mockResolvedValueOnce(response(201, { session: 'tab-b' }))
+    .mockResolvedValue(response(200));
+  await Promise.all([
+    a.sessionFetch('/v1/rag/collections'),
+    b.sessionFetch('/v1/rag/collections'),
+  ]);
+  for (const ui of [a, b]) {
+    expect(ui.legacyStorage.removeItem).toHaveBeenCalledWith('clh.session');
+    expect(ui.fetch.mock.calls[0][1].headers).not.toHaveProperty(
+      'x-clh-session',
+    );
+  }
+  expect(a.values.get('clh.session')).toBe('tab-a');
+  expect(b.values.get('clh.session')).toBe('tab-b');
+});
+
+describe('atomic tab ownership', () => {
+  test('concurrent tabs with the same copied key keep exactly one owner', async () => {
+    const locks = exclusiveLocks();
+    const a = sessionHarness('copied', locks);
+    const b = sessionHarness('copied', locks);
+    a.fetch.mockResolvedValue(response(200));
+    b.fetch
+      .mockResolvedValueOnce(response(201, { session: 'new-b' }))
+      .mockResolvedValue(response(200));
+    await Promise.all([
+      a.sessionFetch('/v1/models'),
+      b.sessionFetch('/v1/models'),
+    ]);
+    expect(a.values.get('clh.session')).toBe('copied');
+    expect(b.values.get('clh.session')).toBe('new-b');
+    expect(locks.held).toEqual(
+      new Set(['clh-session:copied', 'clh-session:new-b']),
+    );
+    await a.closeSession();
+    expect(locks.held.has('clh-session:copied')).toBe(false);
+    b.releaseSession();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(locks.held.size).toBe(0);
+  });
+
+  test('without Web Locks a stored key is discarded and a new session opens', async () => {
+    const ui = sessionHarness('copied', null);
+    ui.fetch
+      .mockResolvedValueOnce(response(201, { session: 'fresh' }))
+      .mockResolvedValue(response(200));
+    await ui.sessionFetch('/v1/models');
+    expect(ui.fetch.mock.calls[0][0]).toBe('/v1/session');
+    expect(ui.fetch.mock.calls[0][1].headers).not.toHaveProperty(
+      'x-clh-session',
+    );
+    expect(ui.values.get('clh.session')).toBe('fresh');
+    await ui.sessionFetch('/v1/models');
+    expect(ui.fetch).toHaveBeenCalledTimes(3);
+    expect(ui.fetch.mock.calls[2][1].headers['x-clh-session']).toBe('fresh');
+  });
+});
+test('close never deletes a session this tab does not own', async () => {
+  const ui = sessionHarness('old');
+  await ui.ready;
+  // Another tab's key appears in this tab's storage (copied or restored page).
+  ui.values.set('clh.session', 'other');
+  ui.fetch.mockResolvedValue(response(204));
+  await ui.closeSession();
+  expect(
+    ui.fetch.mock.calls.some(
+      ([url, opts]: [string, { method?: string }]) =>
+        url === '/v1/session' && opts.method === 'DELETE',
+    ),
+  ).toBe(false);
+  expect(ui.values.has('clh.session')).toBe(false);
 });

@@ -9,7 +9,7 @@
  * critic now answers whether the response delivered what the USER asked, which
  * is worth asking of every step, so the proxy is gone rather than retuned.
  *
- * What remains is a timeout and a master switch.
+ * The master switch remains. Reviews wait for caller cancellation.
  */
 
 /**
@@ -28,7 +28,7 @@ function strictInt(
   return Number.isInteger(n) && n >= min && String(n) === t ? n : def;
 }
 
-/** Reviewer hard-timeout (ms), strictly positive; empty/invalid/<=0 → 8000. */
+/** @deprecated Parsed for compatibility only; reviews have no deadline. */
 export function loadStepReviewTimeoutMs(env: NodeJS.ProcessEnv): number {
   return strictInt(env.LLM_AGENT_STEP_REVIEW_TIMEOUT_MS, 8000, 1);
 }

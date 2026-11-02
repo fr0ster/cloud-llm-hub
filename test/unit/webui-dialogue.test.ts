@@ -9,6 +9,9 @@ interface MessageNode {
 type Chunk = { done: boolean; value?: Uint8Array };
 interface UiApi {
   sendMessage(): Promise<void>;
+  onRelease(check: () => void): void;
+  ensureOwnedSession(): Promise<void>;
+  discardOwnedSession(): void;
   renderMessageVersion(
     key: string,
     id: string,
@@ -28,12 +31,25 @@ interface UiApi {
   ack(key: string): string | undefined;
   view(key: string, id: string): { node: MessageNode };
   signOut(): void;
+  setBusy(busy: boolean): void;
+  setTasks(tasks: Array<{ state: string }>): void;
+  ownTurn(text: string): void;
+  ownTurnCount(): number;
+  renderForeignTurn(turn: {
+    source: string;
+    text: string;
+    clientTurnId?: string;
+  }): void;
 }
 const html = readFileSync('app/chat/webapp/index.html', 'utf8');
 const flush = async () => {
   for (let i = 0; i < 30; i++) await Promise.resolve();
 };
-function harness(now?: number, realSessionRecovery = false) {
+function harness(
+  now?: number,
+  realSessionRecovery = false,
+  realTimers = false,
+) {
   const nodes: MessageNode[] = [];
   const list = { innerHTML: '', style: {} };
   const plan = { hidden: true, open: false };
@@ -57,9 +73,20 @@ function harness(now?: number, realSessionRecovery = false) {
             }
           },
     fetch,
+    window: { addEventListener: jest.fn() },
+    localStorage: { removeItem: jest.fn() },
+    navigator: {
+      locks: {
+        request: jest.fn(async (_name, _options, callback) => callback({})),
+      },
+    },
+    crypto: { randomUUID: () => 'test-turn-id' },
     ready: true,
     sessionKey: 'key',
+    lockedSessionKey: 'key',
+    sessionPageHidden: false,
     ensureSession: async () => {},
+    ensureEventOwnership: async () => true,
 
     userInput,
     getSelectedDestination: () => '',
@@ -78,7 +105,7 @@ function harness(now?: number, realSessionRecovery = false) {
     setIdleStatus: jest.fn(),
     refreshHubState: jest.fn(async (): Promise<void> => {}),
     renderMermaidDiagrams: jest.fn(),
-    localStorage: {
+    sessionStorage: {
       getItem: (key: string) => storage.get(key) ?? null,
       setItem: (key: string, value: string) => storage.set(key, value),
       removeItem: (key: string) => storage.delete(key),
@@ -95,13 +122,17 @@ function harness(now?: number, realSessionRecovery = false) {
       return timers.length;
     },
     clearTimeout: jest.fn(),
-    setInterval: (fn: () => void) => {
-      intervals.push(fn);
-      return intervals.length;
-    },
-    clearInterval: (id: number | null) => {
-      if (id) intervals[id - 1] = () => {};
-    },
+    setInterval: realTimers
+      ? setInterval
+      : (fn: () => void) => {
+          intervals.push(fn);
+          return intervals.length;
+        },
+    clearInterval: realTimers
+      ? clearInterval
+      : (id: number | null) => {
+          if (id) intervals[id - 1] = () => {};
+        },
     sessionHeaders: () => ({ 'x-clh-session': context.sessionKey }),
     conversationHistory: [],
     escapeHtml: (s: string) =>
@@ -167,12 +198,14 @@ function harness(now?: number, realSessionRecovery = false) {
   );
   const api: UiApi = runInNewContext(
     (realSessionRecovery
-      ? 'let sessionOpening = null;\n' +
-        html.slice(
-          html.indexOf('        async function ensureSession()'),
+      ? html.slice(
+          html.indexOf('        let sessionKey = sessionStorage'),
           html.indexOf('        async function closeSession()'),
         )
-      : '') +
+      : html.slice(
+          html.indexOf('        const activeChatStreams'),
+          html.indexOf('        let lockedSessionKey'),
+        )) +
       html.slice(
         html.indexOf('        const FILE_MIME_TYPES'),
         html.indexOf('        function getFileExt('),
@@ -199,7 +232,7 @@ function harness(now?: number, realSessionRecovery = false) {
         html.indexOf('        async function sendMessage()'),
         html.indexOf('        // Quick file attach'),
       ) +
-      ';({sendMessage, renderMessageVersion, subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml, runActiveProbe, fileArtifacts, replaceSession: key => { sessionKey = key; }, ack: key => sessionAcks.get(key), view: (key, id) => messageViews.get(key + ":" + id), signOut: () => { hubSignedOut = true; }})',
+      ';({onRelease: check => { const release = releaseSessionLock; releaseSessionLock = () => { check(); release?.(); }; }, ensureOwnedSession: () => ensureSession(), discardOwnedSession: () => discardSession(), sendMessage, renderMessageVersion, subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml, runActiveProbe, fileArtifacts, replaceSession: key => { sessionKey = key; lockedSessionKey = key; }, ack: key => sessionAcks.get(key), view: (key, id) => messageViews.get(key + ":" + id), setTasks: tasks => { dialogueTasks = tasks; updateKeepAlive(); }, ownTurn: text => rememberOwnTurn(text), ownTurnCount: () => ownTurns.size, renderForeignTurn, setBusy: busy => { streamingRequests = busy ? 1 : 0; updateKeepAlive(); }, signOut: () => { hubSignedOut = true; }})',
     context,
   );
   return {
@@ -388,6 +421,7 @@ test('new session cancels pending reader and ignores late data; clear removes ta
       },
     })
     .mockResolvedValue({ status: 409 });
+  ui.replaceSession('old');
   ui.startDialogueEvents('old');
   await flush();
   ui.startDialogueEvents('new');
@@ -568,7 +602,7 @@ test('only queued and running subagents show above the input with elapsed time',
   expect(ui.active.innerHTML).toContain('· queued');
   expect(ui.active.innerHTML).not.toContain('old');
   expect(ui.list.innerHTML).toContain('T1 \u00b7 subagent executor: old');
-  expect(ui.intervals).toHaveLength(1);
+  expect(ui.intervals).toHaveLength(2);
   subscription.stop();
   ui.stopDialogueEvents();
   expect(ui.active.hidden).toBe(true);
@@ -732,7 +766,7 @@ test.each([true, false])(
     expect(ui.fetch.mock.calls[0][1].headers['x-clh-ack']).toBe('none');
     expect(ui.locks.size).toBe(1);
     if (sseFirst) ui.renderMessageVersion('key', 'm', 'answer', true);
-    a.push(messageWire('m', 'answer') + ': turn-end\n\n');
+    a.push(`${messageWire('m', 'answer')}: turn-end\n\n`);
     await flush();
     expect(ui.locks.size).toBe(0);
     if (!sseFirst) ui.renderMessageVersion('key', 'm', 'answer', true);
@@ -815,7 +849,7 @@ test('framed messages parse split file blocks per id with the real parser', asyn
   const sent = ui.sendMessage();
   await flush();
   response.push(
-    ': message-id file\n\n' + delta('Here <file path="report.txt">hello'),
+    `: message-id file\n\n${delta('Here <file path="report.txt">hello')}`,
   );
   await flush();
   response.push(
@@ -890,7 +924,7 @@ test('two messages at the same time keep distinct artifact ids and contents', ()
   });
 });
 
-test('a pending response keeps messages and acknowledgement on its request session', async () => {
+test('a pending response drops messages for a no-longer-owned session', async () => {
   const ui = harness();
   let resolve!: (value: ReturnType<typeof stream>) => void;
   ui.fetch.mockImplementationOnce(
@@ -905,8 +939,8 @@ test('a pending response keeps messages and acknowledgement on its request sessi
   ui.replaceSession('new');
   resolve(stream(messageWire('old-message', 'old answer')));
   await sent;
-  expect(ui.view('key', 'old-message').node.innerHTML).toContain('old answer');
-  expect(ui.ack('key')).toBe('old-message');
+  expect(ui.view('key', 'old-message')).toBeUndefined();
+  expect(ui.ack('key')).toBeUndefined();
   expect(ui.ack('new')).toBeUndefined();
 });
 
@@ -1066,7 +1100,14 @@ test('404 recovery keeps the main request running in the replacement journal unt
   const sent = ui.sendMessage();
   await flush();
   expect(requestKeys).toEqual(['key', 'replacement']);
-  expect(ui.localStorage.getItem('clh.session')).toBe('replacement');
+  const beforeEcho = ui.nodes.length;
+  ui.renderForeignTurn({
+    source: 'web',
+    text: 'recovered request',
+    clientTurnId: 'test-turn-id',
+  });
+  expect(ui.nodes).toHaveLength(beforeEcho);
+  expect(ui.sessionStorage.getItem('clh.session')).toBe('replacement');
   expect(ui.active.innerHTML).toContain('main \u00b7 working');
   expect(ui.list.innerHTML).toContain(
     '\u25b6 main: \u00abrecovered request\u00bb',
@@ -1120,7 +1161,7 @@ test.each([
   ['plain assistant reply', delta('answer'), '\u2713'],
   [
     'partial assistant segment',
-    ': message-id partial\n\n' + delta('answer'),
+    `: message-id partial\n\n${delta('answer')}`,
     '\u2713',
   ],
   ['no reply', '', '\u2713'],
@@ -1132,7 +1173,7 @@ test.each([
   ui.fetch.mockResolvedValue(stream(wire));
   ui.userInput.value = 'request';
   await ui.sendMessage();
-  expect(ui.list.innerHTML).toContain(symbol + ' main: \u00abrequest\u00bb');
+  expect(ui.list.innerHTML).toContain(`${symbol} main: \u00abrequest\u00bb`);
   ui.stopDialogueEvents();
 });
 
@@ -1243,7 +1284,7 @@ test.each(['AbortError', 'stream failure'])(
     ui.userInput.value = 'request';
     await ui.sendMessage();
     expect(ui.list.innerHTML).toContain(
-      '\u2717 main: \u00abrequest\u00bb \u00b7 ' + message,
+      `\u2717 main: \u00abrequest\u00bb \u00b7 ${message}`,
     );
     expect(ui.active.innerHTML).toContain('listening');
     ui.stopDialogueEvents();
@@ -1438,7 +1479,7 @@ test('planner counts belong to the newest running request and survive older foll
   ui.userInput.value = 'first';
   const first = ui.sendMessage();
   await flush();
-  a.push(messageWire('first', 'answer') + ': turn-end\n\n');
+  a.push(`${messageWire('first', 'answer')}: turn-end\n\n`);
   await flush();
   expect(ui.locks.size).toBe(0);
 
@@ -1496,7 +1537,7 @@ test.each([': turn-end', 'data: [DONE]'])(
     await flush();
     expect(ui.attachedFiles).toHaveLength(1);
     expect(ui.renderAttachedFiles).not.toHaveBeenCalled();
-    response.push(messageWire('attached-reply', 'answer') + marker + '\n\n');
+    response.push(`${messageWire('attached-reply', 'answer') + marker}\n\n`);
     response.push();
     await sent;
     expect(
@@ -1540,7 +1581,7 @@ test.each(['server error', 'connection drop', 'empty EOF', 'partial EOF'])(
     ui.fetch
       .mockResolvedValueOnce(failedResponse)
       .mockResolvedValueOnce(
-        stream(messageWire('retry-reply', 'answer') + 'data: [DONE]\n\n'),
+        stream(`${messageWire('retry-reply', 'answer')}data: [DONE]\n\n`),
       );
     ui.userInput.value = 'attached';
     await ui.sendMessage();
@@ -1571,7 +1612,7 @@ test('attachments added during a send remain for the next message', async () => 
   const sent = ui.sendMessage();
   await flush();
   ui.attachedFiles.push(added);
-  response.push(messageWire('first-reply', 'answer') + ': turn-end\n\n');
+  response.push(`${messageWire('first-reply', 'answer')}: turn-end\n\n`);
   response.push();
   await sent;
   expect(
@@ -1730,3 +1771,208 @@ test.each([false, true])(
     expect(card?.innerHTML).toContain('DL');
   },
 );
+
+test('foreign turns render as user bubbles and task activity includes idle minutes', async () => {
+  const ui = harness(180000);
+  ui.fetch.mockResolvedValue(
+    stream(
+      'event: tasks\ndata: [{"id":"t1","worker":"executor","state":"running"}]\n\n' +
+        'event: activity\ndata: {"taskId":"t1","action":"tool ReadObject","at":60000}\n\n' +
+        'event: turn\ndata: {"source":"api","text":"Inspect <object>"}\n\n',
+    ),
+  );
+  const sub = ui.subscribeDialogueEvents('key');
+  await flush();
+  expect(ui.nodes[0].textContent).toBe('> USER [api]: Inspect <object>');
+  expect(ui.active.innerHTML).toContain('tool ReadObject');
+  expect(ui.active.innerHTML).toContain('idle 2m');
+  ui.setNow(240000);
+  for (const tick of [...ui.intervals]) tick();
+  expect(ui.active.innerHTML).toContain('idle 3m');
+  sub.stop();
+});
+
+test('approuter keep-alive starts once while busy and stops when idle', async () => {
+  jest.useFakeTimers();
+  const ui = harness(undefined, false, true);
+  ui.fetch.mockResolvedValue({ status: 204 });
+  try {
+    ui.setBusy(true);
+    ui.setBusy(true);
+    await jest.advanceTimersByTimeAsync(299999);
+    expect(ui.fetch).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    expect(ui.fetch).toHaveBeenCalledTimes(1);
+    expect(ui.fetch).toHaveBeenCalledWith('/v1/ping', {
+      headers: { 'x-clh-session': 'key' },
+    });
+    ui.setBusy(false);
+    await jest.advanceTimersByTimeAsync(600000);
+    expect(ui.fetch).toHaveBeenCalledTimes(1);
+    ui.setTasks([{ state: 'running' }]);
+    await jest.advanceTimersByTimeAsync(300000);
+    expect(ui.fetch).toHaveBeenCalledTimes(2);
+    ui.setTasks([{ state: 'done' }]);
+    await jest.advanceTimersByTimeAsync(300000);
+    expect(ui.fetch).toHaveBeenCalledTimes(2);
+  } finally {
+    ui.setBusy(false);
+    jest.useRealTimers();
+  }
+});
+
+test('a tab suppresses its own turn and renders a turn from another WebUI', () => {
+  const ui = harness();
+  ui.ownTurn('local');
+  ui.renderForeignTurn({
+    source: 'webui',
+    text: 'local',
+    clientTurnId: 'local',
+  });
+  expect(ui.nodes).toHaveLength(0);
+  ui.renderForeignTurn({
+    source: 'webui',
+    text: 'local',
+    clientTurnId: 'remote',
+  });
+  expect(ui.nodes[0].textContent).toBe('> USER [webui]: local');
+});
+
+test.each([true, false])(
+  'request IDs suppress late events after release with success=%s',
+  async (success) => {
+    const ui = harness();
+    ui.userInput.value = 'same text';
+    if (success) ui.fetch.mockResolvedValue(stream(''));
+    else ui.fetch.mockRejectedValue(new Error('offline'));
+    await ui.sendMessage();
+    expect(ui.fetch.mock.calls[0][1].headers['x-clh-turn-id']).toBe(
+      'test-turn-id',
+    );
+    expect(ui.ownTurnCount()).toBe(1);
+    const count = ui.nodes.length;
+    ui.renderForeignTurn({
+      source: 'webui',
+      text: 'same text',
+      clientTurnId: 'test-turn-id',
+    });
+    expect(ui.nodes).toHaveLength(count);
+  },
+);
+
+test('own turn IDs evict in FIFO order after 200 entries', () => {
+  const ui = harness();
+  for (let i = 0; i < 201; i++) ui.ownTurn(String(i));
+  expect(ui.ownTurnCount()).toBe(200);
+  ui.renderForeignTurn({ source: 'webui', text: 'old', clientTurnId: '0' });
+  ui.renderForeignTurn({
+    source: 'webui',
+    text: 'retained',
+    clientTurnId: '1',
+  });
+  expect(ui.nodes).toHaveLength(1);
+});
+
+test.each([false, true])(
+  'pageshow (persisted=%s) replaces a key claimed by another tab before reconnecting',
+  async (persisted) => {
+    const ui = harness(100000, true);
+    const events = controlledStream();
+    ui.fetch.mockImplementation(async (url: string) =>
+      url === '/v1/session'
+        ? { ok: true, json: async () => ({ session: 'replacement' }) }
+        : events.response,
+    );
+    ui.startDialogueEvents('key');
+    await flush();
+    const listener = (name: string) =>
+      ui.window.addEventListener.mock.calls.find(
+        ([event]) => event === name,
+      )?.[1];
+    listener('pagehide')();
+    await flush();
+    ui.navigator.locks.request.mockImplementation(
+      async (name, options, callback) => {
+        expect(options).toEqual({ ifAvailable: true });
+        return callback(name === 'clh-session:key' ? null : {});
+      },
+    );
+    const callsBeforeRestore = ui.fetch.mock.calls.length;
+    listener('pageshow')({ persisted });
+    await flush();
+    for (const timer of [...ui.timers]) await timer.fn();
+    await flush();
+    expect(ui.sessionStorage.getItem('clh.session')).toBe('replacement');
+    const restoredEvents = ui.fetch.mock.calls
+      .slice(callsBeforeRestore)
+      .filter(([url]) => url === '/v1/session/events');
+    expect(restoredEvents.length).toBeGreaterThan(0);
+    for (const [, opts] of restoredEvents)
+      expect(opts.headers['x-clh-session']).toBe('replacement');
+    ui.stopDialogueEvents();
+  },
+);
+
+test.each(['pagehide', 'switch', 'discard'])(
+  '%s aborts every active chat stream before releasing ownership',
+  async (action) => {
+    const ui = harness(undefined, true);
+    const pendingStreams = [controlledStream(), controlledStream()];
+    const streams = [...pendingStreams];
+    ui.fetch.mockImplementation(async (url: string) =>
+      url === '/v1/chat/completions'
+        ? streams.shift()?.response
+        : controlledStream().response,
+    );
+    ui.userInput.value = 'first';
+    const first = ui.sendMessage();
+    await flush();
+    ui.userInput.value = 'second';
+    const second = ui.sendMessage();
+    await flush();
+    const signals = ui.fetch.mock.calls
+      .filter(([url]) => url === '/v1/chat/completions')
+      .map(([, opts]) => opts.signal as AbortSignal);
+    expect(signals).toHaveLength(2);
+    const beforeRelease = jest.fn(() => {
+      expect(signals.every((signal) => signal.aborted)).toBe(true);
+    });
+    ui.onRelease(beforeRelease);
+    if (action === 'pagehide') {
+      ui.window.addEventListener.mock.calls.find(
+        ([name]) => name === 'pagehide',
+      )?.[1]();
+    } else if (action === 'switch') {
+      ui.sessionStorage.setItem('clh.session', 'replacement');
+      await ui.ensureOwnedSession();
+    } else {
+      ui.discardOwnedSession();
+    }
+    expect(beforeRelease).toHaveBeenCalledTimes(1);
+    // Abort-insensitive readers may still deliver buffered frames.
+    for (const stream of pendingStreams)
+      stream.push(messageWire('late', 'must be dropped'));
+    await flush();
+    expect(ui.view('key', 'late')).toBeUndefined();
+    expect(ui.ack('key')).toBeUndefined();
+    await Promise.all([first, second]);
+    ui.stopDialogueEvents();
+  },
+);
+
+test('SSE frames for a no-longer-owned session do not render any event', async () => {
+  const ui = harness();
+  const events = controlledStream();
+  ui.fetch.mockResolvedValue(events.response);
+  const subscription = ui.subscribeDialogueEvents('key');
+  await flush();
+  ui.replaceSession('other');
+  events.push(
+    'event: plan\ndata: {"text":"stale plan"}\n\nevent: turn\ndata: {"text":"stale turn"}\n\nid: stale\ndata: {"text":"stale message"}\n\n',
+  );
+  await flush();
+  expect(ui.nodes).toHaveLength(0);
+  expect(ui.planText.innerHTML).toBe('');
+  expect(ui.ack('key')).toBeUndefined();
+  subscription.stop();
+});

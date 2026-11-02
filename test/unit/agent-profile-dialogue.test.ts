@@ -7,6 +7,7 @@ import {
   DialogueSession,
   PlannerToolsClient,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { parseAgentProfilesConfig } from '../../srv/agent-config';
 import { AgentProfileRunner } from '../../srv/lib/agent-profile-runner';
 import { AgentProfileSource } from '../../srv/lib/agent-profile-source';
 import { MemoryDialogueStore } from '../../srv/lib/dialogue-store';
@@ -233,5 +234,65 @@ test('dialogue discovers arbitrary names, resolves planner variants and executes
     });
   } finally {
     await session.close();
+  }
+});
+
+test('planner preparation beyond ten minutes has no default deadline', async () => {
+  jest.useFakeTimers();
+  let session: DialogueSession | undefined;
+  try {
+    const registry = new CollectionRegistry();
+    await registry.seedAgentConfiguration('agents', 'coordinator');
+    const profiles = parseAgentProfilesConfig({});
+    expect(profiles.timeoutMs).toBeUndefined();
+    const process: ISmartAgent['process'] = jest.fn(
+      async (): ReturnType<ISmartAgent['process']> => ({
+        ok: true,
+        value: {
+          content: 'Prepared',
+          stopReason: 'stop',
+          iterations: 1,
+          toolCallCount: 0,
+        },
+      }),
+    );
+    const planner: ISmartAgent = {
+      process,
+      streamProcess: async function* () {},
+    };
+    const runner = new AgentProfileRunner({
+      catalogue: () => [],
+      grants: () => new Set<string>(),
+      buildWorker: async () => {
+        throw new Error('No worker needed');
+      },
+      buildPlanner: async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 601_000));
+        return planner;
+      },
+    });
+    session = await DialogueSession.open({
+      id: 'slow-preparation',
+      profileSource: new AgentProfileSource(registry, {
+        userId: 'reader',
+        globalCollectionId: 'agents',
+        selectedCollectionId: () => 'agents',
+        plannerRecord: 'coordinator',
+        timeoutMs: profiles.timeoutMs,
+      }),
+      profileRunner: runner,
+      profileTimeoutMs: profiles.timeoutMs,
+      board: { maxConcurrent: 1 },
+      maxCorrections: 0,
+    });
+    const turn = session.send('Hello');
+    await jest.advanceTimersByTimeAsync(600_001);
+    expect(process).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1_000);
+    await turn;
+    expect(process).toHaveBeenCalledTimes(1);
+  } finally {
+    await session?.close();
+    jest.useRealTimers();
   }
 });
