@@ -329,7 +329,9 @@ function checkScopedPackages(file, lines, installed) {
   // `file` arrives absolute; the map is keyed the way `fail()` reports, so the
   // entries stay readable and match what a reviewer sees in the output.
   const budget = {
-    ...(NAMED_THOUGH_ABSENT.get(path.relative(ROOT, file)) ?? {}),
+    ...(NAMED_THOUGH_ABSENT.get(
+      path.relative(ROOT, file).split(path.sep).join('/'),
+    ) ?? {}),
   };
   lines.forEach((line, i) => {
     for (const m of line.matchAll(/@mcp-abap-adt\/([a-z0-9-]+)/g)) {

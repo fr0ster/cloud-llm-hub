@@ -99,7 +99,7 @@ resources:
 #   LLM_AGENT_ANALYST_MCP: "DOCS_MCP"
 #   LLM_AGENT_MCP_TRUST: "DOCS_MCP=4.5"
 # resources:
-#   - name: cloud-llm-hub-destination
+#   - name: cloud-llm-hub-staging-destination
 #     parameters:
 #       config:
 #         init_data:

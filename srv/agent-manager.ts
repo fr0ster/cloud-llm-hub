@@ -3735,7 +3735,8 @@ export async function buildLlmOnlyAgent(
             : 'Say plainly that the SAP destination exists but cannot be reached right now, and that its connectivity (the destination, the Cloud Connector) needs checking — do not suggest adding a destination.',
           "Respond in the user's language. Code and object names always in English.",
         ].join('\n'),
-        buildSkillsPool(),
+        // Base skill tags follow the deployment's configured trust defaults.
+        buildSkillsPool({ resolver: () => getTrustResolver() }),
       ),
     },
   })
