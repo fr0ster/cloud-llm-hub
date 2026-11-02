@@ -208,7 +208,7 @@ when running `npx tsx tools/measure-tool-rag.ts` to measure production tool-quer
 |----------|---------|-------------|
 | `LLM_AGENT_CHAT_COORDINATOR` | `adaptive` | Chat coordinator: `adaptive` plans per request; `fixed` restores the previous one-step DAG; `dialogue` selects the long-session dialogue planner. Unset or empty selects `adaptive`; other values reject startup. |
 | `LLM_AGENT_DIALOGUE_EXECUTORS` | `3` | Maximum concurrent background tasks (executor and checker) and pooled ABAP connections per dialogue session (positive integer). |
-| `LLM_AGENT_DIALOGUE_EXECUTOR_POOL` | `6` | Hub-wide concurrent dialogue background tasks, including checker tasks (positive integer). |
+| `LLM_AGENT_DIALOGUE_EXECUTOR_POOL` | unset | Optional opt-in hub-wide concurrent dialogue task cap (positive integer). Unset means sessions never share an executor pool. |
 | `LLM_AGENT_DIALOGUE_MAX_CORRECTIONS` | `2` | Maximum end-of-turn corrective turns (nonnegative integer); `0` disables corrections. |
 | `LLM_AGENT_DIALOGUE_TASK_OUTPUT_CHARS` | `60000` (library default) | Maximum retained characters per task output; positive safe integer. Unset or blank uses the library default; invalid values reject startup. |
 | `LLM_AGENT_DIALOGUE_MAX_TASKS` | `50` | Maximum task records per dialogue session (positive integer); persistence validates against this configured limit. |
@@ -435,3 +435,7 @@ are legacy parsed settings and no longer bound work or response following.
 External docs discovery runs in the background, never blocks profiles, and has a
 logged ten-minute safety net. Its MCP client no longer overrides tool-call timeouts.
 See [the timeout audit](../superpowers/verification/2026-11-02-timeout-audit.md).
+
+Each dialogue session lazily owns its LLM clients, including coordinator, workers, classifier and critic. A session-specific provider quotaScope isolates Retry-After waits from all other sessions. Calls within one session share the provider/model quota gate. Closing or evicting a session drops its clients; usage and context capture remain enabled. Providers currently expose no transport disposal API. llm-agent releases quota leases after calls and prunes idle, open gates (with a bounded registry); penalized or leased gates remain until safe to reclaim.
+
+Dialogue sessions lazily own provider clients and quota scopes: a 429 pauses only that session, while its calls share their provider/model gate. Usage and context capture remain enabled. Closing or evicting a session drops client references. Providers expose no close/dispose API. llm-agent releases gate leases after calls and reclaims open idle gates with a bounded registry; penalized and leased entries remain until safe to reclaim.

@@ -8,7 +8,7 @@
  * the same wrapping `makeLlm` applied.
  *
  * Credentials are memoized per process: a credential object's identity keys the
- * provider's 429 quota bucket, so every LLM on one account must share one.
+ * provider's default quota bucket. Session calls override it with quotaScope.
  */
 
 import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
@@ -26,6 +26,7 @@ import cds from '@sap/cds';
 import type { LlmProvider } from '../agent-config';
 import { captureLlm } from './context-capture';
 import { reliableLlm } from './llm-failure';
+import { sessionLlms } from './session-llms';
 import { usageRuntime } from './usage/runtime';
 
 export interface HubLlmConfig {
@@ -41,6 +42,7 @@ export interface HubLlmConfig {
   /** SAP AI Core resource group (sap-ai-sdk only). */
   resourceGroup?: string;
   whenThrottled?: IThrottleStrategy;
+  quotaScope?: string;
 }
 
 type AiCoreAccess = ReturnType<typeof serviceKeyCredential>;
@@ -120,6 +122,40 @@ export async function makeHubLlm(
   cfg: HubLlmConfig,
   temperature: number,
 ): Promise<ILlm> {
+  const llm = await createHubLlm(cfg, temperature);
+  const key = JSON.stringify([cfg, temperature]);
+  return new Proxy(llm, {
+    get(target, property) {
+      if (property === 'chat')
+        return async (...args: Parameters<ILlm['chat']>) => {
+          const owner = sessionLlms.getStore();
+          const client = owner
+            ? await owner.get(key, (quotaScope) =>
+                createHubLlm({ ...cfg, quotaScope }, temperature),
+              )
+            : target;
+          return client.chat(...args);
+        };
+      if (property === 'streamChat')
+        return async function* (...args: Parameters<ILlm['streamChat']>) {
+          const owner = sessionLlms.getStore();
+          const client = owner
+            ? await owner.get(key, (quotaScope) =>
+                createHubLlm({ ...cfg, quotaScope }, temperature),
+              )
+            : target;
+          yield* client.streamChat(...args);
+        };
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+async function createHubLlm(
+  cfg: HubLlmConfig,
+  temperature: number,
+): Promise<ILlm> {
   const maxTokens = cfg.maxTokens != null ? Number(cfg.maxTokens) : undefined;
   const usage = usageRuntime()?.recorder;
   const common = {
@@ -128,6 +164,7 @@ export async function makeHubLlm(
     temperature,
     maxTokens,
     whenThrottled: cfg.whenThrottled,
+    quotaScope: cfg.quotaScope,
   };
 
   let provider:

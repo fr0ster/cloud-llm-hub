@@ -2769,7 +2769,8 @@ function getOrCreateSharedLlms(
 } {
   const mainModel = config.llm.model;
   const clients = component === 'planner-author' ? planAuthorLlms : modelLlms;
-  let mainLlm = clients.get(mainModel);
+  const clientKey = JSON.stringify([config.llm, component]);
+  let mainLlm = clients.get(clientKey);
   if (!mainLlm) {
     mainLlm = makeHubLlm(
       {
@@ -2786,7 +2787,7 @@ function getOrCreateSharedLlms(
       config.llm.temperature,
     ).then(trackedLlm);
   }
-  clients.set(mainModel, mainLlm);
+  clients.set(clientKey, mainLlm);
   if (!sharedClassifierLlm) {
     const classifierModel = config.llm.classifierModel;
     sharedClassifierLlm = makeHubLlm(

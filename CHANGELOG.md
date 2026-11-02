@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- Dialogue sessions lazily own provider clients and quota scopes, isolating Retry-After waits while retaining usage and context capture.
+- The hub executor cap is opt-in; sessions use their own executor limit by default. Waiting tasks publish queued activity.
+- Closing sessions drops provider references; upstream providers expose no transport disposal API. llm-agent manages quota leases and idle gate reclamation.
+
 ## [10.4.1] - 2026-11-02
 
 ### Added

@@ -77,6 +77,7 @@ import {
   SessionConnectionFactory,
   SessionConnectionPool,
 } from './session-connection-pool';
+import { SessionLlms } from './session-llms';
 import { evaluateGated } from './step-reviewer';
 import { cachedSystemIdentity } from './system-identity-cache';
 import { type TaskView, taskView } from './task-view';
@@ -246,10 +247,10 @@ export function onDialogueCreated(
 }
 const closing = new Map<string, Promise<void>>();
 let executorPool: IConcurrencyPool | undefined;
-export function sharedExecutorPool(): IConcurrencyPool {
-  executorPool ??= new SemaphorePool(
-    getAgentConfig().agent.dialogue.executorPool,
-  );
+export function sharedExecutorPool(): IConcurrencyPool | undefined {
+  const limit = getAgentConfig().agent.dialogue.executorPool;
+  if (limit === undefined) return undefined;
+  executorPool ??= new SemaphorePool(limit);
   return executorPool;
 }
 const slot = (userId: string, key: string) => JSON.stringify([userId, key]);
@@ -296,16 +297,23 @@ export function dialogueFor(
     session.destination = destination;
     registry?.touch(userId, key);
   }
-  const opening = open(userId, key, destination, selected).then((handle) => {
-    for (const fn of creationListeners.get(id) ?? []) {
-      try {
-        fn(handle);
-      } catch {
-        /* Observer isolation. */
+  const llms = new SessionLlms();
+  const opening = llms
+    .run(() => open(userId, key, destination, selected, llms))
+    .catch((error: Error) => {
+      llms.dispose();
+      throw error;
+    })
+    .then((handle) => {
+      for (const fn of creationListeners.get(id) ?? []) {
+        try {
+          fn(handle);
+        } catch {
+          /* Observer isolation. */
+        }
       }
-    }
-    return handle;
-  });
+      return handle;
+    });
   handles.set(id, opening);
   void opening.catch(() => {
     if (handles.get(id) === opening) handles.delete(id);
@@ -316,7 +324,8 @@ async function open(
   userId: string,
   key: string,
   destination: string,
-  model?: string,
+  model: string | undefined,
+  llms: SessionLlms,
 ): Promise<LiveHandle> {
   const turnCallers = new WeakMap<object, TurnCaller>();
   const config = getAgentConfig();
@@ -361,7 +370,7 @@ async function open(
         ? [`SAP system id: ${identity.masterSystem}`]
         : []),
       ...(identity?.responsible ? [`SAP login: ${identity.responsible}`] : []),
-      `Concurrency limit: ${config.agent.dialogue.executors} (shared executor pool: ${config.agent.dialogue.executorPool})`,
+      `Concurrency limit: ${config.agent.dialogue.executors} (shared executor pool: ${config.agent.dialogue.executorPool ?? 'disabled'})`,
     ].join('\n');
   };
   const decoratePlanner = (planner: ISmartAgent) =>
@@ -627,11 +636,31 @@ async function open(
   const unsubscribeTaskCaller = signals.on(
     'dialogue.task.state',
     ({ payload: { task, previous } }) => {
-      if (task.state === 'queued' && previous === undefined)
+      if (task.state === 'queued' && previous === undefined) {
+        const ahead =
+          session
+            ?.snapshot()
+            .tasks.filter(
+              (entry) =>
+                entry.id !== task.id &&
+                (entry.state === 'queued' || entry.state === 'running'),
+            ).length ?? 0;
+        if (ahead >= config.agent.dialogue.executors) {
+          const action = `queued (${ahead - config.agent.dialogue.executors} ahead)`;
+          session?.noteActivity(task.id, action);
+          emit({
+            kind: 'activity',
+            taskId: task.id,
+            worker: task.worker,
+            action,
+            at: Date.now(),
+          });
+        }
         taskCallers.set(task.id, {
           userId: getRequestUserId() ?? userId,
           identity: dialogueIdentity(),
         });
+      }
       if (
         task.state === 'done' ||
         task.state === 'failed' ||
@@ -687,7 +716,10 @@ async function open(
   );
   const unsubscribeClosed = signals.on(
     'dialogue.session.closed',
-    () => stopLifetime(),
+    () => {
+      llms.dispose();
+      stopLifetime();
+    },
     { source: key },
   );
   // Snapshot before settlement clears the live reply; a later successful turn
@@ -1160,6 +1192,8 @@ async function open(
     throw error;
   }
   lastPlan = dialoguePlan(session.snapshot());
+  const callTool = session.callTool.bind(session);
+  session.callTool = (...args) => llms.run(() => callTool(...args));
   const send = session.send.bind(session);
   session.send = (text, options = {}) => {
     emit({
@@ -1182,7 +1216,9 @@ async function open(
       userId: getRequestUserId() ?? userId,
       identity: dialogueIdentity(),
     });
-    return send(text, { ...options, trace }).finally(drainPending);
+    return llms.run(() =>
+      send(text, { ...options, trace }).finally(drainPending),
+    );
   };
   return {
     async selectModel(model) {
@@ -1222,20 +1258,20 @@ async function open(
     },
     drainPending,
     async runStep(run) {
-      const release = await sharedExecutorPool().acquire(lifetime.signal);
+      const release = await sharedExecutorPool()?.acquire(lifetime.signal);
       try {
         return await runAdmitted((lease, pipeline) =>
           runWithRequestSystem(lease.system, () =>
             runWithRequestConnection(
               lease.connection,
-              () => run(pipeline.signal),
+              () => llms.run(() => run(pipeline.signal)),
               lease.dumpScope,
               factory.exposition,
             ),
           ),
         );
       } finally {
-        release();
+        release?.();
       }
     },
     plannerCounts: (counts) => emit({ kind: 'planner', ...counts }),
@@ -1244,6 +1280,7 @@ async function open(
     pool,
     stop() {
       stopLifetime();
+      llms.dispose();
       stopped = true;
       lifetime.abort();
       subscribers.clear();
