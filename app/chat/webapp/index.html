@@ -400,16 +400,25 @@
             if (typeof ownTurns !== 'undefined') ownTurns.clear();
         }
         function discardSession() {
+            if (typeof stopDialogueEvents === 'function') stopDialogueEvents();
             releaseSession();
             sessionKey = '';
             sessionStorage.removeItem('clh.session');
             sessionStorage.removeItem('clh.session.owner');
         }
+        let sessionClaiming = null;
         function claimSession(key) {
+            if (sessionClaiming?.key === key) return sessionClaiming.promise;
+            const promise = acquireSessionLock(key);
+            sessionClaiming = { key, promise };
+            void promise.finally(() => { if (sessionClaiming?.promise === promise) sessionClaiming = null; }).catch(() => {});
+            return promise;
+        }
+        function acquireSessionLock(key) {
             if (!navigator.locks) return Promise.resolve(false);
             return new Promise((resolve, reject) => {
                 navigator.locks.request('clh-session:' + key, { ifAvailable: true }, lock => {
-                    if (!lock) { resolve(false); return; }
+                    if (!lock || sessionPageHidden) { resolve(false); return; }
                     lockedSessionKey = key;
                     return new Promise(release => {
                         releaseSessionLock = release;
@@ -418,7 +427,21 @@
                 }).catch(reject);
             });
         }
-        window.addEventListener('pagehide', releaseSession);
+        let sessionPageHidden = false;
+        window.addEventListener('pagehide', () => {
+            sessionPageHidden = true;
+            stopDialogueEvents();
+            releaseSession();
+        });
+        window.addEventListener('pageshow', () => {
+            sessionPageHidden = false;
+            if (sessionKey && !hubSignedOut) void ensureSession().catch(error => console.warn('Session restore failed', error));
+        });
+        async function ensureEventOwnership(key) {
+            if (sessionPageHidden || hubSignedOut) return false;
+            await ensureSession();
+            return !sessionPageHidden && !hubSignedOut && sessionKey === key && lockedSessionKey === key;
+        }
         const sessionClaim = (async () => {
             if (sessionKey && !await claimSession(sessionKey)) discardSession();
         })();
@@ -488,6 +511,7 @@
             const request = () => {
                 const headers = { ...opts.headers, ...sessionHeaders() };
                 if (Object.hasOwn(headers, 'x-clh-ack')) headers['x-clh-ack'] = sessionAcks.get(sessionKey) || 'none';
+                if (headers['x-clh-turn-id']) rememberOwnTurn(headers['x-clh-turn-id']);
                 onSessionKey?.(sessionKey);
                 return hubFetch(url, { ...requestOpts, headers });
             };
@@ -732,8 +756,9 @@
             }
             async function connect() {
                 if (stopped || hubSignedOut) return;
-                controller = new AbortController();
                 try {
+                    if (!await ensureEventOwnership(key) || stopped) return;
+                    controller = new AbortController();
                     const response = await hubFetch('/v1/session/events', { method: 'GET', signal: controller.signal, headers: { ...sessionHeaders(), 'x-clh-session': key, Accept: 'text/event-stream', ...(lastId ? { 'Last-Event-ID': lastId } : {}) } });
                     if (stopped || hubSignedOut) return;
                     if (response.status === 409) { stopped = true; dialogueOpen = false; renderActiveAgents([]); return; }

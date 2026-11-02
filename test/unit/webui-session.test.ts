@@ -173,6 +173,7 @@ function sessionHarness(
     setTimeout: (resolve: () => void) => resolve(),
     navigator: { locks: locks ?? undefined },
     ownTurns: new Set<string>(),
+    rememberOwnTurn: (id: string) => context.ownTurns.add(id),
 
     hubFetch: fetch,
     hubSignedOut: false,

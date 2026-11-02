@@ -70,10 +70,18 @@ function harness(
             }
           },
     fetch,
+    window: { addEventListener: jest.fn() },
+    localStorage: { removeItem: jest.fn() },
+    navigator: {
+      locks: {
+        request: jest.fn(async (_name, _options, callback) => callback({})),
+      },
+    },
     crypto: { randomUUID: () => 'test-turn-id' },
     ready: true,
     sessionKey: 'key',
     ensureSession: async () => {},
+    ensureEventOwnership: async () => true,
 
     userInput,
     getSelectedDestination: () => '',
@@ -185,9 +193,8 @@ function harness(
   );
   const api: UiApi = runInNewContext(
     (realSessionRecovery
-      ? 'let sessionOpening = null; const sessionClaim = Promise.resolve(); let lockedSessionKey = "key"; async function claimSession() { return true; } function releaseSession() {} function discardSession() { sessionKey = ""; sessionStorage.removeItem("clh.session"); ownTurns.clear(); } const navigator = {};\n' +
-        html.slice(
-          html.indexOf('        async function ensureSession()'),
+      ? html.slice(
+          html.indexOf('        let sessionKey = sessionStorage'),
           html.indexOf('        async function closeSession()'),
         )
       : '') +
@@ -1084,6 +1091,13 @@ test('404 recovery keeps the main request running in the replacement journal unt
   const sent = ui.sendMessage();
   await flush();
   expect(requestKeys).toEqual(['key', 'replacement']);
+  const beforeEcho = ui.nodes.length;
+  ui.renderForeignTurn({
+    source: 'web',
+    text: 'recovered request',
+    clientTurnId: 'test-turn-id',
+  });
+  expect(ui.nodes).toHaveLength(beforeEcho);
   expect(ui.sessionStorage.getItem('clh.session')).toBe('replacement');
   expect(ui.active.innerHTML).toContain('main \u00b7 working');
   expect(ui.list.innerHTML).toContain(
@@ -1849,3 +1863,43 @@ test('own turn IDs evict in FIFO order after 200 entries', () => {
   });
   expect(ui.nodes).toHaveLength(1);
 });
+
+test.each([false, true])(
+  'pageshow (persisted=%s) replaces a key claimed by another tab before reconnecting',
+  async (persisted) => {
+    const ui = harness(100000, true);
+    const events = controlledStream();
+    ui.fetch.mockImplementation(async (url: string) =>
+      url === '/v1/session'
+        ? { ok: true, json: async () => ({ session: 'replacement' }) }
+        : events.response,
+    );
+    ui.startDialogueEvents('key');
+    await flush();
+    const listener = (name: string) =>
+      ui.window.addEventListener.mock.calls.find(
+        ([event]) => event === name,
+      )![1];
+    listener('pagehide')();
+    await flush();
+    ui.navigator.locks.request.mockImplementation(
+      async (name, options, callback) => {
+        expect(options).toEqual({ ifAvailable: true });
+        return callback(name === 'clh-session:key' ? null : {});
+      },
+    );
+    const callsBeforeRestore = ui.fetch.mock.calls.length;
+    listener('pageshow')({ persisted });
+    await flush();
+    for (const timer of [...ui.timers]) await timer.fn();
+    await flush();
+    expect(ui.sessionStorage.getItem('clh.session')).toBe('replacement');
+    const restoredEvents = ui.fetch.mock.calls
+      .slice(callsBeforeRestore)
+      .filter(([url]) => url === '/v1/session/events');
+    expect(restoredEvents.length).toBeGreaterThan(0);
+    for (const [, opts] of restoredEvents)
+      expect(opts.headers['x-clh-session']).toBe('replacement');
+    ui.stopDialogueEvents();
+  },
+);
