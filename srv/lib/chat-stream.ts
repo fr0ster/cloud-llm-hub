@@ -238,7 +238,9 @@ export async function streamDialogue(opts: {
         if (!chunk.ok) throw chunk.error;
         const v = chunk.value;
         if (v.clhUsage) addDeliveredUsage(v.clhUsage);
-        if (v.clhToolResult) {
+        if (v.clhActivity)
+          comment(v.clhActivity.kind, JSON.stringify(v.clhActivity));
+        else if (v.clhToolResult) {
           if (stream.toolResults)
             comment(
               'tool-result',
@@ -288,6 +290,8 @@ export async function streamDialogue(opts: {
               item.written();
               stream.measurement?.messageDelivered();
             }
+          } else if (item.kind === 'activity' || item.kind === 'turn') {
+            comment(item.kind, JSON.stringify(item));
           } else if (item.kind === 'tool-result') {
             if (stream.toolResults)
               comment(

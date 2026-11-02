@@ -602,6 +602,26 @@
             panel.hidden = false;
         }
         // Only the queued and running subagents of the main agent, above the input.
+        let streamingRequests = 0;
+        let keepAliveTimer = null;
+        function updateKeepAlive() {
+            const busy = streamingRequests > 0 || mainRequests.some(task => task.state === 'running') || dialogueTasks.some(task => task.state === 'running' || task.state === 'queued');
+            if (!busy || hubSignedOut) { clearInterval(keepAliveTimer); keepAliveTimer = null; return; }
+            if (keepAliveTimer === null) keepAliveTimer = setInterval(() => {
+                if (hubSignedOut) { updateKeepAlive(); return; }
+                void hubFetch('/v1/ping', { headers: { 'x-clh-session': sessionKey } }).catch(() => {});
+            }, 300000);
+        }
+        const ownTurns = [];
+        function renderForeignTurn(turn) {
+            const own = ownTurns.indexOf(turn.text);
+            if (turn.source === 'webui' && own >= 0) { ownTurns.splice(own, 1); return; }
+            const node = document.createElement('div');
+            node.className = 'message user';
+            node.textContent = '> USER [' + turn.source + ']: ' + turn.text;
+            chatWindow.appendChild(node);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
         let activeAgentsTimer = null;
         function formatElapsed(ms) {
             const seconds = Math.max(0, Math.floor(ms / 1000));
@@ -613,6 +633,7 @@
         }
         function renderActiveAgents(tasks) {
             dialogueTasks = tasks;
+            updateKeepAlive();
             const box = document.getElementById('dialogue-active');
             if (!dialogueOpen) { clearInterval(activeAgentsTimer); activeAgentsTimer = null; box.hidden = true; box.innerHTML = ''; return; }
             const draw = () => {
@@ -626,13 +647,14 @@
                     const time = task.state === 'queued' ? ('queued ' + elapsed).trim() : elapsed || 'running';
                     return '<div class="agent-child" title="' + escapeHtml(String(task.goal || '')) + '">' + (index === active.length - 1 ? '└ ' : '├ ')
                         + escapeHtml(String(task.id)) + ' ' + escapeHtml(String(task.worker || ''))
+                        + (task.currentAction ? ' \u00b7 ' + escapeHtml(task.currentAction) + ' \u00b7 idle ' + Math.floor(Math.max(0, now - task.lastActivityAt) / 60000) + 'm' : '')
                         + ' <span class="agent-time">· ' + escapeHtml(time) + agentCounts(task) + '</span>' + (task.goal ? ': ' + escapeHtml(String(task.goal)) : '') + '</div>';
                 }).join('');
                 renderTasks();
             };
             draw();
             box.hidden = false;
-            if (activeAgentsTimer === null) activeAgentsTimer = setInterval(draw, 1000);
+            if (activeAgentsTimer === null) activeAgentsTimer = setInterval(draw, 15000);
         }
         function startDialogueEvents(key) {
             if (hubSignedOut) return;
@@ -700,6 +722,11 @@
                                 renderMessageUsage(key, id, parsed.usage);
                                 lastId = id;
                             } else if (event === 'usage') { renderMessageUsage(key, parsed.id, parsed.usage); }
+                            else if (event === 'turn') { renderForeignTurn(parsed); }
+                            else if (event === 'activity') {
+                                const task = tasks.find(task => task.id === parsed.taskId);
+                                if (task) { task.currentAction = parsed.action; task.lastActivityAt = parsed.at; renderActiveAgents(tasks); }
+                            }
                             else if (event === 'plan') { renderPlan(parsed); }
                             else if (event === 'tasks' && Array.isArray(parsed)) {
                                 tasks = parsed.map(task => clearWaitOnStateChange(task, tasks.find(previous => previous.id === task.id)));
@@ -1993,6 +2020,7 @@
                 refreshHubState();
             }
 
+            ownTurns.push(text.slice(0, 300));
             conversationHistory.push({ role: 'user', content: text });
 
             const thinkingId = 'thinking-' + chatSendSequence;
@@ -2015,7 +2043,9 @@
                 setStatus(`${phase} ${elapsed()}s`, cls);
             }, 1000);
 
-            function stopTimer() { clearInterval(timer); }
+            streamingRequests++; updateKeepAlive();
+            let streamCounted = true;
+            function stopTimer() { clearInterval(timer); if (streamCounted) { streamCounted = false; streamingRequests--; updateKeepAlive(); } }
 
             try {
                 const messageAttachments = attachedFiles.slice();
@@ -2053,7 +2083,7 @@
                     mainRequests.push(mainRequest); renderActiveAgents(dialogueTasks);
                 }
                 const requestKey = sessionKey;
-                const headers = { 'Content-Type': 'application/json', 'x-clh-tool-results': 'summary', ...getSapCredHeaders(), 'x-clh-ack': sessionAcks.get(requestKey) || 'none' };
+                const headers = { 'Content-Type': 'application/json', 'x-clh-client': 'webui', 'x-clh-tool-results': 'summary', ...getSapCredHeaders(), 'x-clh-ack': sessionAcks.get(requestKey) || 'none' };
                 if (selectedDest) headers['X-SAP-Destination'] = selectedDest;
 
                 // Include dynamic RAG collections via body (not header — headers don't support non-ASCII)

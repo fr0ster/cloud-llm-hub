@@ -1,5 +1,6 @@
 import { Stream as AnthropicStream } from '@anthropic-ai/sdk/core/streaming';
 import { LlmError } from '@mcp-abap-adt/llm-agent';
+import express from 'express';
 import { Stream as OpenAIStream } from 'openai/core/streaming';
 import {
   type DialogueStreamChunk,
@@ -1645,3 +1646,40 @@ it('non-streaming duration includes queue wait and open setup while preserving r
     clock.mockRestore();
   }
 });
+
+it.each([handleChatCompletions, handleAnthropicMessages])(
+  'activity and turn are SSE comments, never assistant deltas (%p)',
+  async (handler) => {
+    emptyPending = true;
+    const handle = await dialogueFor('alice', session.key, 'DEST');
+    let listener: Parameters<DialogueHandle['subscribe']>[0] = () => {};
+    handle.subscribe = (fn) => {
+      listener = fn;
+      return () => {};
+    };
+    const activity = {
+      kind: 'activity' as const,
+      taskId: 't1',
+      worker: 'executor',
+      action: 'tool ReadObject',
+      at: 123,
+    };
+    const turn = {
+      kind: 'turn' as const,
+      source: 'api' as const,
+      text: 'Inspect object',
+    };
+    send.mockImplementation(async () => {
+      listener(activity);
+      listener(turn);
+      return { text: 'answer' };
+    });
+    const res: Response = Object.create(express.response);
+    const output = fakeRes();
+    Object.defineProperties(res, Object.getOwnPropertyDescriptors(output));
+    await handler(streamingRequest(), res);
+    expect(output.body).toContain(`: activity ${JSON.stringify(activity)}\n\n`);
+    expect(output.body).toContain(`: turn ${JSON.stringify(turn)}\n\n`);
+    expect(output.body).not.toContain('"content":"tool ReadObject"');
+  },
+);

@@ -17,6 +17,7 @@ import {
 } from './lib/model-policy';
 import { resolverFor, TrustResolver } from './lib/trust-resolver';
 import { TrustStore } from './lib/trust-store';
+import { reportWorkerActivity } from './lib/worker-activity';
 
 export function runExecutorStep(...args: ExecutorStepArgs) {
   return executeExecutorStep(createAgentProfileSource, ...args);
@@ -2657,6 +2658,7 @@ export async function buildEmbeddedMcpAdapter(
       // - length >= 2: (context, args) => ... (direct handlers)
       // - length === 1: (args) => ... (closure-based, uses group.context)
       // Match BaseMcpServer.registerHandlers() logic (line 283-301)
+      reportWorkerActivity(`tool ${name}`);
       const toolCall =
         handler.length >= 2
           ? handler(effectiveContext, args)

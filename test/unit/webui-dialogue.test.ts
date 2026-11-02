@@ -28,12 +28,20 @@ interface UiApi {
   ack(key: string): string | undefined;
   view(key: string, id: string): { node: MessageNode };
   signOut(): void;
+  setBusy(busy: boolean): void;
+  setTasks(tasks: Array<{ state: string }>): void;
+  ownTurn(text: string): void;
+  renderForeignTurn(turn: { source: string; text: string }): void;
 }
 const html = readFileSync('app/chat/webapp/index.html', 'utf8');
 const flush = async () => {
   for (let i = 0; i < 30; i++) await Promise.resolve();
 };
-function harness(now?: number, realSessionRecovery = false) {
+function harness(
+  now?: number,
+  realSessionRecovery = false,
+  realTimers = false,
+) {
   const nodes: MessageNode[] = [];
   const list = { innerHTML: '', style: {} };
   const plan = { hidden: true, open: false };
@@ -95,13 +103,17 @@ function harness(now?: number, realSessionRecovery = false) {
       return timers.length;
     },
     clearTimeout: jest.fn(),
-    setInterval: (fn: () => void) => {
-      intervals.push(fn);
-      return intervals.length;
-    },
-    clearInterval: (id: number | null) => {
-      if (id) intervals[id - 1] = () => {};
-    },
+    setInterval: realTimers
+      ? setInterval
+      : (fn: () => void) => {
+          intervals.push(fn);
+          return intervals.length;
+        },
+    clearInterval: realTimers
+      ? clearInterval
+      : (id: number | null) => {
+          if (id) intervals[id - 1] = () => {};
+        },
     sessionHeaders: () => ({ 'x-clh-session': context.sessionKey }),
     conversationHistory: [],
     escapeHtml: (s: string) =>
@@ -199,7 +211,7 @@ function harness(now?: number, realSessionRecovery = false) {
         html.indexOf('        async function sendMessage()'),
         html.indexOf('        // Quick file attach'),
       ) +
-      ';({sendMessage, renderMessageVersion, subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml, runActiveProbe, fileArtifacts, replaceSession: key => { sessionKey = key; }, ack: key => sessionAcks.get(key), view: (key, id) => messageViews.get(key + ":" + id), signOut: () => { hubSignedOut = true; }})',
+      ';({sendMessage, renderMessageVersion, subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml, runActiveProbe, fileArtifacts, replaceSession: key => { sessionKey = key; }, ack: key => sessionAcks.get(key), view: (key, id) => messageViews.get(key + ":" + id), setTasks: tasks => { dialogueTasks = tasks; updateKeepAlive(); }, ownTurn: text => ownTurns.push(text), renderForeignTurn, setBusy: busy => { streamingRequests = busy ? 1 : 0; updateKeepAlive(); }, signOut: () => { hubSignedOut = true; }})',
     context,
   );
   return {
@@ -568,7 +580,7 @@ test('only queued and running subagents show above the input with elapsed time',
   expect(ui.active.innerHTML).toContain('· queued');
   expect(ui.active.innerHTML).not.toContain('old');
   expect(ui.list.innerHTML).toContain('T1 \u00b7 subagent executor: old');
-  expect(ui.intervals).toHaveLength(1);
+  expect(ui.intervals).toHaveLength(2);
   subscription.stop();
   ui.stopDialogueEvents();
   expect(ui.active.hidden).toBe(true);
@@ -1730,3 +1742,61 @@ test.each([false, true])(
     expect(card?.innerHTML).toContain('DL');
   },
 );
+
+test('foreign turns render as user bubbles and task activity includes idle minutes', async () => {
+  const ui = harness(180000);
+  ui.fetch.mockResolvedValue(
+    stream(
+      'event: tasks\ndata: [{"id":"t1","worker":"executor","state":"running"}]\n\n' +
+        'event: activity\ndata: {"taskId":"t1","action":"tool ReadObject","at":60000}\n\n' +
+        'event: turn\ndata: {"source":"api","text":"Inspect <object>"}\n\n',
+    ),
+  );
+  const sub = ui.subscribeDialogueEvents('key');
+  await flush();
+  expect(ui.nodes[0].textContent).toBe('> USER [api]: Inspect <object>');
+  expect(ui.active.innerHTML).toContain('tool ReadObject');
+  expect(ui.active.innerHTML).toContain('idle 2m');
+  ui.setNow(240000);
+  for (const tick of [...ui.intervals]) tick();
+  expect(ui.active.innerHTML).toContain('idle 3m');
+  sub.stop();
+});
+
+test('approuter keep-alive starts once while busy and stops when idle', async () => {
+  jest.useFakeTimers();
+  const ui = harness(undefined, false, true);
+  ui.fetch.mockResolvedValue({ status: 204 });
+  try {
+    ui.setBusy(true);
+    ui.setBusy(true);
+    await jest.advanceTimersByTimeAsync(299999);
+    expect(ui.fetch).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    expect(ui.fetch).toHaveBeenCalledTimes(1);
+    expect(ui.fetch).toHaveBeenCalledWith('/v1/ping', {
+      headers: { 'x-clh-session': 'key' },
+    });
+    ui.setBusy(false);
+    await jest.advanceTimersByTimeAsync(600000);
+    expect(ui.fetch).toHaveBeenCalledTimes(1);
+    ui.setTasks([{ state: 'running' }]);
+    await jest.advanceTimersByTimeAsync(300000);
+    expect(ui.fetch).toHaveBeenCalledTimes(2);
+    ui.setTasks([{ state: 'done' }]);
+    await jest.advanceTimersByTimeAsync(300000);
+    expect(ui.fetch).toHaveBeenCalledTimes(2);
+  } finally {
+    ui.setBusy(false);
+    jest.useRealTimers();
+  }
+});
+
+test('a tab suppresses its own turn and renders a turn from another WebUI', () => {
+  const ui = harness();
+  ui.ownTurn('local');
+  ui.renderForeignTurn({ source: 'webui', text: 'local' });
+  expect(ui.nodes).toHaveLength(0);
+  ui.renderForeignTurn({ source: 'webui', text: 'remote' });
+  expect(ui.nodes[0].textContent).toBe('> USER [webui]: remote');
+});

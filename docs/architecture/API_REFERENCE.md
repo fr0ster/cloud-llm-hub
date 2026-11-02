@@ -1086,6 +1086,16 @@ are emitted in outbox order even when persistence fails; persistence retries on
 the serialized save path. Acknowledgements remove the prefix through a known ID.
 Reconnects can pass `Last-Event-ID` to skip the rendered prefix.
 
+### Dialogue activity, turns and keep-alive
+
+`GET /v1/session/events` publishes live `activity` events with `{ kind: "activity", taskId, worker, action, at }` (epoch milliseconds). Worker tool dispatch and model calls produce content-free `tool <ToolName>` / `llm call` labels, throttled to one event per second per task. No arguments, results, credentials or headers are included.
+
+Live `turn` events carry `{ kind: "turn", source, text }`. Sources are `webui`, `api`, `mcp`, or `background`; requests are limited to 300 characters. Background turns carry only an `after task tN` summary. WebUI requests identify themselves with `x-clh-client: webui`. These transient events have no replay cursor.
+
+Both streaming chat endpoints (`/v1/chat/completions`, `/v1/messages`) forward these events as SSE comments: `: activity <json>` and `: turn <json>`. They are never assistant content, including during background follow.
+
+`GET /v1/ping` returns 204 through the same authentication and role middleware as `/v1`. The WebUI requests it through the approuter every five minutes while a chat stream or active tasks exist, and stops when idle.
+
 ### Session collection search toggle
 
 Trust administration routes (MCP_Admin only, global informational sources):

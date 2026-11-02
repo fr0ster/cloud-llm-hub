@@ -803,6 +803,10 @@ cds.on('bootstrap', (app: Application) => {
   );
   app.use('/v1', context, wrappedAuth, requireMcpRole, authJsonErrorHandler);
 
+  app.get('/v1/ping', (_req: Request, res: Response) => {
+    res.status(204).end();
+  });
+
   // Chat session parameters must be parsed before session resolution.
   app.post(
     ['/v1/chat/completions', '/v1/messages'],

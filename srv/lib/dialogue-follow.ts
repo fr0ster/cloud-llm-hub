@@ -4,9 +4,10 @@ import type {
   ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
 import type { Delivery } from './dialogue-outbox';
-import type { DialogueHandle } from './dialogue-sessions';
+import type { DialogueEvent, DialogueHandle } from './dialogue-sessions';
 
 export type FollowItem =
+  | Extract<DialogueEvent, { kind: 'activity' | 'turn' }>
   | { kind: 'tool-result'; record: ToolCallRecord; written?: () => void }
   | { kind: 'message'; message: PlannerMessage; written(): void }
   | {
@@ -103,10 +104,18 @@ export function followDialogue(
         yield forced;
         return;
       }
-      const toolResults: Extract<FollowItem, { kind: 'tool-result' }>[] = [];
+      const toolResults: Extract<
+        FollowItem,
+        { kind: 'tool-result' | 'activity' | 'turn' }
+      >[] = [];
       unsubscribe = handle.subscribe(
         (event) => {
-          if (event.kind === 'tool-result') toolResults.push(event);
+          if (
+            event.kind === 'tool-result' ||
+            event.kind === 'activity' ||
+            event.kind === 'turn'
+          )
+            toolResults.push(event);
           if (event.kind === 'settled') {
             evaluate = true;
           }

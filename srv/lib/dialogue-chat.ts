@@ -20,10 +20,12 @@ import {
 } from './dialogue-follow';
 import type { Delivery } from './dialogue-outbox';
 import {
+  type DialogueEvent,
   type DialogueHandle,
   dialogueFor,
   type PlannerCounts,
 } from './dialogue-sessions';
+import { turnSource } from './dialogue-turn-source';
 import { failureMessage } from './llm-failure';
 import type { LongSession } from './long-session';
 import { NoMessageFilter, stripNoMessage } from './no-message';
@@ -57,6 +59,7 @@ export type DialogueStreamChunk = LlmStreamChunk & {
   clhMessageId?: string;
   clhMessageEnd?: string;
   clhTurnEnd?: true;
+  clhActivity?: Extract<DialogueEvent, { kind: 'activity' | 'turn' }>;
   clhToolResult?: ToolCallRecord;
   clhToolResultWritten?: () => void;
 };
@@ -137,7 +140,14 @@ export function dialogueChat(
         delivery.ended();
       resolveResponseEnded();
     });
+    const originalSend = handle.session.send.bind(handle.session);
+    const send: typeof originalSend = (text, options) =>
+      turnSource.run(
+        req.headers['x-clh-client'] === 'webui' ? 'webui' : 'api',
+        () => originalSend(text, options),
+      );
     return {
+      send,
       handle,
       pending,
       complete: () => {
@@ -161,7 +171,7 @@ export function dialogueChat(
     },
     async process(messages: Message[], opts: AgentCallOptions | undefined) {
       try {
-        const { handle, pending, complete } = await open();
+        const { handle, pending, complete, send } = await open();
         const message = messages.filter((m) => m.role === 'user').at(-1);
         const trace = {
           ...opts?.trace,
@@ -177,20 +187,19 @@ export function dialogueChat(
         const replyId = randomUUID();
         const createdAt = Date.now();
         handle.replies.set(trace, { id: replyId, createdAt });
-        const answer = await handle.session
-          .send(userText(message), {
-            ...plannerObservers(handle),
-            ...(handle.usage
-              ? {
-                  usage: handle.usage.with({
-                    requestId: trace.traceId,
-                    traceId: trace.traceId,
-                  }),
-                }
-              : {}),
-            signal: opts?.signal,
-            trace,
-          })
+        const answer = await send(userText(message), {
+          ...plannerObservers(handle),
+          ...(handle.usage
+            ? {
+                usage: handle.usage.with({
+                  requestId: trace.traceId,
+                  traceId: trace.traceId,
+                }),
+              }
+            : {}),
+          signal: opts?.signal,
+          trace,
+        })
           .finally(() => {
             handle.attachments.delete(trace);
             handle.replies.delete(trace);
@@ -232,7 +241,7 @@ export function dialogueChat(
       }
     },
     async *streamProcess(messages, opts) {
-      const { handle, pending, complete } = await open();
+      const { handle, pending, complete, send } = await open();
       let hasContent = false;
       let replyUsage: PlannerMessageUsage | undefined;
       for (const message of pending) {
@@ -281,6 +290,8 @@ export function dialogueChat(
       handle.replies.set(trace, { id: replyId, createdAt });
       const unsubscribe = handle.subscribe(
         (event) => {
+          if (event.kind === 'activity' || event.kind === 'turn')
+            push({ ok: true, value: { content: '', clhActivity: event } });
           if (event.kind === 'tool-result')
             push({
               ok: true,
@@ -296,28 +307,27 @@ export function dialogueChat(
       );
       stopToolResults = unsubscribe;
       if (disconnected || response.writableFinished) unsubscribe();
-      const sending = handle.session
-        .send(userText(message), {
-          ...plannerObservers(handle),
-          ...(handle.usage
-            ? {
-                usage: handle.usage.with({
-                  requestId: trace.traceId,
-                  traceId: trace.traceId,
-                }),
-              }
-            : {}),
-          signal: opts?.signal,
-          trace,
-          onPartial(chunk) {
-            if (chunk.kind === 'content') {
-              if (!chunk.delta) return;
-              receivedPartial = true;
-              const content = filter.push(chunk.delta);
-              if (content) push({ ok: true, value: { content } });
+      const sending = send(userText(message), {
+        ...plannerObservers(handle),
+        ...(handle.usage
+          ? {
+              usage: handle.usage.with({
+                requestId: trace.traceId,
+                traceId: trace.traceId,
+              }),
             }
-          },
-        })
+          : {}),
+        signal: opts?.signal,
+        trace,
+        onPartial(chunk) {
+          if (chunk.kind === 'content') {
+            if (!chunk.delta) return;
+            receivedPartial = true;
+            const content = filter.push(chunk.delta);
+            if (content) push({ ok: true, value: { content } });
+          }
+        },
+      })
         .finally(() => {
           handle.attachments.delete(trace);
           handle.replies.delete(trace);

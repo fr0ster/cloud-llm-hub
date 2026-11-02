@@ -10,6 +10,7 @@ import { executeRagTool } from '../../srv/agent-mcp-rag';
 import { chatStream, streamDialogue } from '../../srv/lib/chat-stream';
 import { dialogueChat } from '../../srv/lib/dialogue-chat';
 import { followDialogue } from '../../srv/lib/dialogue-follow';
+import { turnSource } from '../../srv/lib/dialogue-turn-source';
 import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import * as plannerMemory from '../../srv/lib/planner-memory';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
@@ -17,6 +18,7 @@ import { buildReviewMessages } from '../../srv/lib/step-reviewer';
 import { systemToolTrust } from '../../srv/lib/system-tool-trust';
 import type { TrustResolver } from '../../srv/lib/trust-resolver';
 import { sumPlannerUsage } from '../../srv/lib/usage-wire';
+import { reportWorkerActivity } from '../../srv/lib/worker-activity';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { fixtureTrustResolver } from './helpers/agent-profiles';
 import { liveSession } from './helpers/canonical-rag';
@@ -369,7 +371,7 @@ test.each([false, true])(
         events
           .filter((event) => event.kind !== 'task')
           .map((event) => event.kind),
-      ).toEqual(['plan', 'message', 'settled']);
+      ).toEqual(['turn', 'plan', 'message', 'settled']);
       const message = events.find((event) => event.kind === 'message');
       expect(message).toBeDefined();
       if (message?.kind === 'message')
@@ -453,7 +455,7 @@ test('a save during the turn emits no settled', async () => {
     h.session.takePending();
     await h.drainPending();
     await h.outbox.flushed();
-    expect(events).toEqual([]);
+    expect(events).toEqual([{ kind: 'turn', source: 'mcp', text: 'plan' }]);
   } finally {
     release();
     await turn;
@@ -2627,4 +2629,51 @@ test('failed worker spend reaches message usage once when the planner recovers',
   mockPlan = { plan: 'Finished', status: 'done' };
   await h.session.send('finish');
   expect(recorded()).toHaveLength(1);
+});
+
+test('worker scope emits content-free activity and background turns identify completed tasks', async () => {
+  const { h } = await ready();
+  const events: DialogueEvent[] = [];
+  h.subscribe((event) => events.push(event));
+  mockRun.mockImplementation(async () => {
+    reportWorkerActivity('tool ReadObject');
+    reportWorkerActivity('llm call');
+    return { output: 'secret result' };
+  });
+  await turnSource.run('api', () => h.session.send('inspect'));
+  await until(() =>
+    events.some(
+      (event) => event.kind === 'turn' && event.source === 'background',
+    ),
+  );
+  expect(events).toContainEqual({
+    kind: 'turn',
+    source: 'api',
+    text: 'inspect',
+  });
+  const activity = events.filter((event) => event.kind === 'activity');
+  expect(activity).toHaveLength(1);
+  expect(activity[0]).toMatchObject({
+    taskId: 't1',
+    worker: 'executor',
+    action: 'tool ReadObject',
+  });
+  expect(JSON.stringify(activity)).not.toContain('secret');
+  expect(events).toContainEqual({
+    kind: 'turn',
+    source: 'background',
+    text: 'after task t1',
+  });
+});
+
+test('turn requests are truncated and retain their source', async () => {
+  const { h } = await ready();
+  const events: DialogueEvent[] = [];
+  h.subscribe((event) => events.push(event));
+  await turnSource.run('webui', () => h.session.send('x'.repeat(350)));
+  expect(events).toContainEqual({
+    kind: 'turn',
+    source: 'webui',
+    text: 'x'.repeat(300),
+  });
 });

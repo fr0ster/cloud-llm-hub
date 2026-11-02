@@ -59,6 +59,7 @@ import {
   migrateDialogueToolContract,
   touchDialogueState,
 } from './dialogue-store';
+import { turnSource } from './dialogue-turn-source';
 import { admitBackground, type PipelineSession } from './gatekeeper';
 import { isLlmFailure, llmFailure, observeLlmSpend } from './llm-failure';
 import { longSessionsIfReady } from './long-session';
@@ -81,6 +82,12 @@ import { cachedSystemIdentity } from './system-identity-cache';
 import { type TaskView, taskView } from './task-view';
 import { resolverFor, type TrustResolver } from './trust-resolver';
 import { usageRuntime } from './usage/runtime';
+import {
+  type ActivityEvent,
+  noteBoardActivity,
+  taskActivity,
+  withWorkerActivity,
+} from './worker-activity';
 
 type Plan = Exclude<DialogueState['plan'], string | undefined>;
 type PlanStep = Plan['steps'][number];
@@ -97,6 +104,12 @@ export interface PlannerCounts {
 }
 
 export type DialogueEvent =
+  | ActivityEvent
+  | {
+      kind: 'turn';
+      source: 'webui' | 'api' | 'mcp' | 'background';
+      text: string;
+    }
   | ({ kind: 'planner' } & PlannerCounts)
   | ({ kind: 'wait' } & DialogueSignals['dialogue.wait'])
   | { kind: 'settled'; outcome: 'ok' | 'failed'; trigger: 'user' | 'event' }
@@ -609,6 +622,7 @@ async function open(
   };
   const taskCallers = new Map<string, TurnCaller>();
   const pendingEventCallers: TurnCaller[] = [];
+  const pendingEventTasks: string[] = [];
   let eventCaller: TurnCaller | undefined;
   const unsubscribeTaskCaller = signals.on(
     'dialogue.task.state',
@@ -623,6 +637,7 @@ async function open(
         task.state === 'failed' ||
         task.state === 'stopped'
       ) {
+        pendingEventTasks.push(task.id);
         const caller = taskCallers.get(task.id);
         if (caller) pendingEventCallers.push(caller);
         taskCallers.delete(task.id);
@@ -745,6 +760,21 @@ async function open(
   }
   let settledSeq = 0;
   let lastFailedSeq = 0;
+  const unsubscribeStarted = signals.on(
+    'dialogue.turn.started',
+    ({ payload: { trigger } }) => {
+      if (trigger === 'event')
+        emit({
+          kind: 'turn',
+          source: 'background',
+          text: `after task ${pendingEventTasks.splice(0).join(', ') || 'update'}`.slice(
+            0,
+            300,
+          ),
+        });
+    },
+    { source: key },
+  );
   const unsubscribeSettled = signals.on(
     'dialogue.turn.settled',
     async ({ payload: { outcome, trigger } }) => {
@@ -775,6 +805,7 @@ async function open(
     unsubscribeWait();
     unsubscribeActivity();
     unsubscribeClosed();
+    unsubscribeStarted();
     unsubscribeSettled();
     releaseLifetime();
   };
@@ -1055,9 +1086,24 @@ async function open(
                     { component: 'other', taskId: task.id, sessionKey: key },
                     // Workers report spend on TaskRecord, outside the planner bucket.
                     () =>
-                      observeLlmSpend(run, (usage) => {
-                        spent = addTokenUsage(spent, usage);
-                      }),
+                      observeLlmSpend(
+                        () =>
+                          withWorkerActivity(
+                            taskActivity(
+                              task.id,
+                              task.worker,
+                              (action) => {
+                                if (session)
+                                  noteBoardActivity(session, task.id, action);
+                              },
+                              emit,
+                            ),
+                            run,
+                          ),
+                        (usage) => {
+                          spent = addTokenUsage(spent, usage);
+                        },
+                      ),
                   ),
               ),
             );
@@ -1116,6 +1162,11 @@ async function open(
   lastPlan = dialoguePlan(session.snapshot());
   const send = session.send.bind(session);
   session.send = (text, options = {}) => {
+    emit({
+      kind: 'turn',
+      source: turnSource.getStore() ?? 'mcp',
+      text: text.slice(0, 300),
+    });
     // Each queued input owns its snapshot even if callers reuse a trace object.
     const trace = options.trace
       ? { ...options.trace }
