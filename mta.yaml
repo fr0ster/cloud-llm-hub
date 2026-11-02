@@ -23,7 +23,9 @@ parameters:
   LLM_AGENT_MAX_ITERATIONS:
   LLM_AGENT_CHAT_COORDINATOR: "adaptive"
   LLM_AGENT_DIALOGUE_EXECUTORS: "3"
-  LLM_AGENT_DIALOGUE_EXECUTOR_POOL: "6"
+  # Hub-wide cap on concurrent background tasks across ALL sessions: opt-in.
+  # Empty = none; every session queues only within its own LLM_AGENT_DIALOGUE_EXECUTORS.
+  LLM_AGENT_DIALOGUE_EXECUTOR_POOL: ""
   LLM_AGENT_DIALOGUE_MAX_TASKS: "50"
   LLM_AGENT_DIALOGUE_MAX_CORRECTIONS: "2"
   LLM_AGENT_PLAN_MAX_STEPS: ""
