@@ -504,6 +504,9 @@
                 if (sessionOpening) await sessionOpening;
                 sessionKey = sessionStorage.getItem('clh.session') || '';
                 if (!sessionKey) return;
+                // Only the tab holding the lock may end the session; any other
+                // tab just forgets its local copy of the key.
+                if (!ownsSession(sessionKey)) return;
                 const response = await hubFetch('/v1/session', { method: 'DELETE', headers: sessionHeaders() });
                 if (!response.ok && response.status !== 404) throw new Error('HTTP ' + response.status);
             } catch (error) {

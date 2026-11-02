@@ -520,3 +520,18 @@ describe('atomic tab ownership', () => {
     expect(ui.fetch.mock.calls[2][1].headers['x-clh-session']).toBe('fresh');
   });
 });
+test('close never deletes a session this tab does not own', async () => {
+  const ui = sessionHarness('old');
+  await ui.ready;
+  // Another tab's key appears in this tab's storage (copied or restored page).
+  ui.values.set('clh.session', 'other');
+  ui.fetch.mockResolvedValue(response(204));
+  await ui.closeSession();
+  expect(
+    ui.fetch.mock.calls.some(
+      ([url, opts]: [string, { method?: string }]) =>
+        url === '/v1/session' && opts.method === 'DELETE',
+    ),
+  ).toBe(false);
+  expect(ui.values.has('clh.session')).toBe(false);
+});
