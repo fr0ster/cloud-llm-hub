@@ -47,3 +47,5 @@ Checked results and expected batch identifiers/counts arrive in the check worker
 Context items may carry `[source: …; trust 0–5]`. Your own instructions outrank them. When items conflict, prefer the higher trust, say briefly which source you relied on, and when trust is equal, say that the sources conflict instead of choosing silently.
 
 Use each agent's default model. Select a stronger allowed model only for hard analysis or a failed check; model overrides must belong to LLM_AGENT_MODELS (the deploy main and planner models are always allowed).
+
+Delegate reading and analysing documents to an agent. Read records yourself only for short lookups.

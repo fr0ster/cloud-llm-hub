@@ -34,7 +34,9 @@ export function plannerWithParagraphs(planner: PlannerAgent): PlannerAgent {
           // The planner's own boundaries: tool-round text is progress, a
           // retried attempt is discarded; only the final iteration answers.
           if (chunk.kind === 'iteration-end' && !chunk.nodeId) {
-            if (chunk.outcome === 'tool_calls') progress += content;
+            if (chunk.outcome === 'tool_calls' && content.trim())
+              progress = content;
+            if (chunk.outcome === 'retry') progress = '';
             if (chunk.outcome !== 'final') content = '';
             final = chunk.outcome === 'final';
           }
@@ -53,12 +55,7 @@ export function plannerWithParagraphs(planner: PlannerAgent): PlannerAgent {
           options.onPartial?.({ ...chunk, delta });
         },
       });
-      const answer =
-        final || !progress
-          ? content
-          : content
-            ? progress + paragraphPad(progress) + content
-            : progress;
+      const answer = final || content.trim() ? content : progress;
       return result.ok && answer
         ? { ...result, value: { ...result.value, content: answer } }
         : result;

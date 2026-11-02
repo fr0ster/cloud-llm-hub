@@ -31,6 +31,7 @@ import {
   validateRagText,
   validateRagWriteSize,
 } from './lib/rag-write-operations';
+import { readLoopPage } from './lib/read-dedup';
 import {
   collectionView,
   recordAttributes,
@@ -568,15 +569,20 @@ async function runRagTool(
       if (!doc) throw new Error('Document not found');
       const input = await resolverFor(registry).inputForSkill(doc.id);
       const start = args.offset ?? 0;
-      const end = Math.min(doc.text.length, start + (args.limit ?? 8000));
-      return respond({
-        id: doc.id,
-        offset: start,
-        total: doc.text.length,
-        ...(end < doc.text.length ? { next: end } : {}),
-        text: doc.text.slice(start, end),
-        attributes: recordAttributes(doc, input),
-      });
+
+      const page = readLoopPage(
+        traceId,
+        '@skills',
+        doc.id,
+        doc.text,
+        start,
+        args.limit,
+      );
+      return respond(
+        'alreadyRead' in page
+          ? page
+          : { ...page, attributes: recordAttributes(doc, input) },
+      );
     }
     const offset = args.offset ?? 0;
     return respond({
@@ -800,15 +806,9 @@ async function runRagTool(
     if (!visibility.visible)
       return respond({ id: doc.id, attributes, reason: visibility.reason });
     const start = args.offset ?? 0;
-    const end = Math.min(doc.text.length, start + (args.limit ?? 8000));
-    return respond({
-      id: doc.id,
-      offset: start,
-      total: doc.text.length,
-      ...(end < doc.text.length ? { next: end } : {}),
-      text: doc.text.slice(start, end),
-      attributes,
-    });
+
+    const page = readLoopPage(traceId, id, doc.id, doc.text, start, args.limit);
+    return respond('alreadyRead' in page ? page : { ...page, attributes });
   }
   const page = await readRagDocuments(registry, id, {
     offset: args.offset,

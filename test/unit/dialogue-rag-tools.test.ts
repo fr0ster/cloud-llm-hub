@@ -258,3 +258,53 @@ test('canonical tool candidates deduplicate imported names and obey the read cei
       z.object({ type: z.literal('object') }).parse(tool.inputSchema),
     ).toEqual({ type: 'object' });
 });
+
+import { createToolLoopWindow } from '../../srv/lib/tool-loop-window';
+
+test('local rag_read uses loop pointers and restores text after eviction or another-page change', async () => {
+  const { client } = setup();
+  await inSession(async () => {
+    const strategy = createToolLoopWindow(1);
+    const options = { trace: { traceId: 'read-loop' } };
+    const emptyRound = {
+      assistant: { role: 'assistant' as const, content: '' },
+      results: [],
+    };
+    const created = await client.callTool(
+      'collection_create',
+      { name: 'pages', scope: 'user' },
+      options,
+    );
+    const collection = z
+      .object({ collection: z.string() })
+      .parse(
+        created.ok ? JSON.parse(String(created.value.content)) : {},
+      ).collection;
+    await client.callTool(
+      'record_add',
+      { collection, record: 'r', text: 'a'.repeat(40000) },
+      options,
+    );
+    const read = () =>
+      client.callTool('rag_read', { collection, id: 'r' }, options);
+    expect(await read()).toMatchObject({
+      value: { content: expect.stringContaining('"next":32000') },
+    });
+    await strategy.record(emptyRound);
+    expect(await read()).toMatchObject({
+      value: { content: expect.stringContaining('"alreadyRead":true') },
+    });
+    await strategy.record(emptyRound);
+    expect(await read()).toMatchObject({
+      value: { content: expect.stringContaining('"text":') },
+    });
+    await client.callTool(
+      'record_update',
+      { collection, record: 'r', text: `${'a'.repeat(39999)}b` },
+      options,
+    );
+    expect(await read()).toMatchObject({
+      value: { content: expect.stringContaining('"text":') },
+    });
+  });
+});

@@ -501,7 +501,7 @@ test('character paging applies its default and maximum accepted limit', async ()
     metadata: {},
   });
   expect((await body(call('rag_read', { id: 'long' }))).text).toHaveLength(
-    8000,
+    32000,
   );
   const page = await body(call('rag_read', { id: 'long', limit: 32000 }));
   expect(page.text).toHaveLength(32000);

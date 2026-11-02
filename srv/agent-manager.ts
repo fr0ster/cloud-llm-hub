@@ -104,7 +104,6 @@ import {
   McpClientAdapter,
 } from '@mcp-abap-adt/llm-agent-mcp';
 import cds from '@sap/cds';
-
 import { z } from 'zod';
 import {
   type AgentConfig,
@@ -113,6 +112,7 @@ import {
 } from './agent-config';
 import { runOutsideAdmission, trackCall } from './lib/admission-scope';
 import { destinationRequiresCredentials } from './lib/destination-authentication';
+import { createToolLoopWindow } from './lib/tool-loop-window';
 
 export { destinationRequiresCredentials } from './lib/destination-authentication';
 
@@ -2853,6 +2853,7 @@ async function configureDestinationAgentBuilder(
       ].join('\n'),
     },
   })
+    .withToolLoopContextStrategyFactory(() => createToolLoopWindow())
     .withToolTrust(systemToolTrust(isEmbeddedSystemTool, roleResolver))
     .withMainLlm(opts?.skipRetrieval ? mainLlm : trackedLlm(mainLlm, true))
     .withClassifierLlm(classifierLlm)
@@ -2992,6 +2993,9 @@ export async function buildPlannerAgent(
     .withMode('hard');
   if (config.agent.maxToolCalls !== undefined)
     builder.withMaxToolCalls(config.agent.maxToolCalls);
+  // DialogueSession owns the coordinator history; authors use the tool window.
+  if (authorClient)
+    builder.withToolLoopContextStrategyFactory(() => createToolLoopWindow());
   const handle = await builder.build();
   return handle.agent;
 }
