@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.4.0] - 2026-11-02
+
 ### Added
 
 - Built-in external docs MCP destinations per planner, executor, checker and analyst role, with read-only profile ceilings, collision-safe ownership, lazy discovery and destination/profile docs trust.
