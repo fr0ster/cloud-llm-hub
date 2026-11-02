@@ -113,7 +113,7 @@ describe('the configured wait ceiling', () => {
   it('installs our own strategy, not the library default', () => {
     // The library decides nothing on purpose. We can decide, because we know
     // our callers give up around a minute.
-    expect(load().llm.whenThrottled.name).toBe('wait-if-short-enough');
+    expect(load().llm.whenThrottled.name).toBe('wait-as-needed');
   });
 
   it('waits out an interval short enough to be worth waiting', () => {
@@ -124,6 +124,7 @@ describe('the configured wait ceiling', () => {
     // Five twenty-second intervals are not five short waits. An earlier version
     // looked only at the interval in hand and would have waited a hundred
     // seconds — the cut connection this strategy exists to prevent.
+    process.env.LLM_AGENT_THROTTLE_MAX_WAIT_MS = '20000';
     const strategy = load().llm.whenThrottled;
     const decide = (seconds: number, waitedMs: number) =>
       strategy.decide({
@@ -141,6 +142,7 @@ describe('the configured wait ceiling', () => {
   it('reports an interval longer than we will hold a connection', () => {
     // A caller told "try again in ninety seconds" has something to act on; a
     // caller whose connection was cut at sixty has nothing.
+    process.env.LLM_AGENT_THROTTLE_MAX_WAIT_MS = '20000';
     const decision = decideFor(90);
     expect(decision.retry).toBe(false);
     expect(decision.reason).toBe('longer-than-we-wait');
@@ -148,6 +150,7 @@ describe('the configured wait ceiling', () => {
   });
 
   it('reports rather than guessing when the server named nothing', () => {
+    process.env.LLM_AGENT_THROTTLE_MAX_WAIT_MS = '20000';
     const decision = decideFor(undefined);
     expect(decision.retry).toBe(false);
     expect(decision.reason).toBe('no-interval');

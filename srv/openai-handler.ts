@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
+import { failureMessage } from './lib/llm-failure';
 import {
   ignoredModelHeader,
   parseModelAllowlist,
@@ -1175,6 +1176,15 @@ async function serveChatCompletions(
         models?: Record<string, unknown>;
       } | null = null;
 
+      let usageSent = false;
+      const writeUsage = () => {
+        if (!lastUsage || usageSent) return;
+        usageSent = true;
+        out.write(
+          `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: getCurrentModel(), choices: [], usage: lastUsage })}\n\n`,
+        );
+      };
+
       log.info('Starting streamProcess', { sessionId });
 
       // Bind the caller and session for canonical host RAG execution.
@@ -1237,8 +1247,9 @@ async function serveChatCompletions(
                             ? `${unverified} ${throttleMessage(limit)}`
                             : unverified
                           : limit
-                            ? throttleMessage(limit)
-                            : err.message;
+                            ? `${failureMessage(err)}. ${throttleMessage(limit)}`
+                            : failureMessage(err);
+                        writeUsage();
                         out.write(
                           `data: ${jsonError(userMessage, 'server_error')}\n\n`,
                         );
@@ -1385,8 +1396,9 @@ async function serveChatCompletions(
                         ? `${streamUnverified} ${throttleMessage(streamLimit)}`
                         : streamUnverified
                       : streamLimit
-                        ? throttleMessage(streamLimit)
-                        : errMsg;
+                        ? `${failureMessage(err)}. ${throttleMessage(streamLimit)}`
+                        : failureMessage(err);
+                    writeUsage();
                     out.write(
                       `data: ${jsonError(userMessage, 'server_error')}\n\n`,
                     );
@@ -1429,18 +1441,7 @@ async function serveChatCompletions(
       // OpenAI spec gates this behind stream_options.include_usage, but in practice
       // most clients (Goose, Cline) expect it. Sending unconditionally is safe —
       // clients that don't need it simply ignore the extra chunk.
-      if (lastUsage) {
-        out.write(
-          `data: ${JSON.stringify({
-            id,
-            object: 'chat.completion.chunk',
-            created,
-            model: getCurrentModel(),
-            choices: [],
-            usage: lastUsage,
-          })}\n\n`,
-        );
-      }
+      writeUsage();
 
       log.info('Stream completed', {
         chunkCount,

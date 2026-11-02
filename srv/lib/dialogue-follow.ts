@@ -1,4 +1,8 @@
-import type { PlannerMessage, ToolCallRecord } from '@mcp-abap-adt/llm-agent';
+import type {
+  PlannerMessage,
+  PlannerMessageUsage,
+  ToolCallRecord,
+} from '@mcp-abap-adt/llm-agent';
 import type { Delivery } from './dialogue-outbox';
 import type { DialogueHandle } from './dialogue-sessions';
 
@@ -16,6 +20,8 @@ export type FollowItem =
         | 'disconnected'
         | 'error';
       note?: string;
+      cause?: string;
+      usage?: PlannerMessageUsage;
     };
 type End = Extract<FollowItem, { kind: 'end' }>;
 const follows = new WeakMap<
@@ -145,8 +151,25 @@ export function followDialogue(
         });
         const state = handle.state();
         if (state.lastFailedSeq > opts.since)
-          forced ??= { kind: 'end', reason: 'error' };
-        if (forced && (forced.reason !== 'error' || toolResults.length === 0)) {
+          forced ??= {
+            kind: 'end',
+            reason: 'error',
+            cause: state.failureCause,
+            usage: handle.failedUsage?.(),
+          };
+        // Supersession must finish before another request reads the outbox.
+        if (forced && forced.reason !== 'error') {
+          cleanup();
+          yield forced;
+          return;
+        }
+        const message = handle.outbox
+          .pending()
+          .find(
+            (message) =>
+              !opts.delivery.has(message.id) && !yielded.has(message.id),
+          );
+        if (forced && toolResults.length === 0 && !message) {
           cleanup();
           yield forced;
           return;
@@ -156,12 +179,6 @@ export function followDialogue(
           yield record;
           continue;
         }
-        const message = handle.outbox
-          .pending()
-          .find(
-            (message) =>
-              !opts.delivery.has(message.id) && !yielded.has(message.id),
-          );
         if (message) {
           yielded.add(message.id);
           yield {

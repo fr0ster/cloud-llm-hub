@@ -25,6 +25,7 @@ import { SapCoreAIProvider } from '@mcp-abap-adt/sap-aicore-llm';
 import cds from '@sap/cds';
 import type { LlmProvider } from '../agent-config';
 import { captureLlm } from './context-capture';
+import { reliableLlm } from './llm-failure';
 import { usageRuntime } from './usage/runtime';
 
 export interface HubLlmConfig {
@@ -180,15 +181,17 @@ export async function makeHubLlm(
     }
   }
 
-  const llm = captureLlm(
-    new LlmAdapter(new LlmProviderBridge(provider), {
-      model: provider.model,
-      getModels: () => provider.getModels?.() ?? Promise.resolve([]),
-      getEmbeddingModels: () =>
-        provider.getEmbeddingModels?.() ?? Promise.resolve([]),
-    }),
-    cfg.component,
-    cfg.contextCapture,
+  const llm = reliableLlm(
+    captureLlm(
+      new LlmAdapter(new LlmProviderBridge(provider), {
+        model: provider.model,
+        getModels: () => provider.getModels?.() ?? Promise.resolve([]),
+        getEmbeddingModels: () =>
+          provider.getEmbeddingModels?.() ?? Promise.resolve([]),
+      }),
+      cfg.component,
+      cfg.contextCapture,
+    ),
   );
   if (cfg.component !== 'planner-author') return llm;
   // SmartAgent supplies its tool-loop component in CallOptions. Attribute at

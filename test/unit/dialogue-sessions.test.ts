@@ -46,6 +46,7 @@ import type {
   TokenUsage,
   ToolTrace,
 } from '@mcp-abap-adt/llm-agent';
+import { LlmError } from '@mcp-abap-adt/llm-agent';
 import {
   DialogueSession,
   PlannerToolsClient,
@@ -2478,3 +2479,39 @@ test('revival drops a saved coordinator model removed from the allowlist', async
     else process.env.LLM_AGENT_MODELS = previous;
   }
 });
+
+test.each([429, 503, 0])(
+  'background planner failures retain a safe cause and worker spend (%s)',
+  async (status) => {
+    const { h } = await ready();
+    mockRun.mockResolvedValue({
+      output: 'worker finished',
+      usage: { promptTokens: 7, completionTokens: 3, totalTokens: 10 },
+    });
+    mockPlannerHook = async (text) => {
+      if (text.startsWith('[task events]'))
+        throw Object.assign(
+          new LlmError('private model request and provider details'),
+          status ? { response: { status } } : {},
+        );
+    };
+    await h.session.send('go');
+    await until(() => h.state().lastFailedSeq > 0);
+    const cause = status
+      ? `LLM unavailable (HTTP ${status})`
+      : 'LLM unavailable (no response from model)';
+    expect(h.state().failureCause).toBe(cause);
+    expect(h.failedUsage?.().tasks).toEqual([
+      expect.objectContaining({
+        worker: 'executor',
+        usage: { promptTokens: 7, completionTokens: 3, totalTokens: 10 },
+      }),
+    ]);
+    // A successful subsequent turn must not overwrite the retained failure facts.
+    mockPlannerHook = undefined;
+    mockPlan = { plan: 'Finished', status: 'done' };
+    await h.session.send('finish');
+    expect(h.state().failureCause).toBe(cause);
+    expect(h.failedUsage?.().tasks).toHaveLength(1);
+  },
+);

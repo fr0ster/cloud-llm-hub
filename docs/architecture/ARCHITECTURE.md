@@ -1426,25 +1426,21 @@ on a *word boundary* — the old matcher called anything containing `429` a rate
 limit, so a question about object `4290` was answered with an apology about an
 overloaded AI service.
 
-**Where the waiting decision sits.** Ours, not the library's, because only we
-know our callers give up around a minute. Since llm-agent 24.0.0 that decision
-is a strategy rather than a number, and ours is `WaitIfShortEnough`
-(`srv/lib/throttle-strategy.ts`): wait while the **total** stays short enough to
-be worth waiting, report anything longer with the number attached. The total,
-not the interval in hand — five twenty-second intervals are a hundred seconds
-and a cut connection. A caller told to try
-again in ninety seconds has something to act on; a caller whose connection was
-cut at sixty has nothing. The ceiling is `LLM_AGENT_THROTTLE_MAX_WAIT_MS`,
-20 seconds by default.
+**Where the waiting decision sits.** The hub owns this policy.
 
-Deliberately **not** an `AbortSignal` on the call, though the library accepts
-one. A signal bounds the whole agent run, and a tool loop legitimately takes
-minutes — the deadline we want applies to waiting for a quota, not to doing the
-work.
+The hub shares one SAP AI Core account, so the default strategy is
+`WaitAsNeeded` (`wait-as-needed`) both with and without the gatekeeper door.
+A positive server interval is waited exactly, without a total wait cap. SSE
+keep-alives protect streaming callers while queued. Without an interval, the
+strategy backs off from 2 seconds, doubling per unnamed wait, with 20% jitter
+in either direction and a hard 60-second cap per wait. After six unnamed waits
+per call it reports `no-interval`: a missing interval can mean a spend cap.
 
-With a door configured the strategy is `WaitAsTold` instead: admission already
-decided the caller is carried to the end, so a ceiling behind the door would
-only kill work in flight.
+An explicitly set `LLM_AGENT_THROTTLE_MAX_WAIT_MS` selects `WaitIfShortEnough`
+only without a door. This opt-in ceiling bounds total throttle waiting; zero
+means no waiting. The variable is validated at startup, including when a door
+makes it inapplicable. Startup logs name the strategy and include the ceiling
+only when it applies.
 
 The reasoning for the library refusing to choose any of this for us is in
 llm-agent's `docs/ARCHITECTURE.md`, under Server-governed throttling.

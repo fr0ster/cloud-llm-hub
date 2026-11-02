@@ -24,6 +24,7 @@ import {
   dialogueFor,
   type PlannerCounts,
 } from './dialogue-sessions';
+import { failureMessage } from './llm-failure';
 import type { LongSession } from './long-session';
 import { NoMessageFilter, stripNoMessage } from './no-message';
 import { userTextOf } from './rag-context-marker';
@@ -365,7 +366,15 @@ export function dialogueChat(
       }
       await sending;
       await handle.drainPending();
-      if (failure) throw failure;
+      if (failure) {
+        yield {
+          ok: true,
+          value: { content: '', clhUsage: handle.failedUsage?.() },
+        };
+        throw new Error(
+          `Planner turn failed: ${handle.state().failureCause ?? failureMessage(failure)}`,
+        );
+      }
       if (text.trim()) {
         await handle.outbox.upsert([
           { id: replyId, text, createdAt, trigger: 'user', usage: replyUsage },

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
+import { failureMessage } from './lib/llm-failure';
 import {
   ignoredModelHeader,
   parseModelAllowlist,
@@ -35,6 +36,7 @@ import {
   AnthropicApiAdapter,
   type ApiRequestContext,
   type NormalizedRequest,
+  type TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import type { Request, Response } from 'express';
@@ -735,15 +737,10 @@ async function serveMessages(
       let deliveredContent = false;
       let explicitMessages = false;
       let heldStop = undefined as { event?: string; data: string } | undefined;
+      let spentUsage: TokenUsage | undefined;
       try {
-        // `AnthropicApiAdapter.transformStream` turns an error chunk
-        // (`!chunk.ok`) into an ordinary `message_delta`/`message_stop` pair
-        // and returns — it never throws — so the `catch` below never sees a
-        // failure that arrived as a STREAM CHUNK (only an exception thrown by
-        // the pipeline itself). This wrapper is the only way to learn a chunk
-        // failed: it notes the first such error and passes every chunk
-        // through unchanged, so the adapter's own (already-correct) output is
-        // untouched either way.
+        // The adapter consumes failed chunks as a normal close. Keep its usage
+        // event, hold message_stop, and insert an explicit safe error before it.
         let streamError: unknown;
         await runAgent(async () => {
           const source = chatAgent.streamProcess(messages, agentOpts);
@@ -753,6 +750,7 @@ async function serveMessages(
                 requestMeasurement(req)?.end('error');
                 streamError = chunk.error;
               }
+              if (chunk.ok && chunk.value.usage) spentUsage = chunk.value.usage;
               if (measurement && chunk.ok) {
                 if (!deliveredContent && /\S/.test(chunk.value.content ?? ''))
                   deliveredContent = true;
@@ -788,13 +786,8 @@ async function serveMessages(
           }
         });
 
-        // An outage closes the destination regardless of whether a write is
-        // left unanswered — the two facts are independent, and a chunk that
-        // named neither pending write nor throttle would otherwise leave an
-        // unreachable destination open (as OpenAI's matching site already
-        // does not). The trailing `event: error` line stays conditional on
-        // `unverifiedWriteFor`: otherwise today's streamed output (the
-        // adapter's own message_delta/message_stop close) stays as it is.
+        // Destination state and unanswered-write notices remain independent of
+        // the model cause. Every failed stream must now carry an error event.
         if (streamError !== undefined) {
           if (isOutageError(streamError)) {
             closeDestination(destination, describeCause(streamError));
@@ -817,9 +810,17 @@ async function serveMessages(
                 ),
               )}\n\n`,
             );
+          } else {
+            out.write(
+              `event: error\ndata: ${JSON.stringify(anthropicUnverifiedWrite(failureMessage(streamError)))}\n\n`,
+            );
           }
         }
       } catch (err) {
+        if (spentUsage)
+          out.write(
+            `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: {}, usage: { input_tokens: spentUsage.promptTokens, output_tokens: spentUsage.completionTokens } })}\n\n`,
+          );
         requestMeasurement(req)?.end('error');
         if (isOutageError(err))
           closeDestination(destination, describeCause(err));
@@ -836,7 +837,7 @@ async function serveMessages(
               limit ? `${unverified} ${throttleMessage(limit)}` : unverified,
               limit ? 'overloaded_error' : 'api_error',
             )
-          : anthropicErrorPayload(err);
+          : anthropicUnverifiedWrite(failureMessage(err));
         out.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
       }
 

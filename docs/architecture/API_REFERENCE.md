@@ -635,14 +635,27 @@ Anthropic is answered where the HTTP response is still intact: backoff with
 jitter, `Retry-After` honoured when the server sends one, and one shared pause
 per quota so concurrent callers do not each rediscover the same closed limit.
 
-The wait budget is **20 seconds** here, not the library's sixty. A budget that
-expires when the caller does never gets to deliver its answer: our chat clients
-give up around a minute, so the policy must give up well before that and say
-when to come back. Override with `LLM_AGENT_THROTTLE_MAX_WAIT_MS`; the value in
-force is logged at startup, since it shows itself only under load.
+The hub shares one SAP AI Core account, so the default strategy is
+`WaitAsNeeded` (`wait-as-needed`) both with and without the gatekeeper door.
+A positive server interval is waited exactly, without a total wait cap. SSE
+keep-alives protect streaming callers while queued. Without an interval, the
+strategy backs off from 2 seconds, doubling per unnamed wait, with 20% jitter
+in either direction and a hard 60-second cap per wait. After six unnamed waits
+per call it reports `no-interval`: a missing interval can mean a spend cap.
 
-With a door configured this budget is not applied: an admitted session waits
-out exactly the interval the server named, and a `429` that names none fails it.
+An explicitly set `LLM_AGENT_THROTTLE_MAX_WAIT_MS` selects `WaitIfShortEnough`
+only without a door. This opt-in ceiling bounds total throttle waiting; zero
+means no waiting. The variable is validated at startup, including when a door
+makes it inapplicable. Startup logs name the strategy and include the ceiling
+only when it applies.
+
+Streaming model failures on `/v1/chat/completions` and `/v1/messages` report
+content-free causes: `LLM unavailable (HTTP 429)`, another HTTP error status,
+or `LLM unavailable (no response from model)`. Background failures prefix this
+with `Background planner turn failed:`. Provider messages and request text are
+never part of these causes. Spent planner and task tokens are emitted in a
+final usage event before the stream error, including on a failed turn.
+
 
 This service therefore does **not** retry a rate limit of its own. Another
 request into a quota the server has just said is closed only earns another

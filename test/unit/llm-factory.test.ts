@@ -2,6 +2,8 @@ import type { UsageRecord } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import { createUsageRecorder } from '@mcp-abap-adt/llm-usage';
 import { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
+import { observeLlmSpend } from '../../srv/lib/llm-failure';
+import { WaitAsNeeded } from '../../srv/lib/throttle-strategy';
 
 /**
  * Unit tests for the hub's LLM composition root (srv/lib/llm-factory.ts).
@@ -214,5 +216,127 @@ test('author usage wrapper preserves adapter model and model discovery', async (
     expect(getModels).toHaveBeenCalledTimes(2);
   } finally {
     getModels.mockRestore();
+  }
+});
+
+test.each([429, 503, 0])(
+  'model stream failures retain only a safe cause and spent usage (%s)',
+  async (status) => {
+    const stream = jest
+      .spyOn(OpenAIProvider.prototype, 'streamChat')
+      .mockImplementation(async function* () {
+        yield {
+          content: 'partial',
+          usage: { promptTokens: 7, completionTokens: 3, totalTokens: 10 },
+        };
+        throw Object.assign(
+          new Error('private provider text with a request'),
+          status ? { response: { status } } : {},
+        );
+      });
+    try {
+      const llm = await makeHubLlm(
+        { provider: 'openai', apiKey: 'fake', model: 'test' },
+        0,
+      );
+      const spent: import('@mcp-abap-adt/llm-agent').TokenUsage[] = [];
+      const results = await observeLlmSpend(
+        async () => {
+          const chunks = [];
+          for await (const chunk of llm.streamChat([])) chunks.push(chunk);
+          return chunks;
+        },
+        (usage) => spent.push(usage),
+      );
+      expect(results.at(-1)).toMatchObject({
+        ok: false,
+        error: {
+          message: status
+            ? `LLM unavailable (HTTP ${status})`
+            : 'LLM unavailable (no response from model)',
+        },
+      });
+      expect(JSON.stringify(results)).not.toContain('private provider text');
+      expect(spent).toEqual([
+        expect.objectContaining({
+          promptTokens: 7,
+          completionTokens: 3,
+          totalTokens: 10,
+        }),
+      ]);
+    } finally {
+      stream.mockRestore();
+    }
+  },
+);
+
+test('concurrent provider streams have independent unnamed retry budgets', async () => {
+  const strategy = new WaitAsNeeded();
+  const stream = jest
+    .spyOn(OpenAIProvider.prototype, 'streamChat')
+    .mockImplementation(async function* () {
+      for (let attempt = 1; attempt <= 6; attempt++) {
+        expect(
+          strategy.decide({ source: 'response', attempt, waitedMs: 0 }).retry,
+        ).toBe(true);
+        expect(
+          strategy.decide({
+            source: 'response',
+            attempt,
+            waitedMs: 0,
+            retryAfterSeconds: 90,
+          }).waitMs,
+        ).toBe(90000);
+        yield { content: '' };
+      }
+      expect(
+        strategy.decide({ source: 'response', attempt: 7, waitedMs: 0 }).reason,
+      ).toBe('no-interval');
+    });
+  try {
+    const llm = await makeHubLlm(
+      {
+        provider: 'openai',
+        apiKey: 'fake',
+        model: 'test',
+        whenThrottled: strategy,
+      },
+      0,
+    );
+    const consume = async () => {
+      for await (const chunk of llm.streamChat([])) expect(chunk.ok).toBe(true);
+    };
+    await Promise.all([consume(), consume()]);
+  } finally {
+    stream.mockRestore();
+  }
+});
+
+test('safe model errors preserve an exhausted throttle policy for outer retry decorators', async () => {
+  const stream = jest
+    .spyOn(OpenAIProvider.prototype, 'streamChat')
+    .mockImplementation(() => {
+      throw Object.assign(new Error('private rate limit response'), {
+        throttled: true,
+        attempts: 7,
+        reason: 'no-interval',
+      });
+    });
+  try {
+    const llm = await makeHubLlm(
+      { provider: 'openai', apiKey: 'fake', model: 'test' },
+      0,
+    );
+    const chunks = [];
+    for await (const chunk of llm.streamChat([])) chunks.push(chunk);
+    expect(chunks).toMatchObject([
+      {
+        ok: false,
+        error: { throttled: true, attempts: 7, reason: 'no-interval' },
+      },
+    ]);
+    expect(JSON.stringify(chunks)).not.toContain('private rate limit response');
+  } finally {
+    stream.mockRestore();
   }
 });

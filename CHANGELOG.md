@@ -14,6 +14,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Fixed
 
+- Shared-account throttling now waits as needed by default, with bounded backoff for unnamed intervals and an opt-in wait ceiling. Streaming planner failures retain content-free causes and spent usage.
+
 - Dialogue paragraph replies on stops keep only the latest non-empty iteration. Coordinators delegate document reading and analysis to agents.
 
 - Request model selection is isolated to a dialogue coordinator or a single non-dialogue request. Unknown model ids are ignored with `x-clh-model-ignored`; `/v1/models` keeps reporting the deploy default.
