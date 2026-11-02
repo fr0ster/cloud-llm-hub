@@ -9,6 +9,9 @@ interface MessageNode {
 type Chunk = { done: boolean; value?: Uint8Array };
 interface UiApi {
   sendMessage(): Promise<void>;
+  onRelease(check: () => void): void;
+  ensureOwnedSession(): Promise<void>;
+  discardOwnedSession(): void;
   renderMessageVersion(
     key: string,
     id: string,
@@ -80,6 +83,8 @@ function harness(
     crypto: { randomUUID: () => 'test-turn-id' },
     ready: true,
     sessionKey: 'key',
+    lockedSessionKey: 'key',
+    sessionPageHidden: false,
     ensureSession: async () => {},
     ensureEventOwnership: async () => true,
 
@@ -197,7 +202,10 @@ function harness(
           html.indexOf('        let sessionKey = sessionStorage'),
           html.indexOf('        async function closeSession()'),
         )
-      : '') +
+      : html.slice(
+          html.indexOf('        const activeChatStreams'),
+          html.indexOf('        let lockedSessionKey'),
+        )) +
       html.slice(
         html.indexOf('        const FILE_MIME_TYPES'),
         html.indexOf('        function getFileExt('),
@@ -224,7 +232,7 @@ function harness(
         html.indexOf('        async function sendMessage()'),
         html.indexOf('        // Quick file attach'),
       ) +
-      ';({sendMessage, renderMessageVersion, subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml, runActiveProbe, fileArtifacts, replaceSession: key => { sessionKey = key; }, ack: key => sessionAcks.get(key), view: (key, id) => messageViews.get(key + ":" + id), setTasks: tasks => { dialogueTasks = tasks; updateKeepAlive(); }, ownTurn: text => rememberOwnTurn(text), ownTurnCount: () => ownTurns.size, renderForeignTurn, setBusy: busy => { streamingRequests = busy ? 1 : 0; updateKeepAlive(); }, signOut: () => { hubSignedOut = true; }})',
+      ';({onRelease: check => { const release = releaseSessionLock; releaseSessionLock = () => { check(); release?.(); }; }, ensureOwnedSession: () => ensureSession(), discardOwnedSession: () => discardSession(), sendMessage, renderMessageVersion, subscribeDialogueEvents, startDialogueEvents, stopDialogueEvents, markdownToHtml, runActiveProbe, fileArtifacts, replaceSession: key => { sessionKey = key; lockedSessionKey = key; }, ack: key => sessionAcks.get(key), view: (key, id) => messageViews.get(key + ":" + id), setTasks: tasks => { dialogueTasks = tasks; updateKeepAlive(); }, ownTurn: text => rememberOwnTurn(text), ownTurnCount: () => ownTurns.size, renderForeignTurn, setBusy: busy => { streamingRequests = busy ? 1 : 0; updateKeepAlive(); }, signOut: () => { hubSignedOut = true; }})',
     context,
   );
   return {
@@ -413,6 +421,7 @@ test('new session cancels pending reader and ignores late data; clear removes ta
       },
     })
     .mockResolvedValue({ status: 409 });
+  ui.replaceSession('old');
   ui.startDialogueEvents('old');
   await flush();
   ui.startDialogueEvents('new');
@@ -757,7 +766,7 @@ test.each([true, false])(
     expect(ui.fetch.mock.calls[0][1].headers['x-clh-ack']).toBe('none');
     expect(ui.locks.size).toBe(1);
     if (sseFirst) ui.renderMessageVersion('key', 'm', 'answer', true);
-    a.push(messageWire('m', 'answer') + ': turn-end\n\n');
+    a.push(`${messageWire('m', 'answer')}: turn-end\n\n`);
     await flush();
     expect(ui.locks.size).toBe(0);
     if (!sseFirst) ui.renderMessageVersion('key', 'm', 'answer', true);
@@ -840,7 +849,7 @@ test('framed messages parse split file blocks per id with the real parser', asyn
   const sent = ui.sendMessage();
   await flush();
   response.push(
-    ': message-id file\n\n' + delta('Here <file path="report.txt">hello'),
+    `: message-id file\n\n${delta('Here <file path="report.txt">hello')}`,
   );
   await flush();
   response.push(
@@ -915,7 +924,7 @@ test('two messages at the same time keep distinct artifact ids and contents', ()
   });
 });
 
-test('a pending response keeps messages and acknowledgement on its request session', async () => {
+test('a pending response drops messages for a no-longer-owned session', async () => {
   const ui = harness();
   let resolve!: (value: ReturnType<typeof stream>) => void;
   ui.fetch.mockImplementationOnce(
@@ -930,8 +939,8 @@ test('a pending response keeps messages and acknowledgement on its request sessi
   ui.replaceSession('new');
   resolve(stream(messageWire('old-message', 'old answer')));
   await sent;
-  expect(ui.view('key', 'old-message').node.innerHTML).toContain('old answer');
-  expect(ui.ack('key')).toBe('old-message');
+  expect(ui.view('key', 'old-message')).toBeUndefined();
+  expect(ui.ack('key')).toBeUndefined();
   expect(ui.ack('new')).toBeUndefined();
 });
 
@@ -1152,7 +1161,7 @@ test.each([
   ['plain assistant reply', delta('answer'), '\u2713'],
   [
     'partial assistant segment',
-    ': message-id partial\n\n' + delta('answer'),
+    `: message-id partial\n\n${delta('answer')}`,
     '\u2713',
   ],
   ['no reply', '', '\u2713'],
@@ -1164,7 +1173,7 @@ test.each([
   ui.fetch.mockResolvedValue(stream(wire));
   ui.userInput.value = 'request';
   await ui.sendMessage();
-  expect(ui.list.innerHTML).toContain(symbol + ' main: \u00abrequest\u00bb');
+  expect(ui.list.innerHTML).toContain(`${symbol} main: \u00abrequest\u00bb`);
   ui.stopDialogueEvents();
 });
 
@@ -1275,7 +1284,7 @@ test.each(['AbortError', 'stream failure'])(
     ui.userInput.value = 'request';
     await ui.sendMessage();
     expect(ui.list.innerHTML).toContain(
-      '\u2717 main: \u00abrequest\u00bb \u00b7 ' + message,
+      `\u2717 main: \u00abrequest\u00bb \u00b7 ${message}`,
     );
     expect(ui.active.innerHTML).toContain('listening');
     ui.stopDialogueEvents();
@@ -1470,7 +1479,7 @@ test('planner counts belong to the newest running request and survive older foll
   ui.userInput.value = 'first';
   const first = ui.sendMessage();
   await flush();
-  a.push(messageWire('first', 'answer') + ': turn-end\n\n');
+  a.push(`${messageWire('first', 'answer')}: turn-end\n\n`);
   await flush();
   expect(ui.locks.size).toBe(0);
 
@@ -1528,7 +1537,7 @@ test.each([': turn-end', 'data: [DONE]'])(
     await flush();
     expect(ui.attachedFiles).toHaveLength(1);
     expect(ui.renderAttachedFiles).not.toHaveBeenCalled();
-    response.push(messageWire('attached-reply', 'answer') + marker + '\n\n');
+    response.push(`${messageWire('attached-reply', 'answer') + marker}\n\n`);
     response.push();
     await sent;
     expect(
@@ -1572,7 +1581,7 @@ test.each(['server error', 'connection drop', 'empty EOF', 'partial EOF'])(
     ui.fetch
       .mockResolvedValueOnce(failedResponse)
       .mockResolvedValueOnce(
-        stream(messageWire('retry-reply', 'answer') + 'data: [DONE]\n\n'),
+        stream(`${messageWire('retry-reply', 'answer')}data: [DONE]\n\n`),
       );
     ui.userInput.value = 'attached';
     await ui.sendMessage();
@@ -1603,7 +1612,7 @@ test('attachments added during a send remain for the next message', async () => 
   const sent = ui.sendMessage();
   await flush();
   ui.attachedFiles.push(added);
-  response.push(messageWire('first-reply', 'answer') + ': turn-end\n\n');
+  response.push(`${messageWire('first-reply', 'answer')}: turn-end\n\n`);
   response.push();
   await sent;
   expect(
@@ -1879,7 +1888,7 @@ test.each([false, true])(
     const listener = (name: string) =>
       ui.window.addEventListener.mock.calls.find(
         ([event]) => event === name,
-      )![1];
+      )?.[1];
     listener('pagehide')();
     await flush();
     ui.navigator.locks.request.mockImplementation(
@@ -1903,3 +1912,67 @@ test.each([false, true])(
     ui.stopDialogueEvents();
   },
 );
+
+test.each(['pagehide', 'switch', 'discard'])(
+  '%s aborts every active chat stream before releasing ownership',
+  async (action) => {
+    const ui = harness(undefined, true);
+    const pendingStreams = [controlledStream(), controlledStream()];
+    const streams = [...pendingStreams];
+    ui.fetch.mockImplementation(async (url: string) =>
+      url === '/v1/chat/completions'
+        ? streams.shift()?.response
+        : controlledStream().response,
+    );
+    ui.userInput.value = 'first';
+    const first = ui.sendMessage();
+    await flush();
+    ui.userInput.value = 'second';
+    const second = ui.sendMessage();
+    await flush();
+    const signals = ui.fetch.mock.calls
+      .filter(([url]) => url === '/v1/chat/completions')
+      .map(([, opts]) => opts.signal as AbortSignal);
+    expect(signals).toHaveLength(2);
+    const beforeRelease = jest.fn(() => {
+      expect(signals.every((signal) => signal.aborted)).toBe(true);
+    });
+    ui.onRelease(beforeRelease);
+    if (action === 'pagehide') {
+      ui.window.addEventListener.mock.calls.find(
+        ([name]) => name === 'pagehide',
+      )?.[1]();
+    } else if (action === 'switch') {
+      ui.sessionStorage.setItem('clh.session', 'replacement');
+      await ui.ensureOwnedSession();
+    } else {
+      ui.discardOwnedSession();
+    }
+    expect(beforeRelease).toHaveBeenCalledTimes(1);
+    // Abort-insensitive readers may still deliver buffered frames.
+    for (const stream of pendingStreams)
+      stream.push(messageWire('late', 'must be dropped'));
+    await flush();
+    expect(ui.view('key', 'late')).toBeUndefined();
+    expect(ui.ack('key')).toBeUndefined();
+    await Promise.all([first, second]);
+    ui.stopDialogueEvents();
+  },
+);
+
+test('SSE frames for a no-longer-owned session do not render any event', async () => {
+  const ui = harness();
+  const events = controlledStream();
+  ui.fetch.mockResolvedValue(events.response);
+  const subscription = ui.subscribeDialogueEvents('key');
+  await flush();
+  ui.replaceSession('other');
+  events.push(
+    'event: plan\ndata: {"text":"stale plan"}\n\nevent: turn\ndata: {"text":"stale turn"}\n\nid: stale\ndata: {"text":"stale message"}\n\n',
+  );
+  await flush();
+  expect(ui.nodes).toHaveLength(0);
+  expect(ui.planText.innerHTML).toBe('');
+  expect(ui.ack('key')).toBeUndefined();
+  subscription.stop();
+});

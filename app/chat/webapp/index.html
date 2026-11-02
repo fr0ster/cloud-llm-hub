@@ -391,9 +391,19 @@
         localStorage.removeItem('clh.session');
         let sessionOpening = null;
 
+        const activeChatStreams = new Set();
+        function abortChatStreams() {
+            for (const controller of activeChatStreams) controller.abort();
+            activeChatStreams.clear();
+        }
+        function ownsSession(key) {
+            return !!key && !sessionPageHidden && !hubSignedOut && sessionKey === key && lockedSessionKey === key;
+        }
         let lockedSessionKey = '';
         let releaseSessionLock = null;
         function releaseSession() {
+            abortChatStreams();
+            if (typeof stopDialogueEvents === 'function') stopDialogueEvents();
             releaseSessionLock?.();
             releaseSessionLock = null;
             lockedSessionKey = '';
@@ -446,15 +456,20 @@
             if (sessionKey && !await claimSession(sessionKey)) discardSession();
         })();
 
+        function syncSessionKey() {
+            const storedKey = sessionStorage.getItem('clh.session') || '';
+            if (storedKey !== sessionKey) releaseSession();
+            sessionKey = storedKey;
+        }
         function sessionHeaders() {
-            sessionKey = sessionStorage.getItem('clh.session') || '';
+            syncSessionKey();
             return { ...(sessionKey ? { 'x-clh-session': sessionKey } : {}), ...getSapCredHeaders() };
         }
 
         async function ensureSession() {
             await sessionClaim;
             if (sessionOpening) return sessionOpening;
-            sessionKey = sessionStorage.getItem('clh.session') || '';
+            syncSessionKey();
             if (sessionKey && sessionKey !== lockedSessionKey) {
                 releaseSession();
                 if (!await claimSession(sessionKey)) discardSession();
@@ -482,6 +497,7 @@
         }
 
         async function closeSession() {
+            abortChatStreams();
             if (typeof stopDialogueEvents === 'function') stopDialogueEvents();
             try {
                 await sessionClaim;
@@ -512,8 +528,8 @@
                 const headers = { ...opts.headers, ...sessionHeaders() };
                 if (Object.hasOwn(headers, 'x-clh-ack')) headers['x-clh-ack'] = sessionAcks.get(sessionKey) || 'none';
                 if (headers['x-clh-turn-id']) rememberOwnTurn(headers['x-clh-turn-id']);
-                onSessionKey?.(sessionKey);
-                return hubFetch(url, { ...requestOpts, headers });
+                const signal = onSessionKey?.(sessionKey) || requestOpts.signal;
+                return hubFetch(url, { ...requestOpts, ...(signal ? { signal } : {}), headers });
             };
             const requestedKey = sessionStorage.getItem('clh.session');
             let response = await request();
@@ -760,7 +776,7 @@
                     if (!await ensureEventOwnership(key) || stopped) return;
                     controller = new AbortController();
                     const response = await hubFetch('/v1/session/events', { method: 'GET', signal: controller.signal, headers: { ...sessionHeaders(), 'x-clh-session': key, Accept: 'text/event-stream', ...(lastId ? { 'Last-Event-ID': lastId } : {}) } });
-                    if (stopped || hubSignedOut) return;
+                    if (stopped || !ownsSession(key)) return;
                     if (response.status === 409) { stopped = true; dialogueOpen = false; renderActiveAgents([]); return; }
                     if (!response.ok) throw new Error('HTTP ' + response.status);
                     reader = response.body.getReader();
@@ -768,10 +784,11 @@
                     let buffer = '';
                     while (!stopped) {
                         const chunk = await reader.read();
-                        if (stopped || chunk.done) break;
+                        if (stopped || !ownsSession(key) || chunk.done) break;
                         buffer += decoder.decode(chunk.value, { stream: true });
                         let boundary;
                         while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+                            if (!ownsSession(key)) break;
                             const frame = buffer.slice(0, boundary.index);
                             buffer = buffer.slice(boundary.index + boundary[0].length);
                             let event = 'message', id;
@@ -2117,6 +2134,8 @@
             let streamCounted = true;
             function stopTimer() { clearInterval(timer); if (streamCounted) { streamCounted = false; streamingRequests--; updateKeepAlive(); } }
 
+            let streamController = null;
+            let streamKey = null;
             try {
                 const messageAttachments = attachedFiles.slice();
                 const reqBody = {
@@ -2164,20 +2183,26 @@
 
                 reqBody.attachment_document_ids = messageAttachments.flatMap(file => file.documentIds);
 
-                let streamKey = requestKey;
+                streamKey = requestKey;
                 const response = await sessionFetch('/v1/chat/completions', {
                     onSessionKey: key => {
                         streamKey = key;
+                        if (!ownsSession(key)) throw new Error('Session ownership lost');
+                        if (streamController) activeChatStreams.delete(streamController);
+                        streamController = new AbortController();
+                        activeChatStreams.add(streamController);
                         // Session recovery resets the journal; keep this request in its actual session.
                         if (mainRequest && dialogueOpen && !mainRequests.includes(mainRequest)) {
                             mainRequests.push(mainRequest); renderActiveAgents(dialogueTasks);
                         }
+                        return streamController.signal;
                     },
                     method: 'POST',
                     headers,
                     body: JSON.stringify(reqBody)
                 });
 
+                if (streamController.signal.aborted || !ownsSession(streamKey)) return;
                 if (!response.ok) {
                     const errText = await response.text();
                     // Parse JSON error for user-friendly message
@@ -2225,6 +2250,7 @@
                 try {
                     while (true) {
                         const { done, value } = await reader.read();
+                        if (streamController.signal.aborted || !ownsSession(streamKey)) return;
                         if (done) break;
 
                         buffer += decoder.decode(value, { stream: true });
@@ -2232,6 +2258,7 @@
                         buffer = parts.pop() || '';
 
                         for (const part of parts) {
+                            if (streamController.signal.aborted || !ownsSession(streamKey)) return;
                             for (const line of part.split('\n')) {
                                 const trimmed = line.trim();
                                 if (trimmed.startsWith(': message-id ')) {
@@ -2438,6 +2465,10 @@
             } catch (e) {
                 if (mainRequest) finishMain(mainRequest, e.message || String(e));
                 stopTimer();
+                if (!hubSignedOut && (streamController?.signal.aborted || (streamKey && !ownsSession(streamKey)))) {
+                    document.getElementById(thinkingId)?.remove();
+                    return;
+                }
                 if (hubSignedOut) {
                     if (!userInput.value) userInput.value = text;
                     document.getElementById(thinkingId)?.remove();
@@ -2460,6 +2491,10 @@
                 userInput.focus();
                 chatWindow.scrollTop = chatWindow.scrollHeight;
                 return;
+            } finally {
+                if (streamController) activeChatStreams.delete(streamController);
+                stopTimer();
+                releaseTurn();
             }
 
             finishMain(mainRequest);
