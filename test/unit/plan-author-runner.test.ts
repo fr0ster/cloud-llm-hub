@@ -208,11 +208,11 @@ test('destination author offers exactly four canonical read tools and inherits c
 });
 
 test.each([undefined, 'explicit-planner'])(
-  'author uses the active main model unless planner model is set (%s)',
+  'author uses the deploy main model unless planner model is set (%s)',
   async (plannerModel) => {
     const authorConfig: AgentConfig = {
       ...config,
-      llm: { ...config.llm, plannerModel },
+      llm: { ...config.llm, model: 'author-deploy-default', plannerModel },
     };
     const configSpy = jest
       .spyOn(agentConfig, 'getAgentConfig')
@@ -232,16 +232,18 @@ test.each([undefined, 'explicit-planner'])(
         const callsBeforeAuthor = jest.mocked(makeHubLlm).mock.calls.length;
         const author = await buildPlannerAgent(authorConfig, 'Author', empty);
         releasePlannerAgent(author);
-        expect(makeHubLlm).toHaveBeenCalledTimes(callsBeforeAuthor + 1);
+        expect(makeHubLlm).toHaveBeenCalledTimes(
+          callsBeforeAuthor + (mainModel === 'main-before-switch' ? 1 : 0),
+        );
         expect(makeHubLlm).toHaveBeenLastCalledWith(
           expect.objectContaining({
             component: 'planner-author',
-            model: plannerModel ?? mainModel,
+            model: plannerModel ?? authorConfig.llm.model,
           }),
           config.llm.temperature,
         );
         expect(selected.mock.calls.at(-1)?.[0].model).toBe(
-          plannerModel ?? mainModel,
+          plannerModel ?? authorConfig.llm.model,
         );
       }
     } finally {

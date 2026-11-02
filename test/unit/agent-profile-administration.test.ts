@@ -433,3 +433,15 @@ test('disabling an agent returns only an acknowledgement', async () => {
     reason: 'record-disabled',
   });
 });
+
+test('profile model outside allowlist is rejected with HTTP 400', async () => {
+  mockIdentity.admin = true;
+  const record = profile('custom');
+  record.metadata.model = 'not-an-allowed-model';
+  const response = await request(
+    '/rag/collections/agents/documents',
+    'POST',
+    record,
+  );
+  expect(response.status).toBe(400);
+});

@@ -75,6 +75,7 @@ export function dialogueChat(
   destination: string,
   response: Response,
   attachmentRequest: Pick<Request, 'headers' | 'body'> = req,
+  model?: string,
 ): {
   process(
     messages: Message[],
@@ -108,7 +109,7 @@ export function dialogueChat(
     resolveResponseEnded();
   });
   const open = async () => {
-    const handle = await dialogueFor(userId, session.key, destination);
+    const handle = await dialogueFor(userId, session.key, destination, model);
     await supersedeFollow(handle);
     const ack = req.headers['x-clh-ack'];
     if (typeof ack === 'string') {

@@ -161,6 +161,7 @@ export function executeStep(
     destination?: string;
     task: string;
     worker?: string;
+    model?: string;
   },
   signal?: AbortSignal,
 ) {
@@ -258,6 +259,7 @@ async function executeStepMeasured(
     destination?: string;
     task: string;
     worker?: string;
+    model?: string;
   },
   callerSignal?: AbortSignal,
 ) {
@@ -305,7 +307,8 @@ async function executeStepRun(
     destination,
     task,
     worker = 'executor',
-  }: { destination?: string; task: string; worker?: string },
+    model,
+  }: { destination?: string; task: string; worker?: string; model?: string },
   callerSignal?: AbortSignal,
   longSession?: LongSession,
 ) {
@@ -494,6 +497,7 @@ async function executeStepRun(
                   (usage) => {
                     reviewerUsage = usage;
                   },
+                  model,
                 );
               },
               dumpScope,
@@ -779,6 +783,7 @@ export async function createAgentMcpServerForRequest(
         destination?: string;
         task: string;
         worker?: string;
+        model?: string;
       },
       extra,
     ) => executeStep(req, { userId, exposition }, args, extra.signal),

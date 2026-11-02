@@ -325,6 +325,7 @@ const toolTrace = z.object({
   complete: z.boolean(),
 } satisfies Shape<ToolTrace>);
 const taskRecord = z.object({
+  model: str.optional(),
   id: str,
   worker: str,
   goal: str,

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
+import { parseModelAllowlist, resolveRequestModel } from './lib/model-policy';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
 import {
@@ -173,6 +174,21 @@ async function handleAnthropicMessagesMeasured(
     throw err;
   }
 
+  const requestModel = resolveRequestModel(
+    typeof normalized.context.protocol.model === 'string'
+      ? normalized.context.protocol.model
+      : undefined,
+    parseModelAllowlist(),
+  );
+  if (requestModel.ignored) {
+    res.setHeader('x-clh-model-ignored', requestModel.ignored);
+    cds
+      .log('anthropic-handler')
+      .warn('Ignoring request model outside allowlist', {
+        model: requestModel.ignored,
+      });
+  }
+
   const removed = new Map([
     [
       'rag_list',
@@ -331,6 +347,12 @@ async function serveMessages(
   const log = cds.log('anthropic-handler');
   const dialogueMode = getAgentConfig().agent.chatCoordinator === 'dialogue';
   const { stream, options, context } = normalized;
+  const resolvedModel = resolveRequestModel(
+    typeof context.protocol.model === 'string'
+      ? context.protocol.model
+      : undefined,
+    parseModelAllowlist(),
+  );
   let { messages } = normalized;
 
   log.info('Messages request', {
@@ -482,7 +504,7 @@ async function serveMessages(
   // it, getSmartAgent would fall to the configured default destination.
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
-    handle = await getSmartAgent(undefined, destination);
+    handle = await getSmartAgent(resolvedModel.model, destination);
   } catch (err) {
     await releaseRequestConnection(requestConnection, s);
     const message = err instanceof Error ? err.message : String(err);
@@ -557,7 +579,7 @@ async function serveMessages(
 
   const chatAgent =
     useDialogue && s
-      ? dialogueChat(req, userId, s, destination, res)
+      ? dialogueChat(req, userId, s, destination, res, req, resolvedModel.model)
       : handle.agent;
 
   const usage = usageRuntime()

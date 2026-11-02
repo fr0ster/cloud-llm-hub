@@ -370,3 +370,24 @@ Each role uses its own profile map over deployment defaults. Effective informati
 Skill front matter accepts `kind: base` or `kind: informational` (default) and a stable `id`. Keep the id unchanged across renames: trust overrides and editing address ids, never display names. When omitted, hub directory names supply ids; external directory sources use source-qualified directory ids. Equal display names are valid. Base skills load directly into every role's system content after its profile prompt and before corrections, without semantic search or trust tags. Informational skills load through semantic retrieval and carry trust. Existing shipped skills remain informational.
 
 An **assistant** is the future memory-and-learning entity; an **agent** performs a role described by a **profile**, within a **pipeline**.
+
+
+## Model selection
+
+`LLM_AGENT_MODELS` is a comma-separated allowlist for request and agent model choices.
+`LLM_AGENT_MODEL` and `LLM_AGENT_PLANNER_MODEL` are always allowed; with the list unset,
+only those configured names are allowed. Only `LLM_AGENT_MODEL` needs a model name.
+
+The WebUI LLM selector and OpenAI/Anthropic request `model` select the coordinator
+for a dialogue at creation and remain fixed for that dialogue. An allowed request
+model overrides `LLM_AGENT_COORDINATOR_MODEL` / `LLM_AGENT_PLANNER_MODEL`. For direct
+chat, LLM-only and destination agents, the selection applies only to that request.
+An unknown id is ignored, logged, and returned in `x-clh-model-ignored`; deploy
+defaults apply. Requests never change `/v1/models` `_active_model` (the deploy main model).
+
+Only `kind: profile` records accept optional front matter `model`. Agent model
+precedence is explicit tool override, profile model, then `LLM_AGENT_MODEL`.
+Writing a disallowed profile model returns HTTP 400; loading a stored disallowed
+model ignores that field with a warning and keeps the profile usable. Plan authors
+continue to use `LLM_AGENT_PLANNER_MODEL`; classifier, embedder and reviewer settings
+are independent of request model selection.

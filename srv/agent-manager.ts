@@ -3,9 +3,15 @@ import {
   currentCoordinatorRun,
 } from './lib/coordinator-tools-client';
 import {
+  currentExecutorModel,
   type ExecutorStepArgs,
   runExecutorStep as executeExecutorStep,
 } from './lib/executor-step';
+import {
+  parseModelAllowlist,
+  resolveAgentModel,
+  resolveRequestModel,
+} from './lib/model-policy';
 import { resolverFor, TrustResolver } from './lib/trust-resolver';
 import { TrustStore } from './lib/trust-store';
 
@@ -962,21 +968,19 @@ let llmOnlyHandle: SmartAgentHandle | null = null;
  * unreachable destination (LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK) */
 let llmOnlyFallbackHandle: SmartAgentHandle | null = null;
 
-/** Runtime model overrides (null = use config/env default) */
-let currentModel: string | null = null;
-/** Shared LLM instances (updated on model switch) */
-let sharedMainLlm: ReturnType<typeof makeHubLlm> | null = null;
+/** Immutable LLM clients shared by model name. */
+const modelLlms = new Map<string, ReturnType<typeof makeHubLlm>>();
+const planAuthorLlms = new Map<string, ReturnType<typeof makeHubLlm>>();
 let sharedClassifierLlm: ReturnType<typeof makeHubLlm> | null = null;
-let sharedPlannerLlm: ReturnType<typeof makeHubLlm> | null = null;
 
 /** Check if at least one SmartAgent is initialized and ready */
 export function isAgentReady(): boolean {
   return initializationDone || agentHandles.size > 0;
 }
 
-/** Get the model name currently used by the agent */
+/** Deploy main model; request choices never change this value. */
 export function getCurrentModel(): string {
-  return currentModel || getAgentConfig().llm.model;
+  return getAgentConfig().llm.model;
 }
 
 export function getCurrentPlannerModel(): string {
@@ -2734,19 +2738,24 @@ export async function buildEmbeddedMcpAdapter(
 }
 
 /** Create shared LLM instances (called once, reused across all agents) */
-function getOrCreateSharedLlms(config: AgentConfig): {
+function getOrCreateSharedLlms(
+  config: AgentConfig,
+  component: 'chat' | 'planner-author' = 'chat',
+): {
   mainLlm: ReturnType<typeof makeHubLlm>;
   classifierLlm: ReturnType<typeof makeHubLlm>;
 } {
-  if (!sharedMainLlm) {
-    const mainModel = getCurrentModel();
-    sharedMainLlm = makeHubLlm(
+  const mainModel = config.llm.model;
+  const clients = component === 'planner-author' ? planAuthorLlms : modelLlms;
+  let mainLlm = clients.get(mainModel);
+  if (!mainLlm) {
+    mainLlm = makeHubLlm(
       {
         contextCapture: config.llm.contextCapture,
         provider: config.llm.provider,
         apiKey: config.llm.apiKey,
         baseURL: config.llm.baseUrl,
-        component: 'chat',
+        component,
         model: mainModel,
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,
@@ -2755,6 +2764,7 @@ function getOrCreateSharedLlms(config: AgentConfig): {
       config.llm.temperature,
     ).then(trackedLlm);
   }
+  clients.set(mainModel, mainLlm);
   if (!sharedClassifierLlm) {
     const classifierModel = config.llm.classifierModel;
     sharedClassifierLlm = makeHubLlm(
@@ -2772,7 +2782,7 @@ function getOrCreateSharedLlms(config: AgentConfig): {
     ).then(trackedLlm);
   }
   return {
-    mainLlm: sharedMainLlm,
+    mainLlm,
     classifierLlm: sharedClassifierLlm,
   };
 }
@@ -2930,7 +2940,6 @@ export const HUB_ADAPTIVE_CONTROLLER_SYSTEM =
   ADAPTIVE_CONTROLLER_SYSTEM +
   '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.';
 
-const plannerAgents = new Map<SmartAgent, { current: ILlm }>();
 export async function buildPlannerAgent(
   config: AgentConfig,
   systemPrompt: string,
@@ -2942,39 +2951,16 @@ export async function buildPlannerAgent(
       llm: { ...config.llm, plannerModel: config.llm.coordinatorModel },
     };
   }
-  const independentCoordinator =
-    !authorClient && Boolean(config.llm.coordinatorModel);
-  let plannerLlm =
-    independentCoordinator || authorClient ? null : sharedPlannerLlm;
-  if ((config.llm.plannerModel || authorClient) && !plannerLlm) {
-    plannerLlm = makeHubLlm(
-      {
-        contextCapture: config.llm.contextCapture,
-        provider: config.llm.provider,
-        apiKey: config.llm.apiKey,
-        baseURL: config.llm.baseUrl,
-        component: authorClient ? 'planner-author' : 'chat',
-        model: config.llm.plannerModel ?? getCurrentModel(),
-        maxTokens: config.llm.maxTokens,
-        resourceGroup: config.llm.resourceGroup,
-        whenThrottled: config.llm.whenThrottled,
+  const llm = await getOrCreateSharedLlms(
+    {
+      ...config,
+      llm: {
+        ...config.llm,
+        model: config.llm.plannerModel ?? config.llm.model,
       },
-      config.llm.temperature,
-    ).then(trackedLlm);
-  }
-  if (!independentCoordinator && !authorClient) sharedPlannerLlm = plannerLlm;
-  const llm = await ((config.llm.plannerModel || authorClient) && plannerLlm
-    ? plannerLlm
-    : getOrCreateSharedLlms(config).mainLlm);
-  // Pipeline stages retain the LLM supplied at build time. A stable forwarding
-  // client makes the existing getSmartAgent hot-swap reach those stages too.
-  const model = { current: llm };
-  const forwardingLlm = new Proxy(llm, {
-    get(_target, property) {
-      const value = Reflect.get(model.current, property);
-      return typeof value === 'function' ? value.bind(model.current) : value;
     },
-  });
+    authorClient ? 'planner-author' : 'chat',
+  ).mainLlm;
   const roleResolver = resolverFor(getCollectionRegistry());
   const skillsPool = buildSkillsPool({ resolver: () => roleResolver });
   const system = await appendBaseSkills(systemPrompt, skillsPool);
@@ -2992,7 +2978,7 @@ export async function buildPlannerAgent(
     },
   })
     .withToolTrust(systemToolTrust(isEmbeddedSystemTool, roleResolver))
-    .withMainLlm(forwardingLlm)
+    .withMainLlm(llm)
     .withMcpClients([
       new RecordingMcpClient(
         authorClient ?? new DialogueRagMcpClient(coordinatorToolsClient()),
@@ -3006,12 +2992,9 @@ export async function buildPlannerAgent(
   if (config.agent.maxToolCalls !== undefined)
     builder.withMaxToolCalls(config.agent.maxToolCalls);
   const handle = await builder.build();
-  plannerAgents.set(handle.agent, model);
   return handle.agent;
 }
-export function releasePlannerAgent(agent: SmartAgent): void {
-  plannerAgents.delete(agent);
-}
+export function releasePlannerAgent(_agent: SmartAgent): void {}
 
 export function createAgentProfileSource(
   userId: string,
@@ -3130,7 +3113,13 @@ function destinationProfileRunner(
       const builder = await configureDestinationAgentBuilder(
         mcpAdapter,
         toolsRag,
-        config,
+        {
+          ...config,
+          llm: {
+            ...config.llm,
+            model: profile.model ?? getAgentConfig().llm.model,
+          },
+        },
         { systemPrompt },
       );
       options?.signal?.throwIfAborted();
@@ -3201,7 +3190,14 @@ function destinationProfileRunner(
           return client.callTool(name, args, callOptions);
         },
       };
-      const agent = await buildPlannerAgent(config, systemPrompt, filtered);
+      const agent = await buildPlannerAgent(
+        {
+          ...config,
+          llm: { ...config.llm, model: getAgentConfig().llm.model },
+        },
+        systemPrompt,
+        filtered,
+      );
       releasePlannerAgent(agent);
       return agent;
     },
@@ -3264,7 +3260,10 @@ export async function buildAgentForDestination(
 
   // Same shared main LLM the rest of the destination agent uses — no extra
   // provider client stood up just for the critic layer.
-  const { mainLlm: mainLlmPromise } = getOrCreateSharedLlms(config);
+  const { mainLlm: mainLlmPromise } = getOrCreateSharedLlms({
+    ...config,
+    llm: { ...config.llm, model: getAgentConfig().llm.model },
+  });
   const criticLlm = await mainLlmPromise;
 
   // Controller build skips retrieval and skills: the coordinator consumes
@@ -3459,14 +3458,38 @@ export async function buildExecutorWorker(
   const prepareDirect = (options?: CallOptions) =>
     prepareCompatibilityWorker(config, options, async (callOptions) => {
       const resolved = await resolve(callOptions);
+      const selectedModel = resolveAgentModel(
+        { requested: currentExecutorModel(), profile: resolved.profile.model },
+        parseModelAllowlist(),
+        getAgentConfig().llm.model,
+      );
+      if (!selectedModel.ok && currentExecutorModel() !== undefined)
+        throw new Error(selectedModel.error);
+      resolved.profile = {
+        ...resolved.profile,
+        model: selectedModel.ok
+          ? selectedModel.value
+          : getAgentConfig().llm.model,
+      };
       callOptions?.signal?.throwIfAborted();
       const freshBuilder = await runner.bind(resolved.profile)(() =>
-        configureDestinationAgentBuilder(mcpAdapter, toolsRag, config, {
-          systemPrompt: [
-            resolved.workerBase ?? '',
-            resolved.profile.systemPrompt,
-          ].join('\n'),
-        }),
+        configureDestinationAgentBuilder(
+          mcpAdapter,
+          toolsRag,
+          {
+            ...config,
+            llm: {
+              ...config.llm,
+              model: resolved.profile.model ?? getAgentConfig().llm.model,
+            },
+          },
+          {
+            systemPrompt: [
+              resolved.workerBase ?? '',
+              resolved.profile.systemPrompt,
+            ].join('\n'),
+          },
+        ),
       );
       callOptions.signal?.throwIfAborted();
       const fresh = await freshBuilder.build();
@@ -3646,14 +3669,12 @@ export async function buildLlmOnlyAgent(
   const handle = await builder.build();
   // `config.llm.classifierModel` defaults to the main model name, so only the
   // variable itself says that a classifier was chosen. Otherwise the decision
-  // uses the LLM this agent generates with, read on every call so a model
-  // swap of the agent's deps is followed.
+  // uses this request agent's immutable generation model.
   const inner = handle.agent;
   handle.agent = guardLlmOnlyAgent(inner, {
     decide: process.env.LLM_AGENT_CLASSIFIER_MODEL?.trim()
       ? classifierLlm
-      : // biome-ignore lint/suspicious/noExplicitAny: internal deps, as in the model hot-swap
-        () => ((inner as any).deps?.mainLlm as ILlm | undefined) ?? mainLlm,
+      : mainLlm,
     why,
   });
   log.info('LLM-only agent built (no MCP tools)');
@@ -3684,45 +3705,31 @@ export async function getSmartAgent(
   const log = cds.log('agent-manager');
   const config = getAgentConfig();
 
-  // --- Model hot-swap (updates all agents — LLM is stateless) ---
-  // NOT gated on agentHandles.size: with no blocking primary at startup, the
-  // FIRST real request can arrive before any agent exists. We still must set
-  // currentModel/sharedMainLlm so the about-to-be-built first agent uses the
-  // requested model (getOrCreateSharedLlms reuses sharedMainLlm). The loop over
-  // existing handles is simply a no-op when none exist yet.
-  const activeModel = getCurrentModel();
-  if (requestedModel && requestedModel !== activeModel) {
-    const newLlmPromise = makeHubLlm(
-      {
-        contextCapture: config.llm.contextCapture,
-        provider: config.llm.provider,
-        apiKey: config.llm.apiKey,
-        baseURL: config.llm.baseUrl,
-        component: 'chat',
-        model: requestedModel,
-        maxTokens: config.llm.maxTokens,
-        resourceGroup: config.llm.resourceGroup,
-        whenThrottled: config.llm.whenThrottled,
-      },
-      config.llm.temperature,
-    ).then(trackedLlm);
-    const newLlm = await newLlmPromise;
-
-    for (const handle of agentHandles.values()) {
-      // biome-ignore lint/suspicious/noExplicitAny: accessing internal deps for model hot-swap
-      (handle.agent as any).deps.mainLlm = newLlm;
-    }
-    if (!config.llm.plannerModel && !config.llm.coordinatorModel) {
-      for (const model of plannerAgents.values()) model.current = newLlm;
-    }
-    sharedMainLlm = newLlmPromise;
-    currentModel = requestedModel;
-
-    log.info('Model set for request', {
-      from: activeModel,
-      to: requestedModel,
-      agentCount: agentHandles.size,
+  const resolved = resolveRequestModel(requestedModel, parseModelAllowlist());
+  if (resolved.ignored)
+    log.warn('Ignoring request model outside allowlist', {
+      model: resolved.ignored,
     });
+  if (resolved.model) {
+    const base = await getSmartAgent(undefined, requestedDestination);
+    const selected = {
+      ...config,
+      llm: {
+        ...config.llm,
+        model: resolved.model,
+        coordinatorModel: resolved.model,
+      },
+    };
+    const state = destinationStates.get(
+      requestedDestination || config.mcp.destination,
+    );
+    if (state?.mcpAdapter)
+      return buildAgentForDestination(
+        state.mcpAdapter,
+        state.toolsRag,
+        selected,
+      );
+    return { ...base, ...(await buildLlmOnlyAgent(selected, 'waiting')) };
   }
 
   // --- Destination lookup (no hot-swap — each dest has its own agent) ---

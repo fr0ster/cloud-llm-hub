@@ -115,7 +115,7 @@ export class AgentProfileSource implements IAgentProfileSource {
       throw new ProfileFailure('disabled');
     let record: AgentProfileRecord;
     try {
-      record = validateAgentProfileRecord(document);
+      record = validateAgentProfileRecord(document, 'load');
     } catch {
       throw new ProfileFailure('invalid');
     }
@@ -193,7 +193,7 @@ export class AgentProfileSource implements IAgentProfileSource {
         if (!recordPolicy(document.metadata, true).visible) continue;
         let record: AgentProfileRecord;
         try {
-          record = validateAgentProfileRecord(document);
+          record = validateAgentProfileRecord(document, 'load');
         } catch {
           throw new ProfileFailure('invalid');
         }

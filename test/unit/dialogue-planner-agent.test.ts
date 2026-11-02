@@ -126,7 +126,16 @@ function llm(model: string) {
   };
   return { agent, tools, messages };
 }
-test('hard planner retains library turn tools and hub control tools, hub prompt, and follows getSmartAgent model hot-swap', async () => {
+beforeEach(() => {
+  config.llm.model = expect.getState().currentTestName ?? 'test';
+  jest.spyOn(agentConfig, 'getAgentConfig').mockReturnValue(config);
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
+});
+
+test('hard planner retains library turn tools and hub control tools, hub prompt, and keeps its coordinator model across unrelated requests', async () => {
   const first = llm('first');
   const second = llm('second');
   jest.mocked(makeHubLlm).mockResolvedValue(first.agent);
@@ -160,9 +169,11 @@ test('hard planner retains library turn tools and hub control tools, hub prompt,
     jest.mocked(makeHubLlm).mockResolvedValue(second.agent);
     await getSmartAgent('second');
     const swapped = await planner.process([{ role: 'user', content: 'again' }]);
-    expect(swapped.ok && swapped.value.content).toBe('second');
-    expect(second.tools.flat()).toContain('delegate_task');
-    expect(getCurrentPlannerModel()).toBe('second');
+    expect(swapped.ok && swapped.value.content).toBe('first');
+    expect(first.tools.flat()).toContain('delegate_task');
+    expect(getCurrentPlannerModel()).toBe(
+      config.llm.plannerModel ?? config.llm.model,
+    );
   } finally {
     releasePlannerAgent(planner);
   }
@@ -207,7 +218,10 @@ test.each([false, true])(
     jest.mocked(makeHubLlm).mockResolvedValue(model);
     initProviders(await startProviders(config));
     await getSmartAgent(model.model);
-    const planner = await buildPlannerAgent(config, plannerText);
+    const planner = await buildPlannerAgent(
+      { ...config, llm: { ...config.llm, coordinatorModel: model.model } },
+      plannerText,
+    );
     try {
       await runWithSessionId(
         liveSession('alice', `planner-write-${invalid}`),
@@ -527,11 +541,9 @@ test('independent planner model survives request hot-swap and rebuilds', async (
     expect(first.ok && first.value.content).toBe('independent-planner');
 
     jest.mocked(makeHubLlm).mockResolvedValue(mainModel.agent);
+    const callsBeforeRequest = jest.mocked(makeHubLlm).mock.calls.length;
     await getSmartAgent('independent-main');
-    expect(makeHubLlm).toHaveBeenLastCalledWith(
-      expect.objectContaining({ model: 'independent-main' }),
-      config.llm.temperature,
-    );
+    expect(makeHubLlm).toHaveBeenCalledTimes(callsBeforeRequest);
     expect(getCurrentPlannerModel()).toBe('independent-planner');
     const afterSwap = await planner.process([
       { role: 'user', content: 'again' },

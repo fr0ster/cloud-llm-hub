@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- Model allowlist (`LLM_AGENT_MODELS`), profile model defaults, and per-call model overrides for `delegate_task` and `execute_step`; disallowed agent choices return `MODEL_NOT_ALLOWED`.
+
+### Fixed
+
+- Request model selection is isolated to a dialogue coordinator or a single non-dialogue request. Unknown model ids are ignored with `x-clh-model-ignored`; `/v1/models` keeps reporting the deploy default.
+- Saved dialogue tasks accept optional model choices while retaining compatibility with older states.
+
 ## [10.3.0] - 2026-11-02
 
 ### Added

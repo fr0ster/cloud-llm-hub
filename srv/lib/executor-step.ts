@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type {
   CallOptions,
   IAgentProfileSource,
@@ -15,6 +16,12 @@ import {
 import { evaluateGated } from './step-reviewer';
 import { resolverFor } from './trust-resolver';
 
+const executorModel = new AsyncLocalStorage<string | undefined>();
+
+export function currentExecutorModel(): string | undefined {
+  return executorModel.getStore();
+}
+
 export type ExecutorStepArgs = [
   agentHandle: Awaited<ReturnType<typeof getSmartAgent>>,
   userId: string,
@@ -23,6 +30,7 @@ export type ExecutorStepArgs = [
   opts: CallOptions,
   history?: Message[],
   onReviewerUsage?: (usage: TokenUsage | undefined) => void,
+  model?: string,
 ];
 
 /** Executes within the caller's existing request, admission and connection scope. */
@@ -36,6 +44,7 @@ export async function runExecutorStep(
     opts,
     history = [],
     onReviewerUsage,
+    model,
   ]: ExecutorStepArgs
 ) {
   const traceId = opts.trace?.traceId ?? '';
@@ -53,11 +62,13 @@ export async function runExecutorStep(
         const prepared = await agentHandle.profileRunner.createWorker(
           {
             profile: profile.value,
+            model,
             workerBase: prompts.value.workerBase,
           },
           opts,
         );
-        if (!prepared.ok) throw new Error(prepared.error.message);
+        if (!prepared.ok)
+          throw new Error(`${prepared.error.code}: ${prepared.error.message}`);
         const result = await prepared.value.run({
           task,
           ...opts,
@@ -87,9 +98,11 @@ export async function runExecutorStep(
           },
         };
       }
-      return (agentHandle.executor ?? agentHandle.agent).process(
-        [...history, { role: 'user', content: task }],
-        opts,
+      return executorModel.run(model, () =>
+        (agentHandle.executor ?? agentHandle.agent).process(
+          [...history, { role: 'user', content: task }],
+          opts,
+        ),
       );
     }),
   );

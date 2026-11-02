@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
+import { parseModelAllowlist, resolveRequestModel } from './lib/model-policy';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
 import { summarizeToolResult } from './lib/tool-result-summary';
@@ -426,6 +427,13 @@ async function handleChatCompletionsMeasured(
     return;
   }
   body = { ...body, tools: consumerTools };
+  const requestModel = resolveRequestModel(body.model, parseModelAllowlist());
+  if (requestModel.ignored) {
+    res.setHeader('x-clh-model-ignored', requestModel.ignored);
+    cds.log('openai-handler').warn('Ignoring request model outside allowlist', {
+      model: requestModel.ignored,
+    });
+  }
 
   // A long session serves its requests one at a time, through the connection
   // it holds; without one the request stands alone, as it always has.
@@ -632,9 +640,12 @@ async function serveChatCompletions(
       .slice(0, 200),
   });
 
-  // Get SmartAgent handle (pass model/destination to trigger switch if needed)
-  const requestedModel =
-    typeof body.model === 'string' ? body.model : undefined;
+  // Resolve the request model without changing deployment defaults.
+  const modelResolution = resolveRequestModel(
+    typeof body.model === 'string' ? body.model : undefined,
+    parseModelAllowlist(),
+  );
+  const requestedModel = modelResolution.model;
   const requestedDestination = req.headers['x-sap-destination'] as
     | string
     | undefined;
@@ -884,10 +895,18 @@ async function serveChatCompletions(
 
   const chatAgent =
     useDialogue && s
-      ? dialogueChat(req, userId, s, destAfter, res, {
-          headers: req.headers,
-          body,
-        })
+      ? dialogueChat(
+          req,
+          userId,
+          s,
+          destAfter,
+          res,
+          {
+            headers: req.headers,
+            body,
+          },
+          requestedModel,
+        )
       : handle.agent;
 
   // Admitted after the agent is resolved: a caller waiting for a destination to

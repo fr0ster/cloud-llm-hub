@@ -18,6 +18,7 @@ import {
   guardProfileWorker,
   type RegisteredProfileTool,
 } from './agent-profile-tools';
+import { parseModelAllowlist, resolveAgentModel } from './model-policy';
 import { recordReviewProfile } from './review-scope';
 import { runWithTrustResolver, type TrustResolver } from './trust-resolver';
 
@@ -70,11 +71,33 @@ export class AgentProfileRunner implements IAgentProfileRunner {
     };
   }
 
+  validateModel(model: string): Result<void, AgentProfileError> {
+    return parseModelAllowlist().has(model)
+      ? { ok: true, value: undefined }
+      : {
+          ok: false,
+          error: { code: 'MODEL_NOT_ALLOWED', message: 'MODEL_NOT_ALLOWED' },
+        };
+  }
+
   async createWorker(
-    input: { profile: WorkerProfile; workerBase?: string },
+    input: { profile: WorkerProfile; workerBase?: string; model?: string },
     options?: CallOptions,
   ): Promise<Result<ISubAgent, AgentProfileError>> {
     const profile = structuredClone(input.profile);
+    const model = resolveAgentModel(
+      { requested: input.model, profile: profile.model },
+      parseModelAllowlist(),
+      process.env.LLM_AGENT_MODEL ?? '',
+    );
+    if (
+      !model.ok &&
+      (input.model !== undefined ||
+        profile.model !== undefined ||
+        process.env.LLM_AGENT_MODEL)
+    )
+      return { ok: false, error: { code: model.error, message: model.error } };
+    if (model.ok) profile.model = model.value;
     const parent = currentProfileTools();
     try {
       const catalogue = this.host.catalogue();

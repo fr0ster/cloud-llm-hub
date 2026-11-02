@@ -36,6 +36,12 @@ export const EXECUTE_STEP_DESCRIPTION = [
 ].join('\n');
 
 export const executeStepSchema = {
+  model: z
+    .string()
+    .optional()
+    .describe(
+      'Allowed model override for this call; defaults to the executor profile model, then LLM_AGENT_MODEL.',
+    ),
   session: z
     .string()
     .optional()

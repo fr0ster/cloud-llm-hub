@@ -103,6 +103,7 @@ test('executor-step and notice evidence use each reviewed profile without inheri
     const createSource = jest.fn(() => source);
     await runExecutorStep(createSource, handle, 'user', 'read', name, {});
     if (name === 'executor') expect(createSource).not.toHaveBeenCalled();
+    else expect(createSource).toHaveBeenCalledWith('user');
     const finalizer = new NoticeFinalizer(recMcp, critic, undefined, () =>
       systemToolTrust(
         () => true,

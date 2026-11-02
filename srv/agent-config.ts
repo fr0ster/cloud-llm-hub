@@ -190,7 +190,7 @@ export interface AgentConfig {
     classifierModel: string;
 
     /** Optional plan author and default coordinator model: LLM_AGENT_PLANNER_MODEL.
-     * Unset follows the main model, including per-request model selection. */
+     * Unset follows the deploy main model. */
     plannerModel?: string;
     /** Optional coordinator override; defaults to the planner model. */
     coordinatorModel?: string;

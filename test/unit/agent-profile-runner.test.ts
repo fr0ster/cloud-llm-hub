@@ -5,6 +5,11 @@ import type {
   WorkerProfile,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  PlannerToolsClient,
+  runInPlannerScope,
+  TaskBoard,
+} from '@mcp-abap-adt/llm-agent-libs';
+import {
   AgentProfileRunner,
   type AgentProfileRunnerHost,
 } from '../../srv/lib/agent-profile-runner';
@@ -217,3 +222,67 @@ it.each(['rag_list', 'rag_add', 'rag_correct', 'rag_deprecate'])(
     expect(preambles).toEqual([]);
   },
 );
+
+test('disallowed model is rejected before worker construction; overrides reach the host', async () => {
+  const saved = { ...process.env };
+  process.env.LLM_AGENT_MODEL = 'worker';
+  process.env.LLM_AGENT_MODELS = 'strong,profile-model';
+  try {
+    const f = fixture();
+    const build = jest.spyOn(f.host, 'buildWorker');
+    expect(f.runner.validateModel('foreign')).toMatchObject({
+      ok: false,
+      error: { code: 'MODEL_NOT_ALLOWED' },
+    });
+    expect(
+      await f.runner.createWorker({ profile, model: 'foreign' }),
+    ).toMatchObject({ ok: false, error: { code: 'MODEL_NOT_ALLOWED' } });
+    expect(build).not.toHaveBeenCalled();
+    await f.runner.createWorker({ profile });
+    expect(build.mock.calls.at(-1)?.[0].model).toBe('worker');
+    await f.runner.createWorker({
+      profile: { ...profile, model: 'profile-model' },
+    });
+    expect(build.mock.calls.at(-1)?.[0].model).toBe('profile-model');
+    await f.runner.createWorker({
+      profile: { ...profile, model: 'profile-model' },
+      model: 'strong',
+    });
+    expect(build.mock.calls.at(-1)?.[0].model).toBe('strong');
+  } finally {
+    process.env = saved;
+  }
+});
+
+test('delegate_task rejects a disallowed model before enqueueing any task', async () => {
+  const f = fixture();
+  const board = new TaskBoard({
+    onEvent() {},
+    profileRunner: f.runner,
+    profileSource: {
+      list: async () => ({ ok: true, value: [] }),
+      get: async () => ({ ok: true, value: profile }),
+      getPrompts: async () => ({
+        ok: true,
+        value: {
+          workerBase: '',
+          coordinator: '',
+          plannerCreate: '',
+          plannerRevise: '',
+        },
+      }),
+    },
+  });
+  const result = await runInPlannerScope(
+    { board, getPlan: () => undefined, setPlan() {} },
+    () =>
+      new PlannerToolsClient().callTool('delegate_task', {
+        worker: profile.name,
+        goal: 'Read',
+        model: 'foreign-model',
+      }),
+  );
+  expect(JSON.stringify(result)).toContain('MODEL_NOT_ALLOWED');
+  expect(board.list()).toEqual([]);
+  expect(f.preambles).toEqual([]);
+});

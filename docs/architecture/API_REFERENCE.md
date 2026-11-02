@@ -1211,3 +1211,17 @@ Collection listings expose `trusted: true`, effective `trust`, `trustClass`, and
 Model-facing informational content uses `[source: <class>:<name>; trust <n>]`, or `[source: <class>; trust <n>]` without a name. Integers have no trailing `.0`; brackets in names are escaped as `&#91;` and `&#93;`. Planner retrieval labels carry the same source and trust. Tags appear in RAG retrieval, session recall, planner memory/knowledge, attachments, informational skills, reranker candidates, embedded target-system results, replayed tool history and checker evidence. Stored tool traces stay raw. Profiles, base skills, corrections, tool groups and hub orchestration results are not tagged.
 
 MANAGE shows effective collection trust and class, and distinguishes inherited document trust from overrides. Admins can edit global trust inline, including `@skills`; clearing a record input restores inheritance. Chunked uploads retain source grouping with per-chunk trust controls.
+
+### Agent MCP model arguments
+
+`delegate_task({ worker, goal, model? })` accepts an optional allowed model for the
+new agent. A disallowed choice returns `MODEL_NOT_ALLOWED` before enqueueing and
+creates no task. The task record retains an explicit model choice.
+
+`execute_step({ task, worker?, destination?, session?, model? })` accepts an optional
+model for that call. Without it, the executor profile's model applies, falling back
+to `LLM_AGENT_MODEL`. Overrides never change profile defaults or other requests.
+Disallowed choices return a tool error containing `MODEL_NOT_ALLOWED`. Both tools
+use the deploy `LLM_AGENT_MODELS` allowlist, with main and planner defaults always
+allowed. Agents should use their default model and escalate only for hard analysis
+or a failed check.

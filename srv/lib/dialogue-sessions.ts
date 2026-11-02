@@ -234,6 +234,7 @@ export function dialogueFor(
   userId: string,
   key: string,
   destination: string,
+  model?: string,
 ): Promise<DialogueHandle> {
   const id = slot(userId, key);
   if (closing.has(id))
@@ -252,7 +253,7 @@ export function dialogueFor(
     session.destination = destination;
     registry?.touch(userId, key);
   }
-  const opening = open(userId, key, destination).then((handle) => {
+  const opening = open(userId, key, destination, model).then((handle) => {
     for (const fn of creationListeners.get(id) ?? []) {
       try {
         fn(handle);
@@ -272,10 +273,11 @@ async function open(
   userId: string,
   key: string,
   destination: string,
+  model?: string,
 ): Promise<LiveHandle> {
   const turnCallers = new WeakMap<object, TurnCaller>();
   const config = getAgentConfig();
-  const destinationHandle = await getSmartAgent(undefined, destination);
+  const destinationHandle = await getSmartAgent(model, destination);
   if (
     !destinationHandle.workers ||
     !destinationHandle.recMcp ||
@@ -755,6 +757,7 @@ async function open(
       }),
       profileTimeoutMs: config.profiles?.timeoutMs ?? 3000,
       profileRunner: {
+        validateModel: (model) => profileRunner.validateModel(model),
         createWorker: async (input, options) => {
           const result = await profileRunner.createWorker(input, options);
           return result.ok
