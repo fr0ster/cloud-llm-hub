@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.4.1] - 2026-11-02
+
 ### Added
 
 - Dialogue worker activity and source-labelled turn events in session streams, chat SSE comments and the WebUI; authenticated approuter keep-alive while work is active.
