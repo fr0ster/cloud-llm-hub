@@ -84,7 +84,6 @@ import { resolverFor, type TrustResolver } from './trust-resolver';
 import { usageRuntime } from './usage/runtime';
 import {
   type ActivityEvent,
-  noteBoardActivity,
   taskActivity,
   withWorkerActivity,
 } from './worker-activity';
@@ -1093,8 +1092,7 @@ async function open(
                               task.id,
                               task.worker,
                               (action) => {
-                                if (session)
-                                  noteBoardActivity(session, task.id, action);
+                                session?.noteActivity(task.id, action);
                               },
                               emit,
                             ),

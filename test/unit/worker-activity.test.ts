@@ -2,28 +2,26 @@ import type { ILlm, IMcpClient } from '@mcp-abap-adt/llm-agent';
 import { reliableLlm } from '../../srv/lib/llm-failure';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import {
-  noteBoardActivity,
   reportWorkerActivity,
   taskActivity,
   withWorkerActivity,
 } from '../../srv/lib/worker-activity';
 
 afterEach(() => jest.useRealTimers());
-test('feature detects the library board and throttles independently per task', () => {
+test('throttles activity independently per task', () => {
   jest.useFakeTimers();
   const noteActivity = jest.fn();
   const emit = jest.fn();
-  const session = { board: { noteActivity } };
   const first = taskActivity(
     't1',
     'executor',
-    (action) => noteBoardActivity(session, 't1', action),
+    (action) => noteActivity('t1', action),
     emit,
   );
   const second = taskActivity(
     't2',
     'checker',
-    (action) => noteBoardActivity(session, 't2', action),
+    (action) => noteActivity('t2', action),
     emit,
   );
   withWorkerActivity(first, () => {
@@ -45,10 +43,6 @@ test('feature detects the library board and throttles independently per task', (
     action: 'llm call',
     at: Date.now(),
   });
-  expect(() =>
-    noteBoardActivity({ board: {} }, 't1', 'llm call'),
-  ).not.toThrow();
-  expect(() => noteBoardActivity({}, 't1', 'llm call')).not.toThrow();
 });
 
 test('tool and model boundaries report starts with no arguments, prompts or results', async () => {

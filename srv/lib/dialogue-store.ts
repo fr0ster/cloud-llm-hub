@@ -351,9 +351,14 @@ const taskRecord = z.object({
   createdAt: num,
   startedAt: num.optional(),
   finishedAt: num.optional(),
+  // Supervision facts survive a save: a revived planner still sees idle tasks.
+  lastActivityAt: num.optional(),
+  currentAction: str.optional(),
+  idleMs: num.optional(),
 } satisfies Shape<TaskRecord>);
 type TaskEvent = NonNullable<DialogueState['pendingEvents']>[number];
 const taskEvent = z.object({
+  stalled: z.boolean().optional(),
   kind: z.enum(['started', 'done', 'failed', 'stopped', 'long_running']),
   task: taskRecord,
 } satisfies Shape<TaskEvent>);

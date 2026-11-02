@@ -7,26 +7,6 @@ export interface ActivityEvent {
   action: string;
   at: number;
 }
-interface ActivityBoard {
-  noteActivity(taskId: string, action: string): void;
-}
-function supportsActivity(board: object): board is ActivityBoard {
-  return 'noteActivity' in board && typeof board.noteActivity === 'function';
-}
-/** The installed DialogueSession keeps its board private; inspect only this optional capability. */
-export function noteBoardActivity(
-  session: object,
-  taskId: string,
-  action: string,
-): void {
-  if (
-    'board' in session &&
-    typeof session.board === 'object' &&
-    session.board !== null &&
-    supportsActivity(session.board)
-  )
-    session.board.noteActivity(taskId, action);
-}
 const activity = new AsyncLocalStorage<(action: string) => void>();
 export function reportWorkerActivity(
   action: 'llm call' | `tool ${string}`,
