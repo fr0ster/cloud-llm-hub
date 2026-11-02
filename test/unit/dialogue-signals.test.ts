@@ -1,4 +1,5 @@
 import type { DialogueSignals } from '@mcp-abap-adt/llm-agent';
+import { DialogueSession } from '@mcp-abap-adt/llm-agent-libs';
 import { createSignalBus } from '@mcp-abap-adt/llm-signals';
 import { closeDialogue, dialogueFor } from '../../srv/lib/dialogue-sessions';
 import {
@@ -42,6 +43,7 @@ jest.mock('../../srv/agent-manager', () => ({
 }));
 
 const key = 'signals-test';
+const source = JSON.stringify(['alice', key]);
 
 beforeEach(() => {
   setDialogueSignalsForTest(createSignalBus<DialogueSignals>());
@@ -49,21 +51,48 @@ beforeEach(() => {
 
 afterEach(async () => {
   await closeDialogue('alice', key, 'ttl');
+  await closeDialogue('bob', key, 'ttl');
   setDialogueSignalsForTest(undefined);
 });
 
 test('a dialogue session publishes to the hub bus', async () => {
-  const handle = await dialogueFor('alice', key, 'TEST');
+  const open = jest.spyOn(DialogueSession, 'open');
+  const handle = await (async () => {
+    try {
+      const result = await dialogueFor('alice', key, 'TEST');
+      // The library uses this id for planner recall and usage attribution.
+      expect(open.mock.calls.at(-1)?.[0].id).toBe(key);
+      return result;
+    } finally {
+      open.mockRestore();
+    }
+  })();
   await handle.session.send('Hello');
   expect(
-    dialogueSignals().last('dialogue.turn.settled', key)?.payload,
+    dialogueSignals().last('dialogue.turn.settled', source)?.payload,
   ).toMatchObject({ outcome: 'ok' });
 });
 
 test('closing retires the source', async () => {
   const handle = await dialogueFor('alice', key, 'TEST');
   await handle.session.send('Hello');
-  expect(dialogueSignals().lastAll(key).length).toBeGreaterThan(0);
+  expect(dialogueSignals().lastAll(source).length).toBeGreaterThan(0);
   await closeDialogue('alice', key, 'explicit');
-  expect(dialogueSignals().lastAll(key)).toEqual([]);
+  expect(dialogueSignals().lastAll(source)).toEqual([]);
+});
+
+test('closing one user does not retire another user with the same logical key', async () => {
+  const alice = await dialogueFor('alice', key, 'TEST');
+  const bob = await dialogueFor('bob', key, 'TEST');
+  await alice.session.send('Hello');
+  await bob.session.send('Hello');
+  const bobSource = JSON.stringify(['bob', key]);
+  expect(dialogueSignals().lastAll(bobSource).length).toBeGreaterThan(0);
+  await closeDialogue('alice', key, 'explicit');
+  expect(dialogueSignals().lastAll(source)).toEqual([]);
+  expect(dialogueSignals().lastAll(bobSource).length).toBeGreaterThan(0);
+  await bob.session.send('Still here');
+  expect(
+    dialogueSignals().last('dialogue.turn.settled', bobSource)?.payload,
+  ).toMatchObject({ outcome: 'ok' });
 });

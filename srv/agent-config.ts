@@ -256,7 +256,7 @@ export interface AgentConfig {
     plannerKnowledge?: string[];
     dialogue: {
       executors: number;
-      executorPool: number;
+      executorPool?: number;
       maxTasks: number;
       maxCorrections: number;
       followMaxMs: number;
@@ -694,11 +694,10 @@ export function loadAgentConfig(): AgentConfig {
       dialogue: {
         executors:
           readPositiveIntFrom(process.env, 'LLM_AGENT_DIALOGUE_EXECUTORS') ?? 3,
-        executorPool:
-          readPositiveIntFrom(
-            process.env,
-            'LLM_AGENT_DIALOGUE_EXECUTOR_POOL',
-          ) ?? 6,
+        executorPool: readPositiveIntFrom(
+          process.env,
+          'LLM_AGENT_DIALOGUE_EXECUTOR_POOL',
+        ),
         taskOutputChars: dialogueTaskOutputChars(),
         maxTasks: dialogueMaxTasks(),
         maxCorrections: dialogueMaxCorrections(),

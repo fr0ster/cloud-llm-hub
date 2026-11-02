@@ -10,6 +10,7 @@ import {
 } from './collection-toggle';
 import { hasDialogueState } from './dialogue-store';
 import { hasRunRecord } from './run-record-store';
+import { disposeSessionLlms } from './session-llms';
 
 /**
  * Every store keyed by one session, in one place.
@@ -25,6 +26,7 @@ import { hasRunRecord } from './run-record-store';
  * lease between the decision and the deletion.
  */
 export function deleteSessionState(userId: string, sessionId: string): void {
+  disposeSessionLlms({ userId, key: sessionId });
   deleteCollectionOverrides(userId, sessionId);
   clearSession(sessionId, userId);
   forgetSessionDestination(userId, sessionId);

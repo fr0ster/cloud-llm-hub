@@ -8,9 +8,10 @@
  * the same wrapping `makeLlm` applied.
  *
  * Credentials are memoized per process: a credential object's identity keys the
- * provider's 429 quota bucket, so every LLM on one account must share one.
+ * provider's default quota bucket. Session calls override it with quotaScope.
  */
 
+import { createHash } from 'node:crypto';
 import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
 import { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
 import {
@@ -26,6 +27,7 @@ import cds from '@sap/cds';
 import type { LlmProvider } from '../agent-config';
 import { captureLlm } from './context-capture';
 import { reliableLlm } from './llm-failure';
+import { sessionLlms } from './session-llms';
 import { usageRuntime } from './usage/runtime';
 
 export interface HubLlmConfig {
@@ -41,6 +43,7 @@ export interface HubLlmConfig {
   /** SAP AI Core resource group (sap-ai-sdk only). */
   resourceGroup?: string;
   whenThrottled?: IThrottleStrategy;
+  quotaScope?: string;
 }
 
 type AiCoreAccess = ReturnType<typeof serviceKeyCredential>;
@@ -101,10 +104,11 @@ export function getAiCoreAccess(): AiCoreAccess {
 
 /** One credential per key, shared by every LLM and embedder on that account. */
 export function apiKeyCredential(key: string): IApiKeyCredential {
-  let credential = apiKeyCredentials.get(key);
+  const identity = createHash('sha256').update(key).digest('hex');
+  let credential = apiKeyCredentials.get(identity);
   if (!credential) {
     credential = staticApiKey(key);
-    apiKeyCredentials.set(key, credential);
+    apiKeyCredentials.set(identity, credential);
   }
   return credential;
 }
@@ -115,8 +119,69 @@ export function resetLlmCredentials(): void {
   apiKeyCredentials.clear();
 }
 
+const credentialIds = new WeakMap<object, number>();
+let nextCredentialId = 0;
+
+/** Cache identity contains configuration and an opaque credential identity only. */
+export function hubLlmKey(cfg: HubLlmConfig, temperature: number): string {
+  const credential =
+    cfg.provider === 'sap-ai-sdk'
+      ? getAiCoreAccess().credential
+      : apiKeyCredential(cfg.apiKey ?? '');
+  let credentialId = credentialIds.get(credential);
+  if (credentialId === undefined) {
+    credentialId = ++nextCredentialId;
+    credentialIds.set(credential, credentialId);
+  }
+  return JSON.stringify({
+    provider: cfg.provider,
+    model: cfg.model,
+    baseURL: cfg.baseURL,
+    resourceGroup: cfg.resourceGroup,
+    temperature,
+    maxTokens: cfg.maxTokens,
+    component: cfg.component,
+    quotaScope: cfg.quotaScope,
+    credentialId,
+  });
+}
+
 /** Build the provider for `cfg` and wrap it as an `ILlm`. */
 export async function makeHubLlm(
+  cfg: HubLlmConfig,
+  temperature: number,
+): Promise<ILlm> {
+  const llm = await createHubLlm(cfg, temperature);
+  const key = hubLlmKey(cfg, temperature);
+  return new Proxy(llm, {
+    get(target, property) {
+      if (property === 'chat')
+        return async (...args: Parameters<ILlm['chat']>) => {
+          const owner = sessionLlms.getStore();
+          const client = owner
+            ? await owner.get(key, (quotaScope) =>
+                createHubLlm({ ...cfg, quotaScope }, temperature),
+              )
+            : target;
+          return client.chat(...args);
+        };
+      if (property === 'streamChat')
+        return async function* (...args: Parameters<ILlm['streamChat']>) {
+          const owner = sessionLlms.getStore();
+          const client = owner
+            ? await owner.get(key, (quotaScope) =>
+                createHubLlm({ ...cfg, quotaScope }, temperature),
+              )
+            : target;
+          yield* client.streamChat(...args);
+        };
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+async function createHubLlm(
   cfg: HubLlmConfig,
   temperature: number,
 ): Promise<ILlm> {
@@ -128,6 +193,7 @@ export async function makeHubLlm(
     temperature,
     maxTokens,
     whenThrottled: cfg.whenThrottled,
+    quotaScope: cfg.quotaScope,
   };
 
   let provider:

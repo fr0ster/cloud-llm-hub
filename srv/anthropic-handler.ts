@@ -11,6 +11,7 @@ import {
 } from './lib/model-policy';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
+import { runWithRequestLlms } from './lib/session-llms';
 import {
   measureRequest,
   requestMeasurement,
@@ -99,11 +100,16 @@ export function handleAnthropicMessages(
   req: Request,
   res: Response,
 ): Promise<void> {
-  requestStart(req);
-  const runtime = usageRuntime();
-  if (!runtime || (!runtime.enabled('request') && !runtime.enabled('session')))
-    return handleAnthropicMessagesMeasured(req, res);
-  return handleAnthropicMessagesWithUsage(req, res);
+  return runWithRequestLlms((req as LongSessionRequest).longSession, () => {
+    requestStart(req);
+    const runtime = usageRuntime();
+    if (
+      !runtime ||
+      (!runtime.enabled('request') && !runtime.enabled('session'))
+    )
+      return handleAnthropicMessagesMeasured(req, res);
+    return handleAnthropicMessagesWithUsage(req, res);
+  });
 }
 
 async function handleAnthropicMessagesWithUsage(

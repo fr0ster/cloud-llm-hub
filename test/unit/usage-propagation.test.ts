@@ -149,7 +149,7 @@ jest.mock('../../srv/agent-config', (): object => ({
       mode: SmartAgentMode;
       dialogue: {
         executors: number;
-        executorPool: number;
+        executorPool?: number;
         maxTasks: number;
         maxCorrections: number;
         followMaxMs: number;

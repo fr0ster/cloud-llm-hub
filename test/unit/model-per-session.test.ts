@@ -16,6 +16,11 @@ import type { HubLlmConfig } from '../../srv/lib/llm-factory';
 import { handleChatCompletions, handleModels } from '../../srv/openai-handler';
 
 const mockCalls: string[] = [];
+// Model selection does not exercise discovery. Do not leave startup retry
+// timers making BTP requests after this suite has finished.
+jest.mock('../../srv/lib/destination-watch', () => ({
+  watchDestinations: () => () => {},
+}));
 jest.mock('../../srv/lib/llm-factory', () => ({
   ...jest.requireActual('../../srv/lib/llm-factory'),
   makeHubLlm: async (config: HubLlmConfig): Promise<ILlm> => ({

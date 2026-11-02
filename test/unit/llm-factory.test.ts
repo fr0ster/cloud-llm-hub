@@ -25,6 +25,7 @@ jest.mock(
 import {
   apiKeyCredential,
   getAiCoreAccess,
+  hubLlmKey,
   makeHubLlm,
   readAiCoreServiceKey,
   resetLlmCredentials,
@@ -381,4 +382,51 @@ test('safe model errors preserve an exhausted throttle policy for outer retry de
   } finally {
     stream.mockRestore();
   }
+});
+
+it('cached LLM handles dispatch to lazily owned session providers', async () => {
+  const { SessionLlms } = await import('../../srv/lib/session-llms');
+  const a = new SessionLlms();
+  const b = new SessionLlms();
+  const providers: OpenAIProvider[] = [];
+  const chat = jest
+    .spyOn(OpenAIProvider.prototype, 'chat')
+    .mockImplementation(async function (this: OpenAIProvider) {
+      providers.push(this);
+      return { content: 'ok', finishReason: 'stop' };
+    });
+  try {
+    const llm = await makeHubLlm(
+      { provider: 'openai', apiKey: 'test', model: 'test' },
+      0.1,
+    );
+    await a.run(() => llm.chat([]));
+    await a.run(() => llm.chat([]));
+    await b.run(() => llm.chat([]));
+    expect(providers[0]).toBe(providers[1]);
+    expect(providers[0]).not.toBe(providers[2]);
+    a.dispose();
+    await expect(a.run(() => llm.chat([]))).rejects.toThrow('closed');
+    await b.run(() => llm.chat([]));
+    expect(providers[2]).toBe(providers[3]);
+  } finally {
+    chat.mockRestore();
+    a.dispose();
+    b.dispose();
+  }
+});
+
+test('cache keys select public fields and opaque credential identities', () => {
+  const cfg = {
+    provider: 'openai' as const,
+    model: 'model',
+    apiKey: 'secret-key-sentinel',
+  };
+  const first = hubLlmKey(cfg, 0.1);
+  expect(first).not.toContain(cfg.apiKey);
+  expect(first).not.toContain('apiKey');
+  expect(hubLlmKey({ ...cfg }, 0.1)).toBe(first);
+  expect(hubLlmKey({ ...cfg, apiKey: 'different-secret' }, 0.1)).not.toBe(
+    first,
+  );
 });

@@ -189,3 +189,18 @@ it('deletes collection overrides with session state, preserving another session'
   });
   deleteSessionState('alice', 'toggle-retained');
 });
+
+it('session eviction disposes only that user LLM clients', async () => {
+  const { longSessionLlms, disposeSessionLlms } = await import(
+    '../../srv/lib/session-llms'
+  );
+  const alice = longSessionLlms({ userId: 'alice', key: SID });
+  const bob = longSessionLlms({ userId: 'bob', key: SID });
+  const aliceDispose = jest.spyOn(alice, 'dispose');
+  const bobDispose = jest.spyOn(bob, 'dispose');
+  deleteSessionState('alice', SID);
+  expect(aliceDispose).toHaveBeenCalledTimes(1);
+  expect(bobDispose).not.toHaveBeenCalled();
+  await expect(alice.get('unused', jest.fn())).rejects.toThrow('closed');
+  disposeSessionLlms({ userId: 'bob', key: SID });
+});

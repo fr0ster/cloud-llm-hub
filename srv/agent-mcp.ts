@@ -18,6 +18,8 @@ import {
 } from './lib/coordinator-tool-definitions';
 import { runExecutorStep } from './lib/executor-step';
 import { requestStart } from './lib/request-start';
+import type { LongSessionRequest } from './lib/session-connection';
+import { runWithRequestLlms } from './lib/session-llms';
 import {
   measureRequest,
   requestMeasurement,
@@ -264,7 +266,9 @@ async function executeStepMeasured(
   callerSignal?: AbortSignal,
 ) {
   if (args.session === undefined)
-    return executeStepRun(req, caller, args, callerSignal);
+    return runWithRequestLlms((req as LongSessionRequest).longSession, () =>
+      executeStepRun(req, caller, args, callerSignal),
+    );
   try {
     const s = await resolveSession(caller.userId, args.session);
     if (!s) return textResult('SESSION_NOT_FOUND', true);

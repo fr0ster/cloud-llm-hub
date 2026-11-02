@@ -179,7 +179,7 @@ describe('dialogue configuration', () => {
       chatCoordinator: 'dialogue',
       dialogue: {
         executors: 3,
-        executorPool: 6,
+        executorPool: undefined,
         maxTasks: 50,
         maxCorrections: 2,
       },

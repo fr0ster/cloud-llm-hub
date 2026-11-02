@@ -72,6 +72,13 @@ import {
   onDialogueCreated,
   sharedExecutorPool,
 } from '../../srv/lib/dialogue-sessions';
+
+function requiredExecutorPool() {
+  const pool = sharedExecutorPool();
+  if (!pool) throw new Error('Expected configured executor pool');
+  return pool;
+}
+
 import { dialogueSignals } from '../../srv/lib/dialogue-signals';
 import {
   DIALOGUE_TOOL_CONTRACT_VERSION,
@@ -113,6 +120,7 @@ let mockPlan:
       status?: 'active' | 'waiting_user' | 'done';
     }
   | undefined;
+let mockExecutorPool: number | undefined = 1;
 const mockRegister = { track: <T>(p: Promise<T>) => p };
 jest.mock('../../srv/agent-config', () => ({
   ...jest.requireActual('../../srv/agent-config'),
@@ -121,7 +129,7 @@ jest.mock('../../srv/agent-config', () => ({
     agent: {
       dialogue: {
         executors: 2,
-        executorPool: 1,
+        executorPool: mockExecutorPool,
         maxTasks: 50,
         maxCorrections: 2,
       },
@@ -467,11 +475,11 @@ test('state counts every session settlement and retains the latest failure seque
   const bus = dialogueSignals();
   expect(h.state()).toMatchObject({ settledSeq: 0, lastFailedSeq: 0 });
   for (const [source, outcome, settledSeq, lastFailedSeq] of [
-    ['key', 'failed', 1, 1],
+    [JSON.stringify(['alice', 'key']), 'failed', 1, 1],
     ['other', 'failed', 1, 1],
-    ['key', 'ok', 2, 1],
-    ['key', 'failed', 3, 3],
-    ['key', 'ok', 4, 3],
+    [JSON.stringify(['alice', 'key']), 'ok', 2, 1],
+    [JSON.stringify(['alice', 'key']), 'failed', 3, 3],
+    [JSON.stringify(['alice', 'key']), 'ok', 4, 3],
   ] as const) {
     bus.emit('dialogue.turn.settled', { outcome, trigger: 'event' }, source);
     expect(h.state()).toMatchObject({ settledSeq, lastFailedSeq });
@@ -490,30 +498,34 @@ test('idle is false between a task end and its event turn and while ready steps 
   bus.emit(
     'dialogue.plan.changed',
     { status: 'active', total: 3, done: 1 },
-    'key',
+    JSON.stringify(['alice', 'key']),
   );
   const activity = { turnActive: false, queuedInputs: 1, running: 0, ready: 0 };
-  bus.emit('dialogue.activity', activity, 'key');
+  bus.emit('dialogue.activity', activity, JSON.stringify(['alice', 'key']));
   expect(h.state().idle).toBe(false);
   bus.emit(
     'dialogue.activity',
     { ...activity, queuedInputs: 0, ready: 1 },
-    'key',
+    JSON.stringify(['alice', 'key']),
   );
   expect(h.state().idle).toBe(false);
   bus.emit(
     'dialogue.activity',
     { ...activity, queuedInputs: 0, turnActive: true },
-    'key',
+    JSON.stringify(['alice', 'key']),
   );
   expect(h.state()).toMatchObject({ turnActive: true, idle: false });
   bus.emit(
     'dialogue.activity',
     { ...activity, queuedInputs: 0, running: 1 },
-    'key',
+    JSON.stringify(['alice', 'key']),
   );
   expect(h.state()).toMatchObject({ running: 1, idle: false });
-  bus.emit('dialogue.activity', { ...activity, queuedInputs: 0 }, 'key');
+  bus.emit(
+    'dialogue.activity',
+    { ...activity, queuedInputs: 0 },
+    JSON.stringify(['alice', 'key']),
+  );
   expect(h.state()).toEqual({
     settledSeq: 0,
     lastFailedSeq: 0,
@@ -615,7 +627,7 @@ test('delegated worker has system, session, owner, an empty history scope, admis
   });
   await until(() => mockDrop.mock.calls.length === 2);
   expect(mockDrop.mock.calls[0][0]).not.toBe(mockDrop.mock.calls[1][0]);
-  const release = await sharedExecutorPool().acquire();
+  const release = await requiredExecutorPool().acquire();
   release();
   const lease = await h.pool.acquire();
   expect(lease.connection).toBe(connection);
@@ -952,7 +964,7 @@ test('worker failures close unhealthy connections and release admission and pool
   expect(connection.close).toHaveBeenCalledTimes(1);
   expect(mockRelease).toHaveBeenCalledTimes(1);
   expect(h.session.snapshot().tasks[0].state).toBe('failed');
-  const release = await sharedExecutorPool().acquire();
+  const release = await requiredExecutorPool().acquire();
   release();
 });
 
@@ -1289,7 +1301,7 @@ test('a running task holds the session; finishing all tasks releases it', async 
 
 test('a queued task cancelled before start releases the hold', async () => {
   const { registry, hold, setTime } = lifetimeRegistry();
-  const releasePool = await sharedExecutorPool().acquire();
+  const releasePool = await requiredExecutorPool().acquire();
   try {
     const { h } = await ready();
     await h.session.send('go');
@@ -1475,12 +1487,11 @@ test('a corrective user turn publishes consumed task usage after its live reply'
     const reply = events.find(
       (event) => event.kind === 'message' && event.message.trigger === 'user',
     );
-    if (!reply || reply.kind !== 'message') throw new Error('Missing reply');
+    if (reply?.kind !== 'message') throw new Error('Missing reply');
     const update = events.find(
       (event) => event.kind === 'usage' && event.id === reply.message.id,
     );
-    if (!update || update.kind !== 'usage')
-      throw new Error('Missing usage update');
+    if (update?.kind !== 'usage') throw new Error('Missing usage update');
     expect(events.indexOf(update)).toBeGreaterThan(events.indexOf(reply));
     expect(
       events.filter(
@@ -1554,14 +1565,22 @@ test('wait signals are session scoped, live only and unsubscribe on close', asyn
   ];
   dialogueSignals().emit('dialogue.wait', { tasks }, 'other');
   expect(events).toEqual([]);
-  dialogueSignals().emit('dialogue.wait', { tasks }, 'key');
+  dialogueSignals().emit(
+    'dialogue.wait',
+    { tasks },
+    JSON.stringify(['alice', 'key']),
+  );
   expect(events).toEqual([{ kind: 'wait', tasks }]);
   const replay: DialogueEvent[] = [];
   h.subscribe((event) => replay.push(event));
   expect(replay).toEqual([]);
   expect(h.outbox.pending()).toEqual([]);
   await closeDialogue('alice', 'key', 'explicit');
-  dialogueSignals().emit('dialogue.wait', { tasks }, 'key');
+  dialogueSignals().emit(
+    'dialogue.wait',
+    { tasks },
+    JSON.stringify(['alice', 'key']),
+  );
   expect(events).toHaveLength(1);
 });
 
@@ -1670,7 +1689,7 @@ test('reused handle captures caller privileges and channel for each queued turn'
 
 test('queued background tasks keep their scheduling turn identity across later callers', async () => {
   const { h } = await ready();
-  const release = await sharedExecutorPool().acquire();
+  const release = await requiredExecutorPool().acquire();
   const identities: { admin: boolean; channel: string }[] = [];
   mockRun.mockImplementation(async () => {
     const { admin, channel } = getRagCallerIdentity();
@@ -2364,7 +2383,7 @@ test('synchronous steps acquire and release session leases, bind connection and 
     .mockImplementation((conn, run) => bound.run(conn, run));
   const slots = new SemaphorePool(3);
   const hub = jest
-    .spyOn(sharedExecutorPool(), 'acquire')
+    .spyOn(requiredExecutorPool(), 'acquire')
     .mockImplementation((signal) => slots.acquire(signal));
   const releases: jest.Mock[] = [];
   const acquire = jest.spyOn(h.pool, 'acquire').mockImplementation(async () => {
@@ -2651,7 +2670,10 @@ test('worker scope emits content-free activity and background turns identify com
     source: 'api',
     text: 'inspect',
   });
-  const activity = events.filter((event) => event.kind === 'activity');
+  const activity = events.filter(
+    (event) =>
+      event.kind === 'activity' && !event.action.startsWith('queued ('),
+  );
   expect(activity).toHaveLength(1);
   expect(activity[0]).toMatchObject({
     taskId: 't1',
@@ -2679,4 +2701,144 @@ test('turn requests are truncated and retain their source', async () => {
     text: 'x'.repeat(300),
     clientTurnId: 'request-123',
   });
+});
+
+test('sessions have independent queues by default and publish queued activity', async () => {
+  mockExecutorPool = undefined;
+  const finishes: Array<() => void> = [];
+  mockRun.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finishes.push(() => resolve({ output: 'done' }));
+      }),
+  );
+  try {
+    const { h } = await ready();
+    const { h: other } = await ready('bob');
+    const events: DialogueEvent[] = [];
+    h.subscribe((event) => events.push(event));
+    expect(sharedExecutorPool()).toBeUndefined();
+    for (let index = 0; index < 3; index++) {
+      await h.session.callTool('delegate_task', {
+        worker: 'executor',
+        goal: 'Read',
+      });
+    }
+    await until(() => finishes.length === 2);
+    expect(
+      events.some(
+        (event) =>
+          event.kind === 'activity' && event.action === 'queued (0 ahead)',
+      ),
+    ).toBe(true);
+    await other.session.callTool('delegate_task', {
+      worker: 'executor',
+      goal: 'Read',
+    });
+    await until(() => finishes.length === 3);
+    finishes.forEach((finish) => {
+      finish();
+    });
+    await until(() => finishes.length === 4);
+    finishes[3]();
+    await until(() =>
+      h.session.snapshot().tasks.every((task) => task.state === 'done'),
+    );
+    await closeDialogue('bob', 'key', 'explicit');
+  } finally {
+    finishes.forEach((finish) => {
+      finish();
+    });
+    mockExecutorPool = 1;
+  }
+});
+
+test('hub queue labels update in snapshots without notifying the running-only board', async () => {
+  mockExecutorPool = 1;
+  const finishes: Array<() => void> = [];
+  mockRun.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finishes.push(() => resolve({ output: 'done' }));
+      }),
+  );
+  const { h } = await ready();
+  const note = jest.spyOn(h.session, 'noteActivity');
+  const events: DialogueEvent[] = [];
+  h.subscribe((event) => events.push(event));
+  try {
+    for (let index = 0; index < 3; index++) {
+      await h.session.callTool('delegate_task', {
+        worker: 'executor',
+        goal: 'Read',
+      });
+    }
+    await until(() => finishes.length === 1);
+    const queued = h.session
+      .snapshot()
+      .tasks.filter((task) => task.state === 'queued');
+    expect(queued.map((task) => task.currentAction)).toEqual([
+      'queued (0 ahead)',
+      'queued (1 ahead)',
+    ]);
+    expect(note).not.toHaveBeenCalled();
+    finishes[0]();
+    await until(() => finishes.length === 2);
+    expect(
+      h.session.snapshot().tasks.find((task) => task.id === queued[1].id)
+        ?.currentAction,
+    ).toBe('queued (0 ahead)');
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'activity',
+        taskId: queued[1].id,
+        action: 'queued (0 ahead)',
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'task',
+        task: expect.objectContaining({
+          id: queued[1].id,
+          currentAction: 'queued (1 ahead)',
+        }),
+      }),
+    );
+    finishes[1]();
+    await until(() => finishes.length === 3);
+    finishes[2]();
+    await until(() =>
+      h.session.snapshot().tasks.every((task) => task.state === 'done'),
+    );
+  } finally {
+    finishes.forEach((finish) => {
+      finish();
+    });
+    note.mockRestore();
+  }
+});
+
+test('closing one user with a shared key preserves the other user LLMs and signals', async () => {
+  const { longSessionLlms } = await import('../../srv/lib/session-llms');
+  const { h: alice } = await ready('alice');
+  const { h: bob } = await ready('bob');
+  const aliceOwner = longSessionLlms({ userId: 'alice', key: 'key' });
+  const bobOwner = longSessionLlms({ userId: 'bob', key: 'key' });
+  const aliceDispose = jest.spyOn(aliceOwner, 'dispose');
+  const bobDispose = jest.spyOn(bobOwner, 'dispose');
+  const bobEvents: DialogueEvent[] = [];
+  bob.subscribe((event) => bobEvents.push(event));
+  await closeDialogue('alice', 'key', 'explicit');
+  expect(aliceDispose).toHaveBeenCalled();
+  expect(bobDispose).not.toHaveBeenCalled();
+  expect(longSessionLlms({ userId: 'bob', key: 'key' })).toBe(bobOwner);
+  dialogueSignals().emit(
+    'dialogue.wait',
+    { tasks: [] },
+    JSON.stringify(['bob', 'key']),
+  );
+  expect(bobEvents).toEqual([{ kind: 'wait', tasks: [] }]);
+  await bob.session.send('go');
+  await until(() => bob.session.snapshot().tasks[0]?.state === 'done');
+  expect(alice.session.snapshot().tasks).toEqual([]);
 });

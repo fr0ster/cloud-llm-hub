@@ -892,7 +892,7 @@ import {
   handleGetDumpSectionCall,
   parseFormattedDumpPayload,
 } from './lib/get-dump-section';
-import { makeHubLlm } from './lib/llm-factory';
+import { hubLlmKey, makeHubLlm } from './lib/llm-factory';
 import { loggerAdapter } from './lib/logger';
 import {
   collectionDimension,
@@ -2769,7 +2769,19 @@ function getOrCreateSharedLlms(
 } {
   const mainModel = config.llm.model;
   const clients = component === 'planner-author' ? planAuthorLlms : modelLlms;
-  let mainLlm = clients.get(mainModel);
+  const clientKey = hubLlmKey(
+    {
+      provider: config.llm.provider,
+      model: config.llm.model,
+      baseURL: config.llm.baseUrl,
+      apiKey: config.llm.apiKey,
+      resourceGroup: config.llm.resourceGroup,
+      maxTokens: config.llm.maxTokens,
+      component,
+    },
+    config.llm.temperature,
+  );
+  let mainLlm = clients.get(clientKey);
   if (!mainLlm) {
     mainLlm = makeHubLlm(
       {
@@ -2786,7 +2798,7 @@ function getOrCreateSharedLlms(
       config.llm.temperature,
     ).then(trackedLlm);
   }
-  clients.set(mainModel, mainLlm);
+  clients.set(clientKey, mainLlm);
   if (!sharedClassifierLlm) {
     const classifierModel = config.llm.classifierModel;
     sharedClassifierLlm = makeHubLlm(
