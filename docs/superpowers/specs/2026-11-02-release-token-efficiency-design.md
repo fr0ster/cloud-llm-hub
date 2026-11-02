@@ -30,7 +30,7 @@ A four-phase documentation task on POC (doc-task → analysis-plan → evidence 
    - The request `model` (WebUI LLM select, OpenAI/Anthropic `model`) selects the coordinator model of that
      session only. It never changes the process-wide main model or other users.
    - The coordinator chooses the model of each agent it launches: optional `model` on `delegate_task` and
-     `execute_step`, limited to the deploy allowlist `LLM_AGENT_WORKER_MODELS` (comma list). A model outside the
+     `execute_step`, limited to the deploy allowlist `LLM_AGENT_MODELS` (comma list). A model outside the
      list is a tool error `MODEL_NOT_ALLOWED`.
    - Without a choice: the profile's `model` (new optional profile front matter field, must be in the allowlist),
      else `LLM_AGENT_MODEL`.
@@ -86,7 +86,7 @@ A four-phase documentation task on POC (doc-task → analysis-plan → evidence 
 
 ## Decisions after the builder check (my calls unless marked)
 
-- **Allowlist.** One list `LLM_AGENT_MODELS` (comma list) replaces `LLM_AGENT_WORKER_MODELS`; it covers the
+- **Allowlist.** One list `LLM_AGENT_MODELS` (comma list; the earlier draft name for agents only is dropped) covers the
   coordinator choice and agent choices. `LLM_AGENT_MODEL` and `LLM_AGENT_PLANNER_MODEL` are always allowed; unset
   list = only those two.
 - **Unknown request models** (e.g. Claude Code `claude-…` ids not served by AI Core) are ignored: the request runs

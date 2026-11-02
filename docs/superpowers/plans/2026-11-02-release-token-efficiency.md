@@ -48,17 +48,24 @@ Repo `C:\Users\OleksiiKyslytsia\projects\llm-agent`, branch `feat/worker-model` 
 - Modify: `packages/llm-agent/src/interfaces/agent-profile.ts` (`WorkerProfile.model?: string`;
   `createWorker(input, options)` input gains `model?: string`)
 - Modify: `packages/llm-agent-libs/src/coordinator/dialogue/task-board.ts` (task record keeps `model`)
+- Modify: `IAgentProfileRunner` gains optional `validateModel?(model: string): Result<void, AgentProfileError>`;
+  `AgentProfileError.code` gains `MODEL_NOT_ALLOWED`. `delegate_task` calls it synchronously BEFORE enqueueing; a
+  failure is the tool error (`MODEL_NOT_ALLOWED`) and creates no task.
 - Modify: `packages/llm-agent-libs/src/agent.ts`, `pipeline/handlers/tool-loop.ts`,
   `coordinator/dialogue/dialogue-session.ts` (fallback without a final iteration keeps only text after the last
   tool round; validation-retry/reset handling unchanged)
-- Modify: `packages/llm-agent-libs/src/skills/skill-utils.ts` (no rejection of one name with different `kind`)
+- Modify: `packages/llm-agent-libs/src/skills/skill-utils.ts` — discovery keys skills by identity, not display
+  name: front-matter `id`, else the skill directory name; two skills sharing a display name with different ids
+  both survive (no overwrite, no rejection of different `kind`s); two skills with the same identity keep today's
+  first-wins behaviour with a warning
 - Test: `packages/llm-agent-libs/src/__tests__/worker-model.test.ts`, extend `final-iteration-content.test.ts`
 - Changeset: minor for llm-agent and llm-agent-libs (server-libs patch if touched).
 
-- [ ] **Step 1: Failing tests:** `delegate_task({ worker, goal, model: 'm2' })` reaches `createWorker` with
+- [ ] **Step 1: Failing tests:** a disallowed model → tool error `MODEL_NOT_ALLOWED`, no task on the board;
+  `delegate_task({ worker, goal, model: 'm2' })` reaches `createWorker` with
   `model: 'm2'` and the task record stores it; without `model` nothing is passed; a call stopped after two tool
-  rounds with text "Checking." before each returns content without "Checking."; two skill dirs sharing a name with
-  different `kind` both load.
+  rounds with text "Checking." before each returns content without "Checking."; two skill dirs sharing a display name
+  with different ids (or directory names) both load, regardless of `kind`.
 - [ ] **Step 2–4:** Fail, implement, pass; typecheck, lint, tests of all packages.
 - [ ] **Step 5:** Commit, PR, Codex review, merge, release (version PR → signed tags → user publishes npm).
 
@@ -95,11 +102,14 @@ Task 1's versions.
 
 **Files:**
 - Modify: `srv/agent-mcp-rag.ts` (`rag_read` default `limit` 32000)
-- Create: `srv/lib/read-dedup.ts` — per tool-loop record of `(collection, record, offset, limit, version)` reads;
+- Create: `srv/lib/read-dedup.ts` — per tool-loop record (scope: one agent tool loop, keyed by its trace) of reads
+  identified by `(collection, record, offset, limit, sha256(page text))` and the round index that returned the full
+  text. A repeat whose page hash matches and whose original round is still within the last N rounds returns the
+  pointer; pointer responses never update that round index (they cannot extend the text's lifetime);
   a repeat inside the window returns `{ id, offset, total, alreadyRead: true, note: "already read above in this task: <record> offset n–m" }`
 - Modify: `srv/agent-manager.ts` — `withToolLoopContextStrategyFactory(() => new WindowContextStrategy({ keepLastRounds: N }))`
-  for agent tool loops, `N = LLM_AGENT_TOOL_LOOP_WINDOW` (default 8); the dedup record is told which rounds left
-  the window (or tracks round indices) so pointers apply only inside it.
+  for agent tool loops, `N = LLM_AGENT_TOOL_LOOP_WINDOW` (default 8); the hub wraps the factory so each recorded
+  round increments the loop's round counter used by read-dedup (no library eviction callback needed).
 - Modify: `srv/lib/tool-result-summary.ts` — keep `query` (first 200 characters) for `rag_search`.
 - Modify: `srv/lib/dialogue-planner-content.ts` — paragraph wrapper drops progress text on stops without a final
   iteration (matches Task 1).
@@ -117,12 +127,18 @@ Task 1's versions.
   `LLM_AGENT_ANALYST_MCP` (destination lists), `LLM_AGENT_MCP_TRUST=<destination>=<n>,…`.
 - Create: `srv/lib/external-mcp.ts` — connect each destination via Streamable HTTP through `McpClientAdapter`
   (destination URL and auth from the BTP destination service), lazy with retry/cooldown; failures log and leave
-  the role without those tools.
+  the role without those tools. Each external client registers its tool names with ownership
+  `(destination, tool)`; external tools are distinguished from embedded and client tools by that registry, and a
+  name clash with an embedded or RAG tool is resolved by prefixing the external tool `<destination>__<tool>`.
 - Modify: agent construction per role to add the role's external clients (read-only knowledge tools for the
-  planner/author); `systemToolTrust` extended → `docs` class for external tools with per-destination override.
+  planner/author); `systemToolTrust` extended → `docs` class for external tools. Precedence: per-destination
+  `LLM_AGENT_MCP_TRUST` override → the active profile's trust map `docs` value (source-trust spec,
+  `2026-11-01-source-trust-design.md`, "Profile trust map") → deploy/built-in `docs` default.
 - Modify: docs (configuration, architecture), CHANGELOG.
 - Test: `test/unit/external-mcp.test.ts` (fake MCP server over HTTP): tools offered only to configured roles,
-  results tagged `[source: docs:<tool>; trust n]`, unreachable destination → startup continues.
+  results tagged `[source: docs:<tool>; trust n]`; precedence across destination override, two profiles with
+  different `docs` maps, and the default; a clashing tool name is prefixed; unreachable destination → startup
+  continues.
 
 - [ ] Steps: failing tests → implement → pass → commit `feat(mcp): built-in docs MCP per role`.
 - [ ] POC (user go-ahead): create a NoAuthentication destination for `https://mcp-abap.marianzeis.de/mcp`, check CF
