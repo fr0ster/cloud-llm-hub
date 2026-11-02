@@ -18,11 +18,15 @@ import {
   guardProfileWorker,
   type RegisteredProfileTool,
 } from './agent-profile-tools';
+import { parseModelAllowlist, resolveAgentModel } from './model-policy';
 import { recordReviewProfile } from './review-scope';
 import { runWithTrustResolver, type TrustResolver } from './trust-resolver';
 
 export interface AgentProfileRunnerHost {
   trustResolver?(): TrustResolver;
+  prepareTools?(role: string): Promise<void>;
+  plannerKnowledgeTools?(): string[];
+  acceptsPolicyName?: (name: string) => boolean;
   catalogue(): readonly RegisteredProfileTool[];
   grants(): ReadonlySet<string>;
   buildWorker(
@@ -54,6 +58,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
     parent = currentProfileTools(),
   ): <T>(run: () => T) => T {
     const permissions = effectiveProfileTools({
+      acceptsPolicyName: this.host.acceptsPolicyName,
       catalogue: this.host.catalogue(),
       grants: this.host.grants(),
       result: profile.result,
@@ -70,15 +75,39 @@ export class AgentProfileRunner implements IAgentProfileRunner {
     };
   }
 
+  validateModel(model: string): Result<void, AgentProfileError> {
+    return parseModelAllowlist().has(model)
+      ? { ok: true, value: undefined }
+      : {
+          ok: false,
+          error: { code: 'MODEL_NOT_ALLOWED', message: 'MODEL_NOT_ALLOWED' },
+        };
+  }
+
   async createWorker(
-    input: { profile: WorkerProfile; workerBase?: string },
+    input: { profile: WorkerProfile; workerBase?: string; model?: string },
     options?: CallOptions,
   ): Promise<Result<ISubAgent, AgentProfileError>> {
     const profile = structuredClone(input.profile);
+    const model = resolveAgentModel(
+      { requested: input.model, profile: profile.model },
+      parseModelAllowlist(),
+      process.env.LLM_AGENT_MODEL ?? '',
+    );
+    if (
+      !model.ok &&
+      (input.model !== undefined ||
+        profile.model !== undefined ||
+        process.env.LLM_AGENT_MODEL)
+    )
+      return { ok: false, error: { code: model.error, message: model.error } };
+    if (model.ok) profile.model = model.value;
     const parent = currentProfileTools();
     try {
+      await this.host.prepareTools?.(profile.name);
       const catalogue = this.host.catalogue();
       effectiveProfileTools({
+        acceptsPolicyName: this.host.acceptsPolicyName,
         catalogue,
         grants: new Set(catalogue.map((tool) => tool.name)),
         result: profile.result,
@@ -141,6 +170,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
       options?.signal?.throwIfAborted();
       if (!this.host.buildPlanAuthor)
         throw new Error('Plan author unavailable');
+      await this.host.prepareTools?.('planner');
       const scope = this.bind({
         name: 'planner-author',
         trust: input.trust,
@@ -149,6 +179,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
         result: 'report',
         tools: {
           allow: [
+            ...(this.host.plannerKnowledgeTools?.() ?? []),
             'rag_search',
             'rag_read',
             'collection_records',

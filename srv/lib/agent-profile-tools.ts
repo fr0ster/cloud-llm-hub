@@ -29,6 +29,7 @@ export class AgentToolPermissions {
 /** Catalogue entries must come from trusted host registration, never MCP hints. */
 export function effectiveProfileTools(input: {
   catalogue: readonly RegisteredProfileTool[];
+  acceptsPolicyName?: (name: string) => boolean;
   grants: ReadonlySet<string>;
   parent?: Pick<AgentToolPermissions, 'allows'>;
   result: 'report' | 'verdict';
@@ -45,7 +46,7 @@ export function effectiveProfileTools(input: {
   const policy = parsed.data;
   if (typeof policy === 'object') {
     for (const name of [...(policy.allow ?? []), ...(policy.deny ?? [])])
-      if (!catalogue.has(name))
+      if (!catalogue.has(name) && !input.acceptsPolicyName?.(name))
         throw new Error(
           `Unregistered policy tool: ${name}. Update the stored agents profile allow/deny policy against the registered catalogue; migrate legacy RAG operations to collection_create/record_add, record_update, record_set_enabled or paged collection_records/rag_read. Seeds never overwrite existing profiles.`,
         );

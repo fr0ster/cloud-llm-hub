@@ -35,11 +35,18 @@ const structured = identifiers.extend({
 });
 
 export interface ToolResultSummary {
-  call: { name: string; arguments: z.infer<typeof identifiers> };
+  call: {
+    name: string;
+    arguments: z.infer<typeof identifiers> & {
+      query?: string;
+      offset?: number;
+      limit?: number;
+    };
+  };
   result: { isError: boolean; structuredContent: z.infer<typeof structured> };
 }
 
-/** Only identifiers and counts may cross the optional UI summary channel. */
+/** Keep identifiers, counts, and bounded search/paging arguments in UI summaries. */
 export function summarizeToolResult(record: ToolCallRecord): ToolResultSummary {
   const isError = record.result.isError === true;
   const envelope = z
@@ -67,7 +74,21 @@ export function summarizeToolResult(record: ToolCallRecord): ToolResultSummary {
   delete summary.result;
   delete summary.error;
   if (isError) summary.error = { code: code ?? 'ERROR' };
-  const args = identifiers.safeParse(record.call.arguments);
+  const schema =
+    record.call.name === 'rag_search'
+      ? identifiers.extend({
+          query: z
+            .string()
+            .transform((text) => text.slice(0, 200))
+            .optional(),
+        })
+      : record.call.name === 'rag_read'
+        ? identifiers.extend({
+            offset: z.number().optional(),
+            limit: z.number().optional(),
+          })
+        : identifiers;
+  const args = schema.safeParse(record.call.arguments);
   return {
     call: { name: record.call.name, arguments: args.success ? args.data : {} },
     result: { isError, structuredContent: summary },

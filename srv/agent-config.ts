@@ -1,3 +1,4 @@
+import { type ExternalMcpConfig, parseExternalMcp } from './lib/external-mcp';
 import { parseTrustDefaults, type TrustDefaults } from './lib/trust';
 /**
  * Agent Configuration Module
@@ -28,7 +29,6 @@ import { parseTrustDefaults, type TrustDefaults } from './lib/trust';
  */
 
 import type { IThrottleStrategy } from '@mcp-abap-adt/llm-agent';
-import { WaitAsTold } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { validateConfiguredCollectionId } from './collection-ids';
 import { coordinatorName } from './lib/agent-profile-records';
@@ -45,6 +45,7 @@ import {
 } from './lib/system-type';
 import {
   DEFAULT_MAX_THROTTLE_WAIT_MS,
+  WaitAsNeeded,
   WaitIfShortEnough,
 } from './lib/throttle-strategy';
 
@@ -170,6 +171,7 @@ export function parseAgentProfilesConfig(
 
 export interface AgentConfig {
   trust: { defaults: TrustDefaults };
+  externalMcp?: ExternalMcpConfig;
   profiles?: AgentProfilesConfig;
   timeZone?: string;
   /**
@@ -190,7 +192,7 @@ export interface AgentConfig {
     classifierModel: string;
 
     /** Optional plan author and default coordinator model: LLM_AGENT_PLANNER_MODEL.
-     * Unset follows the main model, including per-request model selection. */
+     * Unset follows the deploy main model. */
     plannerModel?: string;
     /** Optional coordinator override; defaults to the planner model. */
     coordinatorModel?: string;
@@ -593,14 +595,16 @@ export function loadAgentConfig(): AgentConfig {
   const provider = (process.env.LLM_AGENT_PROVIDER ||
     'sap-ai-sdk') as LlmProvider;
 
-  // With a door, an admitted session is carried to the end: it waits out exactly
-  // what the server named, and a ceiling behind the door would only kill work in
-  // flight. With no door nothing is admitted, and the ceiling still keeps a wait
-  // shorter than the client's own timeout.
+  // All callers share one account. A ceiling is an explicit opt-in without a door.
+  const configuredThrottleMaxWaitMs = readThrottleMaxWaitMs();
+  const throttleMaxWaitMs =
+    gatekeeper.maxLiveSessions === undefined
+      ? configuredThrottleMaxWaitMs
+      : undefined;
   const throttleStrategy =
-    gatekeeper.maxLiveSessions !== undefined
-      ? new WaitAsTold()
-      : new WaitIfShortEnough(readThrottleMaxWaitMs());
+    throttleMaxWaitMs === undefined
+      ? new WaitAsNeeded()
+      : new WaitIfShortEnough(throttleMaxWaitMs);
   const model =
     process.env.LLM_AGENT_MODEL ||
     process.env.SAP_CORE_AI_MODEL ||
@@ -658,6 +662,7 @@ export function loadAgentConfig(): AgentConfig {
     trust: {
       defaults: parseTrustDefaults(process.env.LLM_AGENT_TRUST_DEFAULTS),
     },
+    externalMcp: parseExternalMcp(process.env),
     profiles: parseAgentProfilesConfig(),
     timeZone: parseTimeZone(),
     llm: {
@@ -741,11 +746,7 @@ export function loadAgentConfig(): AgentConfig {
     // it only shows itself under load, as the difference between an answer and
     // a dropped connection.
     throttleStrategy: config.llm.whenThrottled.name,
-    // Meaningless once the door is on, and said so rather than printed as if it applied.
-    throttleMaxWaitMs:
-      gatekeeper.maxLiveSessions !== undefined
-        ? 'not applied (door on)'
-        : readThrottleMaxWaitMs(),
+    ...(throttleMaxWaitMs !== undefined ? { throttleMaxWaitMs } : {}),
     model: config.llm.model,
     mcpDestination: config.mcp.destination,
     mcpEndpoint: config.mcp.endpoint || 'auto-detect',
@@ -772,7 +773,7 @@ export function loadAgentConfig(): AgentConfig {
  */
 let cachedConfig: AgentConfig | null = null;
 
-/** The longest single wait we will hold a caller for. */
+/** Legacy ceiling export; the hub default now has no total wait ceiling. */
 export const DEFAULT_THROTTLE_MAX_WAIT_MS = DEFAULT_MAX_THROTTLE_WAIT_MS;
 
 /**
@@ -788,10 +789,10 @@ export const DEFAULT_THROTTLE_MAX_WAIT_MS = DEFAULT_MAX_THROTTLE_WAIT_MS;
  * of milliseconds is refused loudly rather than half-applied, because this
  * setting shows itself only under load.
  */
-function readThrottleMaxWaitMs(): number {
+function readThrottleMaxWaitMs(): number | undefined {
   const raw = process.env.LLM_AGENT_THROTTLE_MAX_WAIT_MS;
   if (raw === undefined || raw.trim() === '') {
-    return DEFAULT_THROTTLE_MAX_WAIT_MS;
+    return undefined;
   }
   const n = Number(raw);
   if (!Number.isSafeInteger(n) || n < 0) {

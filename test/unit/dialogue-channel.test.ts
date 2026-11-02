@@ -1,4 +1,5 @@
 import { Stream as AnthropicStream } from '@anthropic-ai/sdk/core/streaming';
+import { LlmError } from '@mcp-abap-adt/llm-agent';
 import { Stream as OpenAIStream } from 'openai/core/streaming';
 import {
   type DialogueStreamChunk,
@@ -1249,15 +1250,67 @@ for (const anthropic of [false, true]) {
     expect(ended).not.toHaveBeenCalled();
   });
 
+  it.each([429, 503, 0])(
+    `${label}: foreground failure retains usage and a safe cause (%s)`,
+    async (status) => {
+      const handle = await dialogueFor('alice', session.key, 'DEST');
+      handle.failedUsage = () => ({
+        planner: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+        tasks: [
+          {
+            id: 'failed-task',
+            worker: 'executor',
+            usage: { promptTokens: 7, completionTokens: 4, totalTokens: 11 },
+          },
+        ],
+      });
+      send.mockRejectedValue(
+        Object.assign(
+          new LlmError('private provider request text'),
+          status ? { status } : {},
+        ),
+      );
+      const res = fakeRes();
+      await handler(streamingRequest(), res as Response & typeof res);
+      expect(res.body).toContain(
+        status
+          ? `LLM unavailable (HTTP ${status})`
+          : 'LLM unavailable (no response from model)',
+      );
+      expect(res.body).not.toContain('private provider request text');
+      expect(res.body).toContain(
+        anthropic
+          ? '"input_tokens":10,"output_tokens":6'
+          : '"prompt_tokens":10,"completion_tokens":6,"total_tokens":16',
+      );
+      expect(res.body).toContain('"task_id":"failed-task"');
+      expect(res.body.indexOf('"x_hub"')).toBeLessThan(
+        res.body.indexOf(anthropic ? 'event: error' : 'data: {"error":'),
+      );
+      expect(res.body).not.toContain('[DONE]');
+      expect(ended).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([false, true])(
     `${label}: failed background settlement emits an error (retained before subscription=%s)`,
     async (retained) => {
       const handle = await dialogueFor('alice', session.key, 'DEST');
       let settledSeq = 0;
       let lastFailedSeq = 0;
+      handle.failedUsage = () => ({
+        tasks: [
+          {
+            id: 'spent-task',
+            worker: 'executor',
+            usage: { promptTokens: 7, completionTokens: 4, totalTokens: 11 },
+          },
+        ],
+      });
       handle.state = () => ({
         settledSeq,
         lastFailedSeq,
+        failureCause: 'LLM unavailable (HTTP 503)',
         status: 'active',
         turnActive: false,
         queuedInputs: 0,
@@ -1271,6 +1324,16 @@ for (const anthropic of [false, true]) {
         text: 'background progress',
         createdAt: 4,
         trigger: 'event' as const,
+        usage: {
+          planner: { promptTokens: 2, completionTokens: 1, totalTokens: 3 },
+          tasks: [
+            {
+              id: 'spent-task',
+              worker: 'executor',
+              usage: { promptTokens: 7, completionTokens: 4, totalTokens: 11 },
+            },
+          ],
+        },
       };
       jest.spyOn(outbox, 'pending').mockReturnValue([]);
       if (retained) {
@@ -1293,7 +1356,19 @@ for (const anthropic of [false, true]) {
       const res = fakeRes();
       await handler(streamingRequest(), res as unknown as Response);
       if (!retained) expect(res.body).toContain('background progress');
-      expect(res.body).toContain('Background planner turn failed');
+      expect(res.body).toContain(
+        'Background planner turn failed: LLM unavailable (HTTP 503)',
+      );
+      expect(res.body).toContain('"task_id":"spent-task"');
+      expect(res.body).toContain(
+        anthropic
+          ? retained
+            ? '"input_tokens":7,"output_tokens":4'
+            : '"input_tokens":9,"output_tokens":5'
+          : retained
+            ? '"prompt_tokens":7,"completion_tokens":4,"total_tokens":11'
+            : '"prompt_tokens":9,"completion_tokens":5,"total_tokens":14',
+      );
       if (anthropic) {
         expect(res.body).toContain('event: error\n');
         expect(res.body).toContain('"type":"api_error"');
@@ -1303,7 +1378,8 @@ for (const anthropic of [false, true]) {
           .find((line) => line.startsWith('data: {"error":'));
         expect(JSON.parse(errorChunk?.slice('data: '.length) ?? '')).toEqual({
           error: {
-            message: 'Background planner turn failed',
+            message:
+              'Background planner turn failed: LLM unavailable (HTTP 503)',
             type: 'server_error',
           },
         });

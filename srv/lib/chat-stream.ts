@@ -122,6 +122,18 @@ export async function streamDialogue(opts: {
   let text = '';
   let explicitMessages = false;
   const deliveredUsage: Array<PlannerMessageUsage | undefined> = [];
+  const addDeliveredUsage = (usage: PlannerMessageUsage | undefined) => {
+    if (!usage) return;
+    const deliveredTasks = new Set(
+      deliveredUsage.flatMap(
+        (value) => value?.tasks?.map((task) => task.id) ?? [],
+      ),
+    );
+    deliveredUsage.push({
+      ...usage,
+      tasks: usage.tasks?.filter((task) => !deliveredTasks.has(task.id)),
+    });
+  };
   const push = (chunk: Chunk) =>
     new Promise<void>((written) => {
       queue.push({ chunk, written });
@@ -154,6 +166,7 @@ export async function streamDialogue(opts: {
     stream.out.write(
       `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: finish_reason ? {} : { role: 'assistant', content }, finish_reason }] })}\n\n`,
     );
+  let usage: LlmStreamChunk['usage'];
   const consuming = (async () => {
     try {
       if (protocol === 'anthropic') {
@@ -176,7 +189,6 @@ export async function streamDialogue(opts: {
             stream.out.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
         }
       } else {
-        let usage: LlmStreamChunk['usage'];
         for await (const chunk of source) {
           if (!chunk.ok) throw chunk.error;
           if (chunk.value.content) delta(chunk.value.content);
@@ -196,6 +208,21 @@ export async function streamDialogue(opts: {
         stream.out.write('data: [DONE]\n\n');
       }
     } catch (error) {
+      // Spend survives a failed turn. Emit it before the error closes the socket.
+      const total = sumPlannerUsage(deliveredUsage, {
+        durationMs: Date.now() - stream.createdAt,
+      });
+      const wire = dialogueUsageToWire(total) ?? tokenUsageToWire(usage);
+      if (wire) {
+        if (protocol === 'anthropic')
+          stream.out.write(
+            `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: {}, usage: { input_tokens: wire.prompt_tokens, output_tokens: wire.completion_tokens, ...(total ? { x_hub: total.x_hub } : {}) } })}\n\n`,
+          );
+        else
+          stream.out.write(
+            `data: ${JSON.stringify({ ...base, choices: [], usage: wire })}\n\n`,
+          );
+      }
       stream.error(opts.onError(error));
     }
   })();
@@ -210,7 +237,7 @@ export async function streamDialogue(opts: {
       for await (const chunk of opts.source) {
         if (!chunk.ok) throw chunk.error;
         const v = chunk.value;
-        if (v.clhUsage) deliveredUsage.push(v.clhUsage);
+        if (v.clhUsage) addDeliveredUsage(v.clhUsage);
         if (v.clhToolResult) {
           if (stream.toolResults)
             comment(
@@ -252,7 +279,7 @@ export async function streamDialogue(opts: {
       if (follow)
         for await (const item of follow) {
           if (item.kind === 'message') {
-            deliveredUsage.push(item.message.usage);
+            addDeliveredUsage(item.message.usage);
             if (text) await content('\n\n');
             comment('message-id', item.message.id);
             await content(item.message.text);
@@ -272,7 +299,12 @@ export async function streamDialogue(opts: {
           } else if (item.kind === 'end') {
             stream.measurement?.end(item.reason);
             if (item.reason === 'error') {
-              throw new Error('Background planner turn failed');
+              addDeliveredUsage(item.usage);
+              throw new Error(
+                item.cause
+                  ? `Background planner turn failed: ${item.cause}`
+                  : 'Background planner turn failed',
+              );
             } else if (item.note)
               await content(`${text ? '\n\n' : ''}${item.note}`);
           }

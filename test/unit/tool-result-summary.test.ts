@@ -127,3 +127,16 @@ test('plain content becomes an error code or nothing', () => {
     summarizeToolResult(record('private text')).result.structuredContent,
   ).toEqual({});
 });
+
+test('keeps bounded search query and read page arguments only for their tools', () => {
+  const search = record('');
+  search.call.arguments = { query: 'q'.repeat(250), offset: 9, limit: 12 };
+  expect(summarizeToolResult(search).call.arguments).toEqual({
+    query: 'q'.repeat(200),
+  });
+  search.call.name = 'rag_read';
+  expect(summarizeToolResult(search).call.arguments).toEqual({
+    offset: 9,
+    limit: 12,
+  });
+});

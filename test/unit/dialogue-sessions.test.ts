@@ -10,6 +10,7 @@ import { executeRagTool } from '../../srv/agent-mcp-rag';
 import { chatStream, streamDialogue } from '../../srv/lib/chat-stream';
 import { dialogueChat } from '../../srv/lib/dialogue-chat';
 import { followDialogue } from '../../srv/lib/dialogue-follow';
+import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import * as plannerMemory from '../../srv/lib/planner-memory';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { buildReviewMessages } from '../../srv/lib/step-reviewer';
@@ -46,6 +47,7 @@ import type {
   TokenUsage,
   ToolTrace,
 } from '@mcp-abap-adt/llm-agent';
+import { LlmError } from '@mcp-abap-adt/llm-agent';
 import {
   DialogueSession,
   PlannerToolsClient,
@@ -2419,4 +2421,185 @@ test('synchronous steps share the hub slot with delegated tasks and release it a
   await checked;
   expect(entered).toBe(true);
   expect(await h.runStep(async () => ({ ok: true }))).toEqual({ ok: true });
+});
+
+test('allowed model switches persist across reuse and revival; omitted and foreign models keep selection', async () => {
+  const previous = process.env.LLM_AGENT_MODELS;
+  process.env.LLM_AGENT_MODELS = 'A,B';
+  const getAgent = jest.requireMock('../../srv/agent-manager')
+    .getSmartAgent as jest.Mock;
+  try {
+    const first = await dialogueFor('alice', 'key', 'D', 'A');
+    await first.outbox.upsert([]);
+    expect(
+      (await getDialogueStoreBackend().load('alice', 'key'))?.coordinatorModel,
+    ).toBe('A');
+    const calls = getAgent.mock.calls.length;
+    // Reusing an existing dialogue must not depend on destination construction.
+    getAgent.mockRejectedValueOnce(new Error('Unused rebuild'));
+    expect(await dialogueFor('alice', 'key', 'D', 'B')).toBe(first);
+    await dialogueFor('alice', 'key', 'D');
+    await dialogueFor('alice', 'key', 'D', 'foreign');
+    expect(getAgent.mock.calls).toHaveLength(calls);
+    expect(
+      (await getDialogueStoreBackend().load('alice', 'key'))?.coordinatorModel,
+    ).toBe('B');
+    getAgent.mockClear();
+    // Consume the deliberately queued failure without altering the default mock.
+    await expect(getAgent()).rejects.toThrow('Unused rebuild');
+    await closeDialogue('alice', 'key', 'shutdown');
+    const revived = await dialogueFor('alice', 'key', 'D');
+    await revived.outbox.upsert([]);
+    expect(
+      (await getDialogueStoreBackend().load('alice', 'key'))?.coordinatorModel,
+    ).toBe('B');
+  } finally {
+    if (previous === undefined) delete process.env.LLM_AGENT_MODELS;
+    else process.env.LLM_AGENT_MODELS = previous;
+  }
+});
+
+test('revival drops a saved coordinator model removed from the allowlist', async () => {
+  const previous = process.env.LLM_AGENT_MODELS;
+  process.env.LLM_AGENT_MODELS = 'A,B';
+  try {
+    const first = await dialogueFor('alice', 'key', 'D', 'B');
+    await first.outbox.upsert([]);
+    expect(
+      (await getDialogueStoreBackend().load('alice', 'key'))?.coordinatorModel,
+    ).toBe('B');
+    await closeDialogue('alice', 'key', 'shutdown');
+    process.env.LLM_AGENT_MODELS = 'A';
+    const revived = await dialogueFor('alice', 'key', 'D');
+    await revived.outbox.upsert([]);
+    expect(
+      (await getDialogueStoreBackend().load('alice', 'key'))?.coordinatorModel,
+    ).toBeUndefined();
+  } finally {
+    if (previous === undefined) delete process.env.LLM_AGENT_MODELS;
+    else process.env.LLM_AGENT_MODELS = previous;
+  }
+});
+
+test.each([429, 503, 0])(
+  'background planner failures retain a safe cause and worker spend (%s)',
+  async (status) => {
+    const { h } = await ready();
+    mockRun.mockResolvedValue({
+      output: 'worker finished',
+      usage: { promptTokens: 7, completionTokens: 3, totalTokens: 10 },
+    });
+    mockPlannerHook = async (text) => {
+      if (text.startsWith('[task events]'))
+        throw Object.assign(
+          new LlmError('private model request and provider details'),
+          status ? { response: { status } } : {},
+        );
+    };
+    await h.session.send('go');
+    await until(() => h.state().lastFailedSeq > 0);
+    const cause = status
+      ? `LLM unavailable (HTTP ${status})`
+      : 'LLM unavailable (no response from model)';
+    expect(h.state().failureCause).toBe(cause);
+    expect(h.failedUsage?.().tasks).toEqual([
+      expect.objectContaining({
+        worker: 'executor',
+        usage: { promptTokens: 7, completionTokens: 3, totalTokens: 10 },
+      }),
+    ]);
+    // A successful subsequent turn must not overwrite the retained failure facts.
+    mockPlannerHook = undefined;
+    mockPlan = { plan: 'Finished', status: 'done' };
+    await h.session.send('finish');
+    expect(h.state().failureCause).toBe(cause);
+    expect(h.failedUsage?.().tasks).toHaveLength(1);
+  },
+);
+
+test('a failed turn keeps planner spend observed before the failure', async () => {
+  const { h } = await ready();
+  mockPlannerHook = async () => {
+    // A completed model call inside the planner, then a model outage.
+    reportLlmSpend({ promptTokens: 5, completionTokens: 2, totalTokens: 7 });
+    throw Object.assign(new LlmError('private'), { response: { status: 503 } });
+  };
+  await h.session.send('go').catch(() => undefined);
+  await until(() => h.state().lastFailedSeq > 0);
+  expect(h.state().failureCause).toBe('LLM unavailable (HTTP 503)');
+  expect(h.failedUsage?.().planner).toEqual(
+    expect.objectContaining({ promptTokens: 5, completionTokens: 2 }),
+  );
+});
+
+test('a later non-model failure does not inherit an earlier model cause', async () => {
+  const { h } = await ready();
+  mockPlannerHook = async () => {
+    throw Object.assign(new LlmError('private'), { response: { status: 429 } });
+  };
+  await h.session.send('first').catch(() => undefined);
+  await until(() => h.state().lastFailedSeq > 0);
+  expect(h.state().failureCause).toBe('LLM unavailable (HTTP 429)');
+  const failed = h.state().lastFailedSeq;
+  mockPlannerHook = async () => {
+    throw new Error('storage unavailable');
+  };
+  await h.session.send('second').catch(() => undefined);
+  await until(() => h.state().lastFailedSeq > failed);
+  expect(h.state().failureCause).toBeUndefined();
+});
+
+test.each([true, false])(
+  'worker observed spend survives failure without doubling success (%s)',
+  async (fails) => {
+    const { h } = await ready();
+    mockRun.mockImplementation(async () => {
+      reportLlmSpend({ promptTokens: 7, completionTokens: 3, totalTokens: 10 });
+      if (fails) throw new Error('worker failed after model call');
+      return {
+        output: 'done',
+        usage: { promptTokens: 8, completionTokens: 4, totalTokens: 12 },
+      };
+    });
+    mockPlannerHook = async (text) => {
+      if (text.startsWith('[task events]'))
+        throw new LlmError('planner failed');
+    };
+    await h.session.send('go');
+    await until(() => h.state().lastFailedSeq > 0);
+    expect(h.failedUsage?.().tasks).toEqual([
+      expect.objectContaining({
+        worker: 'executor',
+        usage: fails
+          ? { promptTokens: 7, completionTokens: 3, totalTokens: 10 }
+          : { promptTokens: 8, completionTokens: 4, totalTokens: 12 },
+      }),
+    ]);
+  },
+);
+
+test('failed worker spend reaches message usage once when the planner recovers', async () => {
+  const { h } = await ready();
+  mockRun.mockImplementation(async () => {
+    reportLlmSpend({ promptTokens: 7, completionTokens: 3, totalTokens: 10 });
+    throw new Error('worker failed');
+  });
+  await h.session.send('go');
+  await until(() =>
+    h.outbox
+      .history()
+      .some((message) =>
+        message.usage?.tasks?.some((task) => task.usage.totalTokens === 10),
+      ),
+  );
+  const recorded = () =>
+    h.outbox.history().flatMap((message) => message.usage?.tasks ?? []);
+  expect(recorded()).toHaveLength(1);
+  expect(
+    sumPlannerUsage(h.outbox.history().map((message) => message.usage))
+      ?.totalTokens,
+  ).toBeGreaterThanOrEqual(10);
+  mockPlan = { plan: 'Finished', status: 'done' };
+  await h.session.send('finish');
+  expect(recorded()).toHaveLength(1);
 });

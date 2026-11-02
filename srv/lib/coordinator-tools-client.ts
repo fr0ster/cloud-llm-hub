@@ -113,6 +113,9 @@ export function coordinatorToolsClient({
               trace: { ...options?.trace, traceId },
               usage: options?.usage?.with({ traceId }),
             },
+            undefined,
+            undefined,
+            input.model,
           ),
         );
         return {

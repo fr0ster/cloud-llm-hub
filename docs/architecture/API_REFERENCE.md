@@ -635,14 +635,27 @@ Anthropic is answered where the HTTP response is still intact: backoff with
 jitter, `Retry-After` honoured when the server sends one, and one shared pause
 per quota so concurrent callers do not each rediscover the same closed limit.
 
-The wait budget is **20 seconds** here, not the library's sixty. A budget that
-expires when the caller does never gets to deliver its answer: our chat clients
-give up around a minute, so the policy must give up well before that and say
-when to come back. Override with `LLM_AGENT_THROTTLE_MAX_WAIT_MS`; the value in
-force is logged at startup, since it shows itself only under load.
+The hub shares one SAP AI Core account, so the default strategy is
+`WaitAsNeeded` (`wait-as-needed`) both with and without the gatekeeper door.
+A positive server interval is waited exactly, without a total wait cap. SSE
+keep-alives protect streaming callers while queued. Without an interval, the
+strategy backs off from 2 seconds, doubling per unnamed wait, with 20% jitter
+in either direction and a hard 60-second cap per wait. After six unnamed waits
+per call it reports `no-interval`: a missing interval can mean a spend cap.
 
-With a door configured this budget is not applied: an admitted session waits
-out exactly the interval the server named, and a `429` that names none fails it.
+An explicitly set `LLM_AGENT_THROTTLE_MAX_WAIT_MS` selects `WaitIfShortEnough`
+only without a door. This opt-in ceiling bounds total throttle waiting; zero
+means no waiting. The variable is validated at startup, including when a door
+makes it inapplicable. Startup logs name the strategy and include the ceiling
+only when it applies.
+
+Streaming model failures on `/v1/chat/completions` and `/v1/messages` report
+content-free causes: `LLM unavailable (HTTP 429)`, another HTTP error status,
+or `LLM unavailable (no response from model)`. Background failures prefix this
+with `Background planner turn failed:`. Provider messages and request text are
+never part of these causes. Spent planner and task tokens are emitted in a
+final usage event before the stream error, including on a failed turn.
+
 
 This service therefore does **not** retry a rate limit of its own. Another
 request into a quota the server has just said is closed only earns another
@@ -856,7 +869,7 @@ use the same id/name resolver and ownership checks as the REST API.
 | Tool | Arguments and result |
 |---|---|
 | `rag_search` | `{ query, collections?, k? }`; returns `{ hits: [{ collection, id, title?, text, score? }], unavailable?: [{ collection, error }] }`. Searches only collections enabled for the session; `collections` only narrows that set (an empty list searches none). `k` defaults to 8, maximum 20 across collections. Unavailable collections are skipped; bounded failure notes share the 24,000-character JSON output cap with hits, with `[truncated]` on cut text. |
-| `rag_read` | `{ collection, id, offset?, limit? }`; returns `{ id, offset, total, next?, text, attributes }`. Character offsets start at zero; limit defaults to 8,000, maximum 32,000. `next` is absent at the end. |
+| `rag_read` | `{ collection, id, offset?, limit? }`; returns `{ id, offset, total, next?, text, attributes }`. Character offsets start at zero; limit defaults to 32,000, maximum 32,000; the existing tool-result character cap still applies. Within an agent loop, unchanged pages whose original round remains in the context window return `{ id, offset, total, alreadyRead: true, note }`. Pointer responses do not refresh that round; expired pages and changed records return full text. `next` is absent at the end. |
 | `collections_list` | `{}`; returns `{ collections: [{ id, name, scope, enabled, defaultEnabled, documents }] }`, including effective session enablement. |
 | `collection_set_enabled` | `{ collection, enabled }`; sets a persisted session override, leaving the collection default and other sessions unchanged. |
 | `collection_records` | `{ collection, offset?, limit? }`; returns `{ total, records: [{ id, title?, source?, attributes: { enabled } }] }`. Record offset defaults to zero, limit to 50, maximum 200. |
@@ -1188,7 +1201,7 @@ keep their snapshots. Agents collections never participate in knowledge context.
 
 Create the target explicitly with `collection_create({ name: "result", scope: "user" })`, then call `record_add({ collection: "result", record: "tech-spec", text: "..." })`. Use user scope for durable results and session scope only for scratch. `record` is the optional stable physical ID; omission generates a UUID. Add is create-only: `RECORD_EXISTS` (409) requires reading the existing record and using `record_update({ collection, record, text })`. Read back with paged `collection_records` and `rag_read` using actual IDs; verify count and scope. Retire reversibly with `record_set_enabled({ collection, id, enabled: false })`; use `record_delete({ collection, record })` only for explicit permanent removal. Updates preserve ID and metadata but add no correction reason, audit history or supersede chain. Disabling does not free an ID. A live owned long session is required for every RAG call.
 
-Plain OpenAI and Anthropic chat clients must open a live caller-owned long session with `POST /v1/session` and bind its returned key with the top-level string body field `session`, `x-clh-session`, or the `clh_session` cookie, in that precedence order. The body field is validated and removed before forwarding upstream; invalid types return 400 and unknown, closed or foreign keys return `SESSION_NOT_FOUND`, as with the header. All thirteen RAG tools stay listed but return `SESSION_REQUIRED` without that session. WebUI sends `x-clh-tool-results: summary` on chat requests to receive compact `: tool-result` SSE comments (identifiers, counts and error codes, without returned texts or error messages). The header value is case-insensitive; absent or other values emit no tool-result comments, including dialogue follow-up streams. WebUI executes RAG on the server and renders server tool results; browsers must not dispatch them again. Removed tool names in client tool definitions, forced choices or calls return 400 with migration guidance; REST tool dispatch returns 404. Cross-instance `RECORD_EXISTS` protection is not atomic: providers offer upsert without conditional insert; serialization applies within one process.
+Plain OpenAI and Anthropic chat clients must open a live caller-owned long session with `POST /v1/session` and bind its returned key with the top-level string body field `session`, `x-clh-session`, or the `clh_session` cookie, in that precedence order. The body field is validated and removed before forwarding upstream; invalid types return 400 and unknown, closed or foreign keys return `SESSION_NOT_FOUND`, as with the header. All thirteen RAG tools stay listed but return `SESSION_REQUIRED` without that session. WebUI sends `x-clh-tool-results: summary` on chat requests to receive compact `: tool-result` SSE comments (identifiers, counts and error codes, plus `rag_search.query` truncated to 200 characters and `rag_read.offset` / `limit` arguments; without returned texts or error messages). The header value is case-insensitive; absent or other values emit no tool-result comments, including dialogue follow-up streams. WebUI executes RAG on the server and renders server tool results; browsers must not dispatch them again. Removed tool names in client tool definitions, forced choices or calls return 400 with migration guidance; REST tool dispatch returns 404. Cross-instance `RECORD_EXISTS` protection is not atomic: providers offer upsert without conditional insert; serialization applies within one process.
 
 ### Source trust: agent MCP and RAG REST
 
@@ -1211,3 +1224,17 @@ Collection listings expose `trusted: true`, effective `trust`, `trustClass`, and
 Model-facing informational content uses `[source: <class>:<name>; trust <n>]`, or `[source: <class>; trust <n>]` without a name. Integers have no trailing `.0`; brackets in names are escaped as `&#91;` and `&#93;`. Planner retrieval labels carry the same source and trust. Tags appear in RAG retrieval, session recall, planner memory/knowledge, attachments, informational skills, reranker candidates, embedded target-system results, replayed tool history and checker evidence. Stored tool traces stay raw. Profiles, base skills, corrections, tool groups and hub orchestration results are not tagged.
 
 MANAGE shows effective collection trust and class, and distinguishes inherited document trust from overrides. Admins can edit global trust inline, including `@skills`; clearing a record input restores inheritance. Chunked uploads retain source grouping with per-chunk trust controls.
+
+### Agent MCP model arguments
+
+`delegate_task({ worker, goal, model? })` accepts an optional allowed model for the
+new agent. A disallowed choice returns `MODEL_NOT_ALLOWED` before enqueueing and
+creates no task. The task record retains an explicit model choice.
+
+`execute_step({ task, worker?, destination?, session?, model? })` accepts an optional
+model for that call. Without it, the executor profile's model applies, falling back
+to `LLM_AGENT_MODEL`. Overrides never change profile defaults or other requests.
+Disallowed choices return a tool error containing `MODEL_NOT_ALLOWED`. Both tools
+use the deploy `LLM_AGENT_MODELS` allowlist, with main and planner defaults always
+allowed. Agents should use their default model and escalate only for hard analysis
+or a failed check.

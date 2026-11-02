@@ -28,6 +28,7 @@ function makeChainableBuilder() {
       return builder;
     });
   builder.withToolTrust = chainable(jest.fn());
+  builder.withToolLoopContextStrategyFactory = chainable(jest.fn());
   builder.withMainLlm = chainable(jest.fn());
   builder.withClassifierLlm = chainable(jest.fn());
   builder.withMcpClients = chainable(jest.fn());

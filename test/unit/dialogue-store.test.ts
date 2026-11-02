@@ -787,3 +787,20 @@ test('v1 migration preserves plan and tasks and translates historical planning c
   ).toEqual(['plan_get', 'plan_update']);
   expect(legacy.conversation[0].tool_calls[0].function.name).toBe('get_plan');
 });
+
+it.each([undefined, 'chosen-model'])(
+  'restores task records with optional model %s',
+  async (model) => {
+    const store = new MemoryDialogueStore();
+    const task = {
+      id: 'task',
+      worker: 'executor',
+      goal: 'Read',
+      state: 'done' as const,
+      createdAt: 1,
+      ...(model === undefined ? {} : { model }),
+    };
+    await store.save('alice', 'models', { ...state, tasks: [task] });
+    expect((await store.load('alice', 'models'))?.tasks).toEqual([task]);
+  },
+);

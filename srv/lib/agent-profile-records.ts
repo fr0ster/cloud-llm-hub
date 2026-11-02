@@ -1,6 +1,8 @@
 import type { WorkerProfile } from '@mcp-abap-adt/llm-agent';
+import cds from '@sap/cds';
 import { z } from 'zod';
 import type { RagDocument } from '../rag-collections';
+import { parseModelAllowlist } from './model-policy';
 import { trustMapSchema } from './trust';
 
 export const profileName = z
@@ -33,6 +35,7 @@ export const profileFrontmatter = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('profile'),
+      model: z.string().min(1).optional(),
       name: profileName,
       enabled,
       trust,
@@ -81,6 +84,7 @@ export type AgentProfileRecord = {
 export function validateAgentProfileRecord(
   document: Omit<RagDocument, 'createdAt'> &
     Partial<Pick<RagDocument, 'createdAt'>>,
+  mode: 'write' | 'load' = 'write',
 ): AgentProfileRecord {
   if (typeof document.text !== 'string')
     throw new Error(`Invalid agent record ${document.id}: text`);
@@ -92,6 +96,21 @@ export function validateAgentProfileRecord(
   }
   if (canonicalKey !== document.id || parsed.data.name !== document.id)
     throw new Error(`Invalid agent record ${document.id}: canonicalKey/name`);
+  if (
+    parsed.data.kind === 'profile' &&
+    parsed.data.model &&
+    !parseModelAllowlist().has(parsed.data.model)
+  ) {
+    if (mode === 'write')
+      throw new Error(
+        `Invalid agent record ${document.id}: model outside allowlist`,
+      );
+    cds.log('agent-profiles').warn('Ignoring disallowed stored profile model', {
+      profile: document.id,
+      model: parsed.data.model,
+    });
+    delete parsed.data.model;
+  }
   return {
     id: document.id,
     text: document.text,
@@ -106,6 +125,7 @@ export function workerProfile(
   if (metadata.kind !== 'profile') return undefined;
   return {
     name: metadata.name,
+    ...(metadata.model ? { model: metadata.model } : {}),
     description: metadata.description,
     systemPrompt: record.text,
     tools: metadata.tools,

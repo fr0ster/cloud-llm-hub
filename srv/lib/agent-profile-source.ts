@@ -27,6 +27,8 @@ export interface AgentProfileReader {
   ): Promise<{ meta: CollectionMeta; documents: RagDocument[] } | null>;
 }
 export interface AgentProfileSelection {
+  readonly prepareCatalogue?: () => Promise<void>;
+  readonly acceptsPolicyName?: (name: string) => boolean;
   readonly catalogue?: () => readonly RegisteredProfileTool[];
   readonly userId: string;
   readonly globalCollectionId: string;
@@ -70,6 +72,7 @@ export class AgentProfileSource implements IAgentProfileSource {
   }
 
   private async readCollection(options: CallOptions): Promise<RagDocument[]> {
+    await this.selection.prepareCatalogue?.();
     const id = await this.selection.selectedCollectionId();
     options.signal?.throwIfAborted();
     const collection = await this.reader.readAgentCollection(id, options);
@@ -115,7 +118,7 @@ export class AgentProfileSource implements IAgentProfileSource {
       throw new ProfileFailure('disabled');
     let record: AgentProfileRecord;
     try {
-      record = validateAgentProfileRecord(document);
+      record = validateAgentProfileRecord(document, 'load');
     } catch {
       throw new ProfileFailure('invalid');
     }
@@ -127,6 +130,7 @@ export class AgentProfileSource implements IAgentProfileSource {
     if (record.metadata.kind !== 'profile' || !this.selection.catalogue) return;
     try {
       effectiveProfileTools({
+        acceptsPolicyName: this.selection.acceptsPolicyName,
         catalogue: this.selection.catalogue(),
         grants: new Set<string>(),
         result: record.metadata.result,
@@ -193,7 +197,7 @@ export class AgentProfileSource implements IAgentProfileSource {
         if (!recordPolicy(document.metadata, true).visible) continue;
         let record: AgentProfileRecord;
         try {
-          record = validateAgentProfileRecord(document);
+          record = validateAgentProfileRecord(document, 'load');
         } catch {
           throw new ProfileFailure('invalid');
         }

@@ -80,10 +80,11 @@ goal sizes, states, durations and hashed session keys. They never contain goal t
 | `LLM_AGENT_PLANNER_RECORD` | `coordinator` | Exact coordinator record name (`coordinator-<variant>` also accepted); planner authors use `planner-create` and `planner-revise` |
 | `LLM_AGENT_PROFILE_TIMEOUT_MS` | `3000` | Positive finite whole-number deadline for profile source reads; runner/library wiring follows in Stage B |
 | `LLM_AGENT_PLANNER_KNOWLEDGE` | `planning` | Comma-separated persistent user collection names for planner guidance, at most 10 distinct names. Empty disables knowledge. Missing or unavailable collections are logged and skipped. Resolved for the session's user each time a dialogue opens, so newly created or replaced collections are picked up by new sessions. |
-| `LLM_AGENT_THROTTLE_MAX_WAIT_MS` | `20000` | The longest LLM-side `429` interval we wait out **when no door is configured**. Anything longer is reported with the number attached. Not applied once `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` is set: behind a door an admitted session waits exactly the interval the server named. A value that is not a whole number of milliseconds is refused at startup |
+| `LLM_AGENT_THROTTLE_MAX_WAIT_MS` | unset = wait as needed | Optional total wait ceiling in milliseconds, applied only without a gatekeeper door. Default `WaitAsNeeded` waits every named interval without a total cap; unnamed intervals use 2 s exponential backoff, capped at 60 s with 20% jitter in either direction, for at most six waits per call. An explicit non-negative whole number selects `WaitIfShortEnough`; invalid values fail startup |
 | `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` | unset | How many sessions may run a pipeline at once, across `/v1/chat/completions`, `/v1/messages` and `execute_step`. Unset: no door on the chat channels, and `execute_step` keeps its cap of two. Size it against the container's memory |
 | `LLM_GATEKEEPER_QUEUE_LENGTH` | the capacity | How many callers may wait to be admitted — for a slot, for their own session, or for a retention place. Requires `LLM_GATEKEEPER_MAX_LIVE_SESSIONS`. The queue passing three quarters is logged as pressure |
 | `LLM_GATEKEEPER_MAX_RETAINED_SESSIONS` | unbounded | How many sessions may hold history and session collections. An idle one is evicted — history, collections and their files — to make room: first sessions no caller ever presented (a client keeping no cookie gets one per request), then the least recently used; a session with a pipeline or a RAG operation running is never evicted. Requires `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` and may not be smaller. With `/v1/rag/*` in use, set it above the capacity by the number of concurrent uploads |
+| `LLM_AGENT_TOOL_LOOP_WINDOW` | `8` | Positive safe integer: agent tool loops keep the latest N tool rounds plus the prefix. Dropped results become deterministic one-line digests, without LLM summarization. The dialogue coordinator keeps its own history handling. |
 | `LLM_AGENT_TOOL_RESULT_MAX_CHARS` | `60000` | Non-negative integer character cap per model-visible MCP tool result, including local dialogue RAG tools. `0` disables. Oversized serialized text is cut at the cap, followed by a paging notice; error status is preserved. Recording stores the capped result and truncation lengths. Content-free truncation logs use `tool-result-cap`. |
 | `LLM_AGENT_MAX_TOOL_CALLS` | unset (library default: `30`) | Positive integer per-run tool-call budget for workers, checkers, planner and agent MCP. Calls over the budget receive error results. Empty or unset preserves the library default. |
 | `LLM_AGENT_CONTEXT_CAPTURE` | `off` | `off` or `stats`: one content-free `context-capture` info line per LLM call, after completion (including failures). Counts messages/characters by role, tool results and definitions; records the three largest tool results by name/size, component, model, known task/session ids, and provider input/output tokens when supplied. Streaming calls log once when consumed or closed; no token estimates or message/tool content. |
@@ -351,7 +352,7 @@ resolution and require `MCP_Admin` where reachable. All thirteen canonical RAG t
 
 Create the target explicitly with `collection_create({ name: "result", scope: "user" })`, then call `record_add({ collection: "result", record: "tech-spec", text: "..." })`. Use user scope for durable results and session scope only for scratch. `record` is the optional stable physical ID; omission generates a UUID. Add is create-only: `RECORD_EXISTS` (409) requires reading the existing record and using `record_update({ collection, record, text })`. Read back with paged `collection_records` and `rag_read` using actual IDs; verify count and scope. Retire reversibly with `record_set_enabled({ collection, id, enabled: false })`; use `record_delete({ collection, record })` only for explicit permanent removal. Updates preserve ID and metadata but add no correction reason, audit history or supersede chain. Disabling does not free an ID. A live owned long session is required for every RAG call.
 
-Plain OpenAI and Anthropic chat clients must open a live caller-owned long session with `POST /v1/session` and bind its returned key with the top-level string body field `session`, `x-clh-session`, or the `clh_session` cookie, in that precedence order. The body field is validated and removed before forwarding upstream; invalid types return 400 and unknown, closed or foreign keys return `SESSION_NOT_FOUND`, as with the header. All thirteen RAG tools stay listed but return `SESSION_REQUIRED` without that session. WebUI sends `x-clh-tool-results: summary` on chat requests to receive compact `: tool-result` SSE comments (identifiers, counts and error codes, without returned texts or error messages). The header value is case-insensitive; absent or other values emit no tool-result comments, including dialogue follow-up streams. WebUI executes RAG on the server and renders server tool results; browsers must not dispatch them again. Removed tool names in client tool definitions, forced choices or calls return 400 with migration guidance; REST tool dispatch returns 404. Cross-instance `RECORD_EXISTS` protection is not atomic: providers offer upsert without conditional insert; serialization applies within one process.
+Plain OpenAI and Anthropic chat clients must open a live caller-owned long session with `POST /v1/session` and bind its returned key with the top-level string body field `session`, `x-clh-session`, or the `clh_session` cookie, in that precedence order. The body field is validated and removed before forwarding upstream; invalid types return 400 and unknown, closed or foreign keys return `SESSION_NOT_FOUND`, as with the header. All thirteen RAG tools stay listed but return `SESSION_REQUIRED` without that session. WebUI sends `x-clh-tool-results: summary` on chat requests to receive compact `: tool-result` SSE comments (identifiers, counts and error codes, plus the first 200 characters of `rag_search.query` and `rag_read.offset` / `limit` arguments; without returned texts or error messages). The header value is case-insensitive; absent or other values emit no tool-result comments, including dialogue follow-up streams. WebUI executes RAG on the server and renders server tool results; browsers must not dispatch them again. Removed tool names in client tool definitions, forced choices or calls return 400 with migration guidance; REST tool dispatch returns 404. Cross-instance `RECORD_EXISTS` protection is not atomic: providers offer upsert without conditional insert; serialization applies within one process.
 
 ## Source trust configuration
 
@@ -370,3 +371,57 @@ Each role uses its own profile map over deployment defaults. Effective informati
 Skill front matter accepts `kind: base` or `kind: informational` (default) and a stable `id`. Keep the id unchanged across renames: trust overrides and editing address ids, never display names. When omitted, hub directory names supply ids; external directory sources use source-qualified directory ids. Equal display names are valid. Base skills load directly into every role's system content after its profile prompt and before corrections, without semantic search or trust tags. Informational skills load through semantic retrieval and carry trust. Existing shipped skills remain informational.
 
 An **assistant** is the future memory-and-learning entity; an **agent** performs a role described by a **profile**, within a **pipeline**.
+
+
+## Model selection
+
+`LLM_AGENT_MODELS` is a comma-separated allowlist for request and agent model choices.
+`LLM_AGENT_MODEL` and `LLM_AGENT_PLANNER_MODEL` are always allowed; with the list unset,
+only those configured names are allowed. Only `LLM_AGENT_MODEL` needs a model name.
+
+The WebUI LLM selector and OpenAI/Anthropic request `model` select the coordinator
+per session, updated by the next allowed request model. The selection is persisted
+for revival; requests without an allowed model keep the session model. An allowed request
+model overrides `LLM_AGENT_COORDINATOR_MODEL` / `LLM_AGENT_PLANNER_MODEL`. For direct
+chat and LLM-only requests, the selection applies only to that request. Destination
+agents are shared per destination; their worker defaults remain unchanged.
+An unknown id is ignored, logged, and returned in `x-clh-model-ignored`; deploy
+defaults apply. Requests never change `/v1/models` `_active_model` (the deploy main model).
+
+Only `kind: profile` records accept optional front matter `model`. Agent model
+precedence is explicit tool override, profile model, then `LLM_AGENT_MODEL`.
+Writing a disallowed profile model returns HTTP 400; loading a stored disallowed
+model ignores that field with a warning and keeps the profile usable. Plan authors
+continue to use `LLM_AGENT_PLANNER_MODEL`; classifier, embedder and reviewer settings
+are independent of request model selection.
+
+`rag_read` defaults to 32,000 characters per page, subject to `LLM_AGENT_TOOL_RESULT_MAX_CHARS`. Identical pages inside one agent loop return an `alreadyRead` pointer while their original full-text round remains in the window. Pointers do not extend that lifetime; expired pages or any change to the full record return text again.
+
+### External docs MCP per agent role
+
+Configure `LLM_AGENT_PLANNER_MCP`, `LLM_AGENT_EXECUTOR_MCP`,
+`LLM_AGENT_CHECKER_MCP`, and `LLM_AGENT_ANALYST_MCP` as comma-separated BTP
+Destination names. Unset lists offer no external docs tools to that role.
+Profile names `executor`, `checker`, and `analyst` select their respective lists;
+planner and plan author use the planner list. These destinations declare docs
+servers: all their tools count as read-only knowledge tools. Write-capable
+external MCP servers are outside this configuration's scope. Profile allow/deny
+rules, read-only policies, and parent ceilings still apply.
+
+For a public endpoint, create a destination in the BTP cockpit under
+Connectivity ? Destinations: Name `ABAP_DOCS`, Type `HTTP`, URL
+`https://mcp-abap.marianzeis.de/mcp`, Proxy Type `Internet`, Authentication
+`NoAuthentication`. Bind the hub to the Destination service as for SAP systems,
+then set `LLM_AGENT_EXECUTOR_MCP=ABAP_DOCS` (and any other desired role lists).
+The URL must be the Streamable HTTP MCP endpoint. Check deployment egress to
+that host. Authenticated endpoints use credentials and tokens managed by the
+destination; do not put endpoint credentials in environment variables.
+OnPremise docs endpoints and user-dependent authentication are not supported.
+
+Optional `LLM_AGENT_MCP_TRUST=ABAP_DOCS=4,OTHER_DOCS=3.5` overrides trust by
+destination. Values are validated by `normalizeTrust`; malformed entries fail
+configuration loading. Otherwise the active profile's `trust.docs` wins, then
+`LLM_AGENT_TRUST_DEFAULTS`'s `docs` value, then the built-in default 3.5.
+Results receive `[source: docs:<original-tool-name>; trust n]` through ToolTrust.
+Connections are lazy; failed discovery logs a warning and omits that destination's
+tools. A later agent preparation retries after a 30-second cooldown.

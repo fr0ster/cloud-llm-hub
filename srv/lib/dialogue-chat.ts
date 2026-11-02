@@ -24,6 +24,7 @@ import {
   dialogueFor,
   type PlannerCounts,
 } from './dialogue-sessions';
+import { failureMessage } from './llm-failure';
 import type { LongSession } from './long-session';
 import { NoMessageFilter, stripNoMessage } from './no-message';
 import { userTextOf } from './rag-context-marker';
@@ -75,6 +76,7 @@ export function dialogueChat(
   destination: string,
   response: Response,
   attachmentRequest: Pick<Request, 'headers' | 'body'> = req,
+  model?: string,
 ): {
   process(
     messages: Message[],
@@ -108,7 +110,7 @@ export function dialogueChat(
     resolveResponseEnded();
   });
   const open = async () => {
-    const handle = await dialogueFor(userId, session.key, destination);
+    const handle = await dialogueFor(userId, session.key, destination, model);
     await supersedeFollow(handle);
     const ack = req.headers['x-clh-ack'];
     if (typeof ack === 'string') {
@@ -364,7 +366,13 @@ export function dialogueChat(
       }
       await sending;
       await handle.drainPending();
-      if (failure) throw failure;
+      if (failure) {
+        yield {
+          ok: true,
+          value: { content: '', clhUsage: handle.failedUsage?.() },
+        };
+        throw new Error(`Planner turn failed: ${failureMessage(failure)}`);
+      }
       if (text.trim()) {
         await handle.outbox.upsert([
           { id: replyId, text, createdAt, trigger: 'user', usage: replyUsage },

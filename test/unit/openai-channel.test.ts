@@ -1,3 +1,5 @@
+import { LlmError } from '@mcp-abap-adt/llm-agent';
+import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import { chatSessionBodyTests } from './helpers/chat-session-body';
 
 // Bootstrap logging is tested with real CAP in logging-config.test.ts.
@@ -963,3 +965,56 @@ test.each([false, true])(
 );
 
 chatSessionBodyTests('/chat/completions', handleChatCompletions);
+
+it.each([429, 503, 0])(
+  'stream exceptions report a safe cause and retain spent usage (%s)',
+  async (status) => {
+    configure();
+    harness.stream = async function* () {
+      yield {
+        ok: true,
+        value: {
+          content: 'partial',
+          usage: { promptTokens: 7, completionTokens: 3, totalTokens: 10 },
+        },
+      };
+      throw Object.assign(
+        new LlmError('private provider message and request'),
+        status ? { status } : {},
+      );
+    };
+    const { res, done } = call(body(true));
+    await done;
+    expect(res.body).toContain(
+      status
+        ? `LLM unavailable (HTTP ${status})`
+        : 'LLM unavailable (no response from model)',
+    );
+    expect(res.body).not.toContain('private provider message and request');
+    expect(res.body).toContain(
+      '"prompt_tokens":7,"completion_tokens":3,"total_tokens":10',
+    );
+    expect(res.body.indexOf('"choices":[],"usage":')).toBeLessThan(
+      res.body.indexOf('data: {"error":'),
+    );
+  },
+);
+
+for (const failure of ['error chunk', 'exception'] as const)
+  it(`model spend reported below the agent survives a failed stream (${failure})`, async () => {
+    configure();
+    harness.stream = async function* () {
+      yield { ok: true, value: { content: 'partial' } };
+      // A model call completed inside the agent; its usage never reached a chunk.
+      reportLlmSpend({ promptTokens: 7, completionTokens: 3, totalTokens: 10 });
+      const error = new LlmError('LLM unavailable (HTTP 503)');
+      if (failure === 'exception') throw error;
+      yield { ok: false, error };
+    };
+    const { res, done } = call(body(true));
+    await done;
+    expect(res.body).toContain('LLM unavailable (HTTP 503)');
+    expect(res.body).toContain(
+      '"prompt_tokens":7,"completion_tokens":3,"total_tokens":10',
+    );
+  });

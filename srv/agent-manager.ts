@@ -1,11 +1,20 @@
+import type { ToolTrust } from '@mcp-abap-adt/llm-agent';
+import { coordinatorModel } from './lib/coordinator-model';
 import {
   coordinatorToolsClient as createCoordinatorToolsClient,
   currentCoordinatorRun,
 } from './lib/coordinator-tools-client';
 import {
+  currentExecutorModel,
   type ExecutorStepArgs,
   runExecutorStep as executeExecutorStep,
 } from './lib/executor-step';
+import { ExternalMcp } from './lib/external-mcp';
+import {
+  parseModelAllowlist,
+  resolveAgentModel,
+  resolveRequestModel,
+} from './lib/model-policy';
 import { resolverFor, TrustResolver } from './lib/trust-resolver';
 import { TrustStore } from './lib/trust-store';
 
@@ -24,6 +33,7 @@ export function coordinatorToolsClient() {
 import { toolSearchText } from '@mcp-abap-adt/lib/tool-search';
 import { AgentProfileRunner } from './lib/agent-profile-runner';
 import { AgentProfileSource } from './lib/agent-profile-source';
+import { compositeMcpClient } from './lib/composite-mcp-client';
 import { watchDestinations } from './lib/destination-watch';
 import { guardLlmOnlyAgent } from './lib/llm-only-guard';
 import { longSessionsIfReady } from './lib/long-session';
@@ -97,7 +107,6 @@ import {
   McpClientAdapter,
 } from '@mcp-abap-adt/llm-agent-mcp';
 import cds from '@sap/cds';
-
 import { z } from 'zod';
 import {
   type AgentConfig,
@@ -106,6 +115,7 @@ import {
 } from './agent-config';
 import { runOutsideAdmission, trackCall } from './lib/admission-scope';
 import { destinationRequiresCredentials } from './lib/destination-authentication';
+import { createToolLoopWindow } from './lib/tool-loop-window';
 
 export { destinationRequiresCredentials } from './lib/destination-authentication';
 
@@ -962,21 +972,19 @@ let llmOnlyHandle: SmartAgentHandle | null = null;
  * unreachable destination (LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK) */
 let llmOnlyFallbackHandle: SmartAgentHandle | null = null;
 
-/** Runtime model overrides (null = use config/env default) */
-let currentModel: string | null = null;
-/** Shared LLM instances (updated on model switch) */
-let sharedMainLlm: ReturnType<typeof makeHubLlm> | null = null;
+/** Immutable LLM clients shared by model name. */
+const modelLlms = new Map<string, ReturnType<typeof makeHubLlm>>();
+const planAuthorLlms = new Map<string, ReturnType<typeof makeHubLlm>>();
 let sharedClassifierLlm: ReturnType<typeof makeHubLlm> | null = null;
-let sharedPlannerLlm: ReturnType<typeof makeHubLlm> | null = null;
 
 /** Check if at least one SmartAgent is initialized and ready */
 export function isAgentReady(): boolean {
   return initializationDone || agentHandles.size > 0;
 }
 
-/** Get the model name currently used by the agent */
+/** Deploy main model; request choices never change this value. */
 export function getCurrentModel(): string {
-  return currentModel || getAgentConfig().llm.model;
+  return getAgentConfig().llm.model;
 }
 
 export function getCurrentPlannerModel(): string {
@@ -1698,6 +1706,22 @@ export function getHandlerExporterConfig() {
 
 /** Static, destination-free tool list from HandlerExporter (same config as buildEmbeddedMcpAdapter). */
 let embeddedToolNames: ReadonlySet<string> | undefined;
+let externalDocs: ExternalMcp | undefined;
+function docsMcp(): ExternalMcp {
+  externalDocs ??= new ExternalMcp(
+    getAgentConfig().externalMcp ?? {
+      roles: { planner: [], executor: [], checker: [], analyst: [] },
+      trust: {},
+    },
+    () => [...getToolExpositionMap().keys(), ...ragToolNames],
+  );
+  return externalDocs;
+}
+function builtInToolTrust(resolver: TrustResolver): ToolTrust {
+  const system = systemToolTrust(isEmbeddedSystemTool, resolver);
+  return (name) => docsMcp().toolTrust(name, resolver) ?? system(name);
+}
+
 export function isEmbeddedSystemTool(name: string): boolean {
   embeddedToolNames ??= new Set(
     new HandlerExporter(getHandlerExporterConfig()).getToolNames(),
@@ -1716,7 +1740,7 @@ function currentTrustResolver(): TrustResolver {
   );
 }
 export function getSystemToolTrust() {
-  return systemToolTrust(isEmbeddedSystemTool, currentTrustResolver());
+  return builtInToolTrust(currentTrustResolver());
 }
 
 function listToolDefsFromExporter(): ToolDocInput[] {
@@ -2734,19 +2758,24 @@ export async function buildEmbeddedMcpAdapter(
 }
 
 /** Create shared LLM instances (called once, reused across all agents) */
-function getOrCreateSharedLlms(config: AgentConfig): {
+function getOrCreateSharedLlms(
+  config: AgentConfig,
+  component: 'chat' | 'planner-author' = 'chat',
+): {
   mainLlm: ReturnType<typeof makeHubLlm>;
   classifierLlm: ReturnType<typeof makeHubLlm>;
 } {
-  if (!sharedMainLlm) {
-    const mainModel = getCurrentModel();
-    sharedMainLlm = makeHubLlm(
+  const mainModel = config.llm.model;
+  const clients = component === 'planner-author' ? planAuthorLlms : modelLlms;
+  let mainLlm = clients.get(mainModel);
+  if (!mainLlm) {
+    mainLlm = makeHubLlm(
       {
         contextCapture: config.llm.contextCapture,
         provider: config.llm.provider,
         apiKey: config.llm.apiKey,
         baseURL: config.llm.baseUrl,
-        component: 'chat',
+        component,
         model: mainModel,
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,
@@ -2755,6 +2784,7 @@ function getOrCreateSharedLlms(config: AgentConfig): {
       config.llm.temperature,
     ).then(trackedLlm);
   }
+  clients.set(mainModel, mainLlm);
   if (!sharedClassifierLlm) {
     const classifierModel = config.llm.classifierModel;
     sharedClassifierLlm = makeHubLlm(
@@ -2772,7 +2802,7 @@ function getOrCreateSharedLlms(config: AgentConfig): {
     ).then(trackedLlm);
   }
   return {
-    mainLlm: sharedMainLlm,
+    mainLlm,
     classifierLlm: sharedClassifierLlm,
   };
 }
@@ -2793,6 +2823,7 @@ async function configureDestinationAgentBuilder(
     skipSkills?: boolean;
     skipRetrieval?: boolean;
     systemPrompt?: string;
+    role?: string;
   },
 ): Promise<SmartAgentBuilder> {
   const { mainLlm: mainLlmPromise, classifierLlm: classifierLlmPromise } =
@@ -2842,14 +2873,20 @@ async function configureDestinationAgentBuilder(
       ].join('\n'),
     },
   })
-    .withToolTrust(systemToolTrust(isEmbeddedSystemTool, roleResolver))
+    .withToolLoopContextStrategyFactory(() => createToolLoopWindow())
+    .withToolTrust(builtInToolTrust(roleResolver))
     .withMainLlm(opts?.skipRetrieval ? mainLlm : trackedLlm(mainLlm, true))
     .withClassifierLlm(classifierLlm)
     .withMcpClients([
       mcpAdapter instanceof RecordingMcpClient
-        ? mcpAdapter
+        ? mcpAdapter.includeClients(
+            await docsMcp().clients(opts?.role ?? 'executor'),
+          )
         : withToolResultCap(
-            new DialogueRagMcpClient(mcpAdapter),
+            compositeMcpClient([
+              ...(await docsMcp().clients(opts?.role ?? 'executor')),
+              new DialogueRagMcpClient(mcpAdapter),
+            ]),
             config.agent.toolResultMaxChars,
           ),
     ]);
@@ -2930,7 +2967,6 @@ export const HUB_ADAPTIVE_CONTROLLER_SYSTEM =
   ADAPTIVE_CONTROLLER_SYSTEM +
   '\nWrite every step goal, question, note and check goal in the language of the request; the workers answer the user in that language.';
 
-const plannerAgents = new Map<SmartAgent, { current: ILlm }>();
 export async function buildPlannerAgent(
   config: AgentConfig,
   systemPrompt: string,
@@ -2942,39 +2978,16 @@ export async function buildPlannerAgent(
       llm: { ...config.llm, plannerModel: config.llm.coordinatorModel },
     };
   }
-  const independentCoordinator =
-    !authorClient && Boolean(config.llm.coordinatorModel);
-  let plannerLlm =
-    independentCoordinator || authorClient ? null : sharedPlannerLlm;
-  if ((config.llm.plannerModel || authorClient) && !plannerLlm) {
-    plannerLlm = makeHubLlm(
-      {
-        contextCapture: config.llm.contextCapture,
-        provider: config.llm.provider,
-        apiKey: config.llm.apiKey,
-        baseURL: config.llm.baseUrl,
-        component: authorClient ? 'planner-author' : 'chat',
-        model: config.llm.plannerModel ?? getCurrentModel(),
-        maxTokens: config.llm.maxTokens,
-        resourceGroup: config.llm.resourceGroup,
-        whenThrottled: config.llm.whenThrottled,
+  const llm = await getOrCreateSharedLlms(
+    {
+      ...config,
+      llm: {
+        ...config.llm,
+        model: config.llm.plannerModel ?? config.llm.model,
       },
-      config.llm.temperature,
-    ).then(trackedLlm);
-  }
-  if (!independentCoordinator && !authorClient) sharedPlannerLlm = plannerLlm;
-  const llm = await ((config.llm.plannerModel || authorClient) && plannerLlm
-    ? plannerLlm
-    : getOrCreateSharedLlms(config).mainLlm);
-  // Pipeline stages retain the LLM supplied at build time. A stable forwarding
-  // client makes the existing getSmartAgent hot-swap reach those stages too.
-  const model = { current: llm };
-  const forwardingLlm = new Proxy(llm, {
-    get(_target, property) {
-      const value = Reflect.get(model.current, property);
-      return typeof value === 'function' ? value.bind(model.current) : value;
     },
-  });
+    authorClient ? 'planner-author' : 'chat',
+  ).mainLlm;
   const roleResolver = resolverFor(getCollectionRegistry());
   const skillsPool = buildSkillsPool({ resolver: () => roleResolver });
   const system = await appendBaseSkills(systemPrompt, skillsPool);
@@ -2991,11 +3004,14 @@ export async function buildPlannerAgent(
       system,
     },
   })
-    .withToolTrust(systemToolTrust(isEmbeddedSystemTool, roleResolver))
-    .withMainLlm(forwardingLlm)
+    .withToolTrust(builtInToolTrust(roleResolver))
+    .withMainLlm(llm)
     .withMcpClients([
       new RecordingMcpClient(
-        authorClient ?? new DialogueRagMcpClient(coordinatorToolsClient()),
+        compositeMcpClient([
+          ...(await docsMcp().clients('planner')),
+          authorClient ?? new DialogueRagMcpClient(coordinatorToolsClient()),
+        ]),
         undefined,
         config.agent.toolResultMaxChars,
         false,
@@ -3005,13 +3021,13 @@ export async function buildPlannerAgent(
     .withMode('hard');
   if (config.agent.maxToolCalls !== undefined)
     builder.withMaxToolCalls(config.agent.maxToolCalls);
+  // DialogueSession owns the coordinator history; authors use the tool window.
+  if (authorClient)
+    builder.withToolLoopContextStrategyFactory(() => createToolLoopWindow());
   const handle = await builder.build();
-  plannerAgents.set(handle.agent, model);
   return handle.agent;
 }
-export function releasePlannerAgent(agent: SmartAgent): void {
-  plannerAgents.delete(agent);
-}
+export function releasePlannerAgent(_agent: SmartAgent): void {}
 
 export function createAgentProfileSource(
   userId: string,
@@ -3024,6 +3040,10 @@ export function createAgentProfileSource(
   };
   const sessionId = getRequestSessionId();
   return new AgentProfileSource(getCollectionRegistry(), {
+    acceptsPolicyName: (name) => docsMcp().acceptsPolicyName(name),
+    prepareCatalogue: async () => {
+      docsMcp().refresh();
+    },
     catalogue: () => [
       ...[...getToolExpositionMap().keys()]
         .filter((name) => !isRagTool(name))
@@ -3033,6 +3053,7 @@ export function createAgentProfileSource(
             ? ('read' as const)
             : ('write' as const),
         })),
+      ...docsMcp().catalogue(),
       ...ragToolNames.map((name) => ({ name, effect: ragToolEffect(name) })),
     ],
     userId,
@@ -3098,18 +3119,28 @@ function destinationProfileRunner(
           ? ('read' as const)
           : ('write' as const),
       })),
+    ...docsMcp().catalogue(),
     ...ragToolNames.map((name) => ({
       name,
       effect: ragToolEffect(name),
     })),
   ];
   return new AgentProfileRunner({
+    acceptsPolicyName: (name) => docsMcp().acceptsPolicyName(name),
     trustResolver: getTrustResolver,
+    prepareTools: async (role) => {
+      await docsMcp().clients(role);
+    },
+    plannerKnowledgeTools: () =>
+      docsMcp()
+        .catalogue('planner')
+        .map((tool) => tool.name),
     catalogue,
     grants: () =>
       new Set(
         catalogue()
           .filter((tool) => {
+            if (docsMcp().owns(tool.name)) return true;
             if (isRagTool(tool.name)) return Boolean(getRequestUserId());
             const caller = callerExposition.getStore();
             const allowed = caller
@@ -3130,8 +3161,14 @@ function destinationProfileRunner(
       const builder = await configureDestinationAgentBuilder(
         mcpAdapter,
         toolsRag,
-        config,
-        { systemPrompt },
+        {
+          ...config,
+          llm: {
+            ...config.llm,
+            model: profile.model ?? getAgentConfig().llm.model,
+          },
+        },
+        { systemPrompt, role: profile.name },
       );
       options?.signal?.throwIfAborted();
       const handle = await builder.build();
@@ -3201,12 +3238,25 @@ function destinationProfileRunner(
           return client.callTool(name, args, callOptions);
         },
       };
-      const agent = await buildPlannerAgent(config, systemPrompt, filtered);
+      const agent = await buildPlannerAgent(
+        {
+          ...config,
+          llm: { ...config.llm, model: getAgentConfig().llm.model },
+        },
+        systemPrompt,
+        filtered,
+      );
       releasePlannerAgent(agent);
       return agent;
     },
     buildPlanner: async (systemPrompt, options) => {
-      const planner = await buildPlannerAgent(config, systemPrompt);
+      const model = coordinatorModel();
+      const planner = await buildPlannerAgent(
+        model
+          ? { ...config, llm: { ...config.llm, coordinatorModel: model } }
+          : config,
+        systemPrompt,
+      );
       const release = (): void => {
         releasePlannerAgent(planner);
         options?.signal?.removeEventListener('abort', release);
@@ -3264,7 +3314,10 @@ export async function buildAgentForDestination(
 
   // Same shared main LLM the rest of the destination agent uses — no extra
   // provider client stood up just for the critic layer.
-  const { mainLlm: mainLlmPromise } = getOrCreateSharedLlms(config);
+  const { mainLlm: mainLlmPromise } = getOrCreateSharedLlms({
+    ...config,
+    llm: { ...config.llm, model: getAgentConfig().llm.model },
+  });
   const criticLlm = await mainLlmPromise;
 
   // Controller build skips retrieval and skills: the coordinator consumes
@@ -3340,14 +3393,30 @@ export async function buildAgentForDestination(
     () => {
       const profile = getReviewProfile() ?? executorProfile;
       return profile?.trust
-        ? systemToolTrust(
-            isEmbeddedSystemTool,
-            getTrustResolver().forProfile(profile),
-          )
+        ? builtInToolTrust(getTrustResolver().forProfile(profile))
         : getSystemToolTrust();
     },
   );
   if (config.agent.chatCoordinator !== 'fixed') {
+    // Resolve at call time: the destination and controller are shared across requests.
+    const coordinatorLlm = async (): Promise<ILlm> => {
+      const model = requestModel.getStore();
+      return model
+        ? getOrCreateSharedLlms({
+            ...config,
+            llm: { ...config.llm, model },
+          }).mainLlm
+        : criticLlm;
+    };
+    const requestLlm: ILlm = {
+      get model() {
+        return requestModel.getStore() ?? criticLlm.model;
+      },
+      chat: async (...args) => (await coordinatorLlm()).chat(...args),
+      streamChat: async function* (...args) {
+        yield* (await coordinatorLlm()).streamChat(...args);
+      },
+    };
     const budget = Object.fromEntries(
       Object.entries(config.agent.planBudget ?? {}).filter(
         ([, value]) => value !== undefined,
@@ -3356,7 +3425,7 @@ export async function buildAgentForDestination(
     builder.withStepperCoordinator(
       new AdaptiveCoordinatorHandler({
         controller: new CheckerAdaptiveController(
-          new LlmAdaptiveController(criticLlm, {
+          new LlmAdaptiveController(requestLlm, {
             systemPrompt: HUB_ADAPTIVE_CONTROLLER_SYSTEM,
           }),
         ),
@@ -3403,8 +3472,7 @@ export async function buildAgentForDestination(
     profileRunner,
     trustResolver: getTrustResolver(),
     toolTrust: getSystemToolTrust(),
-    toolTrustFor: (resolver: TrustResolver) =>
-      systemToolTrust(isEmbeddedSystemTool, resolver),
+    toolTrustFor: (resolver: TrustResolver) => builtInToolTrust(resolver),
   });
 
   return destinationHandle;
@@ -3459,14 +3527,41 @@ export async function buildExecutorWorker(
   const prepareDirect = (options?: CallOptions) =>
     prepareCompatibilityWorker(config, options, async (callOptions) => {
       const resolved = await resolve(callOptions);
+      const selectedModel = resolveAgentModel(
+        {
+          requested: currentExecutorModel() ?? requestModel.getStore(),
+          profile: resolved.profile.model,
+        },
+        parseModelAllowlist(),
+        getAgentConfig().llm.model,
+      );
+      if (!selectedModel.ok && currentExecutorModel() !== undefined)
+        throw new Error(selectedModel.error);
+      resolved.profile = {
+        ...resolved.profile,
+        model: selectedModel.ok
+          ? selectedModel.value
+          : getAgentConfig().llm.model,
+      };
       callOptions?.signal?.throwIfAborted();
       const freshBuilder = await runner.bind(resolved.profile)(() =>
-        configureDestinationAgentBuilder(mcpAdapter, toolsRag, config, {
-          systemPrompt: [
-            resolved.workerBase ?? '',
-            resolved.profile.systemPrompt,
-          ].join('\n'),
-        }),
+        configureDestinationAgentBuilder(
+          mcpAdapter,
+          toolsRag,
+          {
+            ...config,
+            llm: {
+              ...config.llm,
+              model: resolved.profile.model ?? getAgentConfig().llm.model,
+            },
+          },
+          {
+            systemPrompt: [
+              resolved.workerBase ?? '',
+              resolved.profile.systemPrompt,
+            ].join('\n'),
+          },
+        ),
       );
       callOptions.signal?.throwIfAborted();
       const fresh = await freshBuilder.build();
@@ -3535,7 +3630,10 @@ export async function buildExecutorWorker(
         async (options) => {
           const resolved = await resolve(options);
           options.signal?.throwIfAborted();
-          const worker = await runner.createWorker(resolved, options);
+          const worker = await runner.createWorker(
+            { ...resolved, model: requestModel.getStore() },
+            options,
+          );
           if (!worker.ok) throw new Error(worker.error.message);
           return worker.value;
         },
@@ -3646,14 +3744,12 @@ export async function buildLlmOnlyAgent(
   const handle = await builder.build();
   // `config.llm.classifierModel` defaults to the main model name, so only the
   // variable itself says that a classifier was chosen. Otherwise the decision
-  // uses the LLM this agent generates with, read on every call so a model
-  // swap of the agent's deps is followed.
+  // uses this request agent's immutable generation model.
   const inner = handle.agent;
   handle.agent = guardLlmOnlyAgent(inner, {
     decide: process.env.LLM_AGENT_CLASSIFIER_MODEL?.trim()
       ? classifierLlm
-      : // biome-ignore lint/suspicious/noExplicitAny: internal deps, as in the model hot-swap
-        () => ((inner as any).deps?.mainLlm as ILlm | undefined) ?? mainLlm,
+      : mainLlm,
     why,
   });
   log.info('LLM-only agent built (no MCP tools)');
@@ -3677,6 +3773,41 @@ export function getDestinationInitWaitMs(
   return Number.isFinite(v) && v > 0 ? v : 90_000;
 }
 
+const requestModel = new AsyncLocalStorage<string>();
+
+/** Bind a model to one request without mutating the shared destination agent. */
+export function withRequestModel(agent: SmartAgent, model: string): SmartAgent {
+  return new Proxy(agent, {
+    get(target, property, receiver) {
+      if (property === 'process')
+        return (...args: Parameters<SmartAgent['process']>) =>
+          requestModel.run(model, () =>
+            target.process(args[0], { ...args[1], model }),
+          );
+      if (property === 'streamProcess')
+        return async function* (
+          ...args: Parameters<SmartAgent['streamProcess']>
+        ) {
+          const iterator = requestModel.run(model, () =>
+            target
+              .streamProcess(args[0], { ...args[1], model })
+              [Symbol.asyncIterator](),
+          );
+          try {
+            while (true) {
+              const next = await requestModel.run(model, () => iterator.next());
+              if (next.done) return;
+              yield next.value;
+            }
+          } finally {
+            await requestModel.run(model, () => iterator.return?.());
+          }
+        };
+      return Reflect.get(target, property, receiver);
+    },
+  });
+}
+
 export async function getSmartAgent(
   requestedModel?: string,
   requestedDestination?: string,
@@ -3684,45 +3815,25 @@ export async function getSmartAgent(
   const log = cds.log('agent-manager');
   const config = getAgentConfig();
 
-  // --- Model hot-swap (updates all agents — LLM is stateless) ---
-  // NOT gated on agentHandles.size: with no blocking primary at startup, the
-  // FIRST real request can arrive before any agent exists. We still must set
-  // currentModel/sharedMainLlm so the about-to-be-built first agent uses the
-  // requested model (getOrCreateSharedLlms reuses sharedMainLlm). The loop over
-  // existing handles is simply a no-op when none exist yet.
-  const activeModel = getCurrentModel();
-  if (requestedModel && requestedModel !== activeModel) {
-    const newLlmPromise = makeHubLlm(
-      {
-        contextCapture: config.llm.contextCapture,
-        provider: config.llm.provider,
-        apiKey: config.llm.apiKey,
-        baseURL: config.llm.baseUrl,
-        component: 'chat',
-        model: requestedModel,
-        maxTokens: config.llm.maxTokens,
-        resourceGroup: config.llm.resourceGroup,
-        whenThrottled: config.llm.whenThrottled,
-      },
-      config.llm.temperature,
-    ).then(trackedLlm);
-    const newLlm = await newLlmPromise;
-
-    for (const handle of agentHandles.values()) {
-      // biome-ignore lint/suspicious/noExplicitAny: accessing internal deps for model hot-swap
-      (handle.agent as any).deps.mainLlm = newLlm;
-    }
-    if (!config.llm.plannerModel && !config.llm.coordinatorModel) {
-      for (const model of plannerAgents.values()) model.current = newLlm;
-    }
-    sharedMainLlm = newLlmPromise;
-    currentModel = requestedModel;
-
-    log.info('Model set for request', {
-      from: activeModel,
-      to: requestedModel,
-      agentCount: agentHandles.size,
+  const resolved = resolveRequestModel(requestedModel, parseModelAllowlist());
+  if (resolved.ignored)
+    log.warn('Ignoring request model outside allowlist', {
+      model: resolved.ignored,
     });
+  if (resolved.model) {
+    const base = await getSmartAgent(undefined, requestedDestination);
+    const selected = {
+      ...config,
+      llm: {
+        ...config.llm,
+        model: resolved.model,
+        coordinatorModel: resolved.model,
+      },
+    };
+    // Destination agents and their workers are shared across request models.
+    if (base.profileRunner)
+      return { ...base, agent: withRequestModel(base.agent, resolved.model) };
+    return { ...base, ...(await buildLlmOnlyAgent(selected, 'waiting')) };
   }
 
   // --- Destination lookup (no hot-swap — each dest has its own agent) ---

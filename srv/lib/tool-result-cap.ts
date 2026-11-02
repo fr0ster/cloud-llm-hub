@@ -46,6 +46,9 @@ export function withToolResultCap(
 ): IMcpClient {
   const knownNames = new Set<string>();
   return {
+    get cacheable() {
+      return inner.cacheable;
+    },
     ...(inner.healthCheck
       ? { healthCheck: inner.healthCheck.bind(inner) }
       : {}),

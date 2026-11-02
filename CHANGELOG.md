@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- Built-in external docs MCP destinations per planner, executor, checker and analyst role, with read-only profile ceilings, collision-safe ownership, lazy discovery and destination/profile docs trust.
+
+- Agent tool loops retain the latest `LLM_AGENT_TOOL_LOOP_WINDOW` rounds (default 8), with deterministic digests for dropped results and trace-scoped repeated-read pointers. `rag_read` defaults to 32,000 characters, subject to the tool-result cap. Compact tool summaries retain search queries (200 characters) and read paging arguments.
+
+- Model allowlist (`LLM_AGENT_MODELS`), profile model defaults, and per-call model overrides for `delegate_task` and `execute_step`; disallowed agent choices return `MODEL_NOT_ALLOWED`.
+
+### Fixed
+
+- Shared-account throttling now waits as needed by default, with bounded backoff for unnamed intervals and an opt-in wait ceiling. Streaming planner failures retain content-free causes and spent usage.
+
+- Dialogue paragraph replies on stops keep only the latest non-empty iteration. Coordinators delegate document reading and analysis to agents.
+
+- Request model selection is isolated to a dialogue coordinator or a single non-dialogue request. Unknown model ids are ignored with `x-clh-model-ignored`; `/v1/models` keeps reporting the deploy default.
+- Saved dialogue tasks accept optional model choices while retaining compatibility with older states.
+
 ## [10.3.0] - 2026-11-02
 
 ### Added

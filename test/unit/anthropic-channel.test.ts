@@ -1,3 +1,5 @@
+import { LlmError } from '@mcp-abap-adt/llm-agent';
+import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import { chatSessionBodyTests } from './helpers/chat-session-body';
 
 // Bootstrap logging is tested with real CAP in logging-config.test.ts.
@@ -381,7 +383,7 @@ describe('an unanswered write, streaming (swallowed error chunk)', () => {
     const { res, done } = call(body(true));
     await done;
 
-    expect(res.body).not.toContain('event: error');
+    expect(res.body).toContain('event: error');
     expect(res.body).not.toContain('UNVERIFIED_WRITE');
   });
 });
@@ -432,9 +434,14 @@ describe('streamed output with no notice to add', () => {
       const { res, done } = call(body(true));
       await done;
 
-      expect(withoutIds(res.body)).toBe(
-        withoutIds(await adapterBytes([...chunks] as never)),
-      );
+      if (label === 'a successful stream')
+        expect(withoutIds(res.body)).toBe(
+          withoutIds(await adapterBytes([...chunks] as never)),
+        );
+      else {
+        // A failed stream now always ends with an explicit error event.
+        expect(res.body).toContain('event: error');
+      }
     });
   }
 });
@@ -462,7 +469,7 @@ describe('an outage error chunk, streaming', () => {
     expect(harness.closeDestinationCalls).toEqual([
       { destination: 'DEST', reason: outage.message },
     ]);
-    expect(res.body).not.toContain('event: error');
+    expect(res.body).toContain('event: error');
     expect(res.body).not.toContain('UNVERIFIED_WRITE');
   });
 });
@@ -485,7 +492,7 @@ describe('an unanswered write, streaming exception', () => {
     expect(harness.events.filter((e) => e === 'pipeline')).toHaveLength(1);
   });
 
-  it('leaves the ordinary exception payload untouched when nothing is unanswered', async () => {
+  it('leaves the ordinary exception text untouched when nothing is unanswered', async () => {
     configure();
     harness.stream = async function* () {
       yield { ok: true, value: { content: 'working' } };
@@ -876,3 +883,52 @@ test('Anthropic deduplicates canonical definitions and rejects overrides and for
 });
 
 chatSessionBodyTests('/messages', handleAnthropicMessages);
+
+it.each([429, 503, 0])(
+  'stream exceptions report a safe cause and retain spent usage (%s)',
+  async (status) => {
+    configure();
+    harness.stream = async function* () {
+      yield {
+        ok: true,
+        value: {
+          content: 'partial',
+          usage: { promptTokens: 7, completionTokens: 3, totalTokens: 10 },
+        },
+      };
+      throw Object.assign(
+        new LlmError('private provider message and request'),
+        status ? { status } : {},
+      );
+    };
+    const { res, done } = call(body(true));
+    await done;
+    expect(res.body).toContain(
+      status
+        ? `LLM unavailable (HTTP ${status})`
+        : 'LLM unavailable (no response from model)',
+    );
+    expect(res.body).not.toContain('private provider message and request');
+    expect(res.body).toContain('"input_tokens":7,"output_tokens":3');
+    expect(res.body.indexOf('event: message_delta')).toBeLessThan(
+      res.body.indexOf('event: error'),
+    );
+  },
+);
+
+for (const failure of ['error chunk', 'exception'] as const)
+  it(`model spend reported below the agent survives a failed stream (${failure})`, async () => {
+    configure();
+    harness.stream = async function* () {
+      yield { ok: true, value: { content: 'partial' } };
+      // A model call completed inside the agent; its usage never reached a chunk.
+      reportLlmSpend({ promptTokens: 7, completionTokens: 3, totalTokens: 10 });
+      const error = new LlmError('LLM unavailable (HTTP 503)');
+      if (failure === 'exception') throw error;
+      yield { ok: false, error };
+    };
+    const { res, done } = call(body(true));
+    await done;
+    expect(res.body).toContain('LLM unavailable (HTTP 503)');
+    expect(res.body).toContain('"input_tokens":7,"output_tokens":3');
+  });

@@ -300,3 +300,67 @@ it('blocks the real runtime execution tool without effect annotations', async ()
   expect(result).toMatchObject({ ok: true, value: { isError: true } });
   expect(inner.callTool).not.toHaveBeenCalled();
 });
+
+test('docs share the existing recorder cap, deltas and checker read-only rule', async () => {
+  const inner: IMcpClient = {
+    listTools: async () => ({ ok: true, value: [] }),
+    callTool: jest.fn(),
+  };
+  const docs: IMcpClient = {
+    listTools: async () => ({
+      ok: true,
+      value: [
+        {
+          name: 'docs_search',
+          description: 'Search docs',
+          inputSchema: { type: 'object' },
+          annotations: { readOnlyHint: true },
+        },
+        {
+          name: 'docs_write',
+          description: 'Write docs',
+          inputSchema: { type: 'object' },
+          annotations: { readOnlyHint: false },
+        },
+      ],
+    }),
+    callTool: jest.fn(async () => ({
+      ok: true as const,
+      value: { content: 'x'.repeat(100) },
+    })),
+  };
+  const origin = new RecordingMcpClient(inner, undefined, 10);
+  const recorder = origin.includeClients([docs]);
+  // A view, not a mutation: the shared origin keeps only its own tools.
+  expect(recorder).not.toBe(origin);
+  const own = await origin.listTools();
+  expect(own.ok && own.value.some((tool) => tool.name === 'docs_search')).toBe(
+    false,
+  );
+  await recorder.listTools();
+  const result = await recorder.callTool(
+    'docs_search',
+    {},
+    { trace: { traceId: 'docs' } },
+  );
+  expect(result).toEqual({
+    ok: true,
+    value: { content: expect.stringContaining('result truncated: 10 of 100') },
+  });
+  // Records land in the origin, which the reviewer reads.
+  expect(origin.getToolRecords('docs')).toEqual([
+    expect.objectContaining({
+      call: expect.objectContaining({ name: 'docs_search' }),
+      truncation: { truncated: true, originalLength: 100, keptLength: 10 },
+    }),
+  ]);
+  await runWithReadOnlyTools(async () => {
+    const tools = await recorder.listTools();
+    expect(tools.ok && tools.value.map((tool) => tool.name)).toEqual([
+      'docs_search',
+    ]);
+    const denied = await recorder.callTool('docs_write', {});
+    expect(denied.ok && denied.value.isError).toBe(true);
+  });
+  expect(docs.callTool).toHaveBeenCalledTimes(1);
+});

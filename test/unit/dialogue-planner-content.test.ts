@@ -81,7 +81,7 @@ test('paragraph wrapper keeps only the final iteration of the planner', async ()
   }
 });
 
-test('paragraph wrapper keeps accumulated text when no final iteration arrives', async () => {
+test('paragraph wrapper keeps latest non-empty iteration when no final iteration arrives', async () => {
   const planner: PlannerAgent = {
     async process(_input, options) {
       options.onPartial?.({ kind: 'content', delta: 'Partial.' });
@@ -91,7 +91,7 @@ test('paragraph wrapper keeps accumulated text when no final iteration arrives',
     },
   };
   const result = await plannerWithParagraphs(planner).process([], {});
-  expect(result.ok && result.value.content).toBe('Partial.\n\nStopped.');
+  expect(result.ok && result.value.content).toBe('Stopped.');
 });
 
 test('environment reaches user and event turns without changing persisted conversation', async () => {
@@ -429,5 +429,43 @@ test('dialogue planner receives exactly one session request-time line through co
     }
   } finally {
     await session.close();
+  }
+});
+
+test.each([false, true])(
+  'stopping on a completed or empty iteration keeps latest non-empty text (%s)',
+  async (empty) => {
+    const planner: PlannerAgent = {
+      async process(_input, options) {
+        options.onPartial?.({ kind: 'content', delta: 'Thinking.' });
+        options.onPartial?.({ kind: 'iteration-end', outcome: 'tool_calls' });
+        options.onPartial?.({ kind: 'content', delta: 'Waiting.' });
+        options.onPartial?.({ kind: 'iteration-end', outcome: 'tool_calls' });
+        if (empty)
+          options.onPartial?.({ kind: 'iteration-end', outcome: 'tool_calls' });
+        return { ok: true, value: { content: 'Waiting.' } };
+      },
+    };
+    const result = await plannerWithParagraphs(planner).process([], {});
+    expect(result.ok && result.value.content).toBe('Waiting.');
+  },
+);
+
+test('empty whitespace polls preserve the latest reply and validation retries discard it', async () => {
+  for (const retry of [false, true]) {
+    const planner: PlannerAgent = {
+      async process(_input, options) {
+        options.onPartial?.({ kind: 'content', delta: 'Waiting.' });
+        options.onPartial?.({ kind: 'iteration-end', outcome: 'tool_calls' });
+        options.onPartial?.({ kind: 'content', delta: '  ' });
+        options.onPartial?.({
+          kind: 'iteration-end',
+          outcome: retry ? 'retry' : 'tool_calls',
+        });
+        return { ok: true, value: { content: retry ? '' : 'Waiting.' } };
+      },
+    };
+    const result = await plannerWithParagraphs(planner).process([], {});
+    expect(result.ok && result.value.content).toBe(retry ? '' : 'Waiting.');
   }
 });

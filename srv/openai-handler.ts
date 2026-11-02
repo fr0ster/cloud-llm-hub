@@ -3,6 +3,12 @@ import { z } from 'zod';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
+import { failureMessage, observeLlmSpend } from './lib/llm-failure';
+import {
+  ignoredModelHeader,
+  parseModelAllowlist,
+  resolveRequestModel,
+} from './lib/model-policy';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
 import { summarizeToolResult } from './lib/tool-result-summary';
@@ -24,8 +30,10 @@ import { responseUsageToWire } from './lib/usage-wire';
 
 import { randomUUID } from 'node:crypto';
 import {
+  addTokenUsage,
   type Message,
   normalizeAndValidateExternalTools,
+  type TokenUsage,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
@@ -426,6 +434,16 @@ async function handleChatCompletionsMeasured(
     return;
   }
   body = { ...body, tools: consumerTools };
+  const requestModel = resolveRequestModel(body.model, parseModelAllowlist());
+  if (requestModel.ignored) {
+    res.setHeader(
+      'x-clh-model-ignored',
+      ignoredModelHeader(requestModel.ignored),
+    );
+    cds.log('openai-handler').warn('Ignoring request model outside allowlist', {
+      model: requestModel.ignored,
+    });
+  }
 
   // A long session serves its requests one at a time, through the connection
   // it holds; without one the request stands alone, as it always has.
@@ -632,9 +650,12 @@ async function serveChatCompletions(
       .slice(0, 200),
   });
 
-  // Get SmartAgent handle (pass model/destination to trigger switch if needed)
-  const requestedModel =
-    typeof body.model === 'string' ? body.model : undefined;
+  // Resolve the request model without changing deployment defaults.
+  const modelResolution = resolveRequestModel(
+    typeof body.model === 'string' ? body.model : undefined,
+    parseModelAllowlist(),
+  );
+  const requestedModel = modelResolution.model;
   const requestedDestination = req.headers['x-sap-destination'] as
     | string
     | undefined;
@@ -884,10 +905,18 @@ async function serveChatCompletions(
 
   const chatAgent =
     useDialogue && s
-      ? dialogueChat(req, userId, s, destAfter, res, {
-          headers: req.headers,
-          body,
-        })
+      ? dialogueChat(
+          req,
+          userId,
+          s,
+          destAfter,
+          res,
+          {
+            headers: req.headers,
+            body,
+          },
+          requestedModel,
+        )
       : handle.agent;
 
   // Admitted after the agent is resolved: a caller waiting for a destination to
@@ -1149,6 +1178,33 @@ async function serveChatCompletions(
         models?: Record<string, unknown>;
       } | null = null;
 
+      // Model spend observed below the agent: a failed chunk carries no usage, so
+      // a failed stream reports what was already spent.
+      let observedSpend: TokenUsage | undefined;
+      const recordSpend = (usage: TokenUsage) => {
+        observedSpend = addTokenUsage(observedSpend, usage);
+      };
+      const keepSpend = () => {
+        if (
+          observedSpend &&
+          observedSpend.totalTokens > (lastUsage?.total_tokens ?? 0)
+        )
+          lastUsage = {
+            prompt_tokens: observedSpend.promptTokens,
+            completion_tokens: observedSpend.completionTokens,
+            total_tokens: observedSpend.totalTokens,
+          };
+      };
+
+      let usageSent = false;
+      const writeUsage = () => {
+        if (!lastUsage || usageSent) return;
+        usageSent = true;
+        out.write(
+          `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: getCurrentModel(), choices: [], usage: lastUsage })}\n\n`,
+        );
+      };
+
       log.info('Starting streamProcess', { sessionId });
 
       // Bind the caller and session for canonical host RAG execution.
@@ -1165,213 +1221,225 @@ async function serveChatCompletions(
               // Admitted: the responsible person and master system are resolved
               // here, not before the queue wait — see `inRequestSystem`.
               () =>
-                inRequestSystem(async () => {
-                  const stream = chatAgent.streamProcess(
-                    normalizedMessages,
-                    opts,
-                  );
+                inRequestSystem(() =>
+                  observeLlmSpend(async () => {
+                    const stream = chatAgent.streamProcess(
+                      normalizedMessages,
+                      opts,
+                    );
 
-                  try {
-                    for await (const chunk of stream) {
-                      chunkCount++;
-                      if (!chunk.ok) {
-                        requestMeasurement(req)?.end('error');
-                        const err = chunk.error;
-                        if (isOutageError(chunk.error)) {
-                          closeDestination(
-                            destAfter,
-                            describeCause(chunk.error),
+                    try {
+                      for await (const chunk of stream) {
+                        chunkCount++;
+                        if (!chunk.ok) {
+                          requestMeasurement(req)?.end('error');
+                          const err = chunk.error;
+                          if (isOutageError(chunk.error)) {
+                            closeDestination(
+                              destAfter,
+                              describeCause(chunk.error),
+                            );
+                          }
+
+                          const causes: string[] = [];
+                          let current: unknown = err;
+                          while (current) {
+                            if (current instanceof Error) {
+                              causes.push(current.message);
+                              current = (current as { cause?: unknown }).cause;
+                            } else {
+                              causes.push(String(current));
+                              break;
+                            }
+                          }
+                          log.error('Stream error chunk', {
+                            chunkCount,
+                            error: err.message,
+                            causes,
+                          });
+                          const limit = throttleOf(err);
+                          const unverified = unverifiedWriteFor(
+                            handle,
+                            traceId,
+                            err,
+                          );
+                          const userMessage = unverified
+                            ? limit
+                              ? `${unverified} ${throttleMessage(limit)}`
+                              : unverified
+                            : limit
+                              ? `${failureMessage(err)}. ${throttleMessage(limit)}`
+                              : failureMessage(err);
+                          keepSpend();
+                          writeUsage();
+                          out.write(
+                            `data: ${jsonError(userMessage, 'server_error')}\n\n`,
+                          );
+                          break;
+                        }
+
+                        const v = chunk.value;
+                        if (
+                          'clhMessageId' in v ||
+                          'clhMessageEnd' in v ||
+                          'clhTurnEnd' in v
+                        )
+                          continue;
+
+                        // Forward heartbeats as SSE comments to keep the connection alive.
+                        // Without this, CF Router / Cloud Connector may close idle TCP
+                        // connections before the tool loop finishes, causing the browser's
+                        // reader.read() to hang forever (onDone never fires).
+                        if (v.heartbeat) {
+                          out.write(
+                            `: heartbeat ${JSON.stringify(v.heartbeat)}\n\n`,
+                          );
+                          continue;
+                        }
+                        if (v.status) {
+                          out.write(`: status ${JSON.stringify(v.status)}\n\n`);
+                          continue;
+                        }
+                        if (v.usage) {
+                          lastUsage = {
+                            prompt_tokens: v.usage.promptTokens,
+                            completion_tokens: v.usage.completionTokens,
+                            total_tokens: v.usage.totalTokens,
+                            ...(v.usage.models
+                              ? { models: v.usage.models }
+                              : {}),
+                          };
+                        }
+                        if (v.timing) {
+                          log.info('Pipeline stage timing', {
+                            timing: v.timing,
+                          });
+                          continue;
+                        }
+
+                        const baseResponse = {
+                          id,
+                          object: 'chat.completion.chunk',
+                          created,
+                          model: getCurrentModel(),
+                          usage: null,
+                        };
+
+                        // First chunk: role + initial content (matches SmartServer)
+                        if (firstChunk) {
+                          const initialContent = v.content || '';
+                          if (initialContent)
+                            accumulatedContent += initialContent;
+                          out.write(
+                            `data: ${JSON.stringify({
+                              ...baseResponse,
+                              choices: [
+                                {
+                                  index: 0,
+                                  delta: {
+                                    role: 'assistant',
+                                    content: initialContent,
+                                  },
+                                  finish_reason: null,
+                                },
+                              ],
+                            })}\n\n`,
+                          );
+                          firstChunk = false;
+                          if (!v.finishReason && !v.toolCalls) continue;
+                        }
+
+                        // Content and/or tool_calls delta (matches SmartServer)
+                        if (v.content || v.toolCalls) {
+                          const delta: Record<string, unknown> = {};
+                          if (v.content) {
+                            accumulatedContent += v.content;
+                            delta.content = v.content;
+                          }
+                          if (v.toolCalls) {
+                            delta.tool_calls = v.toolCalls.map(
+                              (call, index) => {
+                                const tc = toToolCallDelta(call, index);
+                                return {
+                                  index: tc.index,
+                                  id: tc.id,
+                                  type: 'function',
+                                  function: {
+                                    name: tc.name,
+                                    arguments: tc.arguments || '',
+                                  },
+                                };
+                              },
+                            );
+                          }
+                          out.write(
+                            `data: ${JSON.stringify({
+                              ...baseResponse,
+                              choices: [
+                                {
+                                  index: 0,
+                                  delta,
+                                  finish_reason: null,
+                                },
+                              ],
+                            })}\n\n`,
                           );
                         }
 
-                        const causes: string[] = [];
-                        let current: unknown = err;
-                        while (current) {
-                          if (current instanceof Error) {
-                            causes.push(current.message);
-                            current = (current as { cause?: unknown }).cause;
-                          } else {
-                            causes.push(String(current));
-                            break;
-                          }
-                        }
-                        log.error('Stream error chunk', {
-                          chunkCount,
-                          error: err.message,
-                          causes,
-                        });
-                        const limit = throttleOf(err);
-                        const unverified = unverifiedWriteFor(
-                          handle,
-                          traceId,
-                          err,
-                        );
-                        const userMessage = unverified
-                          ? limit
-                            ? `${unverified} ${throttleMessage(limit)}`
-                            : unverified
-                          : limit
-                            ? throttleMessage(limit)
-                            : err.message;
-                        out.write(
-                          `data: ${jsonError(userMessage, 'server_error')}\n\n`,
-                        );
-                        break;
-                      }
-
-                      const v = chunk.value;
-                      if (
-                        'clhMessageId' in v ||
-                        'clhMessageEnd' in v ||
-                        'clhTurnEnd' in v
-                      )
-                        continue;
-
-                      // Forward heartbeats as SSE comments to keep the connection alive.
-                      // Without this, CF Router / Cloud Connector may close idle TCP
-                      // connections before the tool loop finishes, causing the browser's
-                      // reader.read() to hang forever (onDone never fires).
-                      if (v.heartbeat) {
-                        out.write(
-                          `: heartbeat ${JSON.stringify(v.heartbeat)}\n\n`,
-                        );
-                        continue;
-                      }
-                      if (v.status) {
-                        out.write(`: status ${JSON.stringify(v.status)}\n\n`);
-                        continue;
-                      }
-                      if (v.usage) {
-                        lastUsage = {
-                          prompt_tokens: v.usage.promptTokens,
-                          completion_tokens: v.usage.completionTokens,
-                          total_tokens: v.usage.totalTokens,
-                          ...(v.usage.models ? { models: v.usage.models } : {}),
-                        };
-                      }
-                      if (v.timing) {
-                        log.info('Pipeline stage timing', { timing: v.timing });
-                        continue;
-                      }
-
-                      const baseResponse = {
-                        id,
-                        object: 'chat.completion.chunk',
-                        created,
-                        model: getCurrentModel(),
-                        usage: null,
-                      };
-
-                      // First chunk: role + initial content (matches SmartServer)
-                      if (firstChunk) {
-                        const initialContent = v.content || '';
-                        if (initialContent)
-                          accumulatedContent += initialContent;
-                        out.write(
-                          `data: ${JSON.stringify({
-                            ...baseResponse,
-                            choices: [
-                              {
-                                index: 0,
-                                delta: {
-                                  role: 'assistant',
-                                  content: initialContent,
+                        if (v.finishReason) {
+                          out.write(
+                            `data: ${JSON.stringify({
+                              ...baseResponse,
+                              choices: [
+                                {
+                                  index: 0,
+                                  delta: {},
+                                  finish_reason: mapStopReason(v.finishReason),
                                 },
-                                finish_reason: null,
-                              },
-                            ],
-                          })}\n\n`,
-                        );
-                        firstChunk = false;
-                        if (!v.finishReason && !v.toolCalls) continue;
-                      }
-
-                      // Content and/or tool_calls delta (matches SmartServer)
-                      if (v.content || v.toolCalls) {
-                        const delta: Record<string, unknown> = {};
-                        if (v.content) {
-                          accumulatedContent += v.content;
-                          delta.content = v.content;
+                              ],
+                            })}\n\n`,
+                          );
+                          finishReasonSent = true;
                         }
-                        if (v.toolCalls) {
-                          delta.tool_calls = v.toolCalls.map((call, index) => {
-                            const tc = toToolCallDelta(call, index);
-                            return {
-                              index: tc.index,
-                              id: tc.id,
-                              type: 'function',
-                              function: {
-                                name: tc.name,
-                                arguments: tc.arguments || '',
-                              },
-                            };
-                          });
-                        }
-                        out.write(
-                          `data: ${JSON.stringify({
-                            ...baseResponse,
-                            choices: [
-                              {
-                                index: 0,
-                                delta,
-                                finish_reason: null,
-                              },
-                            ],
-                          })}\n\n`,
-                        );
                       }
-
-                      if (v.finishReason) {
-                        out.write(
-                          `data: ${JSON.stringify({
-                            ...baseResponse,
-                            choices: [
-                              {
-                                index: 0,
-                                delta: {},
-                                finish_reason: mapStopReason(v.finishReason),
-                              },
-                            ],
-                          })}\n\n`,
-                        );
-                        finishReasonSent = true;
+                    } catch (err) {
+                      requestMeasurement(req)?.end('error');
+                      if (isOutageError(err)) {
+                        closeDestination(destAfter, describeCause(err));
                       }
+                      const errMsg =
+                        err instanceof Error ? err.message : String(err);
+                      log.error('Stream exception', {
+                        error: errMsg,
+                        stack: err instanceof Error ? err.stack : undefined,
+                      });
+                      const streamLimit = throttleOf(err);
+                      const streamUnverified = unverifiedWriteFor(
+                        handle,
+                        traceId,
+                        err,
+                      );
+                      const userMessage = streamUnverified
+                        ? streamLimit
+                          ? `${streamUnverified} ${throttleMessage(streamLimit)}`
+                          : streamUnverified
+                        : streamLimit
+                          ? `${failureMessage(err)}. ${throttleMessage(streamLimit)}`
+                          : failureMessage(err);
+                      keepSpend();
+                      writeUsage();
+                      out.write(
+                        `data: ${jsonError(userMessage, 'server_error')}\n\n`,
+                      );
                     }
-                  } catch (err) {
-                    requestMeasurement(req)?.end('error');
-                    if (isOutageError(err)) {
-                      closeDestination(destAfter, describeCause(err));
-                    }
-                    const errMsg =
-                      err instanceof Error ? err.message : String(err);
-                    log.error('Stream exception', {
-                      error: errMsg,
-                      stack: err instanceof Error ? err.stack : undefined,
-                    });
-                    const streamLimit = throttleOf(err);
-                    const streamUnverified = unverifiedWriteFor(
-                      handle,
-                      traceId,
-                      err,
-                    );
-                    const userMessage = streamUnverified
-                      ? streamLimit
-                        ? `${streamUnverified} ${throttleMessage(streamLimit)}`
-                        : streamUnverified
-                      : streamLimit
-                        ? throttleMessage(streamLimit)
-                        : errMsg;
-                    out.write(
-                      `data: ${jsonError(userMessage, 'server_error')}\n\n`,
-                    );
-                  }
 
-                  // Log per-model token breakdown if available (inside runWithSessionId so TS
-                  // can track lastUsage mutations; this is pure logging with no ordering concern).
-                  if (lastUsage?.models) {
-                    log.info('Token usage by model', lastUsage.models);
-                  }
-                }),
+                    // Log per-model token breakdown if available (inside runWithSessionId so TS
+                    // can track lastUsage mutations; this is pure logging with no ordering concern).
+                    if (lastUsage?.models) {
+                      log.info('Token usage by model', lastUsage.models);
+                    }
+                  }, recordSpend),
+                ),
             ),
           priorTurns,
           userId,
@@ -1403,18 +1471,7 @@ async function serveChatCompletions(
       // OpenAI spec gates this behind stream_options.include_usage, but in practice
       // most clients (Goose, Cline) expect it. Sending unconditionally is safe —
       // clients that don't need it simply ignore the extra chunk.
-      if (lastUsage) {
-        out.write(
-          `data: ${JSON.stringify({
-            id,
-            object: 'chat.completion.chunk',
-            created,
-            model: getCurrentModel(),
-            choices: [],
-            usage: lastUsage,
-          })}\n\n`,
-        );
-      }
+      writeUsage();
 
       log.info('Stream completed', {
         chunkCount,

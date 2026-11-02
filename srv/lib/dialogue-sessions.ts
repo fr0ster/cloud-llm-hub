@@ -10,6 +10,7 @@ import type {
   IUsageRecorder,
   Message,
   PlannerMessage,
+  PlannerMessageUsage,
   TaskRecord,
   TokenUsage,
   ToolCallRecord,
@@ -39,6 +40,7 @@ import {
   planAuthorMode,
 } from './brief-plan-author';
 import { runWithContextCapture } from './context-capture';
+import { withCoordinatorModel } from './coordinator-model';
 import { withCoordinatorRun } from './coordinator-tools-client';
 import { DialogueOutbox, type OutboxEntry } from './dialogue-outbox';
 import {
@@ -58,7 +60,9 @@ import {
   touchDialogueState,
 } from './dialogue-store';
 import { admitBackground, type PipelineSession } from './gatekeeper';
+import { isLlmFailure, llmFailure, observeLlmSpend } from './llm-failure';
 import { longSessionsIfReady } from './long-session';
+import { parseModelAllowlist, resolveRequestModel } from './model-policy';
 import { stripNoMessage } from './no-message';
 import { renderNotice } from './notify-policy';
 import {
@@ -128,6 +132,7 @@ export interface DialogueHandle {
   destination: string;
   session: DialogueSession;
   usage?: IUsageRecorder;
+  failedUsage?(): PlannerMessageUsage;
   coordinatorResolver(): Promise<TrustResolver>;
   attachments: WeakMap<object, string>;
   replies: WeakMap<object, { id: string; createdAt: number }>;
@@ -142,6 +147,7 @@ export interface DialogueHandle {
     idle: boolean;
     settledSeq: number;
     lastFailedSeq: number;
+    failureCause?: string;
   };
   runStep<T extends { ok: boolean }>(
     run: (signal: AbortSignal | undefined) => Promise<T>,
@@ -159,6 +165,7 @@ export interface DialogueHandle {
   ): () => void;
 }
 interface LiveHandle extends DialogueHandle {
+  selectModel(model?: string): Promise<void>;
   stop(): void;
 }
 const handles = new Map<string, Promise<LiveHandle>>();
@@ -234,13 +241,18 @@ export function dialogueFor(
   userId: string,
   key: string,
   destination: string,
+  model?: string,
 ): Promise<DialogueHandle> {
   const id = slot(userId, key);
   if (closing.has(id))
     return Promise.reject(new Error('dialogue session closing'));
   const existing = handles.get(id);
+  const selected = resolveRequestModel(model, parseModelAllowlist()).model;
   if (existing)
-    return lookupDialogue(userId, key, destination) as Promise<DialogueHandle>;
+    return lookupDialogue(userId, key, destination).then(async (handle) => {
+      await (handle as LiveHandle).selectModel(selected);
+      return handle as DialogueHandle;
+    });
   const registry = longSessionsIfReady();
   const session = registry?.get(userId, key);
   if (session) {
@@ -252,7 +264,7 @@ export function dialogueFor(
     session.destination = destination;
     registry?.touch(userId, key);
   }
-  const opening = open(userId, key, destination).then((handle) => {
+  const opening = open(userId, key, destination, selected).then((handle) => {
     for (const fn of creationListeners.get(id) ?? []) {
       try {
         fn(handle);
@@ -272,6 +284,7 @@ async function open(
   userId: string,
   key: string,
   destination: string,
+  model?: string,
 ): Promise<LiveHandle> {
   const turnCallers = new WeakMap<object, TurnCaller>();
   const config = getAgentConfig();
@@ -298,6 +311,13 @@ async function open(
   // the reply so live subscribers see it on first emission.
   const replyUsage = new WeakMap<object, TokenUsage>();
   let turnReplyUsage: TokenUsage | undefined;
+  // Cause of the last failed settlement; the turn's own cause is collected
+  // separately and becomes it only when that turn settles as failed.
+  let failureCause: string | undefined;
+  let turnFailureCause: string | undefined;
+  // Every planner call of the turn, background corrections included.
+  let turnPlannerSpend: TokenUsage | undefined;
+  let lastFailureUsage: PlannerMessageUsage | undefined;
   const environment = () => {
     const connection = longSessionsIfReady()?.get(userId, key)?.connection;
     const identity = connection ? cachedSystemIdentity(connection) : undefined;
@@ -517,6 +537,18 @@ async function open(
     await pool.closeAll();
     throw error;
   }
+  const restoredModel = resolveRequestModel(
+    savedState?.coordinatorModel,
+    parseModelAllowlist(),
+  );
+  if (restoredModel.ignored)
+    log().warn(
+      'Saved coordinator model no longer allowed; using deploy default',
+      {
+        model: restoredModel.ignored,
+      },
+    );
+  let selectedModel = model ?? restoredModel.model;
   let saving = Promise.resolve();
   const persist = (
     outboxMessages: OutboxEntry[],
@@ -526,6 +558,7 @@ async function open(
     if (!state) return Promise.resolve();
     const row = {
       ...state,
+      coordinatorModel: selectedModel,
       toolContractVersion: DIALOGUE_TOOL_CONTRACT_VERSION,
       ...(savedState?.agentsCollectionId !== undefined
         ? { agentsCollectionId: savedState.agentsCollectionId }
@@ -543,7 +576,7 @@ async function open(
     savedState?.ackMode,
   );
   const drainPending = async () => {
-    await outbox.add(session?.takePending() ?? []);
+    await outbox.add(withFailedWorkerUsage(session?.takePending() ?? []));
   };
   const signals = dialogueSignals();
   const dialogueIdentity = (): RagCallerIdentity => {
@@ -622,13 +655,87 @@ async function open(
     () => stopLifetime(),
     { source: key },
   );
+  // Snapshot before settlement clears the live reply; a later successful turn
+  // must not erase the spend belonging to the retained failure sequence.
+  // TaskBoard passes wrapRun a copy and drops usage on rejection. Success
+  // records remain authoritative; retain only rejected runs as a fallback.
+  const failedWorkerSpend = new Map<string, TokenUsage>();
+  function failedTurnUsage(): PlannerMessageUsage {
+    const accountedTasks = new Set(
+      outbox
+        .history()
+        .flatMap(
+          (message) => message.usage?.tasks?.map((task) => task.id) ?? [],
+        ),
+    );
+    return {
+      planner:
+        turnPlannerSpend &&
+        turnPlannerSpend.totalTokens > (turnReplyUsage?.totalTokens ?? 0)
+          ? turnPlannerSpend
+          : turnReplyUsage,
+      tasks: (session?.snapshot().tasks ?? []).flatMap((task) => {
+        const usage = task.usage ?? failedWorkerSpend.get(task.id);
+        return usage && !accountedTasks.has(task.id)
+          ? [
+              {
+                id: task.id,
+                worker: task.worker,
+                usage,
+                ...(task.startedAt !== undefined &&
+                task.finishedAt !== undefined
+                  ? {
+                      durationMs: Math.max(0, task.finishedAt - task.startedAt),
+                    }
+                  : {}),
+              },
+            ]
+          : [];
+      }),
+    };
+  }
+  function withFailedWorkerUsage(messages: PlannerMessage[]): PlannerMessage[] {
+    const available = (failedTurnUsage().tasks ?? []).filter((task) =>
+      failedWorkerSpend.has(task.id),
+    );
+    const unique = new Map(messages.map((message) => [message.id, message]));
+    return [...unique.values()].map((message) => {
+      // A later save can republish the library's original message without our
+      // fallback usage. Preserve the spend already attached to that message.
+      const retained =
+        outbox.history().find((entry) => entry.id === message.id)?.usage
+          ?.tasks ?? [];
+      const extras = [
+        ...retained.filter((task) => failedWorkerSpend.has(task.id)),
+        ...available.splice(0),
+      ].filter(
+        (task) =>
+          !message.usage?.tasks?.some((existing) => existing.id === task.id),
+      );
+      return extras.length
+        ? {
+            ...message,
+            usage: {
+              ...message.usage,
+              tasks: [...(message.usage?.tasks ?? []), ...extras],
+            },
+          }
+        : message;
+    });
+  }
   let settledSeq = 0;
   let lastFailedSeq = 0;
   const unsubscribeSettled = signals.on(
     'dialogue.turn.settled',
     async ({ payload: { outcome, trigger } }) => {
       settledSeq++;
-      if (outcome === 'failed') lastFailedSeq = settledSeq;
+      if (outcome === 'failed') {
+        lastFailedSeq = settledSeq;
+        lastFailureUsage = failedTurnUsage();
+        failureCause = turnFailureCause;
+      }
+      turnFailureCause = undefined;
+      turnPlannerSpend = undefined;
       turnReply = undefined;
       turnReplyUsage = undefined;
       await outbox.flushed();
@@ -664,18 +771,24 @@ async function open(
       };
     const reply = options.trace && replies.get(options.trace);
     turnReply = undefined;
-    turnReplyUsage = undefined;
+    turnReplyUsage = options.trace ? replyUsage.get(options.trace) : undefined;
+    let spent: TokenUsage | undefined;
     try {
-      const result = await runWithContextCapture(
-        { component: 'planner', sessionKey: key },
+      const result = await observeLlmSpend(
         () =>
-          runWithSessionId(
-            key,
-            () => decoratePlanner(planner).process(input, options),
-            undefined,
-            caller.userId,
-            caller.identity,
+          runWithContextCapture({ component: 'planner', sessionKey: key }, () =>
+            runWithSessionId(
+              key,
+              () => decoratePlanner(planner).process(input, options),
+              undefined,
+              caller.userId,
+              caller.identity,
+            ),
           ),
+        (usage) => {
+          spent = addTokenUsage(spent, usage);
+          turnPlannerSpend = addTokenUsage(turnPlannerSpend, usage);
+        },
       );
       // The library appends this successful result before its final save.
       if (result.ok) {
@@ -688,7 +801,22 @@ async function open(
         if (trace && usage) replyUsage.set(trace, usage);
         turnReplyUsage = usage;
       }
+      if (!result.ok) {
+        turnReplyUsage = addTokenUsage(turnReplyUsage, spent);
+        // Only a model failure is replaced by its content-free cause.
+        turnFailureCause = isLlmFailure(result.error)
+          ? llmFailure(result.error)
+          : undefined;
+      }
       return result;
+    } catch (error) {
+      turnReplyUsage = addTokenUsage(turnReplyUsage, spent);
+      if (!isLlmFailure(error)) {
+        turnFailureCause = undefined;
+        throw error;
+      }
+      turnFailureCause = llmFailure(error);
+      throw new Error(turnFailureCause);
     } finally {
       for (const task of session?.snapshot().tasks ?? []) emitTask(task);
     }
@@ -755,6 +883,7 @@ async function open(
       }),
       profileTimeoutMs: config.profiles?.timeoutMs ?? 3000,
       profileRunner: {
+        validateModel: (model) => profileRunner.validateModel(model),
         createWorker: async (input, options) => {
           const result = await profileRunner.createWorker(input, options);
           return result.ok
@@ -766,7 +895,10 @@ async function open(
           const result = await withCoordinatorRun(
             async (run) =>
               (await dialogueFor(userId, key, destination)).runStep(run),
-            () => profileRunner.preparePlanner(input, options),
+            () =>
+              withCoordinatorModel(selectedModel, () =>
+                profileRunner.preparePlanner(input, options),
+              ),
           );
           if (!result.ok) return result;
           const prepared = result.value;
@@ -802,6 +934,7 @@ async function open(
         save: async (_id, state) => {
           savedState = {
             ...state,
+            coordinatorModel: selectedModel,
             toolContractVersion: DIALOGUE_TOOL_CONTRACT_VERSION,
             ...(savedState?.agentsCollectionId !== undefined
               ? { agentsCollectionId: savedState.agentsCollectionId }
@@ -832,7 +965,7 @@ async function open(
                   },
                 ]
               : [],
-            state.pending,
+            withFailedWorkerUsage(state.pending),
           );
         },
         delete: async () => {},
@@ -865,6 +998,7 @@ async function open(
             goalChars: task.goal.length,
           });
           let state: TaskRecord['state'] = 'failed';
+          let spent: TokenUsage | undefined;
           const traceId = randomUUID();
           emitTask(task);
           try {
@@ -880,7 +1014,11 @@ async function open(
                 () =>
                   runWithContextCapture(
                     { component: 'other', taskId: task.id, sessionKey: key },
-                    run,
+                    // Workers report spend on TaskRecord, outside the planner bucket.
+                    () =>
+                      observeLlmSpend(run, (usage) => {
+                        spent = addTokenUsage(spent, usage);
+                      }),
                   ),
               ),
             );
@@ -891,6 +1029,9 @@ async function open(
               result.status !== 'awaiting-external';
             state = healthy ? 'done' : result.stopped ? 'stopped' : 'failed';
             return result;
+          } catch (error) {
+            if (spent) failedWorkerSpend.set(task.id, spent);
+            throw error;
           } finally {
             try {
               recMcp.dropRequest(traceId);
@@ -918,7 +1059,9 @@ async function open(
       onMessage(message) {
         if (stopped) return;
         void outbox
-          .add([message, ...(session?.takePending() ?? [])])
+          .add(
+            withFailedWorkerUsage([message, ...(session?.takePending() ?? [])]),
+          )
           .catch(() => {
             /* Retain in memory and retry persistence on next save. */
           });
@@ -949,6 +1092,11 @@ async function open(
     return send(text, { ...options, trace }).finally(drainPending);
   };
   return {
+    async selectModel(model) {
+      if (model === undefined || model === selectedModel) return;
+      selectedModel = model;
+      await outbox.upsert([]);
+    },
     destination,
     session,
     ...(usage ? { usage } : {}),
@@ -956,12 +1104,14 @@ async function open(
     coordinatorResolver,
     replies,
     outbox,
+    failedUsage: () => lastFailureUsage ?? failedTurnUsage(),
     state() {
       const activity = signals.last('dialogue.activity', key)?.payload;
       const plan = signals.last('dialogue.plan.changed', key)?.payload;
       return {
         settledSeq,
         lastFailedSeq,
+        failureCause,
         turnActive: activity?.turnActive ?? false,
         queuedInputs: activity?.queuedInputs,
         running: activity?.running ?? 0,

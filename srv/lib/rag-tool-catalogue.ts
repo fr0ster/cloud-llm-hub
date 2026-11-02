@@ -69,7 +69,7 @@ export const ragMcpSchemas = {
     collection,
     id: z.string().min(1),
     offset,
-    limit: z.number().int().min(1).max(32000).default(8000),
+    limit: z.number().int().min(1).max(32000).default(32000),
   }),
   collections_list: z.object({ session }),
   collection_set_enabled: z.object({ session, collection, enabled }),
