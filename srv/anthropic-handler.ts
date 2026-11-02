@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
-import { failureMessage } from './lib/llm-failure';
+import { failureMessage, observeLlmSpend } from './lib/llm-failure';
 import {
   ignoredModelHeader,
   parseModelAllowlist,
@@ -35,6 +35,7 @@ import {
   AdapterValidationError,
   AnthropicApiAdapter,
   type ApiRequestContext,
+  addTokenUsage,
   type NormalizedRequest,
   type TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
@@ -738,53 +739,77 @@ async function serveMessages(
       let explicitMessages = false;
       let heldStop = undefined as { event?: string; data: string } | undefined;
       let spentUsage: TokenUsage | undefined;
+      // Model spend observed below the agent: a failed chunk carries no usage, so
+      // a failed stream reports what was already spent.
+      let observedSpend: TokenUsage | undefined;
+      const recordSpend = (usage: TokenUsage) => {
+        observedSpend = addTokenUsage(observedSpend, usage);
+      };
+      const largerSpend = (): TokenUsage | undefined =>
+        observedSpend &&
+        observedSpend.totalTokens > (spentUsage?.totalTokens ?? 0)
+          ? observedSpend
+          : spentUsage;
       try {
         // The adapter consumes failed chunks as a normal close. Keep its usage
         // event, hold message_stop, and insert an explicit safe error before it.
         let streamError: unknown;
-        await runAgent(async () => {
-          const source = chatAgent.streamProcess(messages, agentOpts);
-          const observed = (async function* () {
-            for await (const chunk of source) {
-              if (!chunk.ok && streamError === undefined) {
-                requestMeasurement(req)?.end('error');
-                streamError = chunk.error;
-              }
-              if (chunk.ok && chunk.value.usage) spentUsage = chunk.value.usage;
-              if (measurement && chunk.ok) {
-                if (!deliveredContent && /\S/.test(chunk.value.content ?? ''))
-                  deliveredContent = true;
-                if ('clhMessageEnd' in chunk.value) {
-                  explicitMessages = true;
-                  if (!out.detached)
-                    requestMeasurement(req)?.messageDelivered(1);
+        await runAgent(() =>
+          observeLlmSpend(async () => {
+            const source = chatAgent.streamProcess(messages, agentOpts);
+            const observed = (async function* () {
+              for await (const chunk of source) {
+                if (!chunk.ok && streamError === undefined) {
+                  requestMeasurement(req)?.end('error');
+                  streamError = chunk.error;
+                  const spent = largerSpend();
+                  if (spent && spent !== spentUsage) {
+                    spentUsage = spent;
+                    yield {
+                      ok: true as const,
+                      value: { content: '', usage: spent },
+                    };
+                  }
                 }
+                if (chunk.ok && chunk.value.usage)
+                  spentUsage = chunk.value.usage;
+                if (measurement && chunk.ok) {
+                  if (!deliveredContent && /\S/.test(chunk.value.content ?? ''))
+                    deliveredContent = true;
+                  if ('clhMessageEnd' in chunk.value) {
+                    explicitMessages = true;
+                    if (!out.detached)
+                      requestMeasurement(req)?.messageDelivered(1);
+                  }
+                }
+                if (chunk.ok && chunk.value.status) {
+                  out.write(
+                    `: status ${JSON.stringify(chunk.value.status)}\n\n`,
+                  );
+                  continue;
+                }
+                if (
+                  chunk.ok &&
+                  ('clhMessageId' in chunk.value ||
+                    'clhMessageEnd' in chunk.value ||
+                    'clhTurnEnd' in chunk.value)
+                )
+                  continue;
+                yield chunk;
               }
-              if (chunk.ok && chunk.value.status) {
-                out.write(`: status ${JSON.stringify(chunk.value.status)}\n\n`);
+            })();
+            const sseStream = adapter.transformStream(observed, context);
+            for await (const event of sseStream) {
+              // Only after a failed chunk. With none, every event is written as
+              // it arrives, byte for byte what the adapter emitted.
+              if (event.event === 'message_stop' && streamError !== undefined) {
+                heldStop = event;
                 continue;
               }
-              if (
-                chunk.ok &&
-                ('clhMessageId' in chunk.value ||
-                  'clhMessageEnd' in chunk.value ||
-                  'clhTurnEnd' in chunk.value)
-              )
-                continue;
-              yield chunk;
+              out.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
             }
-          })();
-          const sseStream = adapter.transformStream(observed, context);
-          for await (const event of sseStream) {
-            // Only after a failed chunk. With none, every event is written as
-            // it arrives, byte for byte what the adapter emitted.
-            if (event.event === 'message_stop' && streamError !== undefined) {
-              heldStop = event;
-              continue;
-            }
-            out.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
-          }
-        });
+          }, recordSpend),
+        );
 
         // Destination state and unanswered-write notices remain independent of
         // the model cause. Every failed stream must now carry an error event.
@@ -817,6 +842,7 @@ async function serveMessages(
           }
         }
       } catch (err) {
+        spentUsage = largerSpend();
         if (spentUsage)
           out.write(
             `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: {}, usage: { input_tokens: spentUsage.promptTokens, output_tokens: spentUsage.completionTokens } })}\n\n`,

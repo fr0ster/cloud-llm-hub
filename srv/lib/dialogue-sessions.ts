@@ -758,12 +758,18 @@ async function open(
       if (!result.ok) {
         turnReplyUsage = addTokenUsage(turnReplyUsage, spent);
         // Only a model failure is replaced by its content-free cause.
-        if (isLlmFailure(result.error)) failureCause = llmFailure(result.error);
+        failureCause = isLlmFailure(result.error)
+          ? llmFailure(result.error)
+          : undefined;
       }
       return result;
     } catch (error) {
       turnReplyUsage = addTokenUsage(turnReplyUsage, spent);
-      if (!isLlmFailure(error)) throw error;
+      if (!isLlmFailure(error)) {
+        // A stale model cause must not mask this failure.
+        failureCause = undefined;
+        throw error;
+      }
       failureCause = llmFailure(error);
       throw new Error(failureCause);
     } finally {

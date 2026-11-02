@@ -17,6 +17,11 @@ export function observeLlmSpend<T>(
   return spendObserver.run(record, run);
 }
 
+/** Report a completed model call to the innermost spend observer, if any. */
+export function reportLlmSpend(usage: TokenUsage): void {
+  spendObserver.getStore()?.(usage);
+}
+
 /** Keep only status facts: provider messages may contain prompts or credentials. */
 export function llmFailure(error: unknown): string {
   if (findThrottled(error)) return 'LLM unavailable (HTTP 429)';
@@ -83,7 +88,7 @@ export function reliableLlm(inner: ILlm): ILlm {
             try {
               const result = await target.chat(...args);
               if (result.ok && result.value.usage)
-                spendObserver.getStore()?.(result.value.usage);
+                reportLlmSpend(result.value.usage);
               return result.ok
                 ? result
                 : {
@@ -126,7 +131,7 @@ export function reliableLlm(inner: ILlm): ILlm {
                   error: safeLlmError(error),
                 };
               } finally {
-                if (spent) spendObserver.getStore()?.(spent);
+                if (spent) reportLlmSpend(spent);
                 await iterator.return?.();
               }
             })();
