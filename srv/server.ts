@@ -116,12 +116,7 @@ import {
   handleUsage,
 } from './openai-handler';
 import { registerRagRoutes } from './rag-handler';
-import {
-  buildClearCookie,
-  buildSetCookie,
-  resolveSessionId,
-  sessionIdOf,
-} from './session-id';
+import { buildClearCookie, resolveSessionKey, sessionIdOf } from './session-id';
 
 /**
  * RAG collection management routes (/v1/rag/*). Mounted in `bootstrap`, filled
@@ -398,8 +393,7 @@ function isSecure(req: Request): boolean {
  * POST /v1/session — open a long session (the HTTP form of `session_open`).
  *
  * Answers 201 with the key, which the client sends in `x-clh-session` from now
- * on. The key also goes into the `clh_session` cookie: `sendBeacon` (closing a
- * browser tab) cannot set a header, and the cookie carries it there.
+ * on. Cookies never select a long session.
  */
 export async function handleOpenSession(
   req: Request,
@@ -430,7 +424,11 @@ export async function handleOpenSession(
   let s: Awaited<ReturnType<typeof openSession>>;
   try {
     const existing = (req as LongSessionRequest).longSession;
-    if (existing) {
+    if (
+      existing &&
+      existing.userId === userId &&
+      resolveSessionKey(req).key === existing.key
+    ) {
       await setSessionAgentsCollection(existing, input?.agentsCollectionId);
       s = existing;
     } else
@@ -456,7 +454,12 @@ export async function handleOpenSession(
     res.status(r.status).json(r.body);
     return;
   }
-  res.setHeader('Set-Cookie', buildSetCookie(s.key, isSecure(req)));
+  if (
+    req.headers.cookie
+      ?.split(';')
+      .some((part) => part.trim().startsWith('clh_session=ls-'))
+  )
+    res.setHeader('Set-Cookie', buildClearCookie(isSecure(req)));
   res.status(201).json({
     session: s.key,
     ttlSeconds: Math.floor(sessionConfig().ttlMs / 1000),
@@ -478,7 +481,11 @@ export async function handleCloseSession(
   res: Response,
 ): Promise<void> {
   const s = (req as LongSessionRequest).longSession;
-  if (s) {
+  if (
+    s &&
+    s.userId === (cds.context?.user?.id ?? 'anonymous') &&
+    resolveSessionKey(req).key === s.key
+  ) {
     guardedTask(
       'long session cleanup',
       cds.log('session'),
@@ -492,7 +499,11 @@ export async function handleCloseSession(
     )();
     // The cookie named the closed session: clear it, so that a later plain
     // request is not refused for a key that is gone.
-    if (resolveSessionId(req) === s.key)
+    if (
+      req.headers.cookie
+        ?.split(';')
+        .some((part) => part.trim() === `clh_session=${s.key}`)
+    )
       res.setHeader('Set-Cookie', buildClearCookie(isSecure(req)));
     res.writeHead(204);
     res.end();

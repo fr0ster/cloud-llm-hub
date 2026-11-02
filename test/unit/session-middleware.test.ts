@@ -166,9 +166,10 @@ describe('long-session keys on /v1', () => {
     expect(set['Set-Cookie']).toBeUndefined();
   });
 
-  it('a key in the cookie is honoured as well', async () => {
+  it('a key in the cookie never selects a long session', async () => {
     const { req } = await runKeyed({ cookie: `${SESSION_COOKIE}=ls-1` });
-    expect(req.longSession).toBe(live);
+    expect(req.longSession).toBeUndefined();
+    expect(req.sessionId).toMatch(/^s-/);
   });
 
   it('key of another user → 404 SESSION_NOT_FOUND', async () => {

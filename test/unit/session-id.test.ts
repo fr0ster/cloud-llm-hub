@@ -133,17 +133,17 @@ describe('buildSetCookie', () => {
   });
 });
 
-describe('resolveSessionKey — the long-session key, from the header or the cookie', () => {
+describe('resolveSessionKey — the long-session key, from the explicit header', () => {
   test('reads x-clh-session', () => {
     expect(resolveSessionKey(req({ [SESSION_HEADER]: 'ls-1' }))).toEqual({
       key: 'ls-1',
     });
   });
 
-  test('reads a long-session key from the cookie (sendBeacon carries no header)', () => {
+  test('ignores a long-session key in the cookie', () => {
     expect(
       resolveSessionKey(req({ cookie: `${SESSION_COOKIE}=ls-1` })),
-    ).toEqual({ key: 'ls-1' });
+    ).toEqual({ key: undefined });
   });
 
   test('a minted cookie names no long session', () => {

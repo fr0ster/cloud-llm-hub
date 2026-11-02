@@ -386,17 +386,19 @@
             return response;
         }
 
-        let sessionKey = localStorage.getItem('clh.session') || '';
+        let sessionKey = sessionStorage.getItem('clh.session') || '';
+        // The shared per-origin key made tabs share one session; never adopt it.
+        localStorage.removeItem('clh.session');
         let sessionOpening = null;
 
         function sessionHeaders() {
-            sessionKey = localStorage.getItem('clh.session') || '';
-            return { 'x-clh-session': sessionKey, ...getSapCredHeaders() };
+            sessionKey = sessionStorage.getItem('clh.session') || '';
+            return { ...(sessionKey ? { 'x-clh-session': sessionKey } : {}), ...getSapCredHeaders() };
         }
 
         async function ensureSession() {
             if (sessionOpening) return sessionOpening;
-            sessionKey = localStorage.getItem('clh.session') || '';
+            sessionKey = sessionStorage.getItem('clh.session') || '';
             if (sessionKey) { if (typeof startDialogueEvents === 'function') startDialogueEvents(sessionKey); return; }
             sessionOpening = (async () => {
                 const response = await hubFetch('/v1/session', {
@@ -408,7 +410,7 @@
                 if (!response.ok) throw new Error(data.error?.message || 'HTTP ' + response.status);
                 sessionKey = data.session;
                 if (data.agentsCollectionId) localStorage.setItem('clh.agentsCollectionId', data.agentsCollectionId);
-                localStorage.setItem('clh.session', sessionKey);
+                sessionStorage.setItem('clh.session', sessionKey);
                 if (typeof startDialogueEvents === 'function') startDialogueEvents(sessionKey);
             })();
             try { await sessionOpening; } finally { sessionOpening = null; }
@@ -418,7 +420,7 @@
             if (typeof stopDialogueEvents === 'function') stopDialogueEvents();
             try {
                 if (sessionOpening) await sessionOpening;
-                sessionKey = localStorage.getItem('clh.session') || '';
+                sessionKey = sessionStorage.getItem('clh.session') || '';
                 if (!sessionKey) return;
                 const response = await hubFetch('/v1/session', { method: 'DELETE', headers: sessionHeaders() });
                 if (!response.ok && response.status !== 404) throw new Error('HTTP ' + response.status);
@@ -426,7 +428,7 @@
                 console.warn('Session close failed', error);
             } finally {
                 sessionKey = '';
-                localStorage.removeItem('clh.session');
+                sessionStorage.removeItem('clh.session');
             }
         }
 
@@ -447,14 +449,14 @@
                 onSessionKey?.(sessionKey);
                 return hubFetch(url, { ...requestOpts, headers });
             };
-            const requestedKey = localStorage.getItem('clh.session');
+            const requestedKey = sessionStorage.getItem('clh.session');
             let response = await request();
             if (response.status === 404) {
                 const data = await response.clone().json().catch(() => null);
                 if (data?.error?.code === 'SESSION_NOT_FOUND') {
-                    if (localStorage.getItem('clh.session') === requestedKey) {
+                    if (sessionStorage.getItem('clh.session') === requestedKey) {
                         sessionKey = '';
-                        localStorage.removeItem('clh.session');
+                        sessionStorage.removeItem('clh.session');
                     }
                     await ensureSession();
                     showSessionNotice('Сесію перезапущено');

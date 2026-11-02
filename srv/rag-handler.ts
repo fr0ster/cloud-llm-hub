@@ -538,7 +538,7 @@ export function registerRagRoutes(
           error(
             res,
             400,
-            'x-session-id is no longer read. A session collection belongs to a session this service issued: send the key of your session (POST /v1/session) in x-clh-session, or keep the clh_session cookie from a previous response and send it back.',
+            'x-session-id is no longer read. A session collection belongs to a session this service issued: send the key of your session (POST /v1/session) in x-clh-session. Plain-mode sessions use the clh_session cookie.',
           );
           return;
         }

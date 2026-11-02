@@ -78,7 +78,7 @@ function harness(now?: number, realSessionRecovery = false) {
     setIdleStatus: jest.fn(),
     refreshHubState: jest.fn(async (): Promise<void> => {}),
     renderMermaidDiagrams: jest.fn(),
-    localStorage: {
+    sessionStorage: {
       getItem: (key: string) => storage.get(key) ?? null,
       setItem: (key: string, value: string) => storage.set(key, value),
       removeItem: (key: string) => storage.delete(key),
@@ -1066,7 +1066,7 @@ test('404 recovery keeps the main request running in the replacement journal unt
   const sent = ui.sendMessage();
   await flush();
   expect(requestKeys).toEqual(['key', 'replacement']);
-  expect(ui.localStorage.getItem('clh.session')).toBe('replacement');
+  expect(ui.sessionStorage.getItem('clh.session')).toBe('replacement');
   expect(ui.active.innerHTML).toContain('main \u00b7 working');
   expect(ui.list.innerHTML).toContain(
     '\u25b6 main: \u00abrecovered request\u00bb',

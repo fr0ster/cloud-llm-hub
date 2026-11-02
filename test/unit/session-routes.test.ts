@@ -146,7 +146,7 @@ function chat(headers: Record<string, string> = {}, path = 'chat/completions') {
 }
 
 describe('POST /v1/session', () => {
-  it('POST /v1/session → 201 with ls- key and cookie', async () => {
+  it('POST /v1/session → 201 with ls- key without a long-session cookie', async () => {
     const { res, body } = await openOne({ destination: 'DEV' });
     expect(res.status).toBe(201);
     expect(body).toEqual({
@@ -155,9 +155,7 @@ describe('POST /v1/session', () => {
       destination: 'DEV',
       agentsCollectionId: 'agents',
     });
-    expect(res.headers.get('set-cookie')).toContain(
-      `${SESSION_COOKIE}=${body.session}`,
-    );
+    expect(res.headers.get('set-cookie')).not.toContain(body.session);
     expect(longSessions().get('alice', body.session)?.destination).toBe('DEV');
   });
 
@@ -266,8 +264,7 @@ describe('closing', () => {
       headers: { cookie: `${SESSION_COOKIE}=${body.session}` },
     });
     expect(res.status).toBe(204);
-    expect(res.headers.get('set-cookie')).toMatch(/Max-Age=0/);
-    expect(longSessions().has('alice', body.session)).toBe(false);
+    expect(longSessions().has('alice', body.session)).toBe(true);
   });
 
   it('closing a key that is already gone → 204', async () => {
@@ -480,3 +477,39 @@ test.each(['chat/completions', 'messages'])(
     );
   },
 );
+
+describe('shared cookie jar isolation', () => {
+  it.each([undefined, '', '   '])(
+    'opens a separate session with header %p',
+    async (header) => {
+      const a = await openOne();
+      const cookie = `${SESSION_COOKIE}=${a.body.session}`;
+      const headers: Record<string, string> = { cookie };
+      if (header !== undefined) headers[SESSION_HEADER] = header;
+      const b = await fetch(`${base}/v1/session`, { method: 'POST', headers });
+      const opened = z.object({ session: z.string() }).parse(await b.json());
+      expect(b.status).toBe(201);
+      expect(opened.session).not.toBe(a.body.session);
+      expect((await chat(headers)).status).toBe(400);
+      expect(
+        (await fetch(`${base}/v1/session/events`, { headers })).status,
+      ).toBe(404);
+      expect(
+        (await fetch(`${base}/v1/session`, { method: 'DELETE', headers }))
+          .status,
+      ).toBe(204);
+      expect(longSessions().has('alice', a.body.session)).toBe(true);
+    },
+  );
+
+  it('reuses only an explicit owned key', async () => {
+    const a = await openOne();
+    const response = await fetch(`${base}/v1/session`, {
+      method: 'POST',
+      headers: { [SESSION_HEADER]: a.body.session },
+    });
+    expect(
+      z.object({ session: z.string() }).parse(await response.json()).session,
+    ).toBe(a.body.session);
+  });
+});

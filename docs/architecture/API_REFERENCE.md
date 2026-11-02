@@ -703,10 +703,18 @@ destination, under a server-issued key. Its TTL counts from the last request.
 
 | Call | Answer |
 |---|---|
-| `POST /v1/session`, body `{ "destination"?: string }` | `201 { session, ttlSeconds, destination }`; the key also comes back in the `clh_session` cookie |
-| `POST /v1/chat/completions` or `POST /v1/messages` with body `session: "<key>"` | served in that session; body wins over header and cookie |
-| any `/v1` request with `x-clh-session: <key>` | served in that session; the header wins over the cookie |
+| `POST /v1/session`, body `{ "destination"?: string }` | `201 { session, ttlSeconds, destination }`; opens a new session unless an explicit non-empty `x-clh-session` names an existing caller-owned session |
+| `POST /v1/chat/completions` or `POST /v1/messages` with body `session: "<key>"` | served in that session; body wins over header |
+| any `/v1` request with `x-clh-session: <key>` | served in that session; cookies never select long sessions |
 | `DELETE /v1/session` (or `POST /v1/session/close`) with the key | `204` once the session is closed: ABAP session, history, session collections and record are gone |
+
+Long-session clients must send a non-empty `x-clh-session` on each request,
+including events, acknowledgements, RAG and close (or the explicit chat body
+`session` field for chat). The `clh_session` cookie remains for plain mode
+(`LLM_AGENT_PLAIN_API`) only; old long-session cookies are ignored. Cookie-only
+long-session clients must switch to the header. The WebUI keeps `clh.session`
+in per-tab `sessionStorage` and removes legacy `localStorage` keys without
+adopting them. Header loss cannot select another client's long session.
 
 Requests of one session run one after another; a request behind a full queue is
 refused. Refusals carry the code in `error.code`, in the OpenAI and the
@@ -715,7 +723,7 @@ Anthropic envelope alike:
 | Code | Status | When |
 |---|---|---|
 | `SESSION_REQUIRED` | 400 | no key, plain mode off |
-| `SESSION_NOT_FOUND` | 404 | the body or header names no open session (closed, expired, never opened, another user's); an unknown cookie is ignored |
+| `SESSION_NOT_FOUND` | 404 | the body or header names no open session (closed, expired, never opened, another user's); cookies never select long sessions |
 | `SESSION_LIMIT` | 429 | an open (or a revival) beyond `LLM_AGENT_MAX_SESSIONS` / `LLM_AGENT_MAX_SESSIONS_PER_USER` |
 | `SESSION_BUSY` | 429 | the session's queue (`LLM_AGENT_SESSION_QUEUE`) is full |
 | `SESSION_STORE_UNAVAILABLE` | 503, `Retry-After: 5` | a revival asked for before the hub's providers are ready |
@@ -782,7 +790,7 @@ recorded on channel `mcp-agent` with the request trace and session identity.
 All channels share the same thirteen RAG tools. The five content/collection writes below
 use strict objects and accept an optional nonempty `session` argument. A live,
 caller-owned session is required even for user collections. Key precedence is
-`session`, `x-clh-session`, then the `clh_session` cookie; obtain the key with
+`session`, then `x-clh-session`; cookies never select long sessions. Obtain the key with
 `session_open`. Transport `mcp-session-id` and legacy `x-session-id` are not keys.
 UTF-8 JSON-serialized arguments, including attributes and session, must fit in
 10 MiB (10,485,760 bytes). No file upload, chunking, or URL fetching occurs.
@@ -1096,7 +1104,7 @@ The setters use the same values, access rules and error codes as the two MCP
 trust tools above. Effective record trust is record override, then collection or
 source override, then class default. Clearing an override restores inheritance.
 
-`PATCH /v1/rag/collections/:id/enabled` with `{ "enabled": false }` and the current session header (`x-clh-session`, or the session cookie) changes only that user's session. `GET /v1/rag/collections` returns `enabled` (effective session state) and `defaultEnabled`. Use `{ "enabled": false, "scope": "default" }` to edit the default with the existing owner/admin permissions. Without a session, PATCH and GET retain default behavior.
+`PATCH /v1/rag/collections/:id/enabled` with `{ "enabled": false }` and the current session header (`x-clh-session` for long sessions, or the plain-mode session cookie) changes only that user's session. `GET /v1/rag/collections` returns `enabled` (effective session state) and `defaultEnabled`. Use `{ "enabled": false, "scope": "default" }` to edit the default with the existing owner/admin permissions. Without a session, PATCH and GET retain default behavior.
 
 Session overrides take precedence over collection defaults. They are deleted with session state. Long sessions persist overrides in their session record (SQLite/HANA/PG as configured) and restore them with the destination and history after restart; plain sessions keep overrides in memory, like their destination state.
 
@@ -1178,7 +1186,7 @@ Copy creation and record edits are REST-only.
 `POST /v1/session` accepts optional `agentsCollectionId` alongside `destination`.
 Its response includes `{ session, ttlSeconds, destination, agentsCollectionId }`.
 A new session defaults to the configured global identity. With an existing
-session in `x-clh-session` or its cookie, the same route updates its selection;
+session in an explicit non-empty `x-clh-session`, the same route updates its selection;
 omitting the field preserves the stored choice.
 
 MCP `session_open({ destination?, agentsCollectionId?, session? })` returns
@@ -1201,7 +1209,7 @@ keep their snapshots. Agents collections never participate in knowledge context.
 
 Create the target explicitly with `collection_create({ name: "result", scope: "user" })`, then call `record_add({ collection: "result", record: "tech-spec", text: "..." })`. Use user scope for durable results and session scope only for scratch. `record` is the optional stable physical ID; omission generates a UUID. Add is create-only: `RECORD_EXISTS` (409) requires reading the existing record and using `record_update({ collection, record, text })`. Read back with paged `collection_records` and `rag_read` using actual IDs; verify count and scope. Retire reversibly with `record_set_enabled({ collection, id, enabled: false })`; use `record_delete({ collection, record })` only for explicit permanent removal. Updates preserve ID and metadata but add no correction reason, audit history or supersede chain. Disabling does not free an ID. A live owned long session is required for every RAG call.
 
-Plain OpenAI and Anthropic chat clients must open a live caller-owned long session with `POST /v1/session` and bind its returned key with the top-level string body field `session`, `x-clh-session`, or the `clh_session` cookie, in that precedence order. The body field is validated and removed before forwarding upstream; invalid types return 400 and unknown, closed or foreign keys return `SESSION_NOT_FOUND`, as with the header. All thirteen RAG tools stay listed but return `SESSION_REQUIRED` without that session. WebUI sends `x-clh-tool-results: summary` on chat requests to receive compact `: tool-result` SSE comments (identifiers, counts and error codes, plus `rag_search.query` truncated to 200 characters and `rag_read.offset` / `limit` arguments; without returned texts or error messages). The header value is case-insensitive; absent or other values emit no tool-result comments, including dialogue follow-up streams. WebUI executes RAG on the server and renders server tool results; browsers must not dispatch them again. Removed tool names in client tool definitions, forced choices or calls return 400 with migration guidance; REST tool dispatch returns 404. Cross-instance `RECORD_EXISTS` protection is not atomic: providers offer upsert without conditional insert; serialization applies within one process.
+Plain OpenAI and Anthropic chat clients must open a live caller-owned long session with `POST /v1/session` and bind its returned key with the top-level string body field `session` or `x-clh-session`, in that precedence order. Cookies never select a long session. The body field is validated and removed before forwarding upstream; invalid types return 400 and unknown, closed or foreign keys return `SESSION_NOT_FOUND`, as with the header. All thirteen RAG tools stay listed but return `SESSION_REQUIRED` without that session. WebUI sends `x-clh-tool-results: summary` on chat requests to receive compact `: tool-result` SSE comments (identifiers, counts and error codes, plus `rag_search.query` truncated to 200 characters and `rag_read.offset` / `limit` arguments; without returned texts or error messages). The header value is case-insensitive; absent or other values emit no tool-result comments, including dialogue follow-up streams. WebUI executes RAG on the server and renders server tool results; browsers must not dispatch them again. Removed tool names in client tool definitions, forced choices or calls return 400 with migration guidance; REST tool dispatch returns 404. Cross-instance `RECORD_EXISTS` protection is not atomic: providers offer upsert without conditional insert; serialization applies within one process.
 
 ### Source trust: agent MCP and RAG REST
 

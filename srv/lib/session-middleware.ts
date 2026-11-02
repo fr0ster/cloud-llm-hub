@@ -5,7 +5,6 @@ import {
   buildSetCookie,
   resolveSessionId,
   resolveSessionKey,
-  SESSION_HEADER,
   type WithSession,
 } from '../session-id';
 import type { LongSession } from './long-session';
@@ -46,7 +45,7 @@ export interface SessionMiddlewareDeps {
   takeRevivalNotice?: (s: LongSession) => boolean;
   /**
    * Requests on which a key naming no session is not refused but ignored: the
-   * session routes, where a stale key in the cookie must not stop a client
+   * session routes, where a stale explicit key must not stop a client
    * from opening a new session or from closing what is already gone.
    */
   keyOptional?: (req: Request) => boolean;
@@ -84,11 +83,9 @@ function refuse(
 /**
  * Give every `/v1` request a session this service issued.
  *
- * A long-session key (`x-clh-session`, or a long-session key in the cookie)
- * binds the request to that session: live, or revived from its record. A key
- * that names none — closed, expired, never opened, another user's — is refused
- * 404 when sent in the body or header; an unknown cookie key is treated as absent.
- * Chat body `session` takes precedence over the header, then the cookie.
+ * An explicit long-session key binds the request to its caller-owned session,
+ * live or revived. Chat body `session` takes precedence over the header.
+ * A missing session is refused unless the route allows opening a new one.
  *
  * Without a key, the plain mode of before: the presented `clh_session` is kept
  * when it names a live session, and otherwise one is minted and the cookie set
@@ -142,7 +139,7 @@ export function sessionMiddleware(deps: SessionMiddlewareDeps = {}) {
     }
     return resolve(userId, key).then(
       (s) => {
-        if (s) {
+        if (s && s.userId === userId) {
           deps.touchSession?.(s);
           r.sessionId = key;
           r.sessionMinted = false;
@@ -155,10 +152,7 @@ export function sessionMiddleware(deps: SessionMiddlewareDeps = {}) {
           next();
           return;
         }
-        if (
-          (!bodySession && !r.headers[SESSION_HEADER]?.toString().trim()) ||
-          deps.keyOptional?.(req)
-        ) {
+        if (deps.keyOptional?.(req)) {
           // The stale key is not a plain session either: mint.
           mint(r, res);
           next();

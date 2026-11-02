@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- Isolate long sessions through explicit keys only: cookies cannot select, observe or close them, and opening without a key creates a new session. WebUI keys use per-tab sessionStorage and discard legacy shared keys. Cookie-only long-session clients must send x-clh-session; plain-mode cookies remain supported.
+
 ## [10.4.0] - 2026-11-02
 
 ### Added

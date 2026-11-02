@@ -127,7 +127,7 @@ describe('WebUI extended session protocol', () => {
   test('plain UI sends the session header and opens sessions explicitly', () => {
     expect(html).toContain('x-clh-session');
     expect(html).toMatch(/hubFetch\('\/v1\/session',\s*\{\s*method: 'POST'/);
-    expect(html).toContain("localStorage.setItem('clh.session'");
+    expect(html).toContain("sessionStorage.setItem('clh.session'");
   });
   test('R15 plain UI keeps sessions on pagehide and recovers by error code', () => {
     expect(html).not.toContain("sendBeacon('/v1/session/close'");
@@ -148,7 +148,8 @@ function sessionHarness(key = '') {
     fetch,
     hubFetch: fetch,
     hubSignedOut: false,
-    localStorage: {
+    localStorage: { removeItem: jest.fn() },
+    sessionStorage: {
       getItem: (name: string) => values.get(name),
       setItem: (name: string, value: string) => values.set(name, value),
       removeItem: (name: string) => values.delete(name),
@@ -163,14 +164,20 @@ function sessionHarness(key = '') {
     window: { addEventListener: jest.fn() },
   };
   const source = html.slice(
-    html.indexOf('        let sessionKey ='),
+    html.indexOf("        localStorage.removeItem('clh.session');"),
     html.indexOf('        function stepSymbol('),
   );
   const api = runInNewContext(
     `${source}\n({ sessionFetch, closeSession });`,
     context,
   );
-  return { ...api, fetch, values, notices };
+  return {
+    ...api,
+    fetch,
+    values,
+    notices,
+    legacyStorage: context.localStorage,
+  };
 }
 
 function response(status: number, data = {}, notice = '') {
@@ -413,4 +420,27 @@ ${html.slice(start, end)}; loadDocuments;`,
   await load();
   expect(list.innerHTML).toContain('Disabled record');
   expect(list.innerHTML).not.toContain('Error:');
+});
+
+test('tabs discard shared legacy keys and open independently without empty headers', async () => {
+  const a = sessionHarness();
+  const b = sessionHarness();
+  a.fetch
+    .mockResolvedValueOnce(response(201, { session: 'tab-a' }))
+    .mockResolvedValue(response(200));
+  b.fetch
+    .mockResolvedValueOnce(response(201, { session: 'tab-b' }))
+    .mockResolvedValue(response(200));
+  await Promise.all([
+    a.sessionFetch('/v1/rag/collections'),
+    b.sessionFetch('/v1/rag/collections'),
+  ]);
+  for (const ui of [a, b]) {
+    expect(ui.legacyStorage.removeItem).toHaveBeenCalledWith('clh.session');
+    expect(ui.fetch.mock.calls[0][1].headers).not.toHaveProperty(
+      'x-clh-session',
+    );
+  }
+  expect(a.values.get('clh.session')).toBe('tab-a');
+  expect(b.values.get('clh.session')).toBe('tab-b');
 });

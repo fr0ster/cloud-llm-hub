@@ -1264,7 +1264,7 @@ test.each([false, true])(
   },
 );
 
-test('writes use explicit session, header, then cookie precedence', async () => {
+test('writes use explicit session or header and ignore cookies', async () => {
   const input = { name: 'precedence', scope: 'session' as const };
   const execute = (
     headers: { 'x-clh-session'?: string; cookie?: string },
@@ -1293,7 +1293,7 @@ test('writes use explicit session, header, then cookie precedence', async () => 
   expect(
     (await execute({ cookie: `clh_session=${sid}` })).structuredContent,
   ).toMatchObject({
-    collection: sessionCollectionId('precedence', 'alice', sid),
+    error: { code: 'SESSION_REQUIRED' },
   });
 });
 
