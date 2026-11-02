@@ -92,11 +92,11 @@ resources:
 
 # Optional docs MCP: merge into the existing parameters/resources sections.
 # parameters:
-#   LLM_AGENT_PLANNER_MCP: "DOCS_MCP"
+#   LLM_AGENT_PLANNER_MCP: ""
 #   LLM_AGENT_EXECUTOR_MCP: "DOCS_MCP"
-#   LLM_AGENT_CHECKER_MCP: "DOCS_MCP"
+#   LLM_AGENT_CHECKER_MCP: ""
 #   LLM_AGENT_ANALYST_MCP: "DOCS_MCP"
-#   LLM_AGENT_MCP_TRUST: "DOCS_MCP=4.5"
+#   LLM_AGENT_MCP_TRUST: "DOCS_MCP=4.2"
 # resources:
 #   - name: cloud-llm-hub-destination
 #     parameters:
