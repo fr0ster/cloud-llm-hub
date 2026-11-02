@@ -11,6 +11,7 @@ import {
 } from './lib/model-policy';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
+import { runWithRequestLlms } from './lib/session-llms';
 import { summarizeToolResult } from './lib/tool-result-summary';
 import {
   measureRequest,
@@ -264,11 +265,16 @@ export function handleChatCompletions(
   req: Request,
   res: Response,
 ): Promise<void> {
-  requestStart(req);
-  const runtime = usageRuntime();
-  if (!runtime || (!runtime.enabled('request') && !runtime.enabled('session')))
-    return handleChatCompletionsMeasured(req, res);
-  return handleChatCompletionsWithUsage(req, res);
+  return runWithRequestLlms((req as LongSessionRequest).longSession, () => {
+    requestStart(req);
+    const runtime = usageRuntime();
+    if (
+      !runtime ||
+      (!runtime.enabled('request') && !runtime.enabled('session'))
+    )
+      return handleChatCompletionsMeasured(req, res);
+    return handleChatCompletionsWithUsage(req, res);
+  });
 }
 
 async function handleChatCompletionsWithUsage(

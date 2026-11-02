@@ -41,3 +41,57 @@ it('rejects lazy client creation after session disposal', async () => {
   await expect(owner.get('model', create)).rejects.toThrow('closed');
   expect(create).not.toHaveBeenCalled();
 });
+
+it.each(['explicit', 'ttl', 'shutdown'] as const)(
+  'disposes registry clients on %s close, including failed cleanup',
+  async (reason) => {
+    const { LongSessionRegistry } = await import('../../srv/lib/long-session');
+    const { longSessionLlms, runWithRequestLlms, sessionLlms } = await import(
+      '../../srv/lib/session-llms'
+    );
+    const registry = new LongSessionRegistry(
+      { ttlMs: 1, maxSessions: 10, maxPerUser: 10, queueLength: 1 },
+      {
+        onClose: async () => {
+          throw new Error('cleanup failed');
+        },
+      },
+    );
+    const session = registry.open('alice', { key: 'same' });
+    if ('refused' in session) throw new Error(session.refused);
+    const owner = longSessionLlms(session);
+    await runWithRequestLlms(session, async () => {
+      expect(sessionLlms.getStore()).toBe(owner);
+      await registry.run(session, async () => {
+        expect(sessionLlms.getStore()).toBe(owner);
+      });
+    });
+    await expect(registry.close('alice', 'same', reason)).rejects.toThrow(
+      'cleanup failed',
+    );
+    await expect(owner.get('unused', jest.fn())).rejects.toThrow('closed');
+  },
+);
+
+it.each([false, true])(
+  'disposes a request owner after completion (failure: %s)',
+  async (fails) => {
+    const { runWithRequestLlms, sessionLlms } = await import(
+      '../../srv/lib/session-llms'
+    );
+    let owner: SessionLlms | undefined;
+    const result = runWithRequestLlms(undefined, async () => {
+      owner = sessionLlms.getStore();
+      expect(owner).toBeDefined();
+      await runWithRequestLlms(undefined, async () =>
+        expect(sessionLlms.getStore()).toBe(owner),
+      );
+      if (fails) throw new Error('request failed');
+    });
+    if (fails) await expect(result).rejects.toThrow('request failed');
+    else await result;
+    if (!owner) throw new Error('missing owner');
+    await expect(owner.get('unused', jest.fn())).rejects.toThrow('closed');
+    expect(sessionLlms.getStore()).toBeUndefined();
+  },
+);

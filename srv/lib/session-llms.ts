@@ -33,3 +33,48 @@ export class SessionLlms {
 }
 
 export const sessionLlms = new AsyncLocalStorage<SessionLlms>();
+
+/** Full session identity; keys alone are not unique across users. */
+export interface LlmSessionIdentity {
+  readonly userId: string;
+  readonly key: string;
+}
+
+const owners = new Map<string, SessionLlms>();
+const closedSessions = new WeakSet<LlmSessionIdentity>();
+const identityKey = (session: LlmSessionIdentity): string =>
+  JSON.stringify([session.userId, session.key]);
+
+export function longSessionLlms(session: LlmSessionIdentity): SessionLlms {
+  const key = identityKey(session);
+  let owner = owners.get(key);
+  if (!owner) {
+    owner = new SessionLlms();
+    owners.set(key, owner);
+  }
+  return owner;
+}
+
+export function disposeSessionLlms(session: LlmSessionIdentity): void {
+  closedSessions.add(session);
+  const key = identityKey(session);
+  owners.get(key)?.dispose();
+  owners.delete(key);
+}
+
+/** Keep the owner installed through classification, execution and streaming. */
+export async function runWithRequestLlms<T>(
+  session: LlmSessionIdentity | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
+  if (session && !closedSessions.has(session))
+    return longSessionLlms(session).run(run);
+  // Nested internal tools belong to the enclosing request.
+  if (sessionLlms.getStore()) return run();
+  const owner = new SessionLlms();
+  try {
+    return await owner.run(run);
+  } finally {
+    owner.dispose();
+  }
+}

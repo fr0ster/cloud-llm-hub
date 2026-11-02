@@ -3,6 +3,7 @@ import {
   orchestrationDefinitions,
   orchestrationTools,
 } from './lib/orchestration-tool-definitions';
+import { runWithRequestLlms } from './lib/session-llms';
 
 export {
   type OrchestrationTool,
@@ -35,6 +36,7 @@ import {
   planAuthorContextNotes,
   plannerSessionOptions,
 } from './lib/planner-memory';
+import type { LongSessionRequest } from './lib/session-connection';
 import { resolveSession } from './lib/session-lifecycle';
 import { isRefusal } from './lib/session-retention';
 import { requestMeasurement } from './lib/usage/request-records';
@@ -114,7 +116,10 @@ export async function executeOrchestrationTool(
   signal?: AbortSignal,
 ) {
   const { session: supplied, destination: requested, ...input } = args;
-  const key = supplied ?? resolveSessionKey(req).key;
+  const key =
+    supplied ??
+    (req as LongSessionRequest).longSession?.key ??
+    resolveSessionKey(req).key;
   if (!key && name !== 'plan_create' && name !== 'plan_revise')
     return ragTextResult('SESSION_REQUIRED', true);
   try {
@@ -222,7 +227,7 @@ export async function executeOrchestrationTool(
         },
       );
     };
-    if (!s) return await run();
+    if (!s) return await runWithRequestLlms(undefined, run);
     // Do not join the long-session FIFO: that would wait out a WebUI turn and
     // hide the library's busy refusal. The library serializes tools and close;
     // a lifetime hold and retention lease protect the session here.
@@ -241,7 +246,7 @@ export async function executeOrchestrationTool(
       );
     }
     try {
-      return await run();
+      return await runWithRequestLlms(s, run);
     } finally {
       lease.release();
       releaseHold();

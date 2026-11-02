@@ -77,7 +77,11 @@ import {
   SessionConnectionFactory,
   SessionConnectionPool,
 } from './session-connection-pool';
-import { SessionLlms } from './session-llms';
+import {
+  disposeSessionLlms,
+  longSessionLlms,
+  type SessionLlms,
+} from './session-llms';
 import { evaluateGated } from './step-reviewer';
 import { cachedSystemIdentity } from './system-identity-cache';
 import { type TaskView, taskView } from './task-view';
@@ -297,11 +301,11 @@ export function dialogueFor(
     session.destination = destination;
     registry?.touch(userId, key);
   }
-  const llms = new SessionLlms();
+  const llms = longSessionLlms({ userId, key });
   const opening = llms
     .run(() => open(userId, key, destination, selected, llms))
     .catch((error: Error) => {
-      llms.dispose();
+      disposeSessionLlms({ userId, key });
       throw error;
     })
     .then((handle) => {
@@ -683,7 +687,7 @@ async function open(
         taskCallers.delete(task.id);
       }
     },
-    { source: key },
+    { source: slot(userId, key) },
   );
   const unsubscribeTurnCaller = signals.on(
     'dialogue.turn.started',
@@ -705,7 +709,7 @@ async function open(
           },
         };
     },
-    { source: key },
+    { source: slot(userId, key) },
   );
   const registry = longSessionsIfReady();
   const longSession = registry?.get(userId, key);
@@ -723,15 +727,15 @@ async function open(
           releaseHold = registry?.hold(longSession);
       } else releaseLifetime();
     },
-    { source: key },
+    { source: slot(userId, key) },
   );
   const unsubscribeClosed = signals.on(
     'dialogue.session.closed',
     () => {
-      llms.dispose();
+      disposeSessionLlms({ userId, key });
       stopLifetime();
     },
-    { source: key },
+    { source: slot(userId, key) },
   );
   // Snapshot before settlement clears the live reply; a later successful turn
   // must not erase the spend belonging to the retained failure sequence.
@@ -816,7 +820,7 @@ async function open(
           ),
         });
     },
-    { source: key },
+    { source: slot(userId, key) },
   );
   const unsubscribeSettled = signals.on(
     'dialogue.turn.settled',
@@ -834,12 +838,12 @@ async function open(
       await outbox.flushed();
       emit({ kind: 'settled', outcome, trigger });
     },
-    { source: key },
+    { source: slot(userId, key) },
   );
   const unsubscribeWait = signals.on(
     'dialogue.wait',
     ({ payload: { tasks } }) => emit({ kind: 'wait', tasks }),
-    { source: key },
+    { source: slot(userId, key) },
   );
   const stopLifetime = () => {
     pendingToolResults.length = 0;
@@ -1034,7 +1038,7 @@ async function open(
       // do not invoke plan_create or plan_revise.
       ...retrieval,
       ...(usage ? { usage } : {}),
-      id: key,
+      id: slot(userId, key),
       signals,
       // Library close always deletes. The hub owns deletion by close reason:
       // shutdown preserves the last saved state for revival.
@@ -1257,8 +1261,14 @@ async function open(
     outbox,
     failedUsage: () => lastFailureUsage ?? failedTurnUsage(),
     state() {
-      const activity = signals.last('dialogue.activity', key)?.payload;
-      const plan = signals.last('dialogue.plan.changed', key)?.payload;
+      const activity = signals.last(
+        'dialogue.activity',
+        slot(userId, key),
+      )?.payload;
+      const plan = signals.last(
+        'dialogue.plan.changed',
+        slot(userId, key),
+      )?.payload;
       return {
         settledSeq,
         lastFailedSeq,
@@ -1302,7 +1312,7 @@ async function open(
     pool,
     stop() {
       stopLifetime();
-      llms.dispose();
+      disposeSessionLlms({ userId, key });
       stopped = true;
       lifetime.abort();
       subscribers.clear();

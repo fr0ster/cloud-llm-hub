@@ -37,6 +37,7 @@ import {
   recordAttributes,
   recordPolicy,
 } from './lib/record-policy';
+import { runWithRequestLlms } from './lib/session-llms';
 import { isRefusal } from './lib/session-retention';
 import { informationalSkillDocuments } from './lib/skills-pool';
 import { resolverFor } from './lib/trust-resolver';
@@ -380,7 +381,7 @@ async function executeRagMcpToolImpl(
       }
     };
     const result = context.trustedAdmission
-      ? await run()
+      ? await runWithRequestLlms(s, run)
       : await longSessions().run(s, run);
     return 'refused' in result
       ? fail(

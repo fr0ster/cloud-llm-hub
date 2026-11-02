@@ -475,11 +475,11 @@ test('state counts every session settlement and retains the latest failure seque
   const bus = dialogueSignals();
   expect(h.state()).toMatchObject({ settledSeq: 0, lastFailedSeq: 0 });
   for (const [source, outcome, settledSeq, lastFailedSeq] of [
-    ['key', 'failed', 1, 1],
+    [JSON.stringify(['alice', 'key']), 'failed', 1, 1],
     ['other', 'failed', 1, 1],
-    ['key', 'ok', 2, 1],
-    ['key', 'failed', 3, 3],
-    ['key', 'ok', 4, 3],
+    [JSON.stringify(['alice', 'key']), 'ok', 2, 1],
+    [JSON.stringify(['alice', 'key']), 'failed', 3, 3],
+    [JSON.stringify(['alice', 'key']), 'ok', 4, 3],
   ] as const) {
     bus.emit('dialogue.turn.settled', { outcome, trigger: 'event' }, source);
     expect(h.state()).toMatchObject({ settledSeq, lastFailedSeq });
@@ -498,30 +498,34 @@ test('idle is false between a task end and its event turn and while ready steps 
   bus.emit(
     'dialogue.plan.changed',
     { status: 'active', total: 3, done: 1 },
-    'key',
+    JSON.stringify(['alice', 'key']),
   );
   const activity = { turnActive: false, queuedInputs: 1, running: 0, ready: 0 };
-  bus.emit('dialogue.activity', activity, 'key');
+  bus.emit('dialogue.activity', activity, JSON.stringify(['alice', 'key']));
   expect(h.state().idle).toBe(false);
   bus.emit(
     'dialogue.activity',
     { ...activity, queuedInputs: 0, ready: 1 },
-    'key',
+    JSON.stringify(['alice', 'key']),
   );
   expect(h.state().idle).toBe(false);
   bus.emit(
     'dialogue.activity',
     { ...activity, queuedInputs: 0, turnActive: true },
-    'key',
+    JSON.stringify(['alice', 'key']),
   );
   expect(h.state()).toMatchObject({ turnActive: true, idle: false });
   bus.emit(
     'dialogue.activity',
     { ...activity, queuedInputs: 0, running: 1 },
-    'key',
+    JSON.stringify(['alice', 'key']),
   );
   expect(h.state()).toMatchObject({ running: 1, idle: false });
-  bus.emit('dialogue.activity', { ...activity, queuedInputs: 0 }, 'key');
+  bus.emit(
+    'dialogue.activity',
+    { ...activity, queuedInputs: 0 },
+    JSON.stringify(['alice', 'key']),
+  );
   expect(h.state()).toEqual({
     settledSeq: 0,
     lastFailedSeq: 0,
@@ -1561,14 +1565,22 @@ test('wait signals are session scoped, live only and unsubscribe on close', asyn
   ];
   dialogueSignals().emit('dialogue.wait', { tasks }, 'other');
   expect(events).toEqual([]);
-  dialogueSignals().emit('dialogue.wait', { tasks }, 'key');
+  dialogueSignals().emit(
+    'dialogue.wait',
+    { tasks },
+    JSON.stringify(['alice', 'key']),
+  );
   expect(events).toEqual([{ kind: 'wait', tasks }]);
   const replay: DialogueEvent[] = [];
   h.subscribe((event) => replay.push(event));
   expect(replay).toEqual([]);
   expect(h.outbox.pending()).toEqual([]);
   await closeDialogue('alice', 'key', 'explicit');
-  dialogueSignals().emit('dialogue.wait', { tasks }, 'key');
+  dialogueSignals().emit(
+    'dialogue.wait',
+    { tasks },
+    JSON.stringify(['alice', 'key']),
+  );
   expect(events).toHaveLength(1);
 });
 
@@ -2804,4 +2816,29 @@ test('hub queue labels update in snapshots without notifying the running-only bo
     });
     note.mockRestore();
   }
+});
+
+test('closing one user with a shared key preserves the other user LLMs and signals', async () => {
+  const { longSessionLlms } = await import('../../srv/lib/session-llms');
+  const { h: alice } = await ready('alice');
+  const { h: bob } = await ready('bob');
+  const aliceOwner = longSessionLlms({ userId: 'alice', key: 'key' });
+  const bobOwner = longSessionLlms({ userId: 'bob', key: 'key' });
+  const aliceDispose = jest.spyOn(aliceOwner, 'dispose');
+  const bobDispose = jest.spyOn(bobOwner, 'dispose');
+  const bobEvents: DialogueEvent[] = [];
+  bob.subscribe((event) => bobEvents.push(event));
+  await closeDialogue('alice', 'key', 'explicit');
+  expect(aliceDispose).toHaveBeenCalled();
+  expect(bobDispose).not.toHaveBeenCalled();
+  expect(longSessionLlms({ userId: 'bob', key: 'key' })).toBe(bobOwner);
+  dialogueSignals().emit(
+    'dialogue.wait',
+    { tasks: [] },
+    JSON.stringify(['bob', 'key']),
+  );
+  expect(bobEvents).toEqual([{ kind: 'wait', tasks: [] }]);
+  await bob.session.send('go');
+  await until(() => bob.session.snapshot().tasks[0]?.state === 'done');
+  expect(alice.session.snapshot().tasks).toEqual([]);
 });
