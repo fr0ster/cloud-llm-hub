@@ -39,8 +39,8 @@ A four-phase documentation task on POC (doc-task → analysis-plan → evidence 
      analysis or a failed check.
    - Usage keeps recording the real model of every call; the WebUI TOKENS line already shows models per role.
 2. **No progress text on waiting stops.** When a call ends without a final iteration because the coordinator stops
-   (wait, budget, stop signal), tool-round progress text is dropped from the reply; only text after the last tool
-   round is kept (the library fallback and the hub paragraph wrapper). Validation-retry and provider-reset
+   (wait, budget, stop signal), only the text of the last iteration (the one that ended with the stopping tool round) is kept;
+   text of earlier iterations is dropped (the library fallback and the hub paragraph wrapper). Validation-retry and provider-reset
    handling stay as released.
 3. **RAG reading.**
    - `rag_read` default page: 32000 characters (still capped by the existing tool-result cap).

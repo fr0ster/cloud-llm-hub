@@ -52,8 +52,8 @@ Repo `C:\Users\OleksiiKyslytsia\projects\llm-agent`, branch `feat/worker-model` 
   `AgentProfileError.code` gains `MODEL_NOT_ALLOWED`. `delegate_task` calls it synchronously BEFORE enqueueing; a
   failure is the tool error (`MODEL_NOT_ALLOWED`) and creates no task.
 - Modify: `packages/llm-agent-libs/src/agent.ts`, `pipeline/handlers/tool-loop.ts`,
-  `coordinator/dialogue/dialogue-session.ts` (fallback without a final iteration keeps only text after the last
-  tool round; validation-retry/reset handling unchanged)
+  `coordinator/dialogue/dialogue-session.ts` (fallback without a final iteration keeps only the last iteration's
+  text; validation-retry/reset handling unchanged)
 - Modify: `packages/llm-agent-libs/src/skills/skill-utils.ts` — discovery keys skills by identity, not display
   name: front-matter `id`, else the skill directory name; two skills sharing a display name with different ids
   both survive (no overwrite, no rejection of different `kind`s); two skills with the same identity keep today's
@@ -64,7 +64,7 @@ Repo `C:\Users\OleksiiKyslytsia\projects\llm-agent`, branch `feat/worker-model` 
 - [ ] **Step 1: Failing tests:** a disallowed model → tool error `MODEL_NOT_ALLOWED`, no task on the board;
   `delegate_task({ worker, goal, model: 'm2' })` reaches `createWorker` with
   `model: 'm2'` and the task record stores it; without `model` nothing is passed; a call stopped after two tool
-  rounds with text "Checking." before each returns content without "Checking."; two skill dirs sharing a display name
+  rounds ("Thinking." then "Waiting." + stopping tool) returns exactly "Waiting."; two skill dirs sharing a display name
   with different ids (or directory names) both load, regardless of `kind`.
 - [ ] **Step 2–4:** Fail, implement, pass; typecheck, lint, tests of all packages.
 - [ ] **Step 5:** Commit, PR, Codex review, merge, release (version PR → signed tags → user publishes npm).
@@ -111,8 +111,8 @@ Task 1's versions.
   for agent tool loops, `N = LLM_AGENT_TOOL_LOOP_WINDOW` (default 8); the hub wraps the factory so each recorded
   round increments the loop's round counter used by read-dedup (no library eviction callback needed).
 - Modify: `srv/lib/tool-result-summary.ts` — keep `query` (first 200 characters) for `rag_search`.
-- Modify: `srv/lib/dialogue-planner-content.ts` — paragraph wrapper drops progress text on stops without a final
-  iteration (matches Task 1).
+- Modify: `srv/lib/dialogue-planner-content.ts` — paragraph wrapper keeps only the last iteration's text on stops
+  without a final iteration (matches Task 1).
 - Modify: `srv/agent-profiles/coordinator.md` — delegate document reading/analysis to an agent.
 - Test: `test/unit/read-dedup.test.ts`, extend `tool-result-summary`, `dialogue-planner-content` tests.
 
