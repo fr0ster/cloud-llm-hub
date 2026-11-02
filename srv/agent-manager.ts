@@ -3354,6 +3354,25 @@ export async function buildAgentForDestination(
     },
   );
   if (config.agent.chatCoordinator !== 'fixed') {
+    // Resolve at call time: the destination and controller are shared across requests.
+    const coordinatorLlm = async (): Promise<ILlm> => {
+      const model = requestModel.getStore();
+      return model
+        ? getOrCreateSharedLlms({
+            ...config,
+            llm: { ...config.llm, model },
+          }).mainLlm
+        : criticLlm;
+    };
+    const requestLlm: ILlm = {
+      get model() {
+        return requestModel.getStore() ?? criticLlm.model;
+      },
+      chat: async (...args) => (await coordinatorLlm()).chat(...args),
+      streamChat: async function* (...args) {
+        yield* (await coordinatorLlm()).streamChat(...args);
+      },
+    };
     const budget = Object.fromEntries(
       Object.entries(config.agent.planBudget ?? {}).filter(
         ([, value]) => value !== undefined,
@@ -3362,7 +3381,7 @@ export async function buildAgentForDestination(
     builder.withStepperCoordinator(
       new AdaptiveCoordinatorHandler({
         controller: new CheckerAdaptiveController(
-          new LlmAdaptiveController(criticLlm, {
+          new LlmAdaptiveController(requestLlm, {
             systemPrompt: HUB_ADAPTIVE_CONTROLLER_SYSTEM,
           }),
         ),

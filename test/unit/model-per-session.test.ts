@@ -20,12 +20,23 @@ jest.mock('../../srv/lib/llm-factory', () => ({
   ...jest.requireActual('../../srv/lib/llm-factory'),
   makeHubLlm: async (config: HubLlmConfig): Promise<ILlm> => ({
     model: config.model,
-    chat: async () => {
+    chat: async (messages) => {
       mockCalls.push(config.model ?? '');
       await new Promise<void>((resolve) => setImmediate(resolve));
       return {
         ok: true,
-        value: { content: config.model ?? 'Done', finishReason: 'stop' },
+        value: {
+          content: messages.some(
+            (message) =>
+              message.role === 'system' &&
+              message.content?.includes('sequential adaptive plan'),
+          )
+            ? JSON.stringify({
+                steps: [{ id: 'answer', kind: 'answer', text: config.model }],
+              })
+            : (config.model ?? 'Done'),
+          finishReason: 'stop',
+        },
       };
     },
     streamChat: async function* () {
@@ -271,9 +282,13 @@ test('execute_step uses executor profile default, main fallback, and a call-only
   expect(seen.at(-1)).toBe('worker-default');
 });
 
-test.each([false, true])(
-  'destination requests isolate models (stream=%s)',
-  async (stream) => {
+test.each(
+  (['fixed', 'adaptive'] as const).flatMap((coordinator) =>
+    [false, true].map((stream) => ({ coordinator, stream })),
+  ),
+)(
+  'destination requests isolate models (coordinator=$coordinator, stream=$stream)',
+  async ({ coordinator, stream }) => {
     const config = getAgentConfig();
     const adapter = new McpClientAdapter(
       new MCPClientWrapper({ transport: 'embedded' }),
@@ -285,7 +300,7 @@ test.each([false, true])(
     const base = await buildAgentForDestination(
       adapter,
       new ExpositionFilteringRag(new InMemoryRag()),
-      { ...config, agent: { ...config.agent, chatCoordinator: 'fixed' } },
+      { ...config, agent: { ...config.agent, chatCoordinator: coordinator } },
     );
     const agents = [
       withRequestModel(base.agent, 'A'),
@@ -295,11 +310,18 @@ test.each([false, true])(
     mockCalls.length = 0;
     await Promise.all(
       agents.map(async (agent, index) => {
-        const options = { sessionId: `request-${stream}-${index}` };
+        const options = {
+          sessionId: `request-${coordinator}-${stream}-${index}`,
+        };
         if (stream) {
+          const chunks: string[] = [];
           for await (const result of agent.streamProcess('Hello', options)) {
             expect(result.ok).toBe(true);
+            if (result.ok) chunks.push(result.value.content);
           }
+          expect(chunks.join('')).toContain(
+            ['A', 'B', 'worker-default'][index],
+          );
         } else {
           const result = await agent.process('Hello', options);
           expect(result.ok).toBe(true);
@@ -313,6 +335,7 @@ test.each([false, true])(
     expect(mockCalls).toEqual(
       expect.arrayContaining(['A', 'B', 'worker-default']),
     );
+    if (coordinator === 'adaptive') expect(mockCalls).toHaveLength(3);
     mockCalls.length = 0;
     await base.agent.process('Hello again');
     expect(mockCalls).toContain('worker-default');
