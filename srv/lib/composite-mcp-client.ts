@@ -1,6 +1,9 @@
 import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 
-/** First listed owner wins name collisions; one non-cacheable part disables caching. */
+/**
+ * First listed owner wins name collisions; one non-cacheable part disables
+ * caching. The last part is the primary client and receives unlisted names.
+ */
 export function compositeMcpClient(parts: IMcpClient[]): IMcpClient {
   const owners = new Map<string, IMcpClient>();
   const client: IMcpClient = {
@@ -27,7 +30,9 @@ export function compositeMcpClient(parts: IMcpClient[]): IMcpClient {
         const result = await client.listTools(options);
         if (!result.ok) return result;
       }
-      const owner = owners.get(name);
+      // An unlisted name goes to the primary (last) part: its own guards
+      // (forbidden names, unknown-tool errors) decide, not this router.
+      const owner = owners.get(name) ?? parts.at(-1);
       return owner
         ? owner.callTool(name, args, options)
         : {
