@@ -2548,3 +2548,58 @@ test('a later non-model failure does not inherit an earlier model cause', async 
   await until(() => h.state().lastFailedSeq > failed);
   expect(h.state().failureCause).toBeUndefined();
 });
+
+test.each([true, false])(
+  'worker observed spend survives failure without doubling success (%s)',
+  async (fails) => {
+    const { h } = await ready();
+    mockRun.mockImplementation(async () => {
+      reportLlmSpend({ promptTokens: 7, completionTokens: 3, totalTokens: 10 });
+      if (fails) throw new Error('worker failed after model call');
+      return {
+        output: 'done',
+        usage: { promptTokens: 8, completionTokens: 4, totalTokens: 12 },
+      };
+    });
+    mockPlannerHook = async (text) => {
+      if (text.startsWith('[task events]'))
+        throw new LlmError('planner failed');
+    };
+    await h.session.send('go');
+    await until(() => h.state().lastFailedSeq > 0);
+    expect(h.failedUsage?.().tasks).toEqual([
+      expect.objectContaining({
+        worker: 'executor',
+        usage: fails
+          ? { promptTokens: 7, completionTokens: 3, totalTokens: 10 }
+          : { promptTokens: 8, completionTokens: 4, totalTokens: 12 },
+      }),
+    ]);
+  },
+);
+
+test('failed worker spend reaches message usage once when the planner recovers', async () => {
+  const { h } = await ready();
+  mockRun.mockImplementation(async () => {
+    reportLlmSpend({ promptTokens: 7, completionTokens: 3, totalTokens: 10 });
+    throw new Error('worker failed');
+  });
+  await h.session.send('go');
+  await until(() =>
+    h.outbox
+      .history()
+      .some((message) =>
+        message.usage?.tasks?.some((task) => task.usage.totalTokens === 10),
+      ),
+  );
+  const recorded = () =>
+    h.outbox.history().flatMap((message) => message.usage?.tasks ?? []);
+  expect(recorded()).toHaveLength(1);
+  expect(
+    sumPlannerUsage(h.outbox.history().map((message) => message.usage))
+      ?.totalTokens,
+  ).toBeGreaterThanOrEqual(10);
+  mockPlan = { plan: 'Finished', status: 'done' };
+  await h.session.send('finish');
+  expect(recorded()).toHaveLength(1);
+});

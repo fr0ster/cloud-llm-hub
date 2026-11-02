@@ -13,6 +13,7 @@ import {
   isReadOnlyTools,
   profileToolAllowed,
 } from '../request-session';
+import { compositeMcpClient } from './composite-mcp-client';
 import { isOutageError } from './mcp-outage';
 import { isRagTool } from './rag-tool-catalogue';
 import { parseToolOutcome, type RecordedToolCall } from './reviewer-core';
@@ -76,8 +77,8 @@ function isTransportFailure(error: unknown): boolean {
  * never swallows or reshapes errors.
  */
 export class RecordingMcpClient implements IMcpClient {
-  private readonly knownNames = new Set<string>();
-  private readonly deltas = new Map<string, ToolCallRecord[]>();
+  private readonly knownNames: Set<string>;
+  private readonly deltas: Map<string, ToolCallRecord[]>;
 
   /** Present iff `inner` implements it, so callers relying on `?.` see the
    *  same optionality the inner client exposes. */
@@ -91,13 +92,36 @@ export class RecordingMcpClient implements IMcpClient {
     private readonly maxChars = parseToolResultMaxChars(),
     // Planner clients emit capped results without retaining reviewer deltas.
     private readonly retainRecords = true,
+    // A view shares its origin's records: one reviewer evidence per request.
+    shared?: RecordingMcpClient,
   ) {
+    this.knownNames = shared?.knownNames ?? new Set<string>();
+    this.deltas = shared?.deltas ?? new Map<string, ToolCallRecord[]>();
     if (inner.healthCheck) {
       this.healthCheck = (options?: CallOptions) =>
         inner.healthCheck?.(options) as Promise<Result<boolean, McpError>>;
     }
   }
 
+  get cacheable(): boolean | undefined {
+    return this.inner.cacheable;
+  }
+
+  /**
+   * A view over more clients that records into this recorder's deltas. Never
+   * mutates this instance: the recorder is shared by every build for a
+   * destination, so extending it in place would nest clients per request.
+   */
+  includeClients(clients: IMcpClient[]): RecordingMcpClient {
+    if (!clients.length) return this;
+    return new RecordingMcpClient(
+      compositeMcpClient([...clients, this.inner]),
+      undefined,
+      this.maxChars,
+      this.retainRecords,
+      this,
+    );
+  }
   async listTools(options?: CallOptions): Promise<Result<McpTool[], McpError>> {
     const result = await this.inner.listTools(options);
     if (result.ok)

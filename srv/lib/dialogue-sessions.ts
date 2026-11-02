@@ -576,7 +576,7 @@ async function open(
     savedState?.ackMode,
   );
   const drainPending = async () => {
-    await outbox.add(session?.takePending() ?? []);
+    await outbox.add(withFailedWorkerUsage(session?.takePending() ?? []));
   };
   const signals = dialogueSignals();
   const dialogueIdentity = (): RagCallerIdentity => {
@@ -657,6 +657,9 @@ async function open(
   );
   // Snapshot before settlement clears the live reply; a later successful turn
   // must not erase the spend belonging to the retained failure sequence.
+  // TaskBoard passes wrapRun a copy and drops usage on rejection. Success
+  // records remain authoritative; retain only rejected runs as a fallback.
+  const failedWorkerSpend = new Map<string, TokenUsage>();
   function failedTurnUsage(): PlannerMessageUsage {
     const accountedTasks = new Set(
       outbox
@@ -671,13 +674,14 @@ async function open(
         turnPlannerSpend.totalTokens > (turnReplyUsage?.totalTokens ?? 0)
           ? turnPlannerSpend
           : turnReplyUsage,
-      tasks: (session?.snapshot().tasks ?? []).flatMap((task) =>
-        task.usage && !accountedTasks.has(task.id)
+      tasks: (session?.snapshot().tasks ?? []).flatMap((task) => {
+        const usage = task.usage ?? failedWorkerSpend.get(task.id);
+        return usage && !accountedTasks.has(task.id)
           ? [
               {
                 id: task.id,
                 worker: task.worker,
-                usage: task.usage,
+                usage,
                 ...(task.startedAt !== undefined &&
                 task.finishedAt !== undefined
                   ? {
@@ -686,9 +690,38 @@ async function open(
                   : {}),
               },
             ]
-          : [],
-      ),
+          : [];
+      }),
     };
+  }
+  function withFailedWorkerUsage(messages: PlannerMessage[]): PlannerMessage[] {
+    const available = (failedTurnUsage().tasks ?? []).filter((task) =>
+      failedWorkerSpend.has(task.id),
+    );
+    const unique = new Map(messages.map((message) => [message.id, message]));
+    return [...unique.values()].map((message) => {
+      // A later save can republish the library's original message without our
+      // fallback usage. Preserve the spend already attached to that message.
+      const retained =
+        outbox.history().find((entry) => entry.id === message.id)?.usage
+          ?.tasks ?? [];
+      const extras = [
+        ...retained.filter((task) => failedWorkerSpend.has(task.id)),
+        ...available.splice(0),
+      ].filter(
+        (task) =>
+          !message.usage?.tasks?.some((existing) => existing.id === task.id),
+      );
+      return extras.length
+        ? {
+            ...message,
+            usage: {
+              ...message.usage,
+              tasks: [...(message.usage?.tasks ?? []), ...extras],
+            },
+          }
+        : message;
+    });
   }
   let settledSeq = 0;
   let lastFailedSeq = 0;
@@ -932,7 +965,7 @@ async function open(
                   },
                 ]
               : [],
-            state.pending,
+            withFailedWorkerUsage(state.pending),
           );
         },
         delete: async () => {},
@@ -965,6 +998,7 @@ async function open(
             goalChars: task.goal.length,
           });
           let state: TaskRecord['state'] = 'failed';
+          let spent: TokenUsage | undefined;
           const traceId = randomUUID();
           emitTask(task);
           try {
@@ -981,7 +1015,10 @@ async function open(
                   runWithContextCapture(
                     { component: 'other', taskId: task.id, sessionKey: key },
                     // Workers report spend on TaskRecord, outside the planner bucket.
-                    () => observeLlmSpend(run, () => {}),
+                    () =>
+                      observeLlmSpend(run, (usage) => {
+                        spent = addTokenUsage(spent, usage);
+                      }),
                   ),
               ),
             );
@@ -992,6 +1029,9 @@ async function open(
               result.status !== 'awaiting-external';
             state = healthy ? 'done' : result.stopped ? 'stopped' : 'failed';
             return result;
+          } catch (error) {
+            if (spent) failedWorkerSpend.set(task.id, spent);
+            throw error;
           } finally {
             try {
               recMcp.dropRequest(traceId);
@@ -1019,7 +1059,9 @@ async function open(
       onMessage(message) {
         if (stopped) return;
         void outbox
-          .add([message, ...(session?.takePending() ?? [])])
+          .add(
+            withFailedWorkerUsage([message, ...(session?.takePending() ?? [])]),
+          )
           .catch(() => {
             /* Retain in memory and retry persistence on next save. */
           });

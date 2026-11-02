@@ -33,6 +33,7 @@ export function coordinatorToolsClient() {
 import { toolSearchText } from '@mcp-abap-adt/lib/tool-search';
 import { AgentProfileRunner } from './lib/agent-profile-runner';
 import { AgentProfileSource } from './lib/agent-profile-source';
+import { compositeMcpClient } from './lib/composite-mcp-client';
 import { watchDestinations } from './lib/destination-watch';
 import { guardLlmOnlyAgent } from './lib/llm-only-guard';
 import { longSessionsIfReady } from './lib/long-session';
@@ -2877,11 +2878,15 @@ async function configureDestinationAgentBuilder(
     .withMainLlm(opts?.skipRetrieval ? mainLlm : trackedLlm(mainLlm, true))
     .withClassifierLlm(classifierLlm)
     .withMcpClients([
-      ...(await docsMcp().clients(opts?.role ?? 'executor')),
       mcpAdapter instanceof RecordingMcpClient
-        ? mcpAdapter
+        ? mcpAdapter.includeClients(
+            await docsMcp().clients(opts?.role ?? 'executor'),
+          )
         : withToolResultCap(
-            new DialogueRagMcpClient(mcpAdapter),
+            compositeMcpClient([
+              ...(await docsMcp().clients(opts?.role ?? 'executor')),
+              new DialogueRagMcpClient(mcpAdapter),
+            ]),
             config.agent.toolResultMaxChars,
           ),
     ]);
@@ -3002,9 +3007,11 @@ export async function buildPlannerAgent(
     .withToolTrust(builtInToolTrust(roleResolver))
     .withMainLlm(llm)
     .withMcpClients([
-      ...(await docsMcp().clients('planner')),
       new RecordingMcpClient(
-        authorClient ?? new DialogueRagMcpClient(coordinatorToolsClient()),
+        compositeMcpClient([
+          ...(await docsMcp().clients('planner')),
+          authorClient ?? new DialogueRagMcpClient(coordinatorToolsClient()),
+        ]),
         undefined,
         config.agent.toolResultMaxChars,
         false,
