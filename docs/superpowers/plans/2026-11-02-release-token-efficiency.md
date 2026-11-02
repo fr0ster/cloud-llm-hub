@@ -110,7 +110,12 @@ Task 1's versions.
 - Modify: `srv/agent-manager.ts` — `withToolLoopContextStrategyFactory(() => new WindowContextStrategy({ keepLastRounds: N }))`
   for agent tool loops, `N = LLM_AGENT_TOOL_LOOP_WINDOW` (default 8); the hub wraps the factory so each recorded
   round increments the loop's round counter used by read-dedup (no library eviction callback needed).
-- Modify: `srv/lib/tool-result-summary.ts` — keep `query` (first 200 characters) for `rag_search`.
+- Modify: `srv/lib/tool-result-summary.ts` — keep `query` (first 200 characters) for `rag_search` and `offset` / `limit`
+  arguments for `rag_read`, so paging and repeated reads are distinguishable outside the hub.
+- Elided rounds (user input, 2026-11-02): when the window drops a round, the model sees a short, deterministic
+  digest instead of nothing — one line per dropped tool result, e.g. `rag_read <collection>/<record> chars n–m of
+  total (read earlier, dropped from context)` or `<tool>: <first 120 chars of the result>` — so it knows what it
+  already used and re-reads only when it needs the text again. No LLM summarization in this release.
 - Modify: `srv/lib/dialogue-planner-content.ts` — paragraph wrapper keeps only the last iteration's text on stops
   without a final iteration (matches Task 1).
 - Modify: `srv/agent-profiles/coordinator.md` — delegate document reading/analysis to an agent.
