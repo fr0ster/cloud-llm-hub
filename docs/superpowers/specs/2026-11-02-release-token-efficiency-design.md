@@ -1,6 +1,6 @@
 # Release readiness: models per role, token efficiency, docs MCP
 
-Status: design, 2026-11-02. Everything here must close before the current release (minimum for assistants with
+Status: approved, 2026-11-02. Everything here must close before the current release (minimum for assistants with
 long-term memory and learning). Terminology: **assistant** (memory and learning, future), **agent** (planner,
 executor, checker, analyst) described by a **profile**, **pipeline**.
 
@@ -102,3 +102,6 @@ A four-phase documentation task on POC (doc-task → analysis-plan → evidence 
   read-only knowledge tools (they are declared docs-search servers); write-capable external MCP is out of scope.
 - **llm-agent:** one minor release (delegate_task `model`, waiting-stop fallback, window strategy wiring, skill-kind
   patch) before the hub release.
+- **Coordinator model precedence (user decision, 2026-11-02):** an allowed request model (WebUI LLM select,
+  OpenAI/Anthropic `model`) overrides the deploy coordinator model for that session; `LLM_AGENT_COORDINATOR_MODEL`
+  / `LLM_AGENT_PLANNER_MODEL` are only the defaults.
