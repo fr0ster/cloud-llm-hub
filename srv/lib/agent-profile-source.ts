@@ -7,6 +7,7 @@ import type {
   WorkerProfile,
   WorkerProfileSummary,
 } from '@mcp-abap-adt/llm-agent';
+import { formatTrustTag } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import type { CollectionMeta, RagDocument } from '../rag-collections';
 import {
@@ -20,8 +21,10 @@ import {
 } from './agent-profile-tools';
 import { collectionAccessError } from './collection-access';
 import { recordPolicy } from './record-policy';
+import { resolverFor, type TrustResolver } from './trust-resolver';
 
 export interface AgentProfileReader {
+  readonly trustResolver?: TrustResolver;
   readAgentCollection(
     id: string,
     options?: CallOptions,
@@ -48,6 +51,10 @@ class ProfileFailure extends Error {
 
 /** Shared call options bind all reads in one resolution to one validated snapshot. */
 export class AgentProfileSource implements IAgentProfileSource {
+  private readonly sourceClasses = new WeakMap<
+    RagDocument,
+    'system' | 'correction'
+  >();
   private readonly resolutions = new WeakMap<
     CallOptions,
     Promise<RagDocument[]>
@@ -109,7 +116,13 @@ export class AgentProfileSource implements IAgentProfileSource {
         throw new ProfileFailure('invalid');
       identities.add(key);
     }
-    return structuredClone(collection.documents);
+    const documents = structuredClone(collection.documents);
+    for (const document of documents)
+      this.sourceClasses.set(
+        document,
+        meta.scope === 'global' ? 'system' : 'correction',
+      );
+    return documents;
   }
   private record(
     documents: RagDocument[],
@@ -128,6 +141,10 @@ export class AgentProfileSource implements IAgentProfileSource {
     }
     if (record.metadata.kind !== kind) throw new ProfileFailure('invalid');
     this.validateTools(record);
+    const sourceClass = this.sourceClasses.get(document) ?? 'system';
+    const resolver = resolverFor(this.reader).forProfile(record.metadata);
+    if (record.text)
+      record.text = `${formatTrustTag(`${sourceClass}:profiles/${record.id}`, resolver.classDefault(sourceClass))}\n${record.text}`;
     return record;
   }
   private validateTools(record: AgentProfileRecord): void {

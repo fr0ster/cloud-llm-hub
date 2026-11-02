@@ -99,7 +99,7 @@ const trustedRows = [
   rows[0],
   {
     ...rows[1],
-    metadata: { ...rows[1].metadata, source: 'global:skills/read', trust: 4.5 },
+    metadata: { ...rows[1].metadata, source: 'global:skills/read', trust: 3 },
   },
 ];
 it.each(['closed', 'true', 'bypass', 'off', 'unconfigured'])(

@@ -49,7 +49,9 @@ test.each([
       },
     ]);
     const prompt = await appendBaseSkills(`${role} profile`, pool);
-    expect(prompt).toBe(`${role} profile\n\nbase body`);
+    expect(prompt).toBe(
+      `${role} profile\n\n[source: system:skills/base:base; trust 4.8]\nbase body`,
+    );
     const selection = await (await pool.informationalSkills()).listSkills();
     expect(selection.ok && selection.value.map((s) => s.name)).toEqual([
       'info',
@@ -65,14 +67,14 @@ test('same-name skills of both kinds load without a startup failure', async () =
   ]);
   await expect(logSkillsPool(pool)).resolves.toBeUndefined();
   await expect(appendBaseSkills('system', pool)).resolves.toBe(
-    'system\n\ndup body',
+    'system\n\n[source: system:skills/base:dup; trust 4.8]\ndup body',
   );
   const result = await pool.informationalSkills().listSkills();
   if (!result.ok) throw result.error;
   expect(result.value).toHaveLength(1);
   expect(await result.value[0].getContent()).toEqual({
     ok: true,
-    value: '[source: global:skills/dup; trust 4.5]\ndup body',
+    value: '[source: global:skills/dup; trust 3]\ndup body',
   });
 });
 
@@ -97,11 +99,11 @@ test('filesystem discovery and base bodies stay cached until explicit refresh', 
     const pool = buildSkillsPool({ dirs: [{ dir, source: 'test' }] });
     write('changed');
     await expect(appendBaseSkills('profile', pool)).resolves.toBe(
-      'profile\n\noriginal',
+      'profile\n\n[source: system:skills/test/rules; trust 4.8]\noriginal',
     );
     await pool.refresh();
     await expect(appendBaseSkills('profile', pool)).resolves.toBe(
-      'profile\n\nchanged',
+      'profile\n\n[source: system:skills/test/rules; trust 4.8]\nchanged',
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -132,4 +134,49 @@ test('disabled base skills stay out of the base set', async () => {
     { source: 'plugin', manager: manager([skill('on', 'base'), disabled]) },
   ]);
   expect((await pool.baseSkills()).map((s) => s.name)).toEqual(['on']);
+});
+
+test('corrective skill body, selection and views use correction trust and retain explicit overrides', async () => {
+  const { InMemoryRag } = await import('@mcp-abap-adt/llm-agent');
+  const { parseTrustDefaults } = await import('../../srv/lib/trust');
+  const { TrustResolver } = await import('../../srv/lib/trust-resolver');
+  const { TrustStore } = await import('../../srv/lib/trust-store');
+  const { trustedSkillResults } = await import('../../srv/lib/trusted-skill');
+  const { informationalSkillDocuments } = await import(
+    '../../srv/lib/skills-pool'
+  );
+  const store = new TrustStore(new InMemoryRag(), 1);
+  const resolver = new TrustResolver(
+    undefined,
+    store,
+    parseTrustDefaults(undefined),
+    { correction: 4.9 },
+  );
+  const pool = new CompositeSkillManager(
+    [{ source: 'experience', manager: manager([skill('fix', 'correction')]) }],
+    () => resolver,
+  );
+  const loaded = await pool.getSkill('fix');
+  if (!loaded.ok || !loaded.value) throw new Error('Missing skill');
+  expect(await loaded.value.getContent()).toEqual({
+    ok: true,
+    value: '[source: correction:skills/fix; trust 4.9]\nfix body',
+  });
+  const rows = await trustedSkillResults(
+    [{ text: 'fix', score: 1, metadata: { id: 'skill:fix' } }],
+    resolver,
+    pool,
+  );
+  expect(rows[0].metadata).toMatchObject({
+    source: 'correction:skills/fix',
+    trust: 4.9,
+  });
+  expect(await informationalSkillDocuments(resolver, pool)).toMatchObject([
+    { source: 'correction:skills/fix', trust: 4.9 },
+  ]);
+  await store.setRecord('skills', 'fix', 4.2, 'admin');
+  expect(await loaded.value.getContent()).toEqual({
+    ok: true,
+    value: '[source: correction:skills/fix; trust 4.2]\nfix body',
+  });
 });

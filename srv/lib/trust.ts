@@ -2,7 +2,15 @@ import { normalizeTrust } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import { BuildValidationError } from './build-validation-error';
 
-export type TrustClass = 'global' | 'user' | 'session' | 'system' | 'docs';
+export type TrustClass =
+  | 'global'
+  | 'user'
+  | 'session'
+  | 'system'
+  | 'docs'
+  | 'correction'
+  | 'target'
+  | 'client';
 export const trustMapSchema = z
   .object({
     global: z
@@ -18,6 +26,18 @@ export const trustMapSchema = z
       .refine((v) => normalizeTrust(v) !== undefined)
       .optional(),
     system: z
+      .number()
+      .refine((v) => normalizeTrust(v) !== undefined)
+      .optional(),
+    correction: z
+      .number()
+      .refine((v) => normalizeTrust(v) !== undefined)
+      .optional(),
+    target: z
+      .number()
+      .refine((v) => normalizeTrust(v) !== undefined)
+      .optional(),
+    client: z
       .number()
       .refine((v) => normalizeTrust(v) !== undefined)
       .optional(),
@@ -39,11 +59,14 @@ export const trustHistorySchema = z.array(
 export type TrustHistoryEntry = z.infer<typeof trustHistorySchema>[number];
 export function parseTrustDefaults(value: string | undefined): TrustDefaults {
   const defaults: TrustDefaults = {
-    global: 4.5,
-    system: 4.5,
-    docs: 3.5,
-    user: 3,
-    session: 2,
+    global: 3,
+    system: 4.8,
+    correction: 4.9,
+    target: 4.3,
+    docs: 4.2,
+    client: 4.4,
+    user: 3.5,
+    session: 4,
   };
   if (value === undefined) return defaults;
   for (const entry of value.split(',')) {
@@ -67,7 +90,16 @@ export function classTrust(
   defaults: TrustDefaults,
 ): TrustDefaults {
   const result = { ...defaults };
-  for (const key of ['global', 'user', 'session', 'system', 'docs'] as const) {
+  for (const key of [
+    'global',
+    'user',
+    'session',
+    'system',
+    'docs',
+    'correction',
+    'target',
+    'client',
+  ] as const) {
     const value = agentMap?.[key];
     if (value !== undefined) result[key] = value;
   }

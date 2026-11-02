@@ -152,7 +152,16 @@ import { runWithSessionId } from '../../srv/request-session';
 
 const config: AgentConfig = {
   trust: {
-    defaults: { global: 4.5, system: 4.5, docs: 3.5, user: 3, session: 2 },
+    defaults: {
+      global: 3,
+      system: 4.8,
+      correction: 4.9,
+      target: 4.3,
+      docs: 4.2,
+      client: 4.4,
+      user: 3.5,
+      session: 4,
+    },
   },
   llm: {
     provider: 'openai',
@@ -309,7 +318,7 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
       );
       if (!executor) throw new Error('Missing executor fixture');
       await registry.updateDocument('agents', 'executor', {
-        metadata: { ...executor.metadata, trust: { system: 5 } },
+        metadata: { ...executor.metadata, trust: { target: 5 } },
       });
       const spy = jest
         .spyOn(reviewer, 'evaluateGated')
@@ -342,7 +351,7 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
         ).getToolNames()[0];
         if (!tool) throw new Error('Missing embedded tool fixture');
         expect(spy.mock.calls.at(-1)?.[0].toolTrust?.(tool)).toEqual({
-          source: `system:${tool}`,
+          source: `target:${tool}`,
           trust: 5,
         });
       } finally {

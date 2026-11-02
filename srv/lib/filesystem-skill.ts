@@ -10,7 +10,9 @@ const metadata = z
     id: z.string().optional(),
     name: z.string().optional(),
     description: z.string().optional(),
-    kind: z.enum(['base', 'informational']).default('informational'),
+    kind: z
+      .enum(['base', 'informational', 'correction'])
+      .default('informational'),
   })
   .passthrough();
 

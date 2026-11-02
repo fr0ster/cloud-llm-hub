@@ -1,6 +1,10 @@
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
+import {
+  registerClientTools,
+  runWithClientTools,
+} from './lib/client-tool-trust';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
 import { failureMessage, observeLlmSpend } from './lib/llm-failure';
@@ -265,16 +269,18 @@ export function handleChatCompletions(
   req: Request,
   res: Response,
 ): Promise<void> {
-  return runWithRequestLlms((req as LongSessionRequest).longSession, () => {
-    requestStart(req);
-    const runtime = usageRuntime();
-    if (
-      !runtime ||
-      (!runtime.enabled('request') && !runtime.enabled('session'))
-    )
-      return handleChatCompletionsMeasured(req, res);
-    return handleChatCompletionsWithUsage(req, res);
-  });
+  return runWithClientTools(() =>
+    runWithRequestLlms((req as LongSessionRequest).longSession, () => {
+      requestStart(req);
+      const runtime = usageRuntime();
+      if (
+        !runtime ||
+        (!runtime.enabled('request') && !runtime.enabled('session'))
+      )
+        return handleChatCompletionsMeasured(req, res);
+      return handleChatCompletionsWithUsage(req, res);
+    }),
+  );
 }
 
 async function handleChatCompletionsWithUsage(
@@ -536,6 +542,7 @@ async function serveChatCompletions(
   // Validate and normalize external tools (passed to SmartAgent for client adapter detection)
   const externalToolsValidation = normalizeAndValidateExternalTools(body.tools);
   const externalTools = externalToolsValidation.tools;
+  registerClientTools(externalTools);
   if (externalToolsValidation.errors.length > 0) {
     log.debug('Invalid external tools detected', {
       count: externalToolsValidation.errors.length,

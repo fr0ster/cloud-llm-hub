@@ -821,9 +821,9 @@ test.each([
             chars:
               relevant && hasUser
                 ? [
-                    '[source: user:test; trust 3]\nDOC_ONE',
-                    '[source: user:test; trust 3]\nDOC_TWO',
-                    '[source: user:test; trust 3]\nDOC_THREE',
+                    '[source: user:test; trust 3.5]\nDOC_ONE',
+                    '[source: user:test; trust 3.5]\nDOC_TWO',
+                    '[source: user:test; trust 3.5]\nDOC_THREE',
                   ].join('\n---\n').length
                 : 0,
             injected: relevant && hasUser,

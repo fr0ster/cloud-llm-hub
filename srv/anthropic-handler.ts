@@ -1,6 +1,11 @@
 import { isDeepStrictEqual } from 'node:util';
+import { normalizeAndValidateExternalTools } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
+import {
+  registerClientTools,
+  runWithClientTools,
+} from './lib/client-tool-trust';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
 import { failureMessage, observeLlmSpend } from './lib/llm-failure';
@@ -100,16 +105,18 @@ export function handleAnthropicMessages(
   req: Request,
   res: Response,
 ): Promise<void> {
-  return runWithRequestLlms((req as LongSessionRequest).longSession, () => {
-    requestStart(req);
-    const runtime = usageRuntime();
-    if (
-      !runtime ||
-      (!runtime.enabled('request') && !runtime.enabled('session'))
-    )
-      return handleAnthropicMessagesMeasured(req, res);
-    return handleAnthropicMessagesWithUsage(req, res);
-  });
+  return runWithClientTools(() =>
+    runWithRequestLlms((req as LongSessionRequest).longSession, () => {
+      requestStart(req);
+      const runtime = usageRuntime();
+      if (
+        !runtime ||
+        (!runtime.enabled('request') && !runtime.enabled('session'))
+      )
+        return handleAnthropicMessagesMeasured(req, res);
+      return handleAnthropicMessagesWithUsage(req, res);
+    }),
+  );
 }
 
 async function handleAnthropicMessagesWithUsage(
@@ -256,6 +263,7 @@ async function handleAnthropicMessagesMeasured(
     } else consumerTools.push(entry);
   }
   normalized.options.externalTools = consumerTools;
+  registerClientTools(normalizeAndValidateExternalTools(consumerTools).tools);
   const choice = z
     .object({ tool_choice: z.object({ name: z.string() }) })
     .safeParse(req.body);

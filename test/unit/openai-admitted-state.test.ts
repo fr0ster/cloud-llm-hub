@@ -227,7 +227,7 @@ describe('the RAG stores a request names', () => {
       value: [
         {
           ...doc,
-          metadata: { ...doc.metadata, source: 'user:col-1/d1', trust: 3 },
+          metadata: { ...doc.metadata, source: 'user:col-1/d1', trust: 3.5 },
         },
       ],
     });

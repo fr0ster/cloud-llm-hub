@@ -131,7 +131,14 @@ export async function skillDocumentView(
   doc: RagDocument,
   resolver: TrustResolver,
 ) {
-  return documentView(doc, await resolver.inputForSkill(doc.id));
+  return documentView(
+    doc,
+    await resolver.inputForSkill(
+      doc.id,
+      false,
+      doc.metadata.kind === 'correction' ? 'correction' : 'global',
+    ),
+  );
 }
 export async function skillCollectionView(resolver: TrustResolver) {
   const input = await resolver.inputForSkill('');
@@ -173,7 +180,7 @@ export async function informationalSkillDocuments(
           {
             id: skillId(skill),
             text: content.value,
-            metadata: { description: skill.description },
+            metadata: { description: skill.description, kind: skill.meta.kind },
             createdAt: '',
           },
           resolver,
@@ -187,6 +194,6 @@ export async function appendBaseSkills(
   prompt: string,
   pool: CompositeSkillManager,
 ): Promise<string> {
-  const bodies = await pool.baseSkillContents();
+  const bodies = await pool.baseSkillContents(true);
   return [prompt, ...bodies].filter(Boolean).join('\n\n');
 }

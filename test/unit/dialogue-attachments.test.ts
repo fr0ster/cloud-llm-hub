@@ -86,7 +86,7 @@ test('explicit uploads read bounded content without semantic queries and exclude
   const list = jest.spyOn(registry, 'listDocuments');
   const result = await dialogueAttachments(req(), 'alice', 'session');
   expect(result).toContain(
-    '[source: user:Uploads/file; trust 3]\n--- file ---\nattached text',
+    '[source: user:Uploads/file; trust 3.5]\n--- file ---\nattached text',
   );
   expect(result).not.toContain('hidden');
   expect(result).not.toContain('superseded content');
@@ -171,7 +171,7 @@ test.each([undefined, 4])(
       resolver,
     );
     expect(result).toContain(
-      `[source: session:Uploads/file; trust ${sessionTrust ?? 2}]\n--- file ---\n`,
+      `[source: session:Uploads/file; trust ${sessionTrust ?? 4}]\n--- file ---\n`,
     );
     expect(result?.length).toBe(DIALOGUE_ATTACHMENT_CHARS);
   },

@@ -113,7 +113,7 @@ describe('CompositeSkillManager', () => {
     const content = await r.value[1].getContent();
     if (!content.ok) throw new Error('getContent failed');
     expect(content.value).toBe(
-      '[source: global:skills/preset-id; trust 4.5]\npreset body',
+      '[source: global:skills/preset-id; trust 3]\npreset body',
     );
   });
 
@@ -367,8 +367,8 @@ test.each(['explicit', 'fallback'] as const)(
         score: 1,
         metadata: { id: `skill:${String(s.meta.id)}` },
       }));
-      for (const trust of [4.5, 2, 3]) {
-        if (trust !== 4.5) await store.setSource('skills', trust, 'alice');
+      for (const [index, trust] of [3, 2, 3].entries()) {
+        if (index > 0) await store.setSource('skills', trust, 'alice');
         expect(
           await Promise.all(result.value.map((s) => s.getContent())),
         ).toEqual([

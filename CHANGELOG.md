@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- Trust defaults now rank user system corrections (4.9), global system presets (4.8), client tool results (4.4), target SAP tool results (4.3), docs MCP (4.2), session information (4), user information (3.5), and global information (3). Explicit overrides retain precedence. Request-scoped OpenAI/Anthropic client tool replay uses the `client` class; session system (5.0) and session MCP (4.5) remain reserved without producers.
+- Docs MCP role and trust settings are deployable through MTA parameters; deployment extension templates provision the subaccount HTTP destination.
+
 ## [10.4.2] - 2026-11-02
 
 ### Changed

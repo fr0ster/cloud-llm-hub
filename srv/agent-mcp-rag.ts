@@ -568,7 +568,11 @@ async function runRagTool(
     if (name === 'rag_read') {
       const doc = all.find((item) => item.id === args.id);
       if (!doc) throw new Error('Document not found');
-      const input = await resolverFor(registry).inputForSkill(doc.id);
+      const input = await resolverFor(registry).inputForSkill(
+        doc.id,
+        false,
+        doc.metadata.kind === 'correction' ? 'correction' : 'global',
+      );
       const start = args.offset ?? 0;
 
       const page = readLoopPage(
@@ -594,7 +598,11 @@ async function runRagTool(
           title: doc.text.split(/\r?\n/, 1)[0].slice(0, 120),
           attributes: recordAttributes(
             doc,
-            await resolverFor(registry).inputForSkill(doc.id),
+            await resolverFor(registry).inputForSkill(
+              doc.id,
+              false,
+              doc.metadata.kind === 'correction' ? 'correction' : 'global',
+            ),
           ),
         })),
       ),

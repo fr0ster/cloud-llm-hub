@@ -1518,7 +1518,17 @@ RAG uses one host catalogue and executor across MCP, chat, planner, workers and 
 
 ## Source trust
 
-An **assistant** is the future memory-and-learning entity. An **agent** performs a role described by a **profile** within a **pipeline**. Each role has its own profile trust map; informational trust resolves record override, collection/source override, profile class map, deployment defaults, then built-in defaults (`global=4.5,system=4.5,docs=3.5,user=3,session=2`). Informational presets use class `user`; session recall and planner memory use `session`. Embedded target-system tools use `system`; `docs` is reserved for documentation sources.
+Trust is ordered by LEVEL first (system > MCP > informational), then GROUP within a level (session > user > global). Overrides beat the base; explicit profile, source and record overrides retain precedence over defaults.
+
+| Level / Group | session | user | global |
+| --- | --- | --- | --- |
+| system (prompt, base skills, corrections) | 5.0 (reserved) | 4.9 (`correction`) | 4.8 (`system`) |
+| MCP (tool results) | 4.5 (reserved) | 4.4 (`client`) | 4.3 (`target`, built-in ABAP/SAP MCP); 4.2 (`docs`, docs MCP) |
+| informational (collection records) | 4.0 (`session`) | 3.5 (`user`) | 3.0 (`global`) |
+
+Session system (5.0) and session MCP (4.5) have no producers yet. Deploy-configured ABAP and docs MCP belong to the global group. `client` describes results of tools supplied by the client in its own request, in the user group. It is accepted in deployment defaults and profile maps for completeness. The OpenAI and Anthropic request paths register validated client tool definitions in request scope. Replayed results receive `[source: client:<tool-name>; trust 4.4]` wherever the existing model-facing tool-message formatter applies trust tags; profile and deployment overrides apply. Unknown tools and hub orchestration results remain untagged. Registered ABAP and docs MCP ownership takes precedence over client names.
+
+An **assistant** is the future memory-and-learning entity. An **agent** performs a role described by a **profile** within a **pipeline**. Each role has its own profile trust map; informational trust resolves record override, collection/source override, profile class map, deployment defaults, then built-in defaults (`correction=4.9,system=4.8,client=4.4,target=4.3,docs=4.2,session=4,user=3.5,global=3`). Informational presets use class `user`; session recall and planner memory use `session`. Embedded SAP/ABAP tool results use `target`; external docs MCP results use `docs`. Global preset prompts and base skills use `system`. User profile copies and corrective skills (`kind: correction`) use `correction`. Corrections outrank their base; instruction classes outrank informational records; MCP results outrank session information. Explicit admin, user and profile overrides retain precedence.
 
 `TrustResolver` resolves current metadata on each read, including already-built agents. Collection and record overrides persist with bounded audit history (last 20 changes); the internal `h_trust` store holds informational skill source/record overrides. Writes invalidate only the affected provider cache entry. Defaults are not persisted on reads. Caller metadata cannot set informational trust or impersonate provenance.
 

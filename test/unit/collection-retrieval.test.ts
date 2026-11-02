@@ -164,7 +164,7 @@ it('resolves ids, appends context with provenance, and restores stores', async (
       false,
     );
     expect(result.messages?.[0].content).toBe(
-      `question${RAG_CONTEXT_MARKER}[source: user:Notes/r1; trust 3]\nknowledge`,
+      `question${RAG_CONTEXT_MARKER}[source: user:Notes/r1; trust 3.5]\nknowledge`,
     );
     if (!result.messages) throw new Error('unexpected refusal');
     expect(userTextOf(result.messages[0])).toBe('question');
@@ -180,7 +180,7 @@ it('resolves ids, appends context with provenance, and restores stores', async (
     if (!injected.ok) throw injected.error;
     expect(injected.value[0].metadata).toMatchObject({
       source: 'user:Notes/r1',
-      trust: 3,
+      trust: 3.5,
     });
   } finally {
     step.restore();

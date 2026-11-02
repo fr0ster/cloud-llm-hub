@@ -373,7 +373,7 @@ test('read and record lists never reveal disabled content or metadata titles', a
       attributes: {
         enabled: false,
         trusted: true,
-        trust: 3,
+        trust: 3.5,
         source: 'user:notes/hidden',
       },
       reason: 'record-disabled',
@@ -538,7 +538,7 @@ test('read and lists use normalized safe attributes for visible and invisible re
     attributes: {
       enabled: true,
       trusted: true,
-      trust: 3,
+      trust: 3.5,
       source: 'user:notes/metadata',
     },
   });
@@ -563,7 +563,7 @@ test('read and lists use normalized safe attributes for visible and invisible re
     attributes: {
       enabled: true,
       trusted: true,
-      trust: 3,
+      trust: 3.5,
       source: 'user:notes/metadata',
     },
     reason: 'collection-disabled',

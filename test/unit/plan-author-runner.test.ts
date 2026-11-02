@@ -36,7 +36,16 @@ jest.mock('../../srv/lib/llm-factory', () => ({
 }));
 const config: AgentConfig = {
   trust: {
-    defaults: { global: 4.5, system: 4.5, docs: 3.5, user: 3, session: 2 },
+    defaults: {
+      global: 3,
+      system: 4.8,
+      correction: 4.9,
+      target: 4.3,
+      docs: 4.2,
+      client: 4.4,
+      user: 3.5,
+      session: 4,
+    },
   },
   llm: {
     provider: 'openai',

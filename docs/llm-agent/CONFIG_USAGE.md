@@ -356,7 +356,21 @@ Plain OpenAI and Anthropic chat clients must open a live caller-owned long sessi
 
 ## Source trust configuration
 
-`LLM_AGENT_TRUST_DEFAULTS` is a comma-separated class map, for example `global=4.5,system=4.5,docs=3.5,user=3,session=2`. These are also the built-in defaults; omitted classes retain them. Unknown classes, nonnumeric values, values outside 0 to 5, or more than one decimal fail startup.
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `LLM_AGENT_TRUST_DEFAULTS` | `correction=4.9,system=4.8,client=4.4,target=4.3,docs=4.2,session=4,user=3.5,global=3` | Partial comma-separated class defaults; explicit profile/source/record values take precedence. |
+
+Trust is ordered by LEVEL first (system > MCP > informational), then GROUP within a level (session > user > global). Overrides beat the base; explicit profile, source and record overrides retain precedence over defaults.
+
+| Level / Group | session | user | global |
+| --- | --- | --- | --- |
+| system (prompt, base skills, corrections) | 5.0 (reserved) | 4.9 (`correction`) | 4.8 (`system`) |
+| MCP (tool results) | 4.5 (reserved) | 4.4 (`client`) | 4.3 (`target`, built-in ABAP/SAP MCP); 4.2 (`docs`, docs MCP) |
+| informational (collection records) | 4.0 (`session`) | 3.5 (`user`) | 3.0 (`global`) |
+
+Session system (5.0) and session MCP (4.5) have no producers yet. Deploy-configured ABAP and docs MCP belong to the global group. `client` describes results of tools supplied by the client in its own request, in the user group. It is accepted in deployment defaults and profile maps for completeness. The OpenAI and Anthropic request paths register validated client tool definitions in request scope. Replayed results receive `[source: client:<tool-name>; trust 4.4]` wherever the existing model-facing tool-message formatter applies trust tags; profile and deployment overrides apply. Unknown tools and hub orchestration results remain untagged. Registered ABAP and docs MCP ownership takes precedence over client names.
+
+`LLM_AGENT_TRUST_DEFAULTS` is a comma-separated class map, for example `correction=4.9,system=4.8,client=4.4,target=4.3,docs=4.2,session=4,user=3.5,global=3`. These are also the built-in defaults; omitted classes retain them. Unknown classes, nonnumeric values, values outside 0 to 5, or more than one decimal fail startup.
 
 Profile front matter accepts an optional `trust` map:
 
@@ -368,7 +382,7 @@ trust:
 
 Each role uses its own profile map over deployment defaults. Effective informational trust resolves record override, then collection/source override, then profile class default, then deployment/built-in default. Unknown classes or invalid values reject a profile.
 
-Skill front matter accepts `kind: base` or `kind: informational` (default) and a stable `id`. Keep the id unchanged across renames: trust overrides and editing address ids, never display names. When omitted, hub directory names supply ids; external directory sources use source-qualified directory ids. Equal display names are valid. Base skills load directly into every role's system content after its profile prompt and before corrections, without semantic search or trust tags. Informational skills load through semantic retrieval and carry trust. Existing shipped skills remain informational.
+Skill front matter accepts `kind: base` or `kind: informational` (default) and a stable `id`. Keep the id unchanged across renames: trust overrides and editing address ids, never display names. When omitted, hub directory names supply ids; external directory sources use source-qualified directory ids. Equal display names are valid. Base skills load directly into every role's system content after its profile prompt and before corrections, without semantic search, and carry `system` trust tags (4.8 by default). Informational skills load through semantic retrieval and carry trust. Existing shipped skills remain informational.
 
 An **assistant** is the future memory-and-learning entity; an **agent** performs a role described by a **profile**, within a **pipeline**.
 
@@ -421,7 +435,7 @@ OnPremise docs endpoints and user-dependent authentication are not supported.
 Optional `LLM_AGENT_MCP_TRUST=ABAP_DOCS=4,OTHER_DOCS=3.5` overrides trust by
 destination. Values are validated by `normalizeTrust`; malformed entries fail
 configuration loading. Otherwise the active profile's `trust.docs` wins, then
-`LLM_AGENT_TRUST_DEFAULTS`'s `docs` value, then the built-in default 3.5.
+`LLM_AGENT_TRUST_DEFAULTS`'s `docs` value, then the built-in default 4.2.
 Results receive `[source: docs:<original-tool-name>; trust n]` through ToolTrust.
 Connections are lazy; failed discovery logs a warning and omits that destination's
 tools. A later agent preparation retries after a 30-second cooldown.

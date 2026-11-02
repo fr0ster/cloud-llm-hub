@@ -49,7 +49,7 @@ test('role lists, read-only registration, collision dispatch and profile trust p
     ).toEqual({ source: 'docs:search', trust: docs });
   expect(external.toolTrust('public__search', resolver)).toEqual({
     source: 'docs:search',
-    trust: 3.5,
+    trust: 4.2,
   });
   await external.clients('analyst');
   expect(
@@ -107,7 +107,7 @@ test('ToolTrust produces the docs source envelope for model-facing review text',
     executedTools: [{ name: 'search', ok: true }],
     toolTrust: (name) => external.toolTrust(name, resolver),
   });
-  expect(messages[1].content).toContain('[source: docs:search; trust 3.5]');
+  expect(messages[1].content).toContain('[source: docs:search; trust 4.2]');
 });
 
 test.each(['planner', 'executor', 'checker', 'analyst'])(
@@ -414,5 +414,20 @@ test('replacement waits for in-flight calls before disconnecting the old client'
   expect(await clients[0].callTool('search', {})).toEqual({
     ok: true,
     value: { content: 'documentation' },
+  });
+});
+
+test('empty MTA MCP parameters disable connections and use default trust', () => {
+  expect(
+    parseExternalMcp({
+      LLM_AGENT_PLANNER_MCP: '',
+      LLM_AGENT_EXECUTOR_MCP: '',
+      LLM_AGENT_CHECKER_MCP: '',
+      LLM_AGENT_ANALYST_MCP: '',
+      LLM_AGENT_MCP_TRUST: '',
+    }),
+  ).toEqual({
+    roles: { planner: [], executor: [], checker: [], analyst: [] },
+    trust: {},
   });
 });
