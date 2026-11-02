@@ -103,5 +103,5 @@ A four-phase documentation task on POC (doc-task → analysis-plan → evidence 
 - **llm-agent:** one minor release (delegate_task `model`, waiting-stop fallback, window strategy wiring, skill-kind
   patch) before the hub release.
 - **Coordinator model precedence (user decision, 2026-11-02):** an allowed request model (WebUI LLM select,
-  OpenAI/Anthropic `model`) overrides the deploy coordinator model for that session; `LLM_AGENT_COORDINATOR_MODEL`
+  OpenAI/Anthropic `model`) overrides the deploy coordinator model per session, updated by the next allowed request model; `LLM_AGENT_COORDINATOR_MODEL`
   / `LLM_AGENT_PLANNER_MODEL` are only the defaults.

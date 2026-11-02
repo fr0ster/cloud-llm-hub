@@ -2420,3 +2420,61 @@ test('synchronous steps share the hub slot with delegated tasks and release it a
   expect(entered).toBe(true);
   expect(await h.runStep(async () => ({ ok: true }))).toEqual({ ok: true });
 });
+
+test('allowed model switches persist across reuse and revival; omitted and foreign models keep selection', async () => {
+  const previous = process.env.LLM_AGENT_MODELS;
+  process.env.LLM_AGENT_MODELS = 'A,B';
+  const getAgent = jest.requireMock('../../srv/agent-manager')
+    .getSmartAgent as jest.Mock;
+  try {
+    const first = await dialogueFor('alice', 'key', 'D', 'A');
+    await first.outbox.upsert([]);
+    expect(
+      (await getDialogueStoreBackend().load('alice', 'key'))?.coordinatorModel,
+    ).toBe('A');
+    const calls = getAgent.mock.calls.length;
+    // Reusing an existing dialogue must not depend on destination construction.
+    getAgent.mockRejectedValueOnce(new Error('Unused rebuild'));
+    expect(await dialogueFor('alice', 'key', 'D', 'B')).toBe(first);
+    await dialogueFor('alice', 'key', 'D');
+    await dialogueFor('alice', 'key', 'D', 'foreign');
+    expect(getAgent.mock.calls).toHaveLength(calls);
+    expect(
+      (await getDialogueStoreBackend().load('alice', 'key'))?.coordinatorModel,
+    ).toBe('B');
+    getAgent.mockClear();
+    // Consume the deliberately queued failure without altering the default mock.
+    await expect(getAgent()).rejects.toThrow('Unused rebuild');
+    await closeDialogue('alice', 'key', 'shutdown');
+    const revived = await dialogueFor('alice', 'key', 'D');
+    await revived.outbox.upsert([]);
+    expect(
+      (await getDialogueStoreBackend().load('alice', 'key'))?.coordinatorModel,
+    ).toBe('B');
+  } finally {
+    if (previous === undefined) delete process.env.LLM_AGENT_MODELS;
+    else process.env.LLM_AGENT_MODELS = previous;
+  }
+});
+
+test('revival drops a saved coordinator model removed from the allowlist', async () => {
+  const previous = process.env.LLM_AGENT_MODELS;
+  process.env.LLM_AGENT_MODELS = 'A,B';
+  try {
+    const first = await dialogueFor('alice', 'key', 'D', 'B');
+    await first.outbox.upsert([]);
+    expect(
+      (await getDialogueStoreBackend().load('alice', 'key'))?.coordinatorModel,
+    ).toBe('B');
+    await closeDialogue('alice', 'key', 'shutdown');
+    process.env.LLM_AGENT_MODELS = 'A';
+    const revived = await dialogueFor('alice', 'key', 'D');
+    await revived.outbox.upsert([]);
+    expect(
+      (await getDialogueStoreBackend().load('alice', 'key'))?.coordinatorModel,
+    ).toBeUndefined();
+  } finally {
+    if (previous === undefined) delete process.env.LLM_AGENT_MODELS;
+    else process.env.LLM_AGENT_MODELS = previous;
+  }
+});

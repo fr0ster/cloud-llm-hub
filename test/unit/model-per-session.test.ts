@@ -1,10 +1,15 @@
 import { createServer } from 'node:http';
 import type { ILlm } from '@mcp-abap-adt/llm-agent';
 import { DialogueSession } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  MCPClientWrapper,
+  McpClientAdapter,
+} from '@mcp-abap-adt/llm-agent-mcp';
 import express from 'express';
 import { handleAnthropicMessages } from '../../srv/anthropic-handler';
 import { AgentProfileRunner } from '../../srv/lib/agent-profile-runner';
 import { AgentProfileSource } from '../../srv/lib/agent-profile-source';
+import { withCoordinatorModel } from '../../srv/lib/coordinator-model';
 import { MemoryDialogueStore } from '../../srv/lib/dialogue-store';
 import { runExecutorStep } from '../../srv/lib/executor-step';
 import type { HubLlmConfig } from '../../srv/lib/llm-factory';
@@ -18,12 +23,18 @@ jest.mock('../../srv/lib/llm-factory', () => ({
     chat: async () => {
       mockCalls.push(config.model ?? '');
       await new Promise<void>((resolve) => setImmediate(resolve));
-      return { ok: true, value: { content: 'Done', finishReason: 'stop' } };
+      return {
+        ok: true,
+        value: { content: config.model ?? 'Done', finishReason: 'stop' },
+      };
     },
     streamChat: async function* () {
       mockCalls.push(config.model ?? '');
       await new Promise<void>((resolve) => setImmediate(resolve));
-      yield { ok: true, value: { content: 'Done', finishReason: 'stop' } };
+      yield {
+        ok: true,
+        value: { content: config.model ?? 'Done', finishReason: 'stop' },
+      };
     },
   }),
 }));
@@ -31,6 +42,7 @@ jest.mock('../../srv/lib/llm-factory', () => ({
 import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
 import { clearAgentConfig, getAgentConfig } from '../../srv/agent-config';
 import {
+  buildAgentForDestination,
   buildExecutorWorker,
   buildLlmOnlyAgent,
   buildPlannerAgent,
@@ -40,6 +52,7 @@ import {
   getCurrentModel,
   initProviders,
   initSmartAgents,
+  withRequestModel,
 } from '../../srv/agent-manager';
 import { startProviders } from '../../srv/lib/providers';
 
@@ -131,21 +144,31 @@ test('foreign OpenAI and Anthropic ids are ignored with a header and models meta
   const base = `http://127.0.0.1:${address.port}`;
   try {
     for (const path of ['/v1/chat/completions', '/v1/messages']) {
-      const response = await fetch(base + path, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4',
-          max_tokens: 128,
-          messages: [{ role: 'user', content: 'Hello' }],
-        }),
-      });
-      const text = await response.text();
-      if (!response.headers.get('x-clh-model-ignored'))
-        throw new Error(`${path} ${response.status}: ${text}`);
-      expect(response.headers.get('x-clh-model-ignored')).toBe(
+      for (const model of [
         'claude-sonnet-4',
-      );
+        'bad\r\nmodel',
+        '????' + 'x'.repeat(200),
+      ]) {
+        const response = await fetch(base + path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model,
+            max_tokens: 128,
+            messages: [{ role: 'user', content: 'Hello' }],
+          }),
+        });
+        const text = await response.text();
+        if (!response.headers.get('x-clh-model-ignored'))
+          throw new Error(`${path} ${response.status}: ${text}`);
+        expect(response.headers.get('x-clh-model-ignored')).toBe(
+          model === 'claude-sonnet-4'
+            ? model
+            : model === 'bad\r\nmodel'
+              ? 'badmodel'
+              : '????' + 'x'.repeat(124),
+        );
+      }
     }
     const selected = await fetch(`${base}/v1/chat/completions`, {
       method: 'POST',
@@ -247,3 +270,53 @@ test('execute_step uses executor profile default, main fallback, and a call-only
   await runExecutorStep(() => source, handle, 'reader', 'Read', 'executor', {});
   expect(seen.at(-1)).toBe('worker-default');
 });
+
+test.each([false, true])(
+  'destination requests isolate models (stream=%s)',
+  async (stream) => {
+    const config = getAgentConfig();
+    const adapter = new McpClientAdapter(
+      new MCPClientWrapper({ transport: 'embedded' }),
+    );
+    jest.spyOn(adapter, 'listTools').mockResolvedValue({ ok: true, value: [] });
+    jest
+      .spyOn(adapter, 'healthCheck')
+      .mockResolvedValue({ ok: true, value: true });
+    const base = await buildAgentForDestination(
+      adapter,
+      new ExpositionFilteringRag(new InMemoryRag()),
+      { ...config, agent: { ...config.agent, chatCoordinator: 'fixed' } },
+    );
+    const agents = [
+      withRequestModel(base.agent, 'A'),
+      withRequestModel(base.agent, 'B'),
+      base.agent,
+    ];
+    mockCalls.length = 0;
+    await Promise.all(
+      agents.map(async (agent, index) => {
+        const options = { sessionId: `request-${stream}-${index}` };
+        if (stream) {
+          for await (const result of agent.streamProcess('Hello', options)) {
+            expect(result.ok).toBe(true);
+          }
+        } else {
+          const result = await agent.process('Hello', options);
+          expect(result.ok).toBe(true);
+          if (result.ok)
+            expect(result.value.content).toContain(
+              ['A', 'B', 'worker-default'][index],
+            );
+        }
+      }),
+    );
+    expect(mockCalls).toEqual(
+      expect.arrayContaining(['A', 'B', 'worker-default']),
+    );
+    mockCalls.length = 0;
+    await base.agent.process('Hello again');
+    expect(mockCalls).toContain('worker-default');
+    expect(mockCalls).not.toContain('A');
+    expect(mockCalls).not.toContain('B');
+  },
+);

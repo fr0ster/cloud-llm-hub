@@ -1,3 +1,4 @@
+import { coordinatorModel } from './lib/coordinator-model';
 import {
   coordinatorToolsClient as createCoordinatorToolsClient,
   currentCoordinatorRun,
@@ -3202,7 +3203,13 @@ function destinationProfileRunner(
       return agent;
     },
     buildPlanner: async (systemPrompt, options) => {
-      const planner = await buildPlannerAgent(config, systemPrompt);
+      const model = coordinatorModel();
+      const planner = await buildPlannerAgent(
+        model
+          ? { ...config, llm: { ...config.llm, coordinatorModel: model } }
+          : config,
+        systemPrompt,
+      );
       const release = (): void => {
         releasePlannerAgent(planner);
         options?.signal?.removeEventListener('abort', release);
@@ -3459,7 +3466,10 @@ export async function buildExecutorWorker(
     prepareCompatibilityWorker(config, options, async (callOptions) => {
       const resolved = await resolve(callOptions);
       const selectedModel = resolveAgentModel(
-        { requested: currentExecutorModel(), profile: resolved.profile.model },
+        {
+          requested: currentExecutorModel() ?? requestModel.getStore(),
+          profile: resolved.profile.model,
+        },
         parseModelAllowlist(),
         getAgentConfig().llm.model,
       );
@@ -3558,7 +3568,10 @@ export async function buildExecutorWorker(
         async (options) => {
           const resolved = await resolve(options);
           options.signal?.throwIfAborted();
-          const worker = await runner.createWorker(resolved, options);
+          const worker = await runner.createWorker(
+            { ...resolved, model: requestModel.getStore() },
+            options,
+          );
           if (!worker.ok) throw new Error(worker.error.message);
           return worker.value;
         },
@@ -3698,6 +3711,41 @@ export function getDestinationInitWaitMs(
   return Number.isFinite(v) && v > 0 ? v : 90_000;
 }
 
+const requestModel = new AsyncLocalStorage<string>();
+
+/** Bind a model to one request without mutating the shared destination agent. */
+export function withRequestModel(agent: SmartAgent, model: string): SmartAgent {
+  return new Proxy(agent, {
+    get(target, property, receiver) {
+      if (property === 'process')
+        return (...args: Parameters<SmartAgent['process']>) =>
+          requestModel.run(model, () =>
+            target.process(args[0], { ...args[1], model }),
+          );
+      if (property === 'streamProcess')
+        return async function* (
+          ...args: Parameters<SmartAgent['streamProcess']>
+        ) {
+          const iterator = requestModel.run(model, () =>
+            target
+              .streamProcess(args[0], { ...args[1], model })
+              [Symbol.asyncIterator](),
+          );
+          try {
+            while (true) {
+              const next = await requestModel.run(model, () => iterator.next());
+              if (next.done) return;
+              yield next.value;
+            }
+          } finally {
+            await requestModel.run(model, () => iterator.return?.());
+          }
+        };
+      return Reflect.get(target, property, receiver);
+    },
+  });
+}
+
 export async function getSmartAgent(
   requestedModel?: string,
   requestedDestination?: string,
@@ -3720,15 +3768,9 @@ export async function getSmartAgent(
         coordinatorModel: resolved.model,
       },
     };
-    const state = destinationStates.get(
-      requestedDestination || config.mcp.destination,
-    );
-    if (state?.mcpAdapter)
-      return buildAgentForDestination(
-        state.mcpAdapter,
-        state.toolsRag,
-        selected,
-      );
+    // Destination agents and their workers are shared across request models.
+    if (base.profileRunner)
+      return { ...base, agent: withRequestModel(base.agent, resolved.model) };
     return { ...base, ...(await buildLlmOnlyAgent(selected, 'waiting')) };
   }
 

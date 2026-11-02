@@ -32,6 +32,7 @@ type PlanStep = Plan['steps'][number];
 type TaskRecord = DialogueState['tasks'][number];
 
 export type HubDialogueState = DialogueState & {
+  coordinatorModel?: string;
   toolContractVersion?: number;
   outbox?: OutboxEntry[];
   ackMode?: boolean;
@@ -413,6 +414,10 @@ function stored(record: HubDialogueState): HubDialogueState {
           .parse(outbox);
   return {
     ...state,
+    coordinatorModel: z
+      .string()
+      .optional()
+      .parse(raw.coordinatorModel ?? raw.state?.coordinatorModel),
     ...((raw.toolContractVersion ?? raw.state?.toolContractVersion) !==
     undefined
       ? {

@@ -19,7 +19,7 @@ Streamable HTTP.
 
 - Allowlist `LLM_AGENT_MODELS` (comma list); `LLM_AGENT_MODEL` and `LLM_AGENT_PLANNER_MODEL` always allowed; unset =
   only those two. Only `LLM_AGENT_MODEL` may be a required model name.
-- Request model overrides the coordinator model for that session/request only; never process-wide. Unknown
+- Request model overrides the coordinator model per session, updated by the next allowed request model; never process-wide. Unknown
   request model → ignored, header `x-clh-model-ignored: <id>`, log line.
 - Disallowed `delegate_task`/`execute_step` model → tool error `MODEL_NOT_ALLOWED`.
 - Same tools on every connection; profile ceilings apply.
@@ -82,7 +82,7 @@ Task 1's versions.
   changes `currentModel`/`sharedMainLlm`/agent deps); coordinator/planner construction takes the per-session model;
   `buildWorker` / `createWorker` builds the agent on the resolved agent model (LLM cached per model name).
 - Modify: `srv/openai-handler.ts`, `srv/anthropic-handler.ts` — resolve the request model per request; dialogue
-  sessions keep their coordinator model for the session; `x-clh-model-ignored` header.
+  sessions persist their coordinator model per session, updated by the next allowed request model; `x-clh-model-ignored` header.
 - Modify: `srv/lib/agent-profile-records.ts` — `model` on `kind: profile` only; write → 400 outside allowlist; load →
   ignore with warning.
 - Modify: `srv/lib/orchestration-tool-definitions.ts` / `srv/lib/executor-step.ts` — `execute_step.model`,

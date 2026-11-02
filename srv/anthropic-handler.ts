@@ -3,7 +3,11 @@ import { z } from 'zod';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
-import { parseModelAllowlist, resolveRequestModel } from './lib/model-policy';
+import {
+  ignoredModelHeader,
+  parseModelAllowlist,
+  resolveRequestModel,
+} from './lib/model-policy';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
 import {
@@ -181,7 +185,10 @@ async function handleAnthropicMessagesMeasured(
     parseModelAllowlist(),
   );
   if (requestModel.ignored) {
-    res.setHeader('x-clh-model-ignored', requestModel.ignored);
+    res.setHeader(
+      'x-clh-model-ignored',
+      ignoredModelHeader(requestModel.ignored),
+    );
     cds
       .log('anthropic-handler')
       .warn('Ignoring request model outside allowlist', {

@@ -379,9 +379,11 @@ An **assistant** is the future memory-and-learning entity; an **agent** performs
 only those configured names are allowed. Only `LLM_AGENT_MODEL` needs a model name.
 
 The WebUI LLM selector and OpenAI/Anthropic request `model` select the coordinator
-for a dialogue at creation and remain fixed for that dialogue. An allowed request
+per session, updated by the next allowed request model. The selection is persisted
+for revival; requests without an allowed model keep the session model. An allowed request
 model overrides `LLM_AGENT_COORDINATOR_MODEL` / `LLM_AGENT_PLANNER_MODEL`. For direct
-chat, LLM-only and destination agents, the selection applies only to that request.
+chat and LLM-only requests, the selection applies only to that request. Destination
+agents are shared per destination; their worker defaults remain unchanged.
 An unknown id is ignored, logged, and returned in `x-clh-model-ignored`; deploy
 defaults apply. Requests never change `/v1/models` `_active_model` (the deploy main model).
 

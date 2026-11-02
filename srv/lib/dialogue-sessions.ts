@@ -39,6 +39,7 @@ import {
   planAuthorMode,
 } from './brief-plan-author';
 import { runWithContextCapture } from './context-capture';
+import { withCoordinatorModel } from './coordinator-model';
 import { withCoordinatorRun } from './coordinator-tools-client';
 import { DialogueOutbox, type OutboxEntry } from './dialogue-outbox';
 import {
@@ -59,6 +60,7 @@ import {
 } from './dialogue-store';
 import { admitBackground, type PipelineSession } from './gatekeeper';
 import { longSessionsIfReady } from './long-session';
+import { parseModelAllowlist, resolveRequestModel } from './model-policy';
 import { stripNoMessage } from './no-message';
 import { renderNotice } from './notify-policy';
 import {
@@ -159,6 +161,7 @@ export interface DialogueHandle {
   ): () => void;
 }
 interface LiveHandle extends DialogueHandle {
+  selectModel(model?: string): Promise<void>;
   stop(): void;
 }
 const handles = new Map<string, Promise<LiveHandle>>();
@@ -240,8 +243,12 @@ export function dialogueFor(
   if (closing.has(id))
     return Promise.reject(new Error('dialogue session closing'));
   const existing = handles.get(id);
+  const selected = resolveRequestModel(model, parseModelAllowlist()).model;
   if (existing)
-    return lookupDialogue(userId, key, destination) as Promise<DialogueHandle>;
+    return lookupDialogue(userId, key, destination).then(async (handle) => {
+      await (handle as LiveHandle).selectModel(selected);
+      return handle as DialogueHandle;
+    });
   const registry = longSessionsIfReady();
   const session = registry?.get(userId, key);
   if (session) {
@@ -253,7 +260,7 @@ export function dialogueFor(
     session.destination = destination;
     registry?.touch(userId, key);
   }
-  const opening = open(userId, key, destination, model).then((handle) => {
+  const opening = open(userId, key, destination, selected).then((handle) => {
     for (const fn of creationListeners.get(id) ?? []) {
       try {
         fn(handle);
@@ -277,7 +284,7 @@ async function open(
 ): Promise<LiveHandle> {
   const turnCallers = new WeakMap<object, TurnCaller>();
   const config = getAgentConfig();
-  const destinationHandle = await getSmartAgent(model, destination);
+  const destinationHandle = await getSmartAgent(undefined, destination);
   if (
     !destinationHandle.workers ||
     !destinationHandle.recMcp ||
@@ -519,6 +526,18 @@ async function open(
     await pool.closeAll();
     throw error;
   }
+  const restoredModel = resolveRequestModel(
+    savedState?.coordinatorModel,
+    parseModelAllowlist(),
+  );
+  if (restoredModel.ignored)
+    log().warn(
+      'Saved coordinator model no longer allowed; using deploy default',
+      {
+        model: restoredModel.ignored,
+      },
+    );
+  let selectedModel = model ?? restoredModel.model;
   let saving = Promise.resolve();
   const persist = (
     outboxMessages: OutboxEntry[],
@@ -528,6 +547,7 @@ async function open(
     if (!state) return Promise.resolve();
     const row = {
       ...state,
+      coordinatorModel: selectedModel,
       toolContractVersion: DIALOGUE_TOOL_CONTRACT_VERSION,
       ...(savedState?.agentsCollectionId !== undefined
         ? { agentsCollectionId: savedState.agentsCollectionId }
@@ -769,7 +789,10 @@ async function open(
           const result = await withCoordinatorRun(
             async (run) =>
               (await dialogueFor(userId, key, destination)).runStep(run),
-            () => profileRunner.preparePlanner(input, options),
+            () =>
+              withCoordinatorModel(selectedModel, () =>
+                profileRunner.preparePlanner(input, options),
+              ),
           );
           if (!result.ok) return result;
           const prepared = result.value;
@@ -805,6 +828,7 @@ async function open(
         save: async (_id, state) => {
           savedState = {
             ...state,
+            coordinatorModel: selectedModel,
             toolContractVersion: DIALOGUE_TOOL_CONTRACT_VERSION,
             ...(savedState?.agentsCollectionId !== undefined
               ? { agentsCollectionId: savedState.agentsCollectionId }
@@ -952,6 +976,11 @@ async function open(
     return send(text, { ...options, trace }).finally(drainPending);
   };
   return {
+    async selectModel(model) {
+      if (model === undefined || model === selectedModel) return;
+      selectedModel = model;
+      await outbox.upsert([]);
+    },
     destination,
     session,
     ...(usage ? { usage } : {}),

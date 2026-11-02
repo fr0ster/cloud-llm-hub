@@ -3,7 +3,11 @@ import { z } from 'zod';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
-import { parseModelAllowlist, resolveRequestModel } from './lib/model-policy';
+import {
+  ignoredModelHeader,
+  parseModelAllowlist,
+  resolveRequestModel,
+} from './lib/model-policy';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
 import { summarizeToolResult } from './lib/tool-result-summary';
@@ -429,7 +433,10 @@ async function handleChatCompletionsMeasured(
   body = { ...body, tools: consumerTools };
   const requestModel = resolveRequestModel(body.model, parseModelAllowlist());
   if (requestModel.ignored) {
-    res.setHeader('x-clh-model-ignored', requestModel.ignored);
+    res.setHeader(
+      'x-clh-model-ignored',
+      ignoredModelHeader(requestModel.ignored),
+    );
     cds.log('openai-handler').warn('Ignoring request model outside allowlist', {
       model: requestModel.ignored,
     });
