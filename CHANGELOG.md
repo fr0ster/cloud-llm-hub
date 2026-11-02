@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.4.2] - 2026-11-02
+
 ### Changed
 
 - Dialogue sessions lazily own provider clients and quota scopes, isolating Retry-After waits while retaining usage and context capture.
