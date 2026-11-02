@@ -371,9 +371,7 @@ export function dialogueChat(
           ok: true,
           value: { content: '', clhUsage: handle.failedUsage?.() },
         };
-        throw new Error(
-          `Planner turn failed: ${handle.state().failureCause ?? failureMessage(failure)}`,
-        );
+        throw new Error(`Planner turn failed: ${failureMessage(failure)}`);
       }
       if (text.trim()) {
         await handle.outbox.upsert([

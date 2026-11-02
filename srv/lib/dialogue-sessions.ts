@@ -311,7 +311,12 @@ async function open(
   // the reply so live subscribers see it on first emission.
   const replyUsage = new WeakMap<object, TokenUsage>();
   let turnReplyUsage: TokenUsage | undefined;
+  // Cause of the last failed settlement; the turn's own cause is collected
+  // separately and becomes it only when that turn settles as failed.
   let failureCause: string | undefined;
+  let turnFailureCause: string | undefined;
+  // Every planner call of the turn, background corrections included.
+  let turnPlannerSpend: TokenUsage | undefined;
   let lastFailureUsage: PlannerMessageUsage | undefined;
   const environment = () => {
     const connection = longSessionsIfReady()?.get(userId, key)?.connection;
@@ -661,7 +666,11 @@ async function open(
         ),
     );
     return {
-      planner: turnReplyUsage,
+      planner:
+        turnPlannerSpend &&
+        turnPlannerSpend.totalTokens > (turnReplyUsage?.totalTokens ?? 0)
+          ? turnPlannerSpend
+          : turnReplyUsage,
       tasks: (session?.snapshot().tasks ?? []).flatMap((task) =>
         task.usage && !accountedTasks.has(task.id)
           ? [
@@ -690,7 +699,10 @@ async function open(
       if (outcome === 'failed') {
         lastFailedSeq = settledSeq;
         lastFailureUsage = failedTurnUsage();
+        failureCause = turnFailureCause;
       }
+      turnFailureCause = undefined;
+      turnPlannerSpend = undefined;
       turnReply = undefined;
       turnReplyUsage = undefined;
       await outbox.flushed();
@@ -742,6 +754,7 @@ async function open(
           ),
         (usage) => {
           spent = addTokenUsage(spent, usage);
+          turnPlannerSpend = addTokenUsage(turnPlannerSpend, usage);
         },
       );
       // The library appends this successful result before its final save.
@@ -758,7 +771,7 @@ async function open(
       if (!result.ok) {
         turnReplyUsage = addTokenUsage(turnReplyUsage, spent);
         // Only a model failure is replaced by its content-free cause.
-        failureCause = isLlmFailure(result.error)
+        turnFailureCause = isLlmFailure(result.error)
           ? llmFailure(result.error)
           : undefined;
       }
@@ -766,12 +779,11 @@ async function open(
     } catch (error) {
       turnReplyUsage = addTokenUsage(turnReplyUsage, spent);
       if (!isLlmFailure(error)) {
-        // A stale model cause must not mask this failure.
-        failureCause = undefined;
+        turnFailureCause = undefined;
         throw error;
       }
-      failureCause = llmFailure(error);
-      throw new Error(failureCause);
+      turnFailureCause = llmFailure(error);
+      throw new Error(turnFailureCause);
     } finally {
       for (const task of session?.snapshot().tasks ?? []) emitTask(task);
     }

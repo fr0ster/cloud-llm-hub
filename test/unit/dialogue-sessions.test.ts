@@ -10,6 +10,7 @@ import { executeRagTool } from '../../srv/agent-mcp-rag';
 import { chatStream, streamDialogue } from '../../srv/lib/chat-stream';
 import { dialogueChat } from '../../srv/lib/dialogue-chat';
 import { followDialogue } from '../../srv/lib/dialogue-follow';
+import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import * as plannerMemory from '../../srv/lib/planner-memory';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { buildReviewMessages } from '../../srv/lib/step-reviewer';
@@ -2515,3 +2516,35 @@ test.each([429, 503, 0])(
     expect(h.failedUsage?.().tasks).toHaveLength(1);
   },
 );
+
+test('a failed turn keeps planner spend observed before the failure', async () => {
+  const { h } = await ready();
+  mockPlannerHook = async () => {
+    // A completed model call inside the planner, then a model outage.
+    reportLlmSpend({ promptTokens: 5, completionTokens: 2, totalTokens: 7 });
+    throw Object.assign(new LlmError('private'), { response: { status: 503 } });
+  };
+  await h.session.send('go').catch(() => undefined);
+  await until(() => h.state().lastFailedSeq > 0);
+  expect(h.state().failureCause).toBe('LLM unavailable (HTTP 503)');
+  expect(h.failedUsage?.().planner).toEqual(
+    expect.objectContaining({ promptTokens: 5, completionTokens: 2 }),
+  );
+});
+
+test('a later non-model failure does not inherit an earlier model cause', async () => {
+  const { h } = await ready();
+  mockPlannerHook = async () => {
+    throw Object.assign(new LlmError('private'), { response: { status: 429 } });
+  };
+  await h.session.send('first').catch(() => undefined);
+  await until(() => h.state().lastFailedSeq > 0);
+  expect(h.state().failureCause).toBe('LLM unavailable (HTTP 429)');
+  const failed = h.state().lastFailedSeq;
+  mockPlannerHook = async () => {
+    throw new Error('storage unavailable');
+  };
+  await h.session.send('second').catch(() => undefined);
+  await until(() => h.state().lastFailedSeq > failed);
+  expect(h.state().failureCause).toBeUndefined();
+});
