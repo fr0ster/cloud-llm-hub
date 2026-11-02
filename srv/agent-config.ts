@@ -1,3 +1,4 @@
+import { type ExternalMcpConfig, parseExternalMcp } from './lib/external-mcp';
 import { parseTrustDefaults, type TrustDefaults } from './lib/trust';
 /**
  * Agent Configuration Module
@@ -170,6 +171,7 @@ export function parseAgentProfilesConfig(
 
 export interface AgentConfig {
   trust: { defaults: TrustDefaults };
+  externalMcp?: ExternalMcpConfig;
   profiles?: AgentProfilesConfig;
   timeZone?: string;
   /**
@@ -658,6 +660,7 @@ export function loadAgentConfig(): AgentConfig {
     trust: {
       defaults: parseTrustDefaults(process.env.LLM_AGENT_TRUST_DEFAULTS),
     },
+    externalMcp: parseExternalMcp(process.env),
     profiles: parseAgentProfilesConfig(),
     timeZone: parseTimeZone(),
     llm: {

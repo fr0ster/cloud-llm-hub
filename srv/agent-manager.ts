@@ -1,3 +1,4 @@
+import type { ToolTrust } from '@mcp-abap-adt/llm-agent';
 import { coordinatorModel } from './lib/coordinator-model';
 import {
   coordinatorToolsClient as createCoordinatorToolsClient,
@@ -8,6 +9,7 @@ import {
   type ExecutorStepArgs,
   runExecutorStep as executeExecutorStep,
 } from './lib/executor-step';
+import { ExternalMcp } from './lib/external-mcp';
 import {
   parseModelAllowlist,
   resolveAgentModel,
@@ -1703,6 +1705,22 @@ export function getHandlerExporterConfig() {
 
 /** Static, destination-free tool list from HandlerExporter (same config as buildEmbeddedMcpAdapter). */
 let embeddedToolNames: ReadonlySet<string> | undefined;
+let externalDocs: ExternalMcp | undefined;
+function docsMcp(): ExternalMcp {
+  externalDocs ??= new ExternalMcp(
+    getAgentConfig().externalMcp ?? {
+      roles: { planner: [], executor: [], checker: [], analyst: [] },
+      trust: {},
+    },
+    () => [...getToolExpositionMap().keys(), ...ragToolNames],
+  );
+  return externalDocs;
+}
+function builtInToolTrust(resolver: TrustResolver): ToolTrust {
+  const system = systemToolTrust(isEmbeddedSystemTool, resolver);
+  return (name) => docsMcp().toolTrust(name, resolver) ?? system(name);
+}
+
 export function isEmbeddedSystemTool(name: string): boolean {
   embeddedToolNames ??= new Set(
     new HandlerExporter(getHandlerExporterConfig()).getToolNames(),
@@ -1721,7 +1739,7 @@ function currentTrustResolver(): TrustResolver {
   );
 }
 export function getSystemToolTrust() {
-  return systemToolTrust(isEmbeddedSystemTool, currentTrustResolver());
+  return builtInToolTrust(currentTrustResolver());
 }
 
 function listToolDefsFromExporter(): ToolDocInput[] {
@@ -2804,6 +2822,7 @@ async function configureDestinationAgentBuilder(
     skipSkills?: boolean;
     skipRetrieval?: boolean;
     systemPrompt?: string;
+    role?: string;
   },
 ): Promise<SmartAgentBuilder> {
   const { mainLlm: mainLlmPromise, classifierLlm: classifierLlmPromise } =
@@ -2854,10 +2873,11 @@ async function configureDestinationAgentBuilder(
     },
   })
     .withToolLoopContextStrategyFactory(() => createToolLoopWindow())
-    .withToolTrust(systemToolTrust(isEmbeddedSystemTool, roleResolver))
+    .withToolTrust(builtInToolTrust(roleResolver))
     .withMainLlm(opts?.skipRetrieval ? mainLlm : trackedLlm(mainLlm, true))
     .withClassifierLlm(classifierLlm)
     .withMcpClients([
+      ...(await docsMcp().clients(opts?.role ?? 'executor')),
       mcpAdapter instanceof RecordingMcpClient
         ? mcpAdapter
         : withToolResultCap(
@@ -2979,9 +2999,10 @@ export async function buildPlannerAgent(
       system,
     },
   })
-    .withToolTrust(systemToolTrust(isEmbeddedSystemTool, roleResolver))
+    .withToolTrust(builtInToolTrust(roleResolver))
     .withMainLlm(llm)
     .withMcpClients([
+      ...(await docsMcp().clients('planner')),
       new RecordingMcpClient(
         authorClient ?? new DialogueRagMcpClient(coordinatorToolsClient()),
         undefined,
@@ -3012,6 +3033,10 @@ export function createAgentProfileSource(
   };
   const sessionId = getRequestSessionId();
   return new AgentProfileSource(getCollectionRegistry(), {
+    prepareCatalogue: async () => {
+      for (const role of ['planner', 'executor', 'checker', 'analyst'])
+        await docsMcp().clients(role);
+    },
     catalogue: () => [
       ...[...getToolExpositionMap().keys()]
         .filter((name) => !isRagTool(name))
@@ -3021,6 +3046,7 @@ export function createAgentProfileSource(
             ? ('read' as const)
             : ('write' as const),
         })),
+      ...docsMcp().catalogue(),
       ...ragToolNames.map((name) => ({ name, effect: ragToolEffect(name) })),
     ],
     userId,
@@ -3086,6 +3112,7 @@ function destinationProfileRunner(
           ? ('read' as const)
           : ('write' as const),
       })),
+    ...docsMcp().catalogue(),
     ...ragToolNames.map((name) => ({
       name,
       effect: ragToolEffect(name),
@@ -3093,11 +3120,19 @@ function destinationProfileRunner(
   ];
   return new AgentProfileRunner({
     trustResolver: getTrustResolver,
+    prepareTools: async (role) => {
+      await docsMcp().clients(role);
+    },
+    plannerKnowledgeTools: () =>
+      docsMcp()
+        .catalogue('planner')
+        .map((tool) => tool.name),
     catalogue,
     grants: () =>
       new Set(
         catalogue()
           .filter((tool) => {
+            if (docsMcp().owns(tool.name)) return true;
             if (isRagTool(tool.name)) return Boolean(getRequestUserId());
             const caller = callerExposition.getStore();
             const allowed = caller
@@ -3125,7 +3160,7 @@ function destinationProfileRunner(
             model: profile.model ?? getAgentConfig().llm.model,
           },
         },
-        { systemPrompt },
+        { systemPrompt, role: profile.name },
       );
       options?.signal?.throwIfAborted();
       const handle = await builder.build();
@@ -3350,10 +3385,7 @@ export async function buildAgentForDestination(
     () => {
       const profile = getReviewProfile() ?? executorProfile;
       return profile?.trust
-        ? systemToolTrust(
-            isEmbeddedSystemTool,
-            getTrustResolver().forProfile(profile),
-          )
+        ? builtInToolTrust(getTrustResolver().forProfile(profile))
         : getSystemToolTrust();
     },
   );
@@ -3432,8 +3464,7 @@ export async function buildAgentForDestination(
     profileRunner,
     trustResolver: getTrustResolver(),
     toolTrust: getSystemToolTrust(),
-    toolTrustFor: (resolver: TrustResolver) =>
-      systemToolTrust(isEmbeddedSystemTool, resolver),
+    toolTrustFor: (resolver: TrustResolver) => builtInToolTrust(resolver),
   });
 
   return destinationHandle;

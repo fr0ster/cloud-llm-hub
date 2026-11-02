@@ -27,6 +27,7 @@ export interface AgentProfileReader {
   ): Promise<{ meta: CollectionMeta; documents: RagDocument[] } | null>;
 }
 export interface AgentProfileSelection {
+  readonly prepareCatalogue?: () => Promise<void>;
   readonly catalogue?: () => readonly RegisteredProfileTool[];
   readonly userId: string;
   readonly globalCollectionId: string;
@@ -70,6 +71,7 @@ export class AgentProfileSource implements IAgentProfileSource {
   }
 
   private async readCollection(options: CallOptions): Promise<RagDocument[]> {
+    await this.selection.prepareCatalogue?.();
     const id = await this.selection.selectedCollectionId();
     options.signal?.throwIfAborted();
     const collection = await this.reader.readAgentCollection(id, options);

@@ -396,3 +396,32 @@ continue to use `LLM_AGENT_PLANNER_MODEL`; classifier, embedder and reviewer set
 are independent of request model selection.
 
 `rag_read` defaults to 32,000 characters per page, subject to `LLM_AGENT_TOOL_RESULT_MAX_CHARS`. Identical pages inside one agent loop return an `alreadyRead` pointer while their original full-text round remains in the window. Pointers do not extend that lifetime; expired pages or any change to the full record return text again.
+
+### External docs MCP per agent role
+
+Configure `LLM_AGENT_PLANNER_MCP`, `LLM_AGENT_EXECUTOR_MCP`,
+`LLM_AGENT_CHECKER_MCP`, and `LLM_AGENT_ANALYST_MCP` as comma-separated BTP
+Destination names. Unset lists offer no external docs tools to that role.
+Profile names `executor`, `checker`, and `analyst` select their respective lists;
+planner and plan author use the planner list. These destinations declare docs
+servers: all their tools count as read-only knowledge tools. Write-capable
+external MCP servers are outside this configuration's scope. Profile allow/deny
+rules, read-only policies, and parent ceilings still apply.
+
+For a public endpoint, create a destination in the BTP cockpit under
+Connectivity ? Destinations: Name `ABAP_DOCS`, Type `HTTP`, URL
+`https://mcp-abap.marianzeis.de/mcp`, Proxy Type `Internet`, Authentication
+`NoAuthentication`. Bind the hub to the Destination service as for SAP systems,
+then set `LLM_AGENT_EXECUTOR_MCP=ABAP_DOCS` (and any other desired role lists).
+The URL must be the Streamable HTTP MCP endpoint. Check deployment egress to
+that host. Authenticated endpoints use credentials and tokens managed by the
+destination; do not put endpoint credentials in environment variables.
+OnPremise docs endpoints and user-dependent authentication are not supported.
+
+Optional `LLM_AGENT_MCP_TRUST=ABAP_DOCS=4,OTHER_DOCS=3.5` overrides trust by
+destination. Values are validated by `normalizeTrust`; malformed entries fail
+configuration loading. Otherwise the active profile's `trust.docs` wins, then
+`LLM_AGENT_TRUST_DEFAULTS`'s `docs` value, then the built-in default 3.5.
+Results receive `[source: docs:<original-tool-name>; trust n]` through ToolTrust.
+Connections are lazy; failed discovery logs a warning and omits that destination's
+tools. A later agent preparation retries after a 30-second cooldown.

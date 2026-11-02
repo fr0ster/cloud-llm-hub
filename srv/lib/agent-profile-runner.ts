@@ -24,6 +24,8 @@ import { runWithTrustResolver, type TrustResolver } from './trust-resolver';
 
 export interface AgentProfileRunnerHost {
   trustResolver?(): TrustResolver;
+  prepareTools?(role: string): Promise<void>;
+  plannerKnowledgeTools?(): string[];
   catalogue(): readonly RegisteredProfileTool[];
   grants(): ReadonlySet<string>;
   buildWorker(
@@ -100,6 +102,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
     if (model.ok) profile.model = model.value;
     const parent = currentProfileTools();
     try {
+      await this.host.prepareTools?.(profile.name);
       const catalogue = this.host.catalogue();
       effectiveProfileTools({
         catalogue,
@@ -164,6 +167,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
       options?.signal?.throwIfAborted();
       if (!this.host.buildPlanAuthor)
         throw new Error('Plan author unavailable');
+      await this.host.prepareTools?.('planner');
       const scope = this.bind({
         name: 'planner-author',
         trust: input.trust,
@@ -172,6 +176,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
         result: 'report',
         tools: {
           allow: [
+            ...(this.host.plannerKnowledgeTools?.() ?? []),
             'rag_search',
             'rag_read',
             'collection_records',

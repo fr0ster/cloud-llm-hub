@@ -1519,3 +1519,25 @@ An **assistant** is the future memory-and-learning entity. An **agent** performs
 `TrustResolver` resolves current metadata on each read, including already-built agents. Collection and record overrides persist with bounded audit history (last 20 changes); the internal `h_trust` store holds informational skill source/record overrides. Writes invalidate only the affected provider cache entry. Defaults are not persisted on reads. Caller metadata cannot set informational trust or impersonate provenance.
 
 Only admins change global informational trust through the shared REST/MCP write path. The virtual `@skills` source uses stable skill ids. Base skills load directly with system content; informational skills use semantic selection and live trust tags. Profile instructions and corrections outrank tagged context. The prompt rule asks agents to prefer higher trust, identify the relied-on source briefly, and disclose equal-trust conflicts. Trust affects conflict interpretation, not relevance scoring or filtering. All model-facing paths carry source/trust annotations while stored traces remain raw.
+
+### Built-in external docs MCP
+
+`srv/lib/external-mcp.ts` owns role destination lists, live MCP connections and
+an explicit `(destination, original tool)` ownership registry. Destination URL
+and authentication come from the bound BTP Destination service using the same
+Cloud SDK path as SAP destinations. `MCPClientWrapper` uses Streamable HTTP and
+`McpClientAdapter` exposes the tools to agent builders. Connection failures warn
+and omit tools, leaving hub startup available; discovery retries after cooldown.
+No tool results are cached here.
+
+Worker preparation discovers tools before computing profile permissions. The
+host registers docs tools as read-only; planner authors add only planner docs
+to their knowledge allowlist. Builders attach only the selected role's clients,
+independent of the caller's MCP connection. Dispatch checks profile permissions
+again. Client-supplied tools remain a separate request mechanism and never enter
+this registry. Embedded/RAG name collisions expose the external tool as
+`<destination>__<tool>` while dispatch retains its original name.
+
+The ToolTrust callback classifies external tools by ownership, with destination
+trust overrides preceding the active profile's docs map and deployment defaults.
+Raw MCP results stay raw; the tool loop adds source/trust envelopes for the model.

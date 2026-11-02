@@ -535,3 +535,16 @@ function isSdkUserTokenMissing(error: unknown): boolean {
   }
   return false;
 }
+/** Resolve HTTP endpoints through the same bound Cloud SDK destination service as SAP connections. */
+export async function resolveHttpDestination(
+  name: string,
+): Promise<Destination> {
+  ensureVcapServicesLoaded();
+  const destination = await getDestination({
+    destinationName: name,
+    useCache: false,
+  });
+  if (!destination?.url)
+    throw new Error(`Destination "${name}" not found or missing URL`);
+  return destination;
+}

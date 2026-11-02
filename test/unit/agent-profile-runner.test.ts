@@ -286,3 +286,39 @@ test('delegate_task rejects a disallowed model before enqueueing any task', asyn
   expect(board.list()).toEqual([]);
   expect(f.preambles).toEqual([]);
 });
+
+test('planner author receives registered docs as knowledge tools under its parent ceiling', async () => {
+  const f = fixture();
+  const baseCatalogue = f.host.catalogue;
+  f.host.catalogue = () => [
+    ...baseCatalogue(),
+    ...[
+      'rag_search',
+      'rag_read',
+      'collection_records',
+      'collections_list',
+      'docs_search',
+    ].map((name) => ({ name, effect: 'read' as const })),
+  ];
+  f.host.prepareTools = jest.fn(async () => undefined);
+  f.host.plannerKnowledgeTools = () => ['docs_search'];
+  f.host.grants = () => new Set(f.host.catalogue().map((tool) => tool.name));
+  f.host.buildPlanAuthor = async () => {
+    expect(profileToolAllowed('docs_search')).toBe(true);
+    expect(profileToolAllowed('CreateTable')).toBe(false);
+    return f.host.buildPlanner('author');
+  };
+  const result = await f.runner.preparePlanAuthor({
+    systemPrompt: 'author',
+    mode: 'create',
+  });
+  expect(result.ok).toBe(true);
+  expect(f.host.prepareTools).toHaveBeenCalledWith('planner');
+  f.host.buildPlanAuthor = async () => {
+    expect(profileToolAllowed('docs_search')).toBe(false);
+    return f.host.buildPlanner('author');
+  };
+  await runWithProfileTools(new AgentToolPermissions(['rag_read']), () =>
+    f.runner.preparePlanAuthor({ systemPrompt: 'author', mode: 'create' }),
+  );
+});

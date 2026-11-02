@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Added
 
+- Built-in external docs MCP destinations per planner, executor, checker and analyst role, with read-only profile ceilings, collision-safe ownership, lazy discovery and destination/profile docs trust.
+
 - Agent tool loops retain the latest `LLM_AGENT_TOOL_LOOP_WINDOW` rounds (default 8), with deterministic digests for dropped results and trace-scoped repeated-read pointers. `rag_read` defaults to 32,000 characters, subject to the tool-result cap. Compact tool summaries retain search queries (200 characters) and read paging arguments.
 
 - Model allowlist (`LLM_AGENT_MODELS`), profile model defaults, and per-call model overrides for `delegate_task` and `execute_step`; disallowed agent choices return `MODEL_NOT_ALLOWED`.
