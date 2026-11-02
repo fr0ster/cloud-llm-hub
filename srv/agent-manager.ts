@@ -3033,6 +3033,7 @@ export function createAgentProfileSource(
   };
   const sessionId = getRequestSessionId();
   return new AgentProfileSource(getCollectionRegistry(), {
+    acceptsPolicyName: (name) => docsMcp().acceptsPolicyName(name),
     prepareCatalogue: async () => {
       docsMcp().refresh();
     },
@@ -3118,6 +3119,7 @@ function destinationProfileRunner(
     })),
   ];
   return new AgentProfileRunner({
+    acceptsPolicyName: (name) => docsMcp().acceptsPolicyName(name),
     trustResolver: getTrustResolver,
     prepareTools: async (role) => {
       await docsMcp().clients(role);

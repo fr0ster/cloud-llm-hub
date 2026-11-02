@@ -28,6 +28,7 @@ export interface AgentProfileReader {
 }
 export interface AgentProfileSelection {
   readonly prepareCatalogue?: () => Promise<void>;
+  readonly acceptsPolicyName?: (name: string) => boolean;
   readonly catalogue?: () => readonly RegisteredProfileTool[];
   readonly userId: string;
   readonly globalCollectionId: string;
@@ -129,6 +130,7 @@ export class AgentProfileSource implements IAgentProfileSource {
     if (record.metadata.kind !== 'profile' || !this.selection.catalogue) return;
     try {
       effectiveProfileTools({
+        acceptsPolicyName: this.selection.acceptsPolicyName,
         catalogue: this.selection.catalogue(),
         grants: new Set<string>(),
         result: record.metadata.result,

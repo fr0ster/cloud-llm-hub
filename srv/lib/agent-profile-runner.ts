@@ -26,6 +26,7 @@ export interface AgentProfileRunnerHost {
   trustResolver?(): TrustResolver;
   prepareTools?(role: string): Promise<void>;
   plannerKnowledgeTools?(): string[];
+  acceptsPolicyName?: (name: string) => boolean;
   catalogue(): readonly RegisteredProfileTool[];
   grants(): ReadonlySet<string>;
   buildWorker(
@@ -57,6 +58,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
     parent = currentProfileTools(),
   ): <T>(run: () => T) => T {
     const permissions = effectiveProfileTools({
+      acceptsPolicyName: this.host.acceptsPolicyName,
       catalogue: this.host.catalogue(),
       grants: this.host.grants(),
       result: profile.result,
@@ -105,6 +107,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
       await this.host.prepareTools?.(profile.name);
       const catalogue = this.host.catalogue();
       effectiveProfileTools({
+        acceptsPolicyName: this.host.acceptsPolicyName,
         catalogue,
         grants: new Set(catalogue.map((tool) => tool.name)),
         result: profile.result,

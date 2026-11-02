@@ -255,3 +255,164 @@ test('background discovery never waits for a hung destination and retries after 
     jest.useRealTimers();
   }
 });
+
+test('recovery preserves names and routes existing agents to the replacement', async () => {
+  let now = 0;
+  let online = false;
+  const oldCall = jest.fn(adapter.callTool);
+  const disconnect = jest.fn(async () => {});
+  const first = { ...adapter, callTool: oldCall, disconnect };
+  const replacementCall = jest.fn(adapter.callTool);
+  const replacement = { ...adapter, callTool: replacementCall };
+  let connections = 0;
+  const external = new ExternalMcp(
+    parseExternalMcp({ LLM_AGENT_EXECUTOR_MCP: 'A,B' }),
+    () => [],
+    async (destination) => {
+      if (destination === 'B' && !online) throw new Error('offline');
+      if (destination === 'A') return connections++ === 0 ? first : replacement;
+      return adapter;
+    },
+    jest.fn(),
+    () => now,
+  );
+  const clients = await external.clients('executor');
+  expect(external.catalogue()).toEqual([{ name: 'A__search', effect: 'read' }]);
+  oldCall.mockRejectedValueOnce(new Error('lost connection'));
+  await clients[0].callTool('A__search', {});
+  online = true;
+  now = 30001;
+  await external.clients('executor');
+  expect(external.catalogue()).toEqual([
+    { name: 'A__search', effect: 'read' },
+    { name: 'B__search', effect: 'read' },
+  ]);
+  await clients[0].callTool('A__search', {});
+  expect(replacementCall).toHaveBeenCalledWith('search', {}, undefined);
+  expect(disconnect).toHaveBeenCalledTimes(1);
+});
+
+test('healthy refresh lists tools again without reconnecting', async () => {
+  let now = 0;
+  const listTools = jest.fn(adapter.listTools);
+  const disconnect = jest.fn(async () => {});
+  const connect = jest.fn(async () => ({ ...adapter, listTools, disconnect }));
+  const external = new ExternalMcp(
+    parseExternalMcp({ LLM_AGENT_EXECUTOR_MCP: 'docs' }),
+    () => [],
+    connect,
+    jest.fn(),
+    () => now,
+  );
+  await external.clients('executor');
+  now = 30001;
+  await external.clients('executor');
+  expect(connect).toHaveBeenCalledTimes(1);
+  expect(listTools).toHaveBeenCalledTimes(2);
+  expect(disconnect).not.toHaveBeenCalled();
+});
+
+test.each(['throw', 'timeout', 'late-connect'])(
+  'discovery cleans up the connected client on %s',
+  async (failure) => {
+    jest.useFakeTimers();
+    try {
+      const disconnect = jest.fn(async () => {});
+      const client = {
+        ...adapter,
+        disconnect,
+        listTools:
+          failure === 'late-connect'
+            ? adapter.listTools
+            : async (): ReturnType<IMcpClient['listTools']> => {
+                if (failure === 'throw') throw new Error('list failed');
+                return new Promise(() => {});
+              },
+      };
+      const external = new ExternalMcp(
+        parseExternalMcp({ LLM_AGENT_EXECUTOR_MCP: 'docs' }),
+        () => [],
+        async () => {
+          if (failure === 'late-connect')
+            await new Promise((resolve) => setTimeout(resolve, 11000));
+          return client;
+        },
+        jest.fn(),
+      );
+      const ready = external.clients('executor');
+      await jest.advanceTimersByTimeAsync(11000);
+      expect(await ready).toEqual([]);
+      expect(disconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  },
+);
+
+test('undiscovered external policy entries match nothing and retain strict validation without destinations', async () => {
+  const { effectiveProfileTools } = await import(
+    '../../srv/lib/agent-profile-tools'
+  );
+  for (const configured of [false, true]) {
+    const external = new ExternalMcp(
+      parseExternalMcp(configured ? { LLM_AGENT_EXECUTOR_MCP: 'docs' } : {}),
+      () => [],
+      async () => adapter,
+    );
+    for (const name of ['search', 'docs__search']) {
+      const validate = () =>
+        effectiveProfileTools({
+          catalogue: [],
+          grants: new Set([name]),
+          result: 'report',
+          policy: { allow: [name], deny: ['docs__other'] },
+          acceptsPolicyName: (candidate) =>
+            external.acceptsPolicyName(candidate),
+        });
+      if (configured) expect(validate().allows(name)).toBe(false);
+      else expect(validate).toThrow('Unregistered policy tool');
+    }
+    expect(external.acceptsPolicyName('other__search')).toBe(false);
+  }
+});
+
+test('replacement waits for in-flight calls before disconnecting the old client', async () => {
+  let now = 0;
+  let finish: (() => void) | undefined;
+  const disconnect = jest.fn(async () => {});
+  const first: IMcpClient & { disconnect(): Promise<void> } = {
+    ...adapter,
+    disconnect,
+    callTool: async () => {
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      return { ok: true, value: { content: 'finished' } };
+    },
+  };
+  let attempts = 0;
+  const external = new ExternalMcp(
+    parseExternalMcp({ LLM_AGENT_EXECUTOR_MCP: 'docs' }),
+    () => [],
+    async () => (attempts++ === 0 ? first : adapter),
+    jest.fn(),
+    () => now,
+  );
+  const clients = await external.clients('executor');
+  const running = clients[0].callTool('search', {});
+  // A concurrent failure marks the same connection unhealthy.
+  first.callTool = async () => {
+    throw new Error('offline');
+  };
+  await clients[0].callTool('search', {});
+  now = 30001;
+  await external.clients('executor');
+  expect(disconnect).not.toHaveBeenCalled();
+  finish?.();
+  await running;
+  expect(disconnect).toHaveBeenCalledTimes(1);
+  expect(await clients[0].callTool('search', {})).toEqual({
+    ok: true,
+    value: { content: 'documentation' },
+  });
+});

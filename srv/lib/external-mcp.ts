@@ -53,7 +53,7 @@ export function parseExternalMcp(env: NodeJS.ProcessEnv): ExternalMcpConfig {
     }
   return result;
 }
-async function connectDestination(name: string): Promise<IMcpClient> {
+async function connectDestination(name: string): Promise<ExternalMcpClient> {
   const destination = await resolveHttpDestination(name);
   if (destination.proxyType === 'OnPremise')
     throw new Error('Docs MCP requires an Internet destination');
@@ -66,14 +66,24 @@ async function connectDestination(name: string): Promise<IMcpClient> {
   });
   try {
     await wrapper.connect();
-    return new McpClientAdapter(wrapper);
+    const adapter = new McpClientAdapter(wrapper);
+    return {
+      listTools: (options) => adapter.listTools(options),
+      callTool: (name, args, options) => adapter.callTool(name, args, options),
+      disconnect: () => wrapper.disconnect(),
+    };
   } catch (error) {
     await wrapper.disconnect().catch(() => undefined);
     throw error;
   }
 }
+interface ExternalMcpClient extends IMcpClient {
+  disconnect?(): Promise<void>;
+}
 interface Connection {
-  client: IMcpClient;
+  client: ExternalMcpClient;
+  active: number;
+  retired: boolean;
   tools: McpTool[];
 }
 /** Live connections and ownership, never a tool-result or destination credential cache. */
@@ -83,6 +93,7 @@ export class ExternalMcp {
     Promise<Connection | undefined>
   >();
   private readonly cached = new Map<string, Connection>();
+  private readonly unhealthy = new Set<string>();
   private readonly retryAt = new Map<string, number>();
   private readonly owners = new Map<
     string,
@@ -91,7 +102,9 @@ export class ExternalMcp {
   constructor(
     private readonly config: ExternalMcpConfig,
     private readonly reserved: () => Iterable<string>,
-    private readonly connect = connectDestination,
+    private readonly connect: (
+      destination: string,
+    ) => Promise<ExternalMcpClient> = connectDestination,
     private readonly warn = (
       message: string,
       detail: { destination: string },
@@ -120,7 +133,33 @@ export class ExternalMcp {
         }
       : undefined;
   }
+  acceptsPolicyName(name: string): boolean {
+    const destinations = this.destinations();
+    // Raw names exist only with a single destination; otherwise all are prefixed.
+    return (
+      destinations.length > 0 &&
+      ((destinations.length === 1 && !name.includes('__')) ||
+        destinations.some(
+          (destination) =>
+            name.startsWith(`${destination}__`) &&
+            name.length > destination.length + 2,
+        ))
+    );
+  }
+  private async disconnect(client: ExternalMcpClient): Promise<void> {
+    try {
+      await client.disconnect?.();
+    } catch {
+      /* Best-effort cleanup. */
+    }
+  }
+  private retire(connection: Connection): void {
+    if (connection.retired) return;
+    connection.retired = true;
+    if (connection.active === 0) void this.disconnect(connection.client);
+  }
   private failed(destination: string): void {
+    this.unhealthy.add(destination);
     this.retryAt.set(destination, this.now() + 30000);
     this.connections.delete(destination);
     this.warn('External docs MCP unavailable', { destination });
@@ -131,32 +170,56 @@ export class ExternalMcp {
     if ((this.retryAt.get(destination) ?? 0) > this.now())
       return Promise.resolve(this.cached.get(destination));
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let expired = false;
+    let candidate: ExternalMcpClient | undefined;
+    const previous = this.cached.get(destination);
     const pending = (async () => {
       try {
-        const listedConnection = await Promise.race([
-          (async () => {
-            const client = await this.connect(destination);
-            return { client, listed: await client.listTools() };
+        const connection = await Promise.race([
+          (async (): Promise<Connection> => {
+            candidate =
+              previous && !this.unhealthy.has(destination)
+                ? previous.client
+                : await this.connect(destination);
+            if (expired) {
+              await this.disconnect(candidate);
+              throw new Error('Discovery timed out');
+            }
+            const listed = await candidate.listTools();
+            if (!listed.ok) throw listed.error;
+            return {
+              client: candidate,
+              tools: listed.value,
+              active: 0,
+              retired: false,
+            };
           })(),
           new Promise<never>((_resolve, reject) => {
-            timer = setTimeout(
-              () => reject(new Error('Discovery timed out')),
-              10000,
-            );
+            timer = setTimeout(() => {
+              expired = true;
+              reject(new Error('Discovery timed out'));
+            }, 10000);
             timer.unref();
           }),
         ]);
-        const { client, listed } = listedConnection;
-        if (!listed.ok) throw listed.error;
-        const connection = { client, tools: listed.value };
-        this.cached.set(destination, connection);
+        // Keep the activity counter when refreshing the same live client.
+        if (previous?.client === connection.client) {
+          previous.tools = connection.tools;
+          this.cached.set(destination, previous);
+        } else {
+          this.cached.set(destination, connection);
+          if (previous) this.retire(previous);
+        }
+        this.unhealthy.delete(destination);
         this.rebuildOwners();
         this.retryAt.set(destination, this.now() + 30000);
-        return connection;
+        return this.cached.get(destination);
       } catch {
-        this.retryAt.set(destination, this.now() + 30000);
-        this.connections.delete(destination);
-        this.warn('External docs MCP unavailable', { destination });
+        if (candidate) {
+          if (previous?.client === candidate) this.retire(previous);
+          else await this.disconnect(candidate);
+        }
+        this.failed(destination);
         return undefined;
       } finally {
         clearTimeout(timer);
@@ -173,19 +236,24 @@ export class ExternalMcp {
   }
   private rebuildOwners(): void {
     const reserved = new Set(this.reserved());
-    const counts = new Map<string, number>();
-    for (const connection of this.cached.values())
-      for (const name of new Set(connection.tools.map((tool) => tool.name)))
-        counts.set(name, (counts.get(name) ?? 0) + 1);
-    this.owners.clear();
     for (const destination of this.destinations()) {
       const connection = this.cached.get(destination);
       if (!connection) continue;
       for (const tool of connection.tools) {
+        // Namespace all tools in multi-destination configurations before discovery
+        // can reveal collisions. Reachability never participates in naming.
         const name =
-          reserved.has(tool.name) || (counts.get(tool.name) ?? 0) > 1
+          reserved.has(tool.name) || this.destinations().length > 1
             ? `${destination}__${tool.name}`
             : tool.name;
+        // Assigned names remain owned for the process lifetime, even if removed.
+        if (
+          [...this.owners.values()].some(
+            (owner) =>
+              owner.destination === destination && owner.tool === tool.name,
+          )
+        )
+          continue;
         // Reject ambiguous generated aliases as well as duplicate raw names.
         if (reserved.has(name) || this.owners.has(name)) continue;
         this.owners.set(name, { destination, tool: tool.name });
@@ -216,9 +284,9 @@ export class ExternalMcp {
           value: [...this.owners].flatMap(([name, owner]) => {
             if (owner.destination !== destination || !profileToolAllowed(name))
               return [];
-            const tool = connection.tools.find(
-              (tool) => tool.name === owner.tool,
-            );
+            const tool = this.cached
+              .get(destination)
+              ?.tools.find((tool) => tool.name === owner.tool);
             return tool ? [{ ...tool, name }] : [];
           }),
         }),
@@ -233,8 +301,15 @@ export class ExternalMcp {
               ok: false,
               error: new McpError('External docs tool forbidden'),
             };
+          const live = this.cached.get(destination);
+          if (!live || live.retired)
+            return {
+              ok: false,
+              error: new McpError('External docs MCP unavailable'),
+            };
+          live.active++;
           try {
-            const result = await connection.client.callTool(
+            const result = await live.client.callTool(
               owner.tool,
               args,
               options,
@@ -250,6 +325,10 @@ export class ExternalMcp {
                 content: 'External docs MCP unavailable',
               },
             };
+          } finally {
+            live.active--;
+            if (live.retired && live.active === 0)
+              void this.disconnect(live.client);
           }
         },
       });
