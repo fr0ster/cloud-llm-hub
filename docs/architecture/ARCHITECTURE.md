@@ -1145,7 +1145,7 @@ graph TB
 | `LLM_AGENT_TEMPERATURE` | `agent-config.ts` | Temperature (0.0–2.0, default: 0.7) |
 | `LLM_AGENT_MAX_TOKENS` | `agent-config.ts` | Max response tokens (default: 2000) |
 | `LLM_AGENT_MCP_DESTINATION` | `agent-config.ts`, `agent-manager.ts` | BTP Destination with two roles: (1) a "warm this first" startup hint (NOT privileged; does not block startup), and (2) the **implicit default destination** `getSmartAgent()` uses when a request passes no destination (`requestedDestination \|\| config.mcp.destination`, `agent-manager.ts`). Unset → LLM-only mode at startup |
-| `LLM_AGENT_DESTINATION_INIT_WAIT_MS` | `agent-manager.ts` | Max ms `getSmartAgent` waits for a destination to vectorize before erroring (default: 90000) |
+| `LLM_AGENT_DESTINATION_INIT_WAIT_MS` | `agent-manager.ts` | Legacy parser only; destination preparation now waits for completion without a hub deadline. |
 | `LLM_AGENT_MCP_ENDPOINT` | `agent-config.ts` | **Inert.** Read into `config.mcp.endpoint` and logged at startup, but no runtime path consumes it — the agent calls embedded handlers, not an MCP URL. Setting it changes nothing |
 | `LLM_AGENT_RESOURCE_GROUP` | `agent-config.ts`, `agent-manager.ts` | AI Core resource group; read into `llm.resourceGroup` (`agent-config.ts`) and passed to `makeHubLlm`, the embedder, and the tool-RAG store / embedding-bundle fingerprint (`agent-manager.ts`). Default: `default` |
 | `LLM_AGENT_PROVIDER` | `agent-config.ts` | LLM provider (`sap-ai-sdk` \| `openai` \| `anthropic` \| `deepseek`, default: `sap-ai-sdk`) |

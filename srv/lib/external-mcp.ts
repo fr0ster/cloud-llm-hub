@@ -62,7 +62,7 @@ async function connectDestination(name: string): Promise<ExternalMcpClient> {
     transport: 'stream-http',
     url: destination.url,
     headers: await buildHeadersForDestination(destination),
-    timeout: 10000,
+    // The MCP SDK requires a positive timeout; its library safety net applies.
   });
   try {
     await wrapper.connect();
@@ -170,6 +170,8 @@ export class ExternalMcp {
     if (existing) return existing;
     if ((this.retryAt.get(destination) ?? 0) > this.now())
       return Promise.resolve(this.cached.get(destination));
+    // Background discovery has no caller signal and never blocks profiles.
+    // Release a truly hung refresh after ten minutes; failed() logs a warning.
     let timer: ReturnType<typeof setTimeout> | undefined;
     let expired = false;
     let candidate: ExternalMcpClient | undefined;
@@ -199,7 +201,7 @@ export class ExternalMcp {
             timer = setTimeout(() => {
               expired = true;
               reject(new Error('Discovery timed out'));
-            }, 10000);
+            }, 600_000);
             timer.unref();
           }),
         ]);

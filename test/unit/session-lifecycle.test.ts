@@ -143,12 +143,18 @@ test.each([false, true])(
   },
 );
 
-test('open falls through to the cap after 15 seconds of pending close', async () => {
+test('open waits beyond 15 seconds for pending close', async () => {
   jest.useFakeTimers();
   try {
+    let finish!: () => void;
     const registry = new LongSessionRegistry(
       { ttlMs: TTL, maxSessions: 2, maxPerUser: 1, queueLength: 1 },
-      { onClose: () => new Promise(() => {}) },
+      {
+        onClose: () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      },
     );
     setLongSessionsForTest(registry);
     registry.open('alice', { key: 'old' });
@@ -161,7 +167,9 @@ test('open falls through to the cap after 15 seconds of pending close', async ()
     await jest.advanceTimersByTimeAsync(14_999);
     expect(done).toBe(false);
     await jest.advanceTimersByTimeAsync(1);
-    expect(await opening).toEqual({ refused: 'SESSION_LIMIT' });
+    expect(done).toBe(false);
+    finish();
+    expect('refused' in (await opening)).toBe(false);
   } finally {
     jest.useRealTimers();
   }

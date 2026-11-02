@@ -319,7 +319,7 @@ describe('compatibility profile cancellation', () => {
   });
 
   test.each(['worker', 'checker', 'process', 'stream'] as const)(
-    '%s bounds stalled construction by the configured profile deadline',
+    '%s waits beyond the profile deadline and stops on caller abort',
     async (mode) => {
       buildMock.mockResolvedValue({ agent: fakeAgent, ragStores: {} });
       let direct: ISmartAgent | undefined;
@@ -382,15 +382,30 @@ describe('compatibility profile cancellation', () => {
         return new Promise<never>(() => {});
       });
       jest.useFakeTimers();
+      const controller = new AbortController();
       const pending =
         mode === 'worker' || mode === 'checker'
-          ? selectedWorker.run({ task: 'task' })
+          ? selectedWorker.run({ task: 'task', signal: controller.signal })
           : mode === 'process'
-            ? executor.process('task')
-            : executor.streamProcess('task')[Symbol.asyncIterator]().next();
+            ? executor.process('task', { signal: controller.signal })
+            : executor
+                .streamProcess('task', { signal: controller.signal })
+                [Symbol.asyncIterator]()
+                .next();
+      let settled = false;
+      void pending.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
       const rejected = expect(pending).rejects.toThrow();
       await building;
-      await jest.advanceTimersByTimeAsync(25);
+      await jest.advanceTimersByTimeAsync(100);
+      expect(settled).toBe(false);
+      controller.abort();
       await rejected;
     },
   );

@@ -1960,8 +1960,8 @@ test('retains worker results across the subscriber handoff once, with a bounded 
 });
 
 test.each([false, true])(
-  'retains worker results with session-events attached after follow timeout: %s',
-  async (timeout) => {
+  'retains worker results with session-events attached after follow disconnect: %s',
+  async (disconnect) => {
     let report: ReturnType<typeof getRagCallerIdentity>['onToolResult'];
     let finish!: () => void;
     const blocked = new Promise<void>((resolve) => {
@@ -1974,39 +1974,64 @@ test.each([false, true])(
     });
     const { h } = await ready();
     const detach = h.subscribe(() => {});
-    const follow = (maxMs: number) =>
+    const controller = new AbortController();
+    const follow = (maxMs: number, signal = new AbortController().signal) =>
       followDialogue(h, {
         delivery: h.outbox.beginDelivery(),
         since: 0,
-        signal: new AbortController().signal,
+        signal,
         maxMs,
       });
     try {
       await h.session.send('go');
       await until(() => report !== undefined);
-      if (timeout) {
+      if (disconnect) {
         const items = [];
-        for await (const item of follow(1)) {
+        const iterator = follow(1, controller.signal)[Symbol.asyncIterator]();
+        let settled = false;
+        const next = iterator.next().then((item) => {
+          settled = true;
+          return item;
+        });
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        expect(settled).toBe(false);
+        controller.abort();
+        items.push((await next).value);
+        for await (const item of { [Symbol.asyncIterator]: () => iterator }) {
           items.push(item);
           if (item.kind === 'tool-result') item.written?.();
         }
-        expect(items.at(-1)).toMatchObject({ kind: 'end', reason: 'limit' });
+        expect(items.at(-1)).toMatchObject({
+          kind: 'end',
+          reason: 'disconnected',
+        });
       }
       const record = {
         call: { id: 'retained', name: 'record_get', arguments: {} },
         result: { content: 'saved' },
       };
       report?.(record);
+      const resultController = new AbortController();
       const items = [];
-      for await (const item of follow(1)) {
+      for await (const item of follow(1, resultController.signal)) {
         items.push(item);
-        if (item.kind === 'tool-result') item.written?.();
+        if (item.kind === 'tool-result') {
+          item.written?.();
+          resultController.abort();
+        }
       }
       expect(items.filter((item) => item.kind === 'tool-result')).toEqual([
         { kind: 'tool-result', record, written: expect.any(Function) },
       ]);
-      const replay = [];
-      for await (const item of follow(1)) replay.push(item);
+      const replayController = new AbortController();
+      const replayIterator = follow(1, replayController.signal)[
+        Symbol.asyncIterator
+      ]();
+      const replayNext = replayIterator.next();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      replayController.abort();
+      const replay = [(await replayNext).value];
+      await replayIterator.return?.();
       expect(replay.filter((item) => item.kind === 'tool-result')).toEqual([]);
     } finally {
       detach();

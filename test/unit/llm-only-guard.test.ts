@@ -247,13 +247,15 @@ describe('LLM-only guard', () => {
     expect(agent.process).not.toHaveBeenCalled();
   });
 
-  it('fails closed on a decision timeout', async () => {
+  it('waits beyond the old deadline and fails closed on caller abort', async () => {
     jest.useFakeTimers();
     try {
       const { guarded, chat, agent } = setup();
       chat.mockImplementation(() => new Promise(() => {}));
-      const pending = guarded.process(messages);
-      jest.advanceTimersByTime(15_000);
+      const controller = new AbortController();
+      const pending = guarded.process(messages, { signal: controller.signal });
+      jest.advanceTimersByTime(30_000);
+      controller.abort();
       const result = await pending;
       expect(result.ok && result.value.content).toContain(
         'could not be classified',

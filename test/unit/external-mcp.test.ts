@@ -242,7 +242,7 @@ test('background discovery never waits for a hung destination and retries after 
     external.refresh();
     for (const role of ['executor', 'checker', 'planner'] as const)
       expect(external.catalogue(role)).toEqual([]);
-    await jest.advanceTimersByTimeAsync(10000);
+    await jest.advanceTimersByTimeAsync(600_000);
     reachable = true;
     await jest.advanceTimersByTimeAsync(30001);
     external.refresh();
@@ -334,13 +334,13 @@ test.each(['throw', 'timeout', 'late-connect'])(
         () => [],
         async () => {
           if (failure === 'late-connect')
-            await new Promise((resolve) => setTimeout(resolve, 11000));
+            await new Promise((resolve) => setTimeout(resolve, 600_001));
           return client;
         },
         jest.fn(),
       );
       const ready = external.clients('executor');
-      await jest.advanceTimersByTimeAsync(11000);
+      await jest.advanceTimersByTimeAsync(600_001);
       expect(await ready).toEqual([]);
       expect(disconnect).toHaveBeenCalledTimes(1);
     } finally {

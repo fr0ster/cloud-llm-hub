@@ -171,9 +171,8 @@ export async function planAuthorContextNotes(
     ? AbortSignal.any([options.signal, controller.signal])
     : controller.signal;
   const call = { ...options, sessionId, signal };
-  let timer: ReturnType<typeof setTimeout> | undefined;
   const warn = () =>
-    cds.log('planner-memory').warn('Plan author retrieval failed or timed out');
+    cds.log('planner-memory').warn('Plan author retrieval failed');
   try {
     await Promise.race([
       Promise.all([
@@ -243,15 +242,10 @@ export async function planAuthorContextNotes(
       new Promise<void>((resolve) => {
         const done = () => resolve();
         signal.addEventListener('abort', done, { once: true });
-        timer = setTimeout(
-          () => controller.abort(),
-          config.retrievalTimeoutMs ?? 3_000,
-        );
         if (signal.aborted) resolve();
       }),
     ]);
   } finally {
-    clearTimeout(timer);
     controller.abort();
   }
   // The public builder supplies the library's escaped, per-source budgeted blocks.

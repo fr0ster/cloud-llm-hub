@@ -120,6 +120,7 @@ export async function runExecutorStep(
     agentHandle.criticLlm
   ) {
     const verdict = await evaluateGated({
+      signal: opts.signal,
       toolTrust,
       usage: opts.usage,
       content: result.value.content ?? '',

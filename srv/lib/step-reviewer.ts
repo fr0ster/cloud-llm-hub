@@ -16,7 +16,7 @@ import {
   type ReviewVerdict,
   type ToolOutcome,
 } from './reviewer-core';
-import { loadStepReviewTimeoutMs, stepReviewEnabled } from './step-gate';
+import { stepReviewEnabled } from './step-gate';
 
 export type StepReview = {
   possiblyFake: boolean;
@@ -247,21 +247,21 @@ export async function reviewStep(
   },
   deps: {
     llm: ILlm;
+    /** @deprecated Ignored; caller cancellation owns review lifetime. */
     timeoutMs?: number;
+    signal?: AbortSignal;
     usage?: IUsageRecorder;
     onUsage?: (usage: TokenUsage) => void;
   },
 ): Promise<StepReview | null> {
-  const timeoutMs = deps.timeoutMs ?? 8000;
   const ctrl = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  // Race the chat against a hard timeout — a reviewer that ignores the signal
-  // must still never block execute_step. `null` from the timeout branch fails open.
-  const timeout = new Promise<null>((resolve) => {
-    timer = setTimeout(() => {
-      ctrl.abort();
-      resolve(null);
-    }, timeoutMs);
+  const abort = () => ctrl.abort();
+  deps.signal?.addEventListener('abort', abort, { once: true });
+  if (deps.signal?.aborted) abort();
+  // Caller cancellation releases the waiter even if the provider ignores abort.
+  const cancelled = new Promise<null>((resolve) => {
+    ctrl.signal.addEventListener('abort', () => resolve(null), { once: true });
+    if (ctrl.signal.aborted) resolve(null);
   });
   try {
     const res = await Promise.race([
@@ -276,7 +276,7 @@ export async function reviewStep(
           : {}),
         signal: ctrl.signal,
       }),
-      timeout,
+      cancelled,
     ]);
     if (res === null || !res.ok) return null;
     if (res.value.usage) {
@@ -292,7 +292,7 @@ export async function reviewStep(
   } catch {
     return null;
   } finally {
-    if (timer) clearTimeout(timer);
+    deps.signal?.removeEventListener('abort', abort);
   }
 }
 
@@ -316,6 +316,7 @@ export async function reviewStep(
  * returned unchanged, never with a fabricated issue.
  */
 export async function evaluateGated(input: {
+  signal?: AbortSignal;
   content: string;
   topToolScore?: number;
   completionTokens?: number;
@@ -364,7 +365,7 @@ export async function evaluateGated(input: {
           usage = addTokenUsage(usage, callUsage);
         },
         usage: input.usage,
-        timeoutMs: loadStepReviewTimeoutMs(process.env),
+        signal: input.signal,
       },
     );
   } catch {

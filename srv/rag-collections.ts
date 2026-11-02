@@ -664,7 +664,6 @@ export class CollectionRegistry {
   /** The restore attempt in flight, if any. */
   private restoreAttempt?: Promise<void>;
   /** How long a call waits for a restore in flight; see whenReady. */
-  private readyTimeoutMs: number;
   /** Creates in flight, by collection id; see getOrCreateCollection. */
   private creating = new Map<string, Promise<CollectionMeta>>();
   /**
@@ -698,7 +697,6 @@ export class CollectionRegistry {
       opts?.defaultBackend ?? (opts?.embedder ? 'vector' : 'in-memory');
     this.persistence = opts?.persistence;
     this.restoreState = this.persistence ? 'pending' : 'off';
-    this.readyTimeoutMs = opts?.readyTimeoutMs ?? READY_WAIT_MS;
   }
 
   // -------------------------------------------------------------------------
@@ -872,30 +870,7 @@ export class CollectionRegistry {
     if (!this.persistence || this.restoreState === 'ready') return;
     if (this.restoreState === 'failed' && !this.restoreAttempt)
       throw this.unavailable();
-    // Bounded: a restore that hangs (a stalled query, a long scan) answers
-    // 503 instead of holding every request. The attempt itself goes on.
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(
-        () =>
-          reject(
-            new CollectionStatusError(
-              'restore collections',
-              new RagError(
-                'collections unavailable: restore still in progress',
-                COLLECTIONS_UNAVAILABLE,
-              ),
-            ),
-          ),
-        this.readyTimeoutMs,
-      );
-      timer.unref?.();
-    });
-    try {
-      await Promise.race([this.restore(), timeout]);
-    } finally {
-      clearTimeout(timer);
-    }
+    await this.restore();
   }
 
   /**

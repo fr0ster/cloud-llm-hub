@@ -7,6 +7,7 @@ import type {
   WorkerProfile,
   WorkerProfileSummary,
 } from '@mcp-abap-adt/llm-agent';
+import cds from '@sap/cds';
 import type { CollectionMeta, RagDocument } from '../rag-collections';
 import {
   type AgentProfileRecord,
@@ -148,10 +149,16 @@ export class AgentProfileSource implements IAgentProfileSource {
     options?: CallOptions,
   ): Promise<Result<T, AgentProfileError>> {
     const controller = new AbortController();
-    const abort = (): void => controller.abort();
+    const abort = (): void => {
+      const reason = options?.signal?.reason;
+      if (reason instanceof Error && /profile.*deadline/i.test(reason.message))
+        cds
+          .log('agent-profile-source')
+          .warn('Agent profile/preparation deadline observed');
+      controller.abort();
+    };
     options?.signal?.addEventListener('abort', abort, { once: true });
     if (options?.signal?.aborted) abort();
-    let timer: ReturnType<typeof setTimeout> | undefined;
     let rejectAbort: (() => void) | undefined;
     try {
       const stopped = new Promise<never>((_resolve, reject) => {
@@ -159,7 +166,6 @@ export class AgentProfileSource implements IAgentProfileSource {
         controller.signal.addEventListener('abort', rejectAbort, {
           once: true,
         });
-        timer = setTimeout(abort, this.selection.timeoutMs);
         if (controller.signal.aborted) rejectAbort();
       });
       const value = await Promise.race([
@@ -181,7 +187,6 @@ export class AgentProfileSource implements IAgentProfileSource {
         },
       };
     } finally {
-      clearTimeout(timer);
       options?.signal?.removeEventListener('abort', abort);
       if (rejectAbort)
         controller.signal.removeEventListener('abort', rejectAbort);

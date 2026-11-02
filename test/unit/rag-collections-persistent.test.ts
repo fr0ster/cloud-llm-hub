@@ -1602,19 +1602,37 @@ describe('Task 7 fix round 1', () => {
     ).toHaveLength(1);
   });
 
-  it('waiting on a restore is bounded: 503 "restore still in progress"', async () => {
-    const r = new CollectionRegistry({
-      embedder,
-      defaultBackend: 'pg-vector',
-      persistence: { restore: () => new Promise(() => {}) } as never,
-      readyTimeoutMs: 20,
-    });
-    const err = await failureOf(r.listCollections('alice'));
-    expect(err).toBeInstanceOf(CollectionBackendError);
-    expect((err as CollectionBackendError).httpStatus).toBe(503);
-    expect((err as Error).message).toBe(
-      'collections unavailable: restore still in progress',
-    );
+  it('waiting on restore outlasts the old deadline', async () => {
+    jest.useFakeTimers();
+    try {
+      const persistence = createCollectionPersistence(provider, 'fp-test');
+      let release!: () => void;
+      const restored = persistence.restore.bind(persistence);
+      jest.spyOn(persistence, 'restore').mockImplementation(async () => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return restored();
+      });
+      const r = new CollectionRegistry({
+        embedder,
+        defaultBackend: 'pg-vector',
+        persistence,
+      });
+      let settled = false;
+      const pending = r.listCollections('alice').then((value) => {
+        settled = true;
+        return value;
+      });
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(settled).toBe(false);
+      jest.useRealTimers();
+      release();
+      await pending;
+      expect(settled).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it.each([

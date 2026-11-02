@@ -1,5 +1,9 @@
+import cds from '@sap/cds';
+
 /** Shared budget for usage shutdown waits and recorder close. */
-export const USAGE_SHUTDOWN_TIMEOUT_MS = 5000;
+// Process shutdown has no caller abort. A generous final safety net prevents
+// a truly hung recorder from retaining the process; platform shutdown may win.
+export const USAGE_SHUTDOWN_TIMEOUT_MS = 600_000;
 
 export async function withinUsageShutdownBudget(
   work: Promise<void>,
@@ -10,7 +14,10 @@ export async function withinUsageShutdownBudget(
     return await Promise.race([
       work.then((): boolean => true),
       new Promise<boolean>((resolve: (value: boolean) => void): void => {
-        timer = setTimeout((): void => resolve(false), timeoutMs);
+        timer = setTimeout((): void => {
+          cds.log('usage-shutdown').warn('Usage shutdown safety net fired');
+          resolve(false);
+        }, timeoutMs);
       }),
     ]);
   } finally {

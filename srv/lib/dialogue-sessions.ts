@@ -170,6 +170,25 @@ interface LiveHandle extends DialogueHandle {
 }
 const handles = new Map<string, Promise<LiveHandle>>();
 const log = () => cds.log('dialogue');
+
+async function observeProfilePreparation<T>(
+  signal: AbortSignal | undefined,
+  prepare: () => Promise<T>,
+): Promise<T> {
+  const aborted = () => {
+    const reason = signal?.reason;
+    if (reason instanceof Error && /profile.*deadline/i.test(reason.message))
+      log().warn('Agent profile/preparation deadline observed');
+  };
+  signal?.addEventListener('abort', aborted, { once: true });
+  if (signal?.aborted) aborted();
+  try {
+    return await prepare();
+  } finally {
+    signal?.removeEventListener('abort', aborted);
+  }
+}
+
 const keyHash = (key: string) => createHash('sha256').update(key).digest('hex');
 const creationListeners = new Map<
   string,
@@ -496,6 +515,7 @@ async function open(
                   )
                     return result;
                   const verdict = await evaluateGated({
+                    signal: input.signal,
                     toolTrust,
                     usage: input.usage,
                     content: result.output,
@@ -881,11 +901,15 @@ async function open(
           ];
         },
       }),
-      profileTimeoutMs: config.profiles?.timeoutMs ?? 3000,
+      // The library requires a positive deadline for preparation. Ten minutes
+      // is a compatibility safety net; operators may explicitly override it.
+      profileTimeoutMs: config.profiles?.timeoutMs ?? 600_000,
       profileRunner: {
         validateModel: (model) => profileRunner.validateModel(model),
         createWorker: async (input, options) => {
-          const result = await profileRunner.createWorker(input, options);
+          const result = await observeProfilePreparation(options?.signal, () =>
+            profileRunner.createWorker(input, options),
+          );
           return result.ok
             ? { ok: true, value: wrapWorker(result.value, input.profile) }
             : result;
@@ -897,10 +921,16 @@ async function open(
               (await dialogueFor(userId, key, destination)).runStep(run),
             () =>
               withCoordinatorModel(selectedModel, () =>
-                profileRunner.preparePlanner(input, options),
+                observeProfilePreparation(options?.signal, () =>
+                  profileRunner.preparePlanner(input, options),
+                ),
               ),
           );
-          if (!result.ok) return result;
+          if (!result.ok) {
+            if (/timeout|timed out|deadline/i.test(result.error.message))
+              log().warn('Agent profile/preparation deadline observed');
+            return result;
+          }
           const prepared = result.value;
           return {
             ok: true,
@@ -913,6 +943,15 @@ async function open(
               },
             }),
           };
+        },
+      },
+      logger: {
+        warn(message) {
+          log().warn(
+            /profile|prepar|timeout|timed out|deadline/i.test(message)
+              ? 'Agent profile/preparation or background turn failure observed'
+              : 'Dialogue library warning',
+          );
         },
       },
       timeZone: config.timeZone,

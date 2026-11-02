@@ -1,5 +1,8 @@
 import type { IUsageControl, IUsageRecorder } from '@mcp-abap-adt/llm-agent';
-import { completeUsageShutdown } from '../../srv/lib/usage/shutdown';
+import {
+  completeUsageShutdown,
+  USAGE_SHUTDOWN_TIMEOUT_MS,
+} from '../../srv/lib/usage/shutdown';
 
 jest.mock('../../srv/lib/logging-config', (): object => ({
   applyLoggingConfig(): void {},
@@ -1466,18 +1469,28 @@ test.each([false, true])(
       userId: 'alice',
       sessionId: 'unreleased',
     });
+    jest.useFakeTimers();
     const started = Date.now();
     try {
       beginUsageShutdown();
-      const deadline = started + 5000;
-      await shutdownGatekeeper();
-      await closeUsageSessions(Math.max(0, deadline - Date.now()));
-      expect(Date.now() - started).toBeLessThan(enabled ? 5500 : 250);
+      const deadline = started + USAGE_SHUTDOWN_TIMEOUT_MS;
+      const shuttingDown = shutdownGatekeeper();
+      if (enabled)
+        await jest.advanceTimersByTimeAsync(USAGE_SHUTDOWN_TIMEOUT_MS);
+      await shuttingDown;
+      const closing = closeUsageSessions(Math.max(0, deadline - Date.now()));
+      await jest.advanceTimersByTimeAsync(0);
+      await closing;
+      expect(Date.now() - started).toBeLessThan(
+        enabled ? USAGE_SHUTDOWN_TIMEOUT_MS + 500 : 250,
+      );
       expect(pipeline.admitted.signal?.aborted).toBe(
         enabled ? true : undefined,
       );
       if (enabled) {
-        expect(Date.now() - started).toBeGreaterThanOrEqual(4900);
+        expect(Date.now() - started).toBeGreaterThanOrEqual(
+          USAGE_SHUTDOWN_TIMEOUT_MS,
+        );
         expect(await sessions('close')).toMatchObject([
           { values: { reason: 'shutdown' } },
         ]);
@@ -1485,6 +1498,7 @@ test.each([false, true])(
     } finally {
       releaseDelivery();
       pipeline.admitted.release();
+      jest.useRealTimers();
     }
   },
   8000,
