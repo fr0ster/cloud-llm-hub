@@ -60,7 +60,7 @@ import {
   touchDialogueState,
 } from './dialogue-store';
 import { admitBackground, type PipelineSession } from './gatekeeper';
-import { failureCause as failureCauseOf, observeLlmSpend } from './llm-failure';
+import { isLlmFailure, llmFailure, observeLlmSpend } from './llm-failure';
 import { longSessionsIfReady } from './long-session';
 import { parseModelAllowlist, resolveRequestModel } from './model-policy';
 import { stripNoMessage } from './no-message';
@@ -757,12 +757,14 @@ async function open(
       }
       if (!result.ok) {
         turnReplyUsage = addTokenUsage(turnReplyUsage, spent);
-        failureCause = failureCauseOf(result.error);
+        // Only a model failure is replaced by its content-free cause.
+        if (isLlmFailure(result.error)) failureCause = llmFailure(result.error);
       }
       return result;
     } catch (error) {
       turnReplyUsage = addTokenUsage(turnReplyUsage, spent);
-      failureCause = failureCauseOf(error);
+      if (!isLlmFailure(error)) throw error;
+      failureCause = llmFailure(error);
       throw new Error(failureCause);
     } finally {
       for (const task of session?.snapshot().tasks ?? []) emitTask(task);

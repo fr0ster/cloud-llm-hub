@@ -301,7 +301,9 @@ export async function streamDialogue(opts: {
             if (item.reason === 'error') {
               addDeliveredUsage(item.usage);
               throw new Error(
-                `Background planner turn failed: ${item.cause ?? 'LLM unavailable (no response from model)'}`,
+                item.cause
+                  ? `Background planner turn failed: ${item.cause}`
+                  : 'Background planner turn failed',
               );
             } else if (item.note)
               await content(`${text ? '\n\n' : ''}${item.note}`);

@@ -139,7 +139,7 @@ export function reliableLlm(inner: ILlm): ILlm {
 }
 
 /** Is this failure the model's (an LLM error or a throttle anywhere in the cause chain)? */
-function isLlmFailure(error: unknown): boolean {
+export function isLlmFailure(error: unknown): boolean {
   if (findThrottled(error)) return true;
   let current = error;
   for (let depth = 0; depth < 6 && current; depth++) {
@@ -163,9 +163,4 @@ function isLlmFailure(error: unknown): boolean {
 export function failureMessage(error: unknown): string {
   if (isLlmFailure(error)) return llmFailure(error);
   return error instanceof Error ? error.message : String(error);
-}
-
-/** Cause for surfaces that never showed one: LLM status facts, else a fixed phrase. */
-export function failureCause(error: unknown): string {
-  return isLlmFailure(error) ? llmFailure(error) : 'internal error';
 }
