@@ -461,3 +461,61 @@ test('empty MTA MCP parameters disable connections and use default trust', () =>
     directMax: 12,
   });
 });
+
+test('executor waits only for its destinations while other discovery stalls', async () => {
+  let finish: (client: IMcpClient) => void = () => {};
+  const stalled = new Promise<IMcpClient>((resolve) => {
+    finish = resolve;
+  });
+  const connect = jest.fn((destination: string) =>
+    destination === 'DOCS_A' ? Promise.resolve(adapter) : stalled,
+  );
+  const external = new ExternalMcp(
+    parseExternalMcp({
+      LLM_AGENT_EXECUTOR_MCP: 'DOCS_A',
+      LLM_AGENT_PLANNER_MCP: 'DOCS_B',
+    }),
+    () => [],
+    connect,
+  );
+  try {
+    const clients = await external.clients('executor');
+    expect(connect).toHaveBeenCalledWith('DOCS_B');
+    expect(clients).toHaveLength(1);
+    expect(await clients[0].listTools()).toEqual({
+      ok: true,
+      value: [{ name: 'DOCS_A__search', description: 'docs', inputSchema: {} }],
+    });
+  } finally {
+    finish(adapter);
+    await external.clients('planner');
+  }
+  expect(external.toolNames('executor')).toEqual(['DOCS_A__search']);
+});
+
+test('caller abort settles a stalled first discovery without cancelling it', async () => {
+  let finish: (client: IMcpClient) => void = () => {};
+  const stalled = new Promise<IMcpClient>((resolve) => {
+    finish = resolve;
+  });
+  const connect = jest.fn(() => stalled);
+  const external = new ExternalMcp(
+    parseExternalMcp({ LLM_AGENT_EXECUTOR_MCP: 'docs' }),
+    () => [],
+    connect,
+  );
+  const controller = new AbortController();
+  const reason = new Error('caller stopped');
+  const ready = external.clients('executor', { signal: controller.signal });
+  controller.abort(reason);
+  try {
+    await expect(ready).rejects.toBe(reason);
+    expect(external.catalogue()).toEqual([]);
+  } finally {
+    finish(adapter);
+  }
+  const clients = await external.clients('executor');
+  expect(connect).toHaveBeenCalledTimes(1);
+  expect(clients).toHaveLength(1);
+  expect(await clients[0].listTools()).toEqual(await adapter.listTools());
+});

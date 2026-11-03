@@ -485,16 +485,38 @@ export class ExternalMcp {
       }
     }
   }
-  async clients(role: string): Promise<IMcpClient[]> {
+  async clients(
+    role: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<IMcpClient[]> {
     const selected = roles.find((value) => value === role);
     if (!selected) return [];
-    await Promise.all(
-      this.destinations().map((name) => {
+    options?.signal?.throwIfAborted();
+    this.refresh();
+    const pending = Promise.all(
+      this.config.roles[selected].map((name) => {
         const cached = this.cached.get(name);
         const pending = this.connection(name);
         return cached && !cached.retired ? undefined : pending;
       }),
     );
+    const signal = options?.signal;
+    if (signal) {
+      let abort: (() => void) | undefined;
+      try {
+        await Promise.race([
+          pending,
+          new Promise<never>((_resolve, reject) => {
+            abort = () => reject(signal.reason);
+            signal.addEventListener('abort', abort, { once: true });
+            if (signal.aborted) abort();
+          }),
+        ]);
+        signal.throwIfAborted();
+      } finally {
+        if (abort) signal.removeEventListener('abort', abort);
+      }
+    } else await pending;
     const clients: IMcpClient[] = [];
     for (const destination of this.config.roles[selected]) {
       const connection = this.cached.get(destination);

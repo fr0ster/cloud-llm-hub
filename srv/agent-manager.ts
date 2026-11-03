@@ -2845,6 +2845,7 @@ async function configureDestinationAgentBuilder(
     skipRetrieval?: boolean;
     systemPrompt?: string;
     role?: string;
+    signal?: AbortSignal;
   },
 ): Promise<SmartAgentBuilder> {
   const { mainLlm: mainLlmPromise, classifierLlm: classifierLlmPromise } =
@@ -2901,11 +2902,11 @@ async function configureDestinationAgentBuilder(
     .withMcpClients([
       mcpAdapter instanceof RecordingMcpClient
         ? mcpAdapter.includeClients(
-            await docsMcp().clients(opts?.role ?? 'executor'),
+            await docsMcp().clients(opts?.role ?? 'executor', opts),
           )
         : withToolResultCap(
             compositeMcpClient([
-              ...(await docsMcp().clients(opts?.role ?? 'executor')),
+              ...(await docsMcp().clients(opts?.role ?? 'executor', opts)),
               new DialogueRagMcpClient(mcpAdapter),
             ]),
             config.agent.toolResultMaxChars,
@@ -2998,6 +2999,7 @@ export async function buildPlannerAgent(
   config: AgentConfig,
   systemPrompt: string,
   authorClient?: IMcpClient,
+  options?: CallOptions,
 ): Promise<SmartAgent> {
   if (!authorClient && config.llm.coordinatorModel) {
     config = {
@@ -3036,7 +3038,7 @@ export async function buildPlannerAgent(
     .withMcpClients([
       new RecordingMcpClient(
         compositeMcpClient([
-          ...(await docsMcp().clients('planner')),
+          ...(await docsMcp().clients('planner', options)),
           authorClient ?? new DialogueRagMcpClient(coordinatorToolsClient()),
         ]),
         undefined,
@@ -3152,8 +3154,8 @@ function destinationProfileRunner(
   return new AgentProfileRunner({
     acceptsPolicyName: (name) => docsMcp().acceptsPolicyName(name),
     trustResolver: getTrustResolver,
-    prepareTools: async (role) => {
-      await docsMcp().clients(role);
+    prepareTools: async (role, options) => {
+      await docsMcp().clients(role, options);
     },
     plannerKnowledgeTools: () =>
       docsMcp()
@@ -3192,7 +3194,7 @@ function destinationProfileRunner(
             model: profile.model ?? getAgentConfig().llm.model,
           },
         },
-        { systemPrompt, role: profile.name },
+        { systemPrompt, role: profile.name, signal: options?.signal },
       );
       options?.signal?.throwIfAborted();
       const handle = await builder.build();
@@ -3269,6 +3271,7 @@ function destinationProfileRunner(
         },
         systemPrompt,
         filtered,
+        options,
       );
       releasePlannerAgent(agent);
       return agent;
@@ -3280,6 +3283,8 @@ function destinationProfileRunner(
           ? { ...config, llm: { ...config.llm, coordinatorModel: model } }
           : config,
         systemPrompt,
+        undefined,
+        options,
       );
       const release = (): void => {
         releasePlannerAgent(planner);
@@ -3580,6 +3585,7 @@ export async function buildExecutorWorker(
             },
           },
           {
+            signal: callOptions.signal,
             systemPrompt: [
               resolved.workerBase ?? '',
               resolved.profile.systemPrompt,
