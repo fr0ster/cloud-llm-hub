@@ -53,9 +53,16 @@ export function bindCheckerVerdict(
       ))
         sources.push(result[1] ?? '');
   }
+  // Coordinator-supplied brief context outside the generated sections is a
+  // brief input; checked results, source sections and their headings are not.
+  const briefContext = context.replace(
+    /(?:^|\n)\[(?:result to check: step |result of step |tools used by task )[^\n]*\][^\n]*\n[\s\S]*?(?=\n\n\[|\n\[(?:result to check: step |result of step |tools used by task )|$)/g,
+    '\n',
+  );
   const evidence = normalize(
     [
       ...sources,
+      briefContext,
       brief,
       ...records.map((record) =>
         typeof record.result.content === 'string'

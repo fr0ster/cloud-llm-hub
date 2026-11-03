@@ -201,10 +201,10 @@ export function drainContext(): Promise<void> {
   if (!queue.length) return Promise.resolve();
   return new Promise((resolve) => waiters.push(resolve));
 }
-export function resetContextStore(): void {
+/** Resolves once the previous worker has exited and released the file. */
+export async function resetContextStore(): Promise<void> {
   const previous = worker;
   worker = undefined;
-  void previous?.terminate();
   disabled = false;
   busy = false;
   overflow = false;
@@ -212,6 +212,7 @@ export function resetContextStore(): void {
   warned.clear();
   queue.length = 0;
   settled();
+  await previous?.terminate();
 }
 // Pending writes keep the worker referenced. On natural shutdown, close its port
 // and SQLite connection before allowing exit. Forced exit remains best effort.

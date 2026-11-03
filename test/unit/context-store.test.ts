@@ -60,7 +60,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
   await drainContext();
-  resetContextStore();
+  await resetContextStore();
   process.env = { ...env };
   rmSync(dir, { recursive: true, force: true });
   jest.restoreAllMocks();
