@@ -80,7 +80,14 @@ Set the variables **in the same terminal** you start `claude` from, and **before
 
 ```powershell
 Get-Content "<path-to-sap-env-file>.env" | ForEach-Object {
-  if ($_ -match '^\s*(SAP_LOGIN|SAP_PASSWORD)=(.*)$') { Set-Item "env:$($Matches[1])" $Matches[2].Trim('"', "'") }
+  if ($_ -match '^\s*(SAP_LOGIN|SAP_PASSWORD)=(.*)$') {
+    $v = $Matches[2]
+    # Remove one matching pair of enclosing quotes only; keep every other character.
+    if ($v.Length -ge 2 -and (($v[0] -eq '"' -and $v[-1] -eq '"') -or ($v[0] -eq "'" -and $v[-1] -eq "'"))) {
+      $v = $v.Substring(1, $v.Length - 2)
+    }
+    Set-Item "env:$($Matches[1])" $v
+  }
 }
 claude
 ```
