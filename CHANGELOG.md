@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.4.9] - 2026-11-03
+
 ### Fixed
 
 - Expose checker verdict tool arguments as an object schema while preserving strict verdict validation.
