@@ -5,6 +5,7 @@ import type {
   DialogueSignals,
   DialogueState,
   IConcurrencyPool,
+  ISignalSubscriber,
   ISmartAgent,
   ISubAgent,
   IUsageRecorder,
@@ -1229,6 +1230,12 @@ async function open(
       // Keep the library's memory/usage identity logical; only the hub bus
       // needs the user-scoped identity for routing and retirement.
       signals: {
+        ...({
+          last(name, source, entityKey) {
+            const signal = signals.last(name, slot(userId, key), entityKey);
+            return signal ? { ...signal, source } : undefined;
+          },
+        } satisfies Pick<ISignalSubscriber<DialogueSignals>, 'last'>),
         emit(name, payload, _source, entityKey) {
           signals.emit(name, payload, slot(userId, key), entityKey);
         },
