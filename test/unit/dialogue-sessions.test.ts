@@ -47,6 +47,7 @@ import type {
   ISubAgentInput,
   ISubAgentResult,
   TokenUsage,
+  ToolCallRecord,
   ToolTrace,
 } from '@mcp-abap-adt/llm-agent';
 import { LlmError } from '@mcp-abap-adt/llm-agent';
@@ -99,12 +100,19 @@ const mockRun = jest.fn<Promise<ISubAgentResult>, [ISubAgentInput]>();
 const mockRelease = jest.fn();
 const mockDrain = jest.fn(async () => {});
 const mockDrop = jest.fn();
+const mockToolRecords = new Map<string, ToolCallRecord[]>();
+let mockSessionWriteGeneration = 0;
+let mockSessionReviewedGeneration = 0;
+const mockOpenSession = jest.fn();
+const mockWriteCapability = jest.fn((_traceId?: string) => false);
 const mockPlannerTurns: string[] = [];
 const mockAuthorTurns: string[] = [];
 const mockEnvironments: string[] = [];
 let mockGoal = 'read';
 let mockWorkerTrust: { target: number } | undefined;
 let mockPlannerHook: ((text: string) => Promise<void>) | undefined;
+let mockFinalAnswer: string | undefined;
+let mockBackgroundAnswer: string | undefined;
 let mockPlanUsage: TokenUsage | undefined;
 let mockPlan:
   | {
@@ -199,10 +207,14 @@ jest.mock('../../srv/agent-manager', () => ({
           worker: 'executor',
           goal: mockGoal,
         });
+      if (mockFinalAnswer && !text.startsWith('[task events]'))
+        await until(() => mockRun.mock.calls.length > 0);
       return {
         ok: true,
         value: {
-          content: text.startsWith('[task events]') ? text : 'delegated',
+          content: text.startsWith('[task events]')
+            ? (mockBackgroundAnswer ?? text)
+            : (mockFinalAnswer ?? 'delegated'),
           usage: {
             promptTokens: 3,
             completionTokens: 2,
@@ -274,8 +286,29 @@ jest.mock('../../srv/agent-manager', () => ({
       ],
     ]),
     recMcp: {
-      getToolRecords: () => [],
-      dropRequest: (id: string) => mockDrop(id),
+      withSession: <T>(_user: string, _session: string, run: () => T): T =>
+        run(),
+      openSession: () => {
+        mockSessionWriteGeneration = 0;
+        mockSessionReviewedGeneration = 0;
+        mockOpenSession();
+      },
+      closeSession: jest.fn(),
+      hadSessionWriteCapability: () =>
+        mockSessionWriteGeneration > mockSessionReviewedGeneration,
+      writeGeneration: () => mockSessionWriteGeneration,
+      markReviewed: (_user: string, _key: string, snapshot: number) => {
+        mockSessionReviewedGeneration = Math.max(
+          mockSessionReviewedGeneration,
+          snapshot,
+        );
+      },
+      hadWriteCapability: (traceId?: string) => mockWriteCapability(traceId),
+      getToolRecords: (id?: string) => (id && mockToolRecords.get(id)) || [],
+      dropRequest: (id: string) => {
+        mockToolRecords.delete(id);
+        mockDrop(id);
+      },
     },
     criticLlm: {},
   })),
@@ -325,10 +358,14 @@ async function ready(user = 'alice') {
 }
 beforeEach(() => {
   jest.clearAllMocks();
+  mockWriteCapability.mockReset().mockReturnValue(false);
   mockPlannerTurns.length = 0;
   mockEnvironments.length = 0;
   mockGoal = 'read';
   mockPlannerHook = undefined;
+  mockFinalAnswer = undefined;
+  mockBackgroundAnswer = undefined;
+  mockToolRecords.clear();
   mockPlanUsage = undefined;
   mockPlan = undefined;
   mockRun.mockReset().mockResolvedValue({ output: 'read done' });
@@ -638,6 +675,343 @@ test('delegated worker has system, session, owner, an empty history scope, admis
   expect(lease.connection).toBe(connection);
   await lease.release(true);
 });
+test.each([false, true])(
+  'worker inherits only its scheduling turn write capability (%s)',
+  async (offered) => {
+    const { h } = await ready();
+    mockWriteCapability.mockImplementation(
+      (traceId) => offered && traceId === 'planner-capability',
+    );
+    await h.session.send('go', { trace: { traceId: 'planner-capability' } });
+    await until(() => jest.mocked(evaluateGated).mock.calls.length > 0);
+    expect(jest.mocked(evaluateGated).mock.calls[0][0].writeToolOffered).toBe(
+      offered,
+    );
+  },
+);
+
+test.each([
+  [true, 'I created X.'],
+  [false, 'X was created using the older syntax.'],
+] as const)(
+  'coordinator final answer uses this turn worker capability (%s)',
+  async (offered, answer) => {
+    const { h } = await ready();
+    const workerTraces = new Set<string>();
+    mockFinalAnswer = answer;
+    mockWriteCapability.mockImplementation(
+      (id) => !!id && workerTraces.has(id),
+    );
+    mockRun.mockImplementation(async (input) => {
+      if (offered && input.trace?.traceId) {
+        workerTraces.add(input.trace.traceId);
+        mockSessionWriteGeneration++;
+      }
+      return { output: 'Finished analysis.' };
+    });
+    jest
+      .mocked(evaluateGated)
+      .mockImplementation(async (input) =>
+        jest
+          .requireActual<typeof import('../../srv/lib/step-reviewer')>(
+            '../../srv/lib/step-reviewer',
+          )
+          .evaluateGated(input),
+      );
+    await h.session.send('go', { trace: { traceId: 'coordinator-final' } });
+    const content =
+      h.session
+        .snapshot()
+        .conversation.find(
+          (message) =>
+            message.role === 'assistant' &&
+            typeof message.content === 'string' &&
+            message.content.includes(answer),
+        )?.content ?? '';
+    expect(content).toContain(answer);
+    expect(content.includes('UNVERIFIED_WRITE:')).toBe(offered);
+    // A later read-only turn in the same session must not inherit the capability.
+    mockFinalAnswer = 'X was created using the older syntax.';
+    mockRun.mockImplementation(async () => ({ output: 'Finished analysis.' }));
+    await h.session.send('read only', { trace: { traceId: 'next-final' } });
+    expect(h.session.snapshot().conversation.at(-1)?.content).not.toContain(
+      'UNVERIFIED_WRITE:',
+    );
+  },
+);
+
+test.each([true, false, 'close'] as const)(
+  'late worker evidence reaches the next coordinator review (write: %s)',
+  async (write) => {
+    const { h } = await ready();
+    let finish!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    let workerTrace: string | undefined;
+    mockWriteCapability.mockImplementation((id) => !!id && id === workerTrace);
+    mockRun.mockImplementation(async (input) => {
+      workerTrace = input.trace?.traceId;
+      mockSessionWriteGeneration++;
+      await blocked;
+      if (write && workerTrace)
+        mockToolRecords.set(workerTrace, [
+          {
+            call: { id: 'create', name: 'CreateObject', arguments: {} },
+            result: { content: { success: true } },
+          },
+        ]);
+      return { output: 'Finished.' };
+    });
+    await h.session.send('go');
+    await until(() => !!workerTrace);
+    let releaseBackground!: () => void;
+    const backgroundBlocked = new Promise<void>((resolve) => {
+      releaseBackground = resolve;
+    });
+    if (write === 'close')
+      mockPlannerHook = async (text) => {
+        if (text.startsWith('[task events]')) await backgroundBlocked;
+      };
+    mockBackgroundAnswer = 'I created X.';
+    jest
+      .mocked(evaluateGated)
+      .mockImplementation(async (input) =>
+        jest
+          .requireActual<typeof import('../../srv/lib/step-reviewer')>(
+            '../../srv/lib/step-reviewer',
+          )
+          .evaluateGated(input),
+      );
+    finish();
+    if (write === 'close') {
+      // The worker records have been buffered, but no coordinator has reviewed
+      // them yet. Closing must discard this pending evidence.
+      await until(() => mockDrop.mock.calls.some(([id]) => id === workerTrace));
+      const closing = closeDialogue('alice', 'key', 'ttl');
+      releaseBackground();
+      await closing;
+      mockPlannerHook = undefined;
+      const reopened = await ready();
+      mockPlan = { status: 'waiting_user', question: 'Continue?' };
+      jest.mocked(evaluateGated).mockClear();
+      await reopened.h.session.send('next');
+      expect(jest.mocked(evaluateGated)).not.toHaveBeenCalled();
+      return;
+    }
+    await until(() =>
+      h.session
+        .snapshot()
+        .conversation.some(
+          (message) =>
+            typeof message.content === 'string' &&
+            message.content.includes('I created X.'),
+        ),
+    );
+    const answer = h.session
+      .snapshot()
+      .conversation.find(
+        (message) =>
+          message.role === 'assistant' &&
+          typeof message.content === 'string' &&
+          message.content.includes('I created X.'),
+      )?.content;
+    expect(answer).toContain('I created X.');
+    expect(answer?.includes('UNVERIFIED_WRITE:')).toBe(!write);
+  },
+);
+
+test('evicting read-only late worker records grants no write capability', async () => {
+  const { h } = await ready();
+  let finish!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  let workerTrace: string | undefined;
+  mockWriteCapability.mockImplementation(() => false);
+  mockRun.mockImplementation(async (input) => {
+    workerTrace = input.trace?.traceId;
+    await blocked;
+    if (workerTrace)
+      mockToolRecords.set(
+        workerTrace,
+        Array.from({ length: 129 }, (_, i) => ({
+          call: { id: `read-${i}`, name: 'GetTable', arguments: {} },
+          result: { content: { success: true } },
+        })),
+      );
+    return { output: 'Finished.' };
+  });
+  await h.session.send('go');
+  await until(() => !!workerTrace);
+  mockBackgroundAnswer = 'X was created using the older syntax.';
+  jest
+    .mocked(evaluateGated)
+    .mockImplementation(async (input) =>
+      jest
+        .requireActual<typeof import('../../srv/lib/step-reviewer')>(
+          '../../srv/lib/step-reviewer',
+        )
+        .evaluateGated(input),
+    );
+  jest.mocked(evaluateGated).mockClear();
+  finish();
+  await until(() =>
+    h.session
+      .snapshot()
+      .conversation.some(
+        (message) =>
+          typeof message.content === 'string' &&
+          message.content.includes('X was created using'),
+      ),
+  );
+  expect(
+    jest
+      .mocked(evaluateGated)
+      .mock.calls.every(([input]) => !input.writeToolOffered),
+  ).toBe(true);
+  const answer = h.session
+    .snapshot()
+    .conversation.find(
+      (message) =>
+        typeof message.content === 'string' &&
+        message.content.includes('X was created using'),
+    )?.content;
+  expect(answer).not.toContain('UNVERIFIED_WRITE:');
+});
+
+test('a failed turn settles buffered late worker evidence', async () => {
+  const { h } = await ready();
+  let finish!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  let workerTrace: string | undefined;
+  mockWriteCapability.mockImplementation((id) => !!id && id === workerTrace);
+  mockRun.mockImplementation(async (input) => {
+    workerTrace = input.trace?.traceId;
+    await blocked;
+    return { output: 'Finished.' };
+  });
+  await h.session.send('go');
+  await until(() => !!workerTrace);
+  // The task-event turn that would review the buffered evidence fails.
+  let backgroundFailed = false;
+  mockPlannerHook = async (text) => {
+    if (text.startsWith('[task events]')) {
+      backgroundFailed = true;
+      throw new Error('planner failed');
+    }
+  };
+  finish();
+  await until(() => backgroundFailed);
+  await until(() => mockDrop.mock.calls.some(([id]) => id === workerTrace));
+  mockPlannerHook = undefined;
+  mockWriteCapability.mockImplementation(() => false);
+  mockFinalAnswer = 'X was created using the older syntax.';
+  jest
+    .mocked(evaluateGated)
+    .mockImplementation(async (input) =>
+      jest
+        .requireActual<typeof import('../../srv/lib/step-reviewer')>(
+          '../../srv/lib/step-reviewer',
+        )
+        .evaluateGated(input),
+    );
+  jest.mocked(evaluateGated).mockClear();
+  await h.session.send('read only');
+  expect(
+    jest
+      .mocked(evaluateGated)
+      .mock.calls.every(([input]) => !input.writeToolOffered),
+  ).toBe(true);
+  expect(h.session.snapshot().conversation.at(-1)?.content).not.toContain(
+    'UNVERIFIED_WRITE:',
+  );
+});
+
+test('failed load never registers session write state', async () => {
+  const load = jest
+    .spyOn(getDialogueStoreBackend(), 'load')
+    .mockRejectedValueOnce(new Error('load failed'));
+  try {
+    await expect(dialogueFor('alice', 'key', 'TEST')).rejects.toThrow(
+      'load failed',
+    );
+    expect(mockOpenSession).not.toHaveBeenCalled();
+  } finally {
+    load.mockRestore();
+  }
+});
+
+test.each([
+  ['failure', 'prior'],
+  ['empty', 'prior'],
+  ['failure', 'during'],
+  ['empty', 'during'],
+] as const)(
+  '%s coordinator turn retires %s capability',
+  async (outcome, acquired) => {
+    const { h } = await ready();
+    if (acquired === 'prior') mockSessionWriteGeneration++;
+    mockPlannerHook = async () => {
+      if (acquired === 'during') mockSessionWriteGeneration++;
+      if (outcome === 'failure') throw new Error('planner failed');
+    };
+    mockFinalAnswer = '';
+    if (outcome === 'failure') {
+      await expect(h.session.send('go')).rejects.toThrow('planner failed');
+    } else {
+      await h.session.send('go');
+      await until(
+        () => mockSessionReviewedGeneration === mockSessionWriteGeneration,
+      );
+    }
+    mockPlannerHook = undefined;
+    mockFinalAnswer = 'X was created using the older syntax.';
+    jest.mocked(evaluateGated).mockClear();
+    await h.session.send('read only');
+    expect(
+      jest
+        .mocked(evaluateGated)
+        .mock.calls.every(([input]) => !input.writeToolOffered),
+    ).toBe(true);
+    expect(h.session.snapshot().conversation.at(-1)?.content).not.toContain(
+      'UNVERIFIED_WRITE:',
+    );
+  },
+);
+
+test('worker write arriving during review remains pending for the next answer', async () => {
+  const { h } = await ready();
+  mockPlan = { status: 'waiting_user', question: 'Proceed?' };
+  mockSessionWriteGeneration++;
+  let entered!: () => void;
+  const reviewing = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let finish!: () => void;
+  const release = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  jest.mocked(evaluateGated).mockImplementationOnce(async () => {
+    entered();
+    await release;
+    return { ok: true };
+  });
+  const sending = h.session.send('go');
+  await reviewing;
+  mockSessionWriteGeneration++;
+  finish();
+  await sending;
+  expect(mockSessionReviewedGeneration).toBe(1);
+  jest.mocked(evaluateGated).mockClear();
+  await h.session.send('next answer');
+  expect(jest.mocked(evaluateGated).mock.calls[0][0].writeToolOffered).toBe(
+    true,
+  );
+});
+
 test('honesty notice reaches task output and planner', async () => {
   const { h } = await ready();
   const events: DialogueEvent[] = [];

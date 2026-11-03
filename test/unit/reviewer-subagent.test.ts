@@ -91,6 +91,7 @@ describe('ReviewerSubAgent', () => {
   it('never sets errorClass, even when the review is a problem verdict (Verified fact 2)', async () => {
     const agent = new ReviewerSubAgent({
       getToolRecords: () => [],
+      hadWriteCapability: () => true,
       llm: benignLlm as never,
     });
     const result = await agent.run({

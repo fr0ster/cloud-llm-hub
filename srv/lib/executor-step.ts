@@ -120,6 +120,7 @@ export async function runExecutorStep(
     agentHandle.criticLlm
   ) {
     const verdict = await evaluateGated({
+      writeToolOffered: agentHandle.recMcp.hadWriteCapability(traceId),
       signal: opts.signal,
       toolTrust,
       usage: opts.usage,

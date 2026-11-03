@@ -105,9 +105,11 @@ describe('evaluateDeterministic (result-based)', () => {
 
   it('flags created when only a read tool ran (no successful Create*)', () => {
     const content = 'The domain was created successfully.';
-    const verdict = evaluateDeterministic(content, [
-      record('ReadDomain', '{"success":true}'),
-    ]);
+    const verdict = evaluateDeterministic(
+      content,
+      [record('ReadDomain', '{"success":true}')],
+      true,
+    );
     expect(verdict.ok).toBe(false);
     if (verdict.ok) throw new Error('unreachable');
     expect(verdict.issues).toEqual([
@@ -205,9 +207,11 @@ describe('evaluateDeterministic (result-based)', () => {
 
   it('flags an unverified delete when no delete tool ran', () => {
     const content = 'The table entry was deleted successfully.';
-    const verdict = evaluateDeterministic(content, [
-      record('GetTable', '{"success":true}'),
-    ]);
+    const verdict = evaluateDeterministic(
+      content,
+      [record('GetTable', '{"success":true}')],
+      true,
+    );
     expect(verdict.ok).toBe(false);
     if (verdict.ok) throw new Error('unreachable');
     expect(verdict.issues).toEqual([
@@ -228,9 +232,11 @@ describe('evaluateDeterministic (result-based)', () => {
 
   it('does NOT let a READ tool echoing status:active satisfy an activation claim', () => {
     const content = 'Domain ZDEMO_D_MATNR has been successfully activated.';
-    const verdict = evaluateDeterministic(content, [
-      record('ReadDomain', '{"success":true,"status":"active"}'),
-    ]);
+    const verdict = evaluateDeterministic(
+      content,
+      [record('ReadDomain', '{"success":true,"status":"active"}')],
+      true,
+    );
     expect(verdict.ok).toBe(false);
     if (verdict.ok) throw new Error('unreachable');
     expect(verdict.issues).toEqual([

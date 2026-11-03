@@ -343,6 +343,7 @@ async function open(
   )
     throw new Error('Destination profile runner unavailable');
   const { recMcp, criticLlm, profileRunner } = destinationHandle;
+  let runningWorkers = 0;
   const trustResolver = destinationHandle.trustResolver ?? resolverFor({});
   const usage = usageRuntime()?.forSession({
     sessionId: key,
@@ -477,12 +478,33 @@ async function open(
       }
     }
   }
+  // Late evidence is session-local. Keep at most 128 tool records, evicting
+  // oldest first. Capability is accumulated before eviction (it already covers
+  // attempted writes), so an evicted write still makes claims warn.
+  const pendingWorkerRecords: ToolCallRecord[] = [];
+  let pendingWorkerWriteCapability = false;
+  const retainWorkerEvidence = (traceId: string) => {
+    if (stopped) return;
+    pendingWorkerWriteCapability ||= recMcp.hadWriteCapability(traceId);
+    pendingWorkerRecords.push(...recMcp.getToolRecords(traceId));
+    if (pendingWorkerRecords.length > 128)
+      pendingWorkerRecords.splice(0, pendingWorkerRecords.length - 128);
+  };
+  type PlannerTurn = {
+    traceId?: string;
+    workerTraces: Set<string>;
+    workerRecords: ToolCallRecord[];
+    active: boolean;
+    reviewing: boolean;
+  };
+  const plannerTrace = new AsyncLocalStorage<PlannerTurn>();
   // Carry task admission into the worker callback and rebuild its request scope.
   // Dialogue workers receive only their brief; no request history is injected.
   const scope = new AsyncLocalStorage<{
     lease: ConnectionLease;
     pipeline: PipelineSession;
     traceId: string;
+    writeToolOffered: boolean;
     taskId: string;
     userId: string;
     identity: RagCallerIdentity;
@@ -551,6 +573,9 @@ async function open(
                   )
                     return result;
                   const verdict = await evaluateGated({
+                    writeToolOffered:
+                      ctx.writeToolOffered ||
+                      recMcp.hadWriteCapability(ctx.traceId),
                     signal: input.signal,
                     toolTrust,
                     usage: input.usage,
@@ -847,6 +872,9 @@ async function open(
     { source: slot(userId, key) },
   );
   const stopLifetime = () => {
+    pendingWorkerRecords.length = 0;
+    pendingWorkerWriteCapability = false;
+    recMcp.closeSession(userId, key);
     pendingToolResults.length = 0;
     unsubscribeTaskCaller();
     unsubscribeTurnCaller();
@@ -872,13 +900,36 @@ async function open(
     turnReply = undefined;
     turnReplyUsage = options.trace ? replyUsage.get(options.trace) : undefined;
     let spent: TokenUsage | undefined;
+    let contentStreamed = false;
+    const turn: PlannerTurn = {
+      traceId: options.trace?.traceId,
+      workerTraces: new Set<string>(),
+      workerRecords: [],
+      active: true,
+      reviewing: false,
+    };
+    // Set when content is reviewed; empty/failed turns settle at the generation
+    // current when they end, so their own capability does not leak forward.
+    let reviewedGeneration: number | undefined;
     try {
-      const result = await observeLlmSpend(
+      let result = await observeLlmSpend(
         () =>
           runWithContextCapture({ component: 'planner', sessionKey: key }, () =>
             runWithSessionId(
               key,
-              () => decoratePlanner(planner).process(input, options),
+              () =>
+                recMcp.withSession(userId, key, () =>
+                  plannerTrace.run(turn, () =>
+                    decoratePlanner(planner).process(input, {
+                      ...options,
+                      onPartial(chunk) {
+                        if (chunk.kind === 'content' && chunk.delta)
+                          contentStreamed = true;
+                        options.onPartial?.(chunk);
+                      },
+                    }),
+                  ),
+                ),
               undefined,
               caller.userId,
               caller.identity,
@@ -889,6 +940,59 @@ async function open(
           turnPlannerSpend = addTokenUsage(turnPlannerSpend, usage);
         },
       );
+      if (result.ok && result.value.content) {
+        turn.reviewing = true;
+        reviewedGeneration = recMcp.writeGeneration(userId, key);
+        const writeToolOffered =
+          pendingWorkerWriteCapability ||
+          recMcp.hadWriteCapability(turn.traceId) ||
+          recMcp.hadSessionWriteCapability(userId, key) ||
+          [...turn.workerTraces].some((id) => recMcp.hadWriteCapability(id));
+        const records = [
+          ...pendingWorkerRecords.splice(0),
+          ...recMcp.getToolRecords(turn.traceId),
+          ...turn.workerRecords,
+          ...[...turn.workerTraces].flatMap((id) => recMcp.getToolRecords(id)),
+        ];
+        pendingWorkerWriteCapability = false;
+        if (writeToolOffered || records.length) {
+          const verdict = await evaluateGated({
+            writeToolOffered,
+            content: result.value.content,
+            records,
+            signal: options.signal,
+            usage: options.usage,
+            toolTrust:
+              destinationHandle.toolTrustFor?.(await coordinatorResolver()) ??
+              destinationHandle.toolTrust,
+            ...getReviewSignals(),
+            llm: criticLlm,
+            request: input.at(-1)?.content ?? '',
+            history: getRequestHistory(),
+          });
+          result = {
+            ...result,
+            value: {
+              ...result.value,
+              usage: addTokenUsage(result.value.usage, verdict.usage),
+            },
+          };
+          if (!verdict.ok) {
+            const notice = `\n\n${renderNotice(verdict)}`;
+            options.onPartial?.({
+              kind: 'content',
+              delta: (contentStreamed ? '' : result.value.content) + notice,
+            });
+            result = {
+              ...result,
+              value: {
+                ...result.value,
+                content: result.value.content + notice,
+              },
+            };
+          }
+        }
+      }
       // The library appends this successful result before its final save.
       if (result.ok) {
         turnReply = reply;
@@ -917,6 +1021,29 @@ async function open(
       turnFailureCause = llmFailure(error);
       throw new Error(turnFailureCause);
     } finally {
+      // Preserve evidence arriving during review, or during an empty/failed turn.
+      if (runningWorkers === 0) {
+        recMcp.markReviewed(
+          userId,
+          key,
+          reviewedGeneration ?? recMcp.writeGeneration(userId, key),
+        );
+        // An empty or failed turn never reviews, so evidence buffered before it
+        // is settled here. Evidence arriving during a review stays pending.
+        if (reviewedGeneration === undefined) {
+          pendingWorkerRecords.length = 0;
+          pendingWorkerWriteCapability = false;
+        }
+      }
+      turn.active = false;
+      turn.workerTraces.clear();
+      turn.workerRecords.length = 0;
+      const traceId = options.trace?.traceId;
+      if (
+        recMcp.hadWriteCapability(traceId) ||
+        recMcp.getToolRecords(traceId).length
+      )
+        recMcp.dropRequest(traceId);
       for (const task of session?.snapshot().tasks ?? []) emitTask(task);
     }
   };
@@ -934,6 +1061,7 @@ async function open(
       trust: prompts.ok ? prompts.value.trust?.coordinator : undefined,
     });
   };
+  recMcp.openSession(userId, key);
   try {
     const retrieval = await plannerSessionOptions(
       userId,
@@ -1116,6 +1244,9 @@ async function open(
             userId: getRequestUserId() ?? userId,
             identity: dialogueIdentity(),
           };
+          const turn = plannerTrace.getStore();
+          const writeToolOffered = recMcp.hadWriteCapability(turn?.traceId);
+          runningWorkers++;
           const startedAt = Date.now();
           // No free text from goals or errors reaches the logs: a goal may carry
           // whatever the user typed, credentials included. Ids correlate with
@@ -1128,40 +1259,44 @@ async function open(
           let state: TaskRecord['state'] = 'failed';
           let spent: TokenUsage | undefined;
           const traceId = randomUUID();
+          if (turn?.active) turn.workerTraces.add(traceId);
           emitTask(task);
           try {
-            const result = await runAdmitted(async (acquiredLease, pipeline) =>
-              scope.run(
-                {
-                  lease: acquiredLease,
-                  pipeline,
-                  traceId,
-                  taskId: task.id,
-                  ...caller,
-                },
-                () =>
-                  runWithContextCapture(
-                    { component: 'other', taskId: task.id, sessionKey: key },
-                    // Workers report spend on TaskRecord, outside the planner bucket.
-                    () =>
-                      observeLlmSpend(
-                        () =>
-                          withWorkerActivity(
-                            taskActivity(
-                              task.id,
-                              task.worker,
-                              (action) => {
-                                session?.noteActivity(task.id, action);
-                              },
-                              emit,
+            const result = await recMcp.withSession(userId, key, () =>
+              runAdmitted(async (acquiredLease, pipeline) =>
+                scope.run(
+                  {
+                    lease: acquiredLease,
+                    pipeline,
+                    traceId,
+                    writeToolOffered,
+                    taskId: task.id,
+                    ...caller,
+                  },
+                  () =>
+                    runWithContextCapture(
+                      { component: 'other', taskId: task.id, sessionKey: key },
+                      // Workers report spend on TaskRecord, outside the planner bucket.
+                      () =>
+                        observeLlmSpend(
+                          () =>
+                            withWorkerActivity(
+                              taskActivity(
+                                task.id,
+                                task.worker,
+                                (action) => {
+                                  session?.noteActivity(task.id, action);
+                                },
+                                emit,
+                              ),
+                              run,
                             ),
-                            run,
-                          ),
-                        (usage) => {
-                          spent = addTokenUsage(spent, usage);
-                        },
-                      ),
-                  ),
+                          (usage) => {
+                            spent = addTokenUsage(spent, usage);
+                          },
+                        ),
+                    ),
+                ),
               ),
             );
             const healthy =
@@ -1175,6 +1310,13 @@ async function open(
             if (spent) failedWorkerSpend.set(task.id, spent);
             throw error;
           } finally {
+            runningWorkers--;
+            if (turn?.active && !turn.reviewing) {
+              turn.workerRecords.push(...recMcp.getToolRecords(traceId));
+              turn.workerTraces.delete(traceId);
+            } else {
+              retainWorkerEvidence(traceId);
+            }
             try {
               recMcp.dropRequest(traceId);
             } catch (error) {
@@ -1211,6 +1353,7 @@ async function open(
     });
     await drainPending();
   } catch (error) {
+    recMcp.closeSession(userId, key);
     stopLifetime();
     await session?.close();
     await pool.closeAll();

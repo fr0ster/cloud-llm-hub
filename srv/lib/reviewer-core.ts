@@ -222,6 +222,7 @@ function reasonFor(op: WriteOp, outcomes: ToolOutcome[]): string {
 export function evaluateDeterministic(
   content: string,
   records: ToolCallRecord[],
+  writeToolOffered = false,
 ): ReviewVerdict {
   const outcomes = records.map(parseToolOutcome);
 
@@ -241,6 +242,12 @@ export function evaluateDeterministic(
       ],
     };
   }
+
+  if (
+    !writeToolOffered &&
+    !outcomes.some((outcome) => isWriteTool(outcome.name))
+  )
+    return { ok: true };
 
   const claims = claimedWriteOps(content);
   if (claims.length === 0) return { ok: true };

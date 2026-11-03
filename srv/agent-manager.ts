@@ -2897,16 +2897,32 @@ async function configureDestinationAgentBuilder(
   })
     .withToolLoopContextStrategyFactory(() => createToolLoopWindow())
     .withToolTrust(builtInToolTrust(roleResolver))
-    .withMainLlm(opts?.skipRetrieval ? mainLlm : trackedLlm(mainLlm, true))
+    .withMainLlm(
+      mcpAdapter instanceof RecordingMcpClient
+        ? mcpAdapter.trackOfferedTools(
+            opts?.skipRetrieval ? mainLlm : trackedLlm(mainLlm, true),
+          )
+        : opts?.skipRetrieval
+          ? mainLlm
+          : trackedLlm(mainLlm, true),
+    )
     .withClassifierLlm(classifierLlm)
     .withMcpClients([
       mcpAdapter instanceof RecordingMcpClient
         ? mcpAdapter.includeClients(
-            await docsMcp().clients(opts?.role ?? 'executor', opts),
+            await docsMcp().clients(
+              opts?.role ?? 'executor',
+              opts,
+              roleResolver,
+            ),
           )
         : withToolResultCap(
             compositeMcpClient([
-              ...(await docsMcp().clients(opts?.role ?? 'executor', opts)),
+              ...(await docsMcp().clients(
+                opts?.role ?? 'executor',
+                opts,
+                roleResolver,
+              )),
               new DialogueRagMcpClient(mcpAdapter),
             ]),
             config.agent.toolResultMaxChars,
@@ -3000,6 +3016,7 @@ export async function buildPlannerAgent(
   systemPrompt: string,
   authorClient?: IMcpClient,
   options?: CallOptions,
+  recorder?: RecordingMcpClient,
 ): Promise<SmartAgent> {
   if (!authorClient && config.llm.coordinatorModel) {
     config = {
@@ -3039,6 +3056,16 @@ export async function buildPlannerAgent(
     getById: async () => ({ ok: true, value: null }),
     healthCheck: async () => ({ ok: true, value: undefined }),
   };
+  const plannerRecorder = new RecordingMcpClient(
+    compositeMcpClient([
+      ...(await docsMcp().clients('planner', options, roleResolver)),
+      plannerClient,
+    ]),
+    undefined,
+    config.agent.toolResultMaxChars,
+    recorder !== undefined,
+    recorder,
+  );
   const builder = new SmartAgentBuilder({
     // Authors are built per call; validation would send an unattributed completion.
     skipModelValidation:
@@ -3054,18 +3081,8 @@ export async function buildPlannerAgent(
     },
   })
     .withToolTrust(builtInToolTrust(roleResolver))
-    .withMainLlm(llm)
-    .withMcpClients([
-      new RecordingMcpClient(
-        compositeMcpClient([
-          ...(await docsMcp().clients('planner', options)),
-          plannerClient,
-        ]),
-        undefined,
-        config.agent.toolResultMaxChars,
-        false,
-      ),
-    ])
+    .withMainLlm(plannerRecorder.trackOfferedTools(llm))
+    .withMcpClients([plannerRecorder])
     .setToolsRag(docsMcp().withToolsRag(plannerTools, 'planner'))
     .withClassification(false)
     .withMode('hard');
@@ -3293,6 +3310,7 @@ function destinationProfileRunner(
         systemPrompt,
         filtered,
         options,
+        mcpAdapter instanceof RecordingMcpClient ? mcpAdapter : undefined,
       );
       releasePlannerAgent(agent);
       return agent;
@@ -3306,6 +3324,7 @@ function destinationProfileRunner(
         systemPrompt,
         undefined,
         options,
+        mcpAdapter instanceof RecordingMcpClient ? mcpAdapter : undefined,
       );
       const release = (): void => {
         releasePlannerAgent(planner);

@@ -303,6 +303,7 @@ describe('evaluateGated', () => {
       (
         await evaluateGated({
           content: 'The domain has been activated successfully.',
+          writeToolOffered: true,
           records,
           llm: llm as never,
         })
@@ -316,6 +317,7 @@ describe('evaluateGated', () => {
     );
     const verdict = await evaluateGated({
       content: 'The domain has been activated successfully.',
+      writeToolOffered: true,
       request: 'Activate ZDOMAIN',
       records: [],
       llm: llm as never,
@@ -352,6 +354,7 @@ describe('evaluateGated', () => {
     );
     const verdict = await evaluateGated({
       content: 'The domain has been activated successfully.',
+      writeToolOffered: true,
       records: [record('CreateDomain', '{"success":true,"status":"inactive"}')],
       llm: llm as never,
     });
@@ -366,6 +369,7 @@ describe('evaluateGated', () => {
     );
     const verdict = await evaluateGated({
       content: 'The domain has been activated successfully.',
+      writeToolOffered: true,
       records: Array.from({ length: 5 }, () =>
         record('ReadDomain', '{"success":true}'),
       ),

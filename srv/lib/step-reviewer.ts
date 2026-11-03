@@ -322,6 +322,7 @@ export async function evaluateGated(input: {
   completionTokens?: number;
   model?: string;
   records: ToolCallRecord[];
+  writeToolOffered?: boolean;
   llm: ILlm;
   usage?: IUsageRecorder;
   /** What the USER asked, verbatim. */
@@ -334,7 +335,11 @@ export async function evaluateGated(input: {
 }): Promise<ReviewVerdict & { usage?: TokenUsage }> {
   if (!stepReviewEnabled(process.env)) return { ok: true };
 
-  const deterministic = evaluateDeterministic(input.content, input.records);
+  const deterministic = evaluateDeterministic(
+    input.content,
+    input.records,
+    input.writeToolOffered,
+  );
 
   const signal = suspicion(input);
   if (input.model && input.completionTokens !== undefined) {

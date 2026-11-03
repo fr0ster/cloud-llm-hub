@@ -18,7 +18,7 @@ import { buildHeadersForDestination } from '@sap-cloud-sdk/connectivity';
 import { resolveHttpDestination } from '../connections/destinationResolver';
 import { profileToolAllowed } from '../request-session';
 import { BuildValidationError } from './build-validation-error';
-import type { TrustResolver } from './trust-resolver';
+import { resolverFor, type TrustResolver } from './trust-resolver';
 
 const roles = ['planner', 'executor', 'checker', 'analyst'] as const;
 export type ExternalMcpRole = (typeof roles)[number];
@@ -217,6 +217,10 @@ export class ExternalMcp {
     const controller = new AbortController();
     let candidate: ExternalMcpClient | undefined;
     const previous = this.cached.get(destination);
+    const previousNames = previous?.tools
+      .map((tool) => tool.name)
+      .sort()
+      .join('\n');
     const pending = (async () => {
       try {
         await Promise.race([
@@ -248,6 +252,19 @@ export class ExternalMcp {
             }
             this.unhealthy.delete(destination);
             this.rebuildOwners();
+            const names = this.cached
+              .get(destination)
+              ?.tools.map((tool) => tool.name)
+              .sort()
+              .join('\n');
+            if (!previous || previousNames !== names)
+              cds.log('external-mcp').info('External docs MCP connected', {
+                destination,
+                mode: this.mode(destination),
+                tools: this.available()
+                  .filter(([, owner]) => owner.destination === destination)
+                  .map(([name]) => name),
+              });
             indexing = true;
             await this.indexDestination(destination, controller.signal);
           })(),
@@ -260,13 +277,6 @@ export class ExternalMcp {
             timer.unref();
           }),
         ]);
-        cds.log('external-mcp').info('External docs MCP connected', {
-          destination,
-          mode: this.mode(destination),
-          tools: this.available()
-            .filter(([, owner]) => owner.destination === destination)
-            .map(([name]) => name),
-        });
         this.retryAt.set(destination, this.now() + 30000);
         return this.cached.get(destination);
       } catch {
@@ -494,6 +504,7 @@ export class ExternalMcp {
   async clients(
     role: string,
     options?: { signal?: AbortSignal },
+    resolver?: TrustResolver,
   ): Promise<IMcpClient[]> {
     const selected = roles.find((value) => value === role);
     if (!selected) return [];
@@ -557,6 +568,11 @@ export class ExternalMcp {
               ok: false,
               error: new McpError('External docs MCP unavailable'),
             };
+          const started = this.now();
+          let ok = false;
+          const trust =
+            this.config.trust[destination] ??
+            (resolver ?? resolverFor({})).classDefault('docs');
           live.active++;
           try {
             const result = await live.client.callTool(
@@ -564,6 +580,7 @@ export class ExternalMcp {
               args,
               options,
             );
+            ok = result.ok && result.value.isError !== true;
             if (!result.ok) this.failed(destination);
             return result;
           } catch {
@@ -576,6 +593,14 @@ export class ExternalMcp {
               },
             };
           } finally {
+            cds.log('external-mcp').info('External docs MCP call', {
+              destination,
+              tool: owner.tool,
+              source: `docs:${owner.tool}`,
+              trust,
+              ok,
+              durationMs: this.now() - started,
+            });
             live.active--;
             if (live.retired && live.active === 0)
               void this.disconnect(live.client);
