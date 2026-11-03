@@ -62,7 +62,6 @@ import {
 } from '../srv/agent-manager';
 import { resolveExposition } from '../srv/lib/exposition';
 import { startProviders } from '../srv/lib/providers';
-import { concernsSap } from '../srv/lib/review-signals';
 import { buildSkillsPool } from '../srv/lib/skills-pool';
 
 const CUTS = [5, 10, 15] as const;
@@ -328,7 +327,8 @@ async function main() {
         ascii,
         multi: !!multi,
         negative,
-        sapIdentifier: concernsSap(q), // No score: evaluates only the identifier regex.
+        sapIdentifier:
+          /\b[ZY][A-Z0-9_/]{2,}\b|\$TMP|\b[A-Z0-9]{3}K9\d{5}\b/.test(q),
         topToolScore: topScore(byK[15].hits),
         topSkillScore: topScore(skills),
         skills,
