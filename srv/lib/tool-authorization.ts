@@ -1,4 +1,5 @@
 import { isReadOnlyTools, profileToolAllowed } from '../request-session';
+import { submitVerdictTool } from './checker-verdict-tool';
 import { allowsReadOnlyEffect } from './dialogue-rag-scope';
 import { isRagTool, ragToolEffect } from './rag-tool-catalogue';
 /**
@@ -46,6 +47,13 @@ export function assertToolAllowed(
   allowed: readonly ExpositionLevel[] | undefined,
   annotations?: ToolEffectAnnotations,
 ): void {
+  // This boundary dispatches external/embedded tools. The reserved verdict
+  // tool is handled locally by LocalRagMcpClient before reaching it.
+  if (toolName === submitVerdictTool.name) {
+    throw new ToolAuthorizationError(
+      `Tool "${submitVerdictTool.name}" is reserved for local verdict profiles.`,
+    );
+  }
   if (!profileToolAllowed(toolName)) {
     throw new ToolAuthorizationError(
       `Tool "${toolName}" was not executed: the agent profile forbids it.`,
@@ -106,6 +114,7 @@ export function isReadOnlyTool(
   name: string,
   annotations?: ToolEffectAnnotations,
 ): boolean {
+  if (name === submitVerdictTool.name) return true;
   if (isRagTool(name)) return ragToolEffect(name) === 'read';
   if (
     [

@@ -18,6 +18,11 @@ import {
   isStatelessKnowledge,
 } from '../request-session';
 import { currentAdmission } from './admission-scope';
+import {
+  submitVerdict,
+  submitVerdictTool,
+  verdictToolsEnabled,
+} from './checker-verdict-tool';
 import { currentContextTaskId } from './context-capture';
 import { isDialogueRagWorker } from './dialogue-rag-scope';
 import {
@@ -59,13 +64,21 @@ export class LocalRagMcpClient implements IMcpClient {
     if (!result.ok) return result;
     const imported = new Map(
       result.value
-        .filter((tool) => !isRagTool(tool.name) && !removedNames.has(tool.name))
+        .filter(
+          (tool) =>
+            tool.name !== submitVerdictTool.name &&
+            !isRagTool(tool.name) &&
+            !removedNames.has(tool.name),
+        )
         .map((tool) => [tool.name, tool]),
     );
     return {
       ok: true,
       value: [
         ...imported.values(),
+        ...(!this.coordinator && verdictToolsEnabled()
+          ? [submitVerdictTool]
+          : []),
         ...localRagTools(this.coordinator).filter(
           (tool) =>
             !this.coordinator ||
@@ -81,6 +94,13 @@ export class LocalRagMcpClient implements IMcpClient {
     args: Parameters<IMcpClient['callTool']>[1],
     options?: CallOptions,
   ): Promise<Result<McpToolResult, McpError>> {
+    if (name === submitVerdictTool.name)
+      return {
+        ok: true,
+        value: this.coordinator
+          ? { isError: true, content: 'Tool unavailable to coordinator.' }
+          : submitVerdict(args),
+      };
     if (
       this.coordinator &&
       isRagTool(name) &&
@@ -167,6 +187,8 @@ export function withDialogueRagTools(rag: IRag): IRag {
                 );
                 const id = String(record.metadata.id).replace(/^tool:/, '');
                 return (
+                  name !== submitVerdictTool.name &&
+                  id !== submitVerdictTool.name &&
                   !isRagTool(name) &&
                   !removedNames.has(name) &&
                   !isRagTool(id) &&
@@ -184,7 +206,10 @@ export function withDialogueRagTools(rag: IRag): IRag {
           return {
             ok: true as const,
             value: [
-              ...localRagTools().map((tool) => ({
+              ...[
+                ...localRagTools(),
+                ...(verdictToolsEnabled() ? [submitVerdictTool] : []),
+              ].map((tool) => ({
                 text: `Tool: ${tool.name}\nDescription: ${tool.description}`,
                 metadata: { id: `tool:${tool.name}`, name: tool.name },
                 score: 1,

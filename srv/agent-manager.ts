@@ -1,4 +1,5 @@
 import type { ToolTrust } from '@mcp-abap-adt/llm-agent';
+import { submitVerdictTool } from './lib/checker-verdict-tool';
 import { clientToolTrust } from './lib/client-tool-trust';
 import { coordinatorModel } from './lib/coordinator-model';
 import {
@@ -1705,13 +1706,20 @@ export function getHandlerExporterConfig() {
 /** Static, destination-free tool list from HandlerExporter (same config as buildEmbeddedMcpAdapter). */
 let embeddedToolNames: ReadonlySet<string> | undefined;
 let externalDocs: ExternalMcp | undefined;
+export function reservedToolNames(): string[] {
+  return [
+    ...getToolExpositionMap().keys(),
+    ...ragToolNames,
+    submitVerdictTool.name,
+  ];
+}
 export function docsMcp(): ExternalMcp {
   externalDocs ??= new ExternalMcp(
     getAgentConfig().externalMcp ?? {
       roles: { planner: [], executor: [], checker: [], analyst: [] },
       trust: {},
     },
-    () => [...getToolExpositionMap().keys(), ...ragToolNames],
+    reservedToolNames,
     undefined,
     undefined,
     undefined,
@@ -3167,13 +3175,9 @@ async function prepareCompatibilityWorker<T>(
   }
 }
 
-function destinationProfileRunner(
-  mcpAdapter: IMcpClient,
-  toolsRag: ExpositionFilteringRag,
-  config: AgentConfig,
-  injectHistory = false,
-): AgentProfileRunner {
-  const catalogue = () => [
+export function destinationProfileToolCatalogue(external = docsMcp()) {
+  return [
+    { name: submitVerdictTool.name, effect: 'read' as const },
     ...[...getToolExpositionMap().keys()]
       .filter((name: string) => !isRagTool(name))
       .map((name) => ({
@@ -3182,12 +3186,21 @@ function destinationProfileRunner(
           ? ('read' as const)
           : ('write' as const),
       })),
-    ...docsMcp().catalogue(),
+    ...external.catalogue(),
     ...ragToolNames.map((name) => ({
       name,
       effect: ragToolEffect(name),
     })),
   ];
+}
+
+function destinationProfileRunner(
+  mcpAdapter: IMcpClient,
+  toolsRag: ExpositionFilteringRag,
+  config: AgentConfig,
+  injectHistory = false,
+): AgentProfileRunner {
+  const catalogue = () => destinationProfileToolCatalogue();
   return new AgentProfileRunner({
     acceptsPolicyName: (name) => docsMcp().acceptsPolicyName(name),
     trustResolver: getTrustResolver,
@@ -3203,7 +3216,11 @@ function destinationProfileRunner(
       new Set(
         catalogue()
           .filter((tool) => {
-            if (docsMcp().owns(tool.name)) return true;
+            if (
+              tool.name === submitVerdictTool.name ||
+              docsMcp().owns(tool.name)
+            )
+              return true;
             if (isRagTool(tool.name)) return Boolean(getRequestUserId());
             const caller = callerExposition.getStore();
             const allowed = caller

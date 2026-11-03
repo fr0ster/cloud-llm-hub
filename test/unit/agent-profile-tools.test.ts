@@ -1,14 +1,20 @@
 import type { IMcpClient, ISubAgent } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
 import type { z } from 'zod';
-import { ExpositionFilteringRag } from '../../srv/agent-manager';
+import {
+  destinationProfileToolCatalogue,
+  ExpositionFilteringRag,
+  reservedToolNames,
+} from '../../srv/agent-manager';
 import {
   AgentToolPermissions,
   effectiveProfileTools,
   guardProfileWorker,
   type RegisteredProfileTool,
 } from '../../srv/lib/agent-profile-tools';
+import { submitVerdictTool } from '../../srv/lib/checker-verdict-tool';
 import { runWithDialogueRagTools } from '../../srv/lib/dialogue-rag-tools';
+import { ExternalMcp, parseExternalMcp } from '../../srv/lib/external-mcp';
 import {
   buildRagToolSchemas,
   ragToolEffect,
@@ -367,4 +373,40 @@ test('recording MCP exposes and dispatches knowledge in a read-only scope', asyn
       expect(call).toHaveBeenCalledTimes(1);
     }),
   );
+});
+
+test('external verdict tool is prefixed and checker catalogue remains unambiguous', async () => {
+  const adapter: IMcpClient = {
+    listTools: async () => ({ ok: true, value: [submitVerdictTool] }),
+    callTool: async () => ({
+      ok: true,
+      value: { content: 'external verdict' },
+    }),
+  };
+  const external = new ExternalMcp(
+    parseExternalMcp({ LLM_AGENT_CHECKER_MCP: 'docs' }),
+    reservedToolNames,
+    async () => adapter,
+  );
+  const clients = await external.clients('checker');
+  const prefixedName = `docs__${submitVerdictTool.name}`;
+  expect(await clients[0].listTools()).toEqual({
+    ok: true,
+    value: [{ ...submitVerdictTool, name: prefixedName }],
+  });
+  const tools = destinationProfileToolCatalogue(external);
+  expect(tools.filter((tool) => tool.name === submitVerdictTool.name)).toEqual([
+    { name: submitVerdictTool.name, effect: 'read' },
+  ]);
+  expect(tools).toContainEqual({ name: prefixedName, effect: 'read' });
+  const buildCheckerTools = () =>
+    effectiveProfileTools({
+      catalogue: tools,
+      grants: new Set(tools.map((tool) => tool.name)),
+      result: 'verdict',
+      policy: 'read-only',
+    });
+  expect(buildCheckerTools).not.toThrow();
+  expect(buildCheckerTools().allows(submitVerdictTool.name)).toBe(true);
+  expect(buildCheckerTools().allows(prefixedName)).toBe(true);
 });
