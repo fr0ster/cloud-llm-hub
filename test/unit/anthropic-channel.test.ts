@@ -621,13 +621,11 @@ describe('a long session', () => {
     }
   });
 
-  it('a closed session is refused 404 and connects nothing', async () => {
+  it('a stale request cannot reopen closed session LLM clients or connect', async () => {
     configure();
     await registry.close('alice', s.key, 'explicit');
-    const { res, done } = callInSession(body());
-    await done;
-    expect(res.statusCode).toBe(404);
-    expect(JSON.parse(res.body).error.code).toBe('SESSION_NOT_FOUND');
+    const { done } = callInSession(body());
+    await expect(done).rejects.toThrow('Session LLM clients closed');
     expect(harness.establishCalls).toEqual([]);
   });
 

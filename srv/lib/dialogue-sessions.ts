@@ -17,7 +17,11 @@ import type {
   WorkerProfile,
 } from '@mcp-abap-adt/llm-agent';
 import { addTokenUsage } from '@mcp-abap-adt/llm-agent';
-import { DialogueSession, SemaphorePool } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  DialogueSession,
+  PlannerToolsClient,
+  SemaphorePool,
+} from '@mcp-abap-adt/llm-agent-libs';
 import cds from '@sap/cds';
 import type { Request } from 'express';
 import { getAgentConfig } from '../agent-config';
@@ -29,7 +33,6 @@ import {
 } from '../agent-manager';
 import {
   getRagCallerIdentity,
-  getRequestHistory,
   getRequestUserId,
   type RagCallerIdentity,
   runWithSessionId,
@@ -40,6 +43,11 @@ import {
   planAuthorBriefRequest,
   planAuthorMode,
 } from './brief-plan-author';
+import {
+  bindCheckerVerdict,
+  clearUnusableCheckerFailures,
+  unusableCheckerPlanSteps,
+} from './checker-verdict';
 import { runWithContextCapture } from './context-capture';
 import { withCoordinatorModel } from './coordinator-model';
 import { withCoordinatorRun } from './coordinator-tools-client';
@@ -72,7 +80,7 @@ import {
   plannerSessionOptions,
 } from './planner-memory';
 import { runWithRequestSystem } from './request-system-context';
-import { captureReviewProfile, getReviewSignals } from './review-scope';
+import { captureReviewProfile } from './review-scope';
 import {
   type ConnectionLease,
   SessionConnectionFactory,
@@ -338,11 +346,10 @@ async function open(
   if (
     !destinationHandle.workers ||
     !destinationHandle.recMcp ||
-    !destinationHandle.criticLlm ||
     !destinationHandle.profileRunner
   )
     throw new Error('Destination profile runner unavailable');
-  const { recMcp, criticLlm, profileRunner } = destinationHandle;
+  const { recMcp, profileRunner } = destinationHandle;
   let runningWorkers = 0;
   const trustResolver = destinationHandle.trustResolver ?? resolverFor({});
   const usage = usageRuntime()?.forSession({
@@ -560,39 +567,36 @@ async function open(
                         ),
                       ),
                     );
-                  const reviewedProfile = profile ?? resolvedProfile;
-                  const toolTrust = reviewedProfile?.trust
-                    ? (destinationHandle.toolTrustFor?.(
-                        trustResolver.forProfile(reviewedProfile),
-                      ) ?? destinationHandle.toolTrust)
-                    : destinationHandle.toolTrust;
                   if (
                     result.errorClass === 'epicfail' ||
                     result.stopped ||
                     result.status === 'awaiting-external'
                   )
                     return result;
+                  const isChecker =
+                    (profile ?? resolvedProfile)?.result === 'verdict' ||
+                    name === 'checker';
+                  const checked = isChecker
+                    ? bindCheckerVerdict(
+                        result.output,
+                        input.context ?? '',
+                        input.task,
+                        recMcp.getToolRecords(ctx.traceId),
+                      )
+                    : result.output;
+                  if (isChecker) return { ...result, output: checked };
                   const verdict = await evaluateGated({
+                    content: checked,
+                    records: recMcp.getToolRecords(ctx.traceId),
                     writeToolOffered:
                       ctx.writeToolOffered ||
                       recMcp.hadWriteCapability(ctx.traceId),
-                    signal: input.signal,
-                    toolTrust,
-                    usage: input.usage,
-                    content: result.output,
-                    records: recMcp.getToolRecords(ctx.traceId),
-                    ...getReviewSignals(),
-                    llm: criticLlm,
-                    request: input.task,
-                    task: input.task,
-                    history: getRequestHistory(),
                   });
                   return {
                     ...result,
-                    usage: addTokenUsage(result.usage, verdict.usage),
                     output: verdict.ok
-                      ? result.output
-                      : result.output + renderNotice(verdict),
+                      ? checked
+                      : checked + renderNotice(verdict),
                   };
                 },
                 ctx.lease.dumpScope,
@@ -890,6 +894,24 @@ async function open(
     input: Message[],
     options: AgentCallOptions,
   ) => {
+    // Reset the library's legacy malformed-verdict failure before decisions.
+    const current = session?.snapshot();
+    const resetSteps = current && unusableCheckerPlanSteps(current);
+    if (resetSteps) {
+      const reset = await new PlannerToolsClient().callTool('plan_update', {
+        steps: resetSteps,
+      });
+      if (!reset.ok || reset.value.isError)
+        throw new Error('Unable to reset unusable checker verdict');
+      input = input.map((message, index) =>
+        index === input.length - 1
+          ? {
+              ...message,
+              content: `${message.content}\nChecker verdict correction: unusable verdicts are undecided, not failures. Their check steps are pending. Decide whether to rerun, revise or skip with a reason.`,
+            }
+          : message,
+      );
+    }
     const caller = (options.trace && turnCallers.get(options.trace)) ??
       eventCaller ?? {
         userId,
@@ -957,26 +979,10 @@ async function open(
         pendingWorkerWriteCapability = false;
         if (writeToolOffered || records.length) {
           const verdict = await evaluateGated({
-            writeToolOffered,
             content: result.value.content,
             records,
-            signal: options.signal,
-            usage: options.usage,
-            toolTrust:
-              destinationHandle.toolTrustFor?.(await coordinatorResolver()) ??
-              destinationHandle.toolTrust,
-            ...getReviewSignals(),
-            llm: criticLlm,
-            request: input.at(-1)?.content ?? '',
-            history: getRequestHistory(),
+            writeToolOffered,
           });
-          result = {
-            ...result,
-            value: {
-              ...result.value,
-              usage: addTokenUsage(result.value.usage, verdict.usage),
-            },
-          };
           if (!verdict.ok) {
             const notice = `\n\n${renderNotice(verdict)}`;
             options.onPartial?.({
@@ -1188,6 +1194,7 @@ async function open(
           return state;
         },
         save: async (_id, state) => {
+          clearUnusableCheckerFailures(state);
           savedState = {
             ...state,
             coordinatorModel: selectedModel,
@@ -1362,6 +1369,7 @@ async function open(
   const snapshot = session.snapshot.bind(session);
   session.snapshot = () => {
     const state = snapshot();
+    clearUnusableCheckerFailures(state);
     return {
       ...state,
       tasks: state.tasks.map((task) => ({
@@ -1372,7 +1380,15 @@ async function open(
   };
   lastPlan = dialoguePlan(session.snapshot());
   const callTool = session.callTool.bind(session);
-  session.callTool = (...args) => llms.run(() => callTool(...args));
+  session.callTool = (...args) =>
+    llms.run(async () => {
+      const steps = unusableCheckerPlanSteps(session.snapshot());
+      if (steps) {
+        const reset = await callTool('plan_update', { steps });
+        if (!reset.ok || reset.value.isError) return reset;
+      }
+      return callTool(...args);
+    });
   const send = session.send.bind(session);
   session.send = (text, options = {}) => {
     emit({

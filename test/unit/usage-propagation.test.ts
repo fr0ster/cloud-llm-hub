@@ -78,7 +78,6 @@ import { agentQueryEmbedder, buildEmbedding } from '../../srv/lib/providers';
 import { SapAiCoreEmbedder } from '../../srv/lib/sap-ai-core-embedder';
 import { lifecycleHooks } from '../../srv/lib/session-lifecycle';
 import { sessionMiddleware } from '../../srv/lib/session-middleware';
-import { reviewStep } from '../../srv/lib/step-reviewer';
 import { readUsageConfig } from '../../srv/lib/usage/config';
 import {
   initUsage,
@@ -172,7 +171,7 @@ jest.mock('../../srv/agent-config', (): object => ({
       allowLlmOnlyFallback: boolean;
     };
     llm: {
-      contextCapture?: 'off' | 'stats';
+      contextCapture?: 'off' | 'stats' | 'full';
       provider: LlmProvider;
       model: string;
       classifierModel: string;
@@ -858,7 +857,7 @@ test('real hub dialogue pipeline retains background context, two successive requ
   );
 });
 
-test('step reviewer and guard pass helper labels and preserve request shape', async (): Promise<void> => {
+test('guard passes helper labels and preserve request shape', async (): Promise<void> => {
   const usage = runtime
     .forSession({ sessionId: 'helpers', userId: 'alice', destination: 'TEST' })
     .with({ requestId: 'helpers-request' });
@@ -866,10 +865,6 @@ test('step reviewer and guard pass helper labels and preserve request shape', as
     content: '{"possiblyFake":false,"confidence":"high","reasons":"ok"}',
     finishReason: 'stop',
   }));
-  await reviewStep(
-    { task: 'PROMPT_SENTINEL', executedTools: [], content: 'RESULT_SENTINEL' },
-    { llm, usage },
-  );
   const agent = await new SmartAgentBuilder({ skipModelValidation: true })
     .withMainLlm(llm)
     .build();
@@ -892,10 +887,7 @@ test('step reviewer and guard pass helper labels and preserve request shape', as
       r.context.role,
       r.context.component,
     ]),
-  ).toEqual([
-    ['reviewer', 'step-reviewer'],
-    ['classifier', 'llm-only-guard'],
-  ]);
+  ).toEqual([['classifier', 'llm-only-guard']]);
   for (const [index, call] of calls.entries())
     expect(call).toMatchObject(physical[index].shape);
   expect(JSON.stringify(calls)).not.toMatch(/PROMPT_SENTINEL|RESULT_SENTINEL/);
@@ -977,12 +969,6 @@ test('usage off passes no recorder to helper LLMs and leaves answers unchanged',
     content: '{"possiblyFake":false,"confidence":"high","reasons":"ok"}',
     finishReason: 'stop',
   }));
-  expect(
-    await reviewStep(
-      { task: 'task', content: 'answer', executedTools: [] },
-      { llm },
-    ),
-  ).toMatchObject({ possiblyFake: false });
   const agent = await new SmartAgentBuilder({ skipModelValidation: true })
     .withMainLlm(llm)
     .build();
@@ -993,7 +979,7 @@ test('usage off passes no recorder to helper LLMs and leaves answers unchanged',
     })),
     why: 'waiting',
   }).process('PROMPT_SENTINEL');
-  expect(physical).toHaveLength(2);
+  expect(physical).toHaveLength(1);
   for (const call of physical) expect(call.options?.usage).toBeUndefined();
 });
 

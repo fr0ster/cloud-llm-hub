@@ -143,11 +143,7 @@ import {
   requestSystemContextResolver,
   requestSystemContextRules,
 } from './lib/request-system-context';
-import {
-  getReviewProfile,
-  recordReviewProfile,
-  recordToolScore,
-} from './lib/review-scope';
+import { recordReviewProfile, recordToolScore } from './lib/review-scope';
 import { getRunRecordStore } from './lib/run-record-store';
 import { SessionHistoryRag, turnOwner } from './lib/session-history-rag';
 import {
@@ -953,7 +949,6 @@ function toJsonSchema(inputSchema: unknown): Record<string, unknown> {
 export type DestinationAgentHandle = SmartAgentHandle & {
   executor: SmartAgent;
   recMcp: RecordingMcpClient;
-  criticLlm: ILlm;
   workers: ReadonlyMap<string, ISubAgent>;
   profileRunner: AgentProfileRunner;
   trustResolver: TrustResolver;
@@ -1456,6 +1451,7 @@ export function createToolQueryAnalyzer(): ToolQueryAnalyzer {
           provider: config.llm.provider,
           apiKey: config.llm.apiKey,
           baseURL: config.llm.baseUrl,
+          component: 'analyst',
           model: config.llm.classifierModel,
           resourceGroup: config.llm.resourceGroup,
           whenThrottled: config.llm.whenThrottled,
@@ -2814,6 +2810,7 @@ function getOrCreateSharedLlms(
         provider: config.llm.provider,
         apiKey: config.llm.apiKey,
         baseURL: config.llm.baseUrl,
+        component: 'classifier',
         model: classifierModel,
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,
@@ -3038,7 +3035,8 @@ export async function buildPlannerAgent(
   const skillsPool = buildSkillsPool({ resolver: () => roleResolver });
   const system = await appendBaseSkills(systemPrompt, skillsPool);
   const plannerClient =
-    authorClient ?? new DialogueRagMcpClient(coordinatorToolsClient());
+    authorClient ??
+    new DialogueRagMcpClient(coordinatorToolsClient(), undefined, true);
   // Hard planners retain every SAP/control tool; only docs use semantic selection.
   const plannerTools: IRag = {
     query: async (_query, _k, options) => {
@@ -3075,6 +3073,7 @@ export async function buildPlannerAgent(
       maxIterations: config.agent.maxIterations,
       classificationEnabled: false,
       ragQueryK: config.agent.ragQueryK,
+      ragTranslateEnabled: false,
     },
     prompts: {
       system,
@@ -3381,13 +3380,12 @@ export async function buildAgentForDestination(
     { injectHistory: config.agent.chatCoordinator === 'fixed' },
   );
 
-  // Same shared main LLM the rest of the destination agent uses — no extra
-  // provider client stood up just for the critic layer.
+  // Reuse the destination main LLM for coordinator turns.
   const { mainLlm: mainLlmPromise } = getOrCreateSharedLlms({
     ...config,
     llm: { ...config.llm, model: getAgentConfig().llm.model },
   });
-  const criticLlm = await mainLlmPromise;
+  const coordinatorBaseLlm = await mainLlmPromise;
 
   // Controller build skips retrieval and skills: the coordinator consumes
   // input/clarification history, not assembled retrieval context. Its tool-loop is gated off
@@ -3441,31 +3439,7 @@ export async function buildAgentForDestination(
       },
     ],
   ]);
-  // Keep the build-time executor profile as a fallback when no worker has
-  // recorded a request-scoped profile yet.
-  // Optional: without an executor profile the notice uses deploy defaults.
-  const executorProfile = await prepareCompatibilityWorker(
-    config,
-    undefined,
-    async (options) => {
-      const source = createAgentProfileSource(
-        getRequestUserId() ?? 'anonymous',
-      );
-      const resolved = await source.get('executor', options);
-      return resolved.ok ? resolved.value : undefined;
-    },
-  ).catch(() => undefined);
-  const noticeFinalizer = new NoticeFinalizer(
-    recMcp,
-    criticLlm,
-    undefined,
-    () => {
-      const profile = getReviewProfile() ?? executorProfile;
-      return profile?.trust
-        ? builtInToolTrust(getTrustResolver().forProfile(profile))
-        : getSystemToolTrust();
-    },
-  );
+  const noticeFinalizer = new NoticeFinalizer(recMcp);
   if (config.agent.chatCoordinator !== 'fixed') {
     // Resolve at call time: the destination and controller are shared across requests.
     const coordinatorLlm = async (): Promise<ILlm> => {
@@ -3475,11 +3449,11 @@ export async function buildAgentForDestination(
             ...config,
             llm: { ...config.llm, model },
           }).mainLlm
-        : criticLlm;
+        : coordinatorBaseLlm;
     };
     const requestLlm: ILlm = {
       get model() {
-        return requestModel.getStore() ?? criticLlm.model;
+        return requestModel.getStore() ?? coordinatorBaseLlm.model;
       },
       chat: async (...args) => (await coordinatorLlm()).chat(...args),
       streamChat: async function* (...args) {
@@ -3536,7 +3510,6 @@ export async function buildAgentForDestination(
   const destinationHandle = Object.assign(handle, {
     recMcp,
     executor,
-    criticLlm,
     workers,
     profileRunner,
     trustResolver: getTrustResolver(),
@@ -3554,7 +3527,7 @@ export async function buildAgentForDestination(
 export type ExecutorAgentHandle = SmartAgentHandle &
   (
     | { executor?: undefined }
-    | { executor: SmartAgent; recMcp: RecordingMcpClient; criticLlm: ILlm }
+    | { executor: SmartAgent; recMcp: RecordingMcpClient }
   );
 
 /**

@@ -9,25 +9,9 @@ function record(
 }
 
 describe('ReviewerSubAgent', () => {
-  // This portable unit derives toolCallCount from records.length, so a
-  // handful of records makes `evaluateGated`'s gate suspicious here and the
-  // LLM critic always runs. Use a benign stub verdict so the deterministic
-  // check (the thing under test) is never overridden by a spurious LLM finding.
-  const benignLlm = {
-    chat: jest.fn(async () => ({
-      ok: true as const,
-      value: {
-        content:
-          '{"possiblyFake": false, "confidence": "low", "reasons": "ok"}',
-      },
-    })),
-    streamChat: async function* () {},
-  };
-
   it('has the expected identity and capabilities', () => {
     const agent = new ReviewerSubAgent({
       getToolRecords: () => [],
-      llm: benignLlm as never,
     });
     expect(agent.name).toBe('reviewer');
     expect(agent.capabilities).toEqual({ contextPolicy: 'optional' });
@@ -38,7 +22,6 @@ describe('ReviewerSubAgent', () => {
       getToolRecords: () => [
         record('CreateDomain', '{"success":true,"status":"inactive"}'),
       ],
-      llm: benignLlm as never,
     });
     const result = await agent.run({
       task: 'Create domain ZDEMO_D_MATNR then activate it',
@@ -64,7 +47,6 @@ describe('ReviewerSubAgent', () => {
       getToolRecords: () => [
         record('CreateDomain', '{"success":true,"status":"active"}'),
       ],
-      llm: benignLlm as never,
     });
     const result = await agent.run({
       task: 'Create domain ZDEMO_D_MATNR then activate it',
@@ -78,7 +60,6 @@ describe('ReviewerSubAgent', () => {
   it('falls back to input.task when input.context is absent', async () => {
     const agent = new ReviewerSubAgent({
       getToolRecords: () => [],
-      llm: benignLlm as never,
     });
     const result = await agent.run({
       task: 'Nothing to report, no writes attempted.',
@@ -92,7 +73,6 @@ describe('ReviewerSubAgent', () => {
     const agent = new ReviewerSubAgent({
       getToolRecords: () => [],
       hadWriteCapability: () => true,
-      llm: benignLlm as never,
     });
     const result = await agent.run({
       task: 'Delete domain ZDEMO_D_MATNR',

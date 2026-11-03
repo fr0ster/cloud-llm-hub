@@ -232,23 +232,21 @@ it.each(['coordinator', 'planner-create', 'planner-revise'])(
       path.join('srv/agent-profiles', `${name}.md`),
       'utf8',
     );
-    expect(prompt).toContain(
-      name === 'coordinator'
-        ? 'For delegated check briefs, require'
-        : 'For check step goals, require',
-    );
-    expect(prompt).toContain(
-      'batch checks must return JSON with verdict and a numeric count',
-    );
-    expect(prompt).toContain(
-      'Return JSON {"verdict":"pass"|"fail","count":number,"note":"optional reason"} or PASS/FAIL. Missing or short batch counts and unusable verdicts fail the check step; plan a fix step and a new check.',
-    );
-    expect(prompt).toContain(
-      'Skills and planning guidance may define other or deeper verification for their kind of work.',
-    );
-    expect(prompt).toContain(
-      'Do not add checks the plan did not foresee unless a result shows a concrete problem.',
-    );
+    if (name === 'coordinator') {
+      // The coordinator decides the next action itself; no prescribed check rules.
+      expect(prompt).not.toContain('skip a planned check');
+      expect(prompt).not.toContain('add an unplanned check');
+      expect(prompt).toContain('an "unusable verdict: <reason>" is not a fail');
+    } else {
+      expect(prompt).toContain(
+        'batch checks must return JSON with verdict and a numeric count',
+      );
+      expect(prompt).toContain('Fail requires exact checked-result quotes');
+      expect(prompt).toContain('Unusable verdicts do not fail the work');
+      expect(prompt).toContain(
+        'The coordinator may add checks when user input requests verification',
+      );
+    }
     if (name !== 'coordinator') {
       expect(prompt).toContain(
         'Follow planning guidance when it fits the request',
@@ -264,15 +262,13 @@ it.each(['coordinator', 'planner-create', 'planner-revise'])(
         'split only for parallel work, size limits or a result that needs its own check',
       );
     } else {
-      expect(prompt).toContain('never write ABAP implementation details');
       expect(prompt).toContain(
-        'Select workers by their discovered exact profile names and descriptions.',
+        'State outcomes, not ABAP implementation details.',
       );
+      expect(prompt).toContain('Use exact discovered profiles');
+      expect(prompt).toContain('redo work only for failure or a concrete gap');
       expect(prompt).toContain(
-        're-delegate only for a failure or a concrete gap, saying what is missing',
-      );
-      expect(prompt).toContain(
-        'Sequence steps touching the same object, locks or transport',
+        'sequence shared objects, locks, transports and dependent results',
       );
     }
   },

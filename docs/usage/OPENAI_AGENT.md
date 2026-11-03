@@ -178,3 +178,5 @@ See `.env.example` for token setup instructions.
 
 - [MCP Proxy Connection](MCP_CONNECTION.md) - Connecting to MCP Stream-HTTP endpoint
 - [CAP Express Auth](../development/CAP_EXPRESS_AUTH.md) - How auth works on custom routes
+
+`UNVERIFIED_WRITE` notices use deterministic tool-journal checks, with no automatic LLM review of workers or answers. Failed/unanswered write notices and recording placeholders remain. `LLM_AGENT_STEP_REVIEW_ENABLED=false` disables claim-based notices only. Verification checks are explicit coordinator decisions each turn: run a planned check, skip it stating why, or add an unplanned check; user input can require `plan_revise`. Checker failures need exact result quotes and cited supplied evidence (or `none provided`); invalid failures are unusable verdicts for the coordinator to assess, not failures. No tools executed alone is never grounds for fail.

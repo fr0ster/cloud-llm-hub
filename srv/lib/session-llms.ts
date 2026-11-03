@@ -41,7 +41,6 @@ export interface LlmSessionIdentity {
 }
 
 const owners = new Map<string, SessionLlms>();
-const closedSessions = new WeakSet<LlmSessionIdentity>();
 const identityKey = (session: LlmSessionIdentity): string =>
   JSON.stringify([session.userId, session.key]);
 
@@ -56,7 +55,6 @@ export function longSessionLlms(session: LlmSessionIdentity): SessionLlms {
 }
 
 export function disposeSessionLlms(session: LlmSessionIdentity): void {
-  closedSessions.add(session);
   const key = identityKey(session);
   owners.get(key)?.dispose();
   owners.delete(key);
@@ -67,8 +65,14 @@ export async function runWithRequestLlms<T>(
   session: LlmSessionIdentity | undefined,
   run: () => Promise<T>,
 ): Promise<T> {
-  if (session && !closedSessions.has(session))
-    return longSessionLlms(session).run(run);
+  if (session) {
+    // Admission explicitly opens/revives owners via longSessionLlms. Missing
+    // stable keys are closed: late requests cannot reopen them. This keeps
+    // only live owners (bounded by session admission), with no tombstone growth.
+    const owner = owners.get(identityKey(session));
+    if (!owner) throw new Error('Session LLM clients closed');
+    return owner.run(run);
+  }
   // Nested internal tools belong to the enclosing request.
   if (sessionLlms.getStore()) return run();
   const owner = new SessionLlms();

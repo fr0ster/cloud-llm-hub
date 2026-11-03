@@ -275,7 +275,7 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
       expect(exposed.executor).not.toBe(workerAgent);
       expect(exposed.recMcp).toBe(withMcpClients.mock.calls[0][0][0]);
       expect(exposed.recMcp).toBe(deps.finalizer.recMcp);
-      expect(exposed.criticLlm).toBe(deps.finalizer.criticLlm);
+      expect(exposed).not.toHaveProperty('criticLlm');
       workerAgent.process.mockResolvedValue({
         ok: true,
         value: { content: 'done' },
@@ -309,7 +309,7 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
   });
 
   it.each(['fixed', 'adaptive'] as const)(
-    'notice uses executor profile trust with %s coordination',
+    'notice requires no critic or profile trust with %s coordination',
     async (chatCoordinator) => {
       const registry = agentManager.getCollectionRegistry();
       const collection = await registry.readAgentCollection('agents');
@@ -350,10 +350,8 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
           agentManager.getHandlerExporterConfig(),
         ).getToolNames()[0];
         if (!tool) throw new Error('Missing embedded tool fixture');
-        expect(spy.mock.calls.at(-1)?.[0].toolTrust?.(tool)).toEqual({
-          source: `target:${tool}`,
-          trust: 5,
-        });
+        expect(spy.mock.calls.at(-1)?.[0]).not.toHaveProperty('llm');
+        expect(spy.mock.calls.at(-1)?.[0]).not.toHaveProperty('toolTrust');
       } finally {
         spy.mockRestore();
         await registry.updateDocument('agents', 'executor', {

@@ -61,10 +61,7 @@ describe('NoticeFinalizer', () => {
   });
 
   it('opts into live interpreter content streaming', () => {
-    const finalizer = new NoticeFinalizer(
-      new RecordingMcpClient(fakeInner()),
-      benignLlm as never,
-    );
+    const finalizer = new NoticeFinalizer(new RecordingMcpClient(fakeInner()));
     expect(finalizer.streamsInterpreterContent).toBe(true);
   });
 
@@ -76,7 +73,7 @@ describe('NoticeFinalizer', () => {
         result: { content: '{"success":true,"status":"inactive"}' },
       },
     ]);
-    const finalizer = new NoticeFinalizer(recMcp, benignLlm as never);
+    const finalizer = new NoticeFinalizer(recMcp);
     const onPartial = jest.fn();
     const input = baseInput({
       interpreterOutput: 'The domain was created and activated successfully.',
@@ -102,7 +99,7 @@ describe('NoticeFinalizer', () => {
       },
     ]);
 
-    const finalizer = new NoticeFinalizer(recMcp, benignLlm as never);
+    const finalizer = new NoticeFinalizer(recMcp);
     const onPartial = jest.fn();
     const input = baseInput({
       interpreterOutput: 'The domain was created and activated successfully.',
@@ -134,7 +131,7 @@ describe('NoticeFinalizer', () => {
       },
     ]);
 
-    const finalizer = new NoticeFinalizer(recMcp, benignLlm as never);
+    const finalizer = new NoticeFinalizer(recMcp);
     const onPartial = jest.fn();
     const input = baseInput({
       interpreterOutput: 'The domain was created and activated successfully.',
@@ -163,7 +160,7 @@ describe('NoticeFinalizer', () => {
       },
     ]);
 
-    const finalizer = new NoticeFinalizer(recMcp, benignLlm as never);
+    const finalizer = new NoticeFinalizer(recMcp);
     const onPartial = jest.fn();
     const input = baseInput({
       interpreterOutput: 'The domain was created and activated successfully.',
@@ -193,7 +190,7 @@ describe('NoticeFinalizer', () => {
         },
       ]);
 
-      const finalizer = new NoticeFinalizer(recMcp, benignLlm as never);
+      const finalizer = new NoticeFinalizer(recMcp);
       const onPartial = jest.fn();
       const input = baseInput({
         interpreterOutput: 'The domain was created and activated successfully.',
@@ -216,7 +213,7 @@ describe('NoticeFinalizer', () => {
     const recMcp = new RecordingMcpClient(fakeInner());
     jest.spyOn(recMcp, 'getToolRecords').mockReturnValue([]);
 
-    const finalizer = new NoticeFinalizer(recMcp, benignLlm as never);
+    const finalizer = new NoticeFinalizer(recMcp);
     const onPartial = jest.fn();
     const input = baseInput({
       interpreterOutput: '',
@@ -231,29 +228,18 @@ describe('NoticeFinalizer', () => {
   });
 });
 
-test('NoticeFinalizer uses request-scoped retrieval score to gate the critic', async () => {
-  const chat = jest.fn(async () => ({
-    ok: true,
-    value: {
-      content: '{"possiblyFake":false,"confidence":"low","reasons":"ok"}',
-    },
-  }));
-  const finalizer = new NoticeFinalizer(new RecordingMcpClient(fakeInner()), {
-    chat,
-    streamChat: async function* () {},
-  } as never);
+test('NoticeFinalizer never invokes a critic, even for SAP answers without tools', async () => {
+  const finalizer = new NoticeFinalizer(new RecordingMcpClient(fakeInner()));
   await runWithSessionId('sap', async () => {
-    recordToolScore(0.48);
+    recordToolScore(1);
+    const onPartial = jest.fn();
     await finalizer.finalize(
       baseInput({
-        prompt: 'List objects',
+        prompt: 'List ZOBJECT objects',
         interpreterOutput: 'Here they are.',
+        onPartial,
       }),
     );
+    expect(onPartial).toHaveBeenCalledTimes(1);
   });
-  expect(chat).toHaveBeenCalledTimes(1);
-  await runWithSessionId('chat', () =>
-    finalizer.finalize(baseInput({ prompt: 'Hello', interpreterOutput: 'Hi' })),
-  );
-  expect(chat).toHaveBeenCalledTimes(1);
 });

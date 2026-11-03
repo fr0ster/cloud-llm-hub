@@ -107,11 +107,11 @@ export type DestinationConfig =
 /** Content-free context telemetry; disabled unless explicitly selected. */
 export function parseContextCapture(
   env: NodeJS.ProcessEnv = process.env,
-): 'off' | 'stats' {
+): 'off' | 'stats' | 'full' {
   const value = env.LLM_AGENT_CONTEXT_CAPTURE?.trim() || 'off';
-  if (value !== 'off' && value !== 'stats')
+  if (value !== 'off' && value !== 'stats' && value !== 'full')
     throw new BuildValidationError(
-      'Invalid LLM_AGENT_CONTEXT_CAPTURE: expected off or stats',
+      'Invalid LLM_AGENT_CONTEXT_CAPTURE: expected off, stats or full',
     );
   return value;
 }
@@ -178,7 +178,7 @@ export interface AgentConfig {
    * LLM Configuration
    */
   llm: {
-    contextCapture?: 'off' | 'stats';
+    contextCapture?: 'off' | 'stats' | 'full';
     /** LLM provider: 'sap-ai-sdk' (default), 'openai', 'anthropic', 'deepseek' */
     provider: LlmProvider;
 
@@ -291,7 +291,6 @@ export interface AgentConfig {
     toolGate?: 'classifier' | 'off';
     toolGateTimeoutMs?: number;
     skillRagK: number;
-    sapRelevanceScore?: number;
 
     /**
      * `LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK=true`: a request that names no
@@ -458,15 +457,9 @@ export function parseRagConfig(
   return rag;
 }
 
-export function parseSapRelevanceScore(env: NodeJS.ProcessEnv): number {
-  const raw = set(env, 'LLM_AGENT_SAP_RELEVANCE_SCORE');
-  const score = raw === undefined ? 0.48 : Number(raw);
-  if (!Number.isFinite(score) || score < 0 || score > 1) {
-    throw new BuildValidationError(
-      'Invalid LLM_AGENT_SAP_RELEVANCE_SCORE: expected a number in 0..1',
-    );
-  }
-  return score;
+/** @deprecated Automatic critic removed; retained as an inert compatibility parser. */
+export function parseSapRelevanceScore(_env: NodeJS.ProcessEnv): number {
+  return 0.48;
 }
 
 /** `LLM_AGENT_SKILL_RAG_K`: a finite number, truncated and floored at 0; else 3. */
@@ -731,7 +724,6 @@ export function loadAgentConfig(): AgentConfig {
         process.env.LLM_AGENT_TOOL_GATE_TIMEOUT_MS,
       ),
       skillRagK: parseSkillRagK(process.env),
-      sapRelevanceScore: parseSapRelevanceScore(process.env),
       allowLlmOnlyFallback:
         process.env.LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK === 'true',
     },

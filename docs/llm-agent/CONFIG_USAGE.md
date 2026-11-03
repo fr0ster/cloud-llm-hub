@@ -87,19 +87,20 @@ goal sizes, states, durations and hashed session keys. They never contain goal t
 | `LLM_AGENT_TOOL_LOOP_WINDOW` | `8` | Positive safe integer: agent tool loops keep the latest N tool rounds plus the prefix. Dropped results become deterministic one-line digests, without LLM summarization. The dialogue coordinator keeps its own history handling. |
 | `LLM_AGENT_TOOL_RESULT_MAX_CHARS` | `60000` | Non-negative integer character cap per model-visible MCP tool result, including local dialogue RAG tools. `0` disables. Oversized serialized text is cut at the cap, followed by a paging notice; error status is preserved. Recording stores the capped result and truncation lengths. Content-free truncation logs use `tool-result-cap`. |
 | `LLM_AGENT_MAX_TOOL_CALLS` | unset (library default: `30`) | Positive integer per-run tool-call budget for workers, checkers, planner and agent MCP. Calls over the budget receive error results. Empty or unset preserves the library default. |
-| `LLM_AGENT_CONTEXT_CAPTURE` | `off` | `off` or `stats`: one content-free `context-capture` info line per LLM call, after completion (including failures). Counts messages/characters by role, tool results and definitions; records the three largest tool results by name/size, component, model, known task/session ids, and provider input/output tokens when supplied. Streaming calls log once when consumed or closed; no token estimates or message/tool content. |
+| `LLM_AGENT_CONTEXT_CAPTURE_FILE` | `context.sqlite` | Container-local full-context SQLite path, relative to the app directory. |
+| `LLM_AGENT_CONTEXT_CAPTURE_MAX_MB` | `512` | Stop writing at this file size in MiB and warn once; no automatic deletion. |
+| `LLM_AGENT_CONTEXT_CAPTURE` | `off` | `off`, `full` (SQLite; see Full LLM context capture below), or legacy `stats`: one content-free `context-capture` info line per LLM call, after completion (including failures). Counts messages/characters by role, tool results and definitions; records the three largest tool results by name/size, component, model, known task ids and salted session hashes, and provider input/output tokens when supplied. Streaming calls log once when consumed or closed; no token estimates or message/tool content. |
 | `LLM_AGENT_TEMPERATURE`, `LLM_AGENT_MAX_TOKENS` | provider defaults | Sampling parameters |
-| `LLM_AGENT_SAP_RELEVANCE_SCORE` | `0.48` | Minimum top non-skill tool score for SAP relevance; validated in `0..1` |
+| `LLM_AGENT_SAP_RELEVANCE_SCORE` | deprecated | Ignored, including invalid values; no automatic LLM critic |
 | `LLM_AGENT_MODE`, `LLM_AGENT_MAX_ITERATIONS` | see `agent-config.ts` | Agent loop behaviour |
 | `LLM_AGENT_HISTORY_RECENCY_WINDOW` | see `agent-config.ts` | How much history reaches the model |
 | `LLM_AGENT_MCP_ENDPOINT` | — | **Inert.** Read and logged, consumed by nothing |
 
 All `LLM_GATEKEEPER_*` values: unset means off. A value that is not plain digits for a positive integer (`0x10`, `1e3`, ` 5` and `5.0` are refused) — or a combination the notes above forbid — stops `cds serve` before it listens, naming the variable. The values in force are logged at startup and returned in `Health()`.
 
-`LLM_AGENT_STEP_REVIEW_ENABLED=false` switches off the honesty controller's
-reviewer (`srv/agent-manager.ts`).
+`LLM_AGENT_STEP_REVIEW_ENABLED=false` disables deterministic claim-based notices. Journal-based failed/unanswered write safeguards remain. No automatic LLM critic runs on worker results, final answers or execute_step. Checks are explicit plan steps that the coordinator may run, skip with a reason, or add after considering new user input.
 
-`LLM_AGENT_SAP_RELEVANCE_SCORE` (default `0.48`, range `0..1`) is the minimum top non-skill tool retrieval score that marks a request as SAP-related for step review. SAP identifiers also qualify. The LLM critic runs only for SAP requests without tool calls or anomalous executor completion token counts (outside mean +/- two standard deviations over the last 50 steps per model, after 20 steps). The deterministic check always runs unless `LLM_AGENT_STEP_REVIEW_ENABLED=false`.
+`LLM_AGENT_SAP_RELEVANCE_SCORE` and `LLM_AGENT_STEP_REVIEW_TIMEOUT_MS` are deprecated and ignored; they do not trigger validation errors or deadlines.
 
 ## Long sessions
 
@@ -406,7 +407,7 @@ Only `kind: profile` records accept optional front matter `model`. Agent model
 precedence is explicit tool override, profile model, then `LLM_AGENT_MODEL`.
 Writing a disallowed profile model returns HTTP 400; loading a stored disallowed
 model ignores that field with a warning and keeps the profile usable. Plan authors
-continue to use `LLM_AGENT_PLANNER_MODEL`; classifier, embedder and reviewer settings
+continue to use `LLM_AGENT_PLANNER_MODEL`; classifier and embedder settings
 are independent of request model selection.
 
 `rag_read` defaults to 32,000 characters per page, subject to `LLM_AGENT_TOOL_RESULT_MAX_CHARS`. Identical pages inside one agent loop return an `alreadyRead` pointer while their original full-text round remains in the window. Pointers do not extend that lifetime; expired pages or any change to the full record return text again.
@@ -450,7 +451,7 @@ External docs discovery runs in the background, never blocks profiles, and has a
 logged ten-minute safety net. Its MCP client no longer overrides tool-call timeouts.
 See [the timeout audit](../superpowers/verification/2026-11-02-timeout-audit.md).
 
-Each dialogue session lazily owns its LLM clients, including coordinator, workers, classifier and critic. A session-specific provider quotaScope isolates Retry-After waits from all other sessions. Calls within one session share the provider/model quota gate. Closing or evicting a session drops its clients; usage and context capture remain enabled. Providers currently expose no transport disposal API. llm-agent releases quota leases after calls and prunes idle, open gates (with a bounded registry); penalized or leased gates remain until safe to reclaim.
+Each dialogue session lazily owns its LLM clients, including coordinator, workers and classifier. A session-specific provider quotaScope isolates Retry-After waits from all other sessions. Calls within one session share the provider/model quota gate. Closing or evicting a session drops its clients; usage and context capture remain enabled. Providers currently expose no transport disposal API. llm-agent releases quota leases after calls and prunes idle, open gates (with a bounded registry); penalized or leased gates remain until safe to reclaim.
 
 Dialogue sessions lazily own provider clients and quota scopes: a 429 pauses only that session, while its calls share their provider/model gate. Usage and context capture remain enabled. Closing or evicting a session drops client references. Providers expose no close/dispose API. llm-agent releases gate leases after calls and reclaims open idle gates with a bounded registry; penalized and leased entries remain until safe to reclaim.
 
@@ -459,3 +460,16 @@ Dialogue sessions lazily own provider clients and quota scopes: a 429 pauses onl
 `LLM_AGENT_MCP_SELECTION` accepts comma-separated `DEST=direct|rag|auto` entries. Empty means `auto` for every destination. Direct mode always includes connected tools permitted for the worker role and profile policy. RAG mode embeds tool names and descriptions into a separate runtime memory index and selects relevant tools alongside corpus results. Refresh replaces only that destination's index entries.
 
 `LLM_AGENT_MCP_DIRECT_MAX` is a positive integer (default `12`); invalid values warn and use the default. Auto uses direct mode at or below this tool count and RAG above it. RAG requires the hub embedder. For example, set `LLM_AGENT_EXECUTOR_MCP=DOCS_MCP` and `LLM_AGENT_MCP_SELECTION=DOCS_MCP=auto`. Role destination lists still control access.
+
+`LLM_AGENT_CONTEXT_CANARY` defaults to empty (off). With `LLM_AGENT_CONTEXT_CAPTURE=stats`, a regex source logs distinct input matches by role, including tool definitions. Invalid regexes warn and disable scanning. Canaries must be test markers such as `SESSION-TAG: ALPHA-7Q2`, never secrets: matches are logged. Capture includes per-message, combined-system and tool-definition fingerprints (12 hex SHA-256 characters with a per-process random salt). Content uses NFC and normalized line endings. Session hashes include user and session identity without logging either. Hashes are stable within a process only. Compare non-shared message fingerprints and canaries across session hashes to investigate leaks; shared prompts and tools normally match.
+
+
+### Full LLM context capture
+
+Set `LLM_AGENT_CONTEXT_CAPTURE=full` to store one row per chat or streaming LLM call in the container's SQLite `context_calls` table. The default is `off`; the existing `stats` mode remains available. Embeddings are excluded. Requests include complete messages, tool calls/results, tool definitions and model options; responses include complete content and tool calls (stream deltas are assembled). Rows also contain ISO timestamps, ids, salted session hashes (null outside sessions), component, model, trace id when available, reported input/output/cached tokens (null when unavailable), duration, success and error name without stack or error message.
+
+`LLM_AGENT_CONTEXT_CAPTURE_FILE` defaults to `context.sqlite` relative to the app directory, using the same convention as `usage.sqlite`. `LLM_AGENT_CONTEXT_CAPTURE_MAX_MB` defaults to `512` MiB. Once the file reaches this cap, capture stops writing and warns once; the final row can take the file beyond the cap. No data is deleted automatically. The admin must download and delete or rotate the file; it grows until the cap and container-local data can disappear on restart. Disable capture and restart before rotating an open file.
+
+Download using the same `cf ssh` / SQLite `VACUUM INTO` workflow as usage: create a consistent snapshot with `VACUUM INTO '/tmp/context-snapshot.sqlite'` from the app's `context.sqlite`, then copy the snapshot out through SSH. There is no REST export endpoint. Downloads must happen before restart.
+
+Credential-like password/passwd, authorization, bearer, client_secret/clientsecret, x-sap-* header and sap-password values are replaced with `?redacted?` in request and response strings before storage, including tool arguments and definitions. Other context is retained in full; restrict access to the file accordingly. The bounded in-process queue drops rows on overflow or storage failure and warns once per failure kind. Capture never changes the LLM result, and queued rows can be lost if the process exits before they are drained.

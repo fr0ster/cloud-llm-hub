@@ -32,8 +32,8 @@ import { usageRuntime } from './usage/runtime';
 
 export interface HubLlmConfig {
   provider: LlmProvider;
-  component?: 'chat' | 'other' | 'planner-author';
-  contextCapture?: 'off' | 'stats';
+  component?: 'chat' | 'other' | 'planner-author' | 'classifier' | 'analyst';
+  contextCapture?: 'off' | 'stats' | 'full';
   /** API key for openai / anthropic / deepseek. Unused for sap-ai-sdk. */
   apiKey?: string;
   /** Base URL for OpenAI-compatible endpoints (Azure OpenAI, Ollama, vLLM). */
@@ -257,6 +257,7 @@ async function createHubLlm(
       }),
       cfg.component,
       cfg.contextCapture,
+      { temperature, maxTokens },
     ),
   );
   if (cfg.component !== 'planner-author') return llm;

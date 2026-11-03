@@ -94,21 +94,17 @@ test.each(['bad', 'x=', 'x=6', 'x=NaN', 'x=2=3'])(
   },
 );
 
-test('ToolTrust produces the docs source envelope for model-facing review text', async () => {
+test('ToolTrust resolves the docs source for model-facing evidence', async () => {
   const external = new ExternalMcp(
     parseExternalMcp({ LLM_AGENT_EXECUTOR_MCP: 'docs' }),
     () => [],
     async () => adapter,
   );
   await external.clients('executor');
-  const { buildReviewMessages } = await import('../../srv/lib/step-reviewer');
-  const messages = buildReviewMessages({
-    task: 'read docs',
-    content: 'done',
-    executedTools: [{ name: 'search', ok: true }],
-    toolTrust: (name) => external.toolTrust(name, resolver),
+  expect(external.toolTrust('search', resolver)).toEqual({
+    source: 'docs:search',
+    trust: 4.2,
   });
-  expect(messages[1].content).toContain('[source: docs:search; trust 4.2]');
 });
 
 test.each(['planner', 'executor', 'checker', 'analyst'])(

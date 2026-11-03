@@ -10,6 +10,7 @@ import {
   LocalRagMcpClient,
   localRagTools,
 } from '../../srv/lib/dialogue-rag-tools';
+import { withCompactRagSearch } from '../../srv/lib/rag-search-context';
 import {
   buildRagToolSchemas,
   ragToolEffect,
@@ -1860,3 +1861,37 @@ test.each([false, true])(
     );
   },
 );
+
+test('plan author search is compact, preserves canonical ids and leaves full reads and worker searches intact', async () => {
+  const full = `needle title\n${'needle body '.repeat(100)}`;
+  await registry.addDocument(cid, { id: 'compact', text: full, metadata: {} });
+  const compact = await withCompactRagSearch(() =>
+    call('rag_search', { collections: ['notes'] }),
+  );
+  expect(compact.content[0].text).not.toContain('"text":');
+  expect(compact.content[0].text).toContain('"snippet":');
+  expect(compact.content[0].text).toContain('"textLength":');
+  const parsed: {
+    hits: Array<{
+      collection: string;
+      id: string;
+      title: string;
+      snippet: string;
+      textLength: number;
+    }>;
+  } = JSON.parse(compact.content[0].text);
+  const hit = parsed.hits.find((entry) => entry.id === 'compact');
+  expect(hit).toMatchObject({
+    collection: cid,
+    id: 'compact',
+    title: 'needle title',
+    snippet: full.slice(0, 400),
+    textLength: full.length,
+  });
+  expect(hit?.snippet.length).toBeLessThanOrEqual(400);
+  const worker = await call('rag_search', { collections: ['notes'] });
+  expect(worker.content[0].text).toContain(JSON.stringify(full));
+  expect(
+    await body(call('rag_read', { collection: cid, id: 'compact' })),
+  ).toMatchObject({ text: full });
+});

@@ -18,6 +18,7 @@ import {
 import { withCollectionToolScope } from './lib/collection-write-scope';
 import { longSessions, longSessionsIfReady } from './lib/long-session';
 import { readRagDocuments } from './lib/rag-read';
+import { compactRagSearch } from './lib/rag-search-context';
 import {
   addRagRecord,
   createAgentKnowledgeCollection,
@@ -739,6 +740,18 @@ async function runRagTool(
           unavailable.push(note);
       }
     }
+    if (compactRagSearch())
+      return respond({
+        hits: hits
+          .sort((a, b) => b.score - a.score)
+          .slice(0, args.k ?? 8)
+          .map(({ text, ...hit }) => ({
+            ...hit,
+            snippet: text.slice(0, 400),
+            textLength: text.length,
+          })),
+        ...(unavailable.length ? { unavailable } : {}),
+      });
     const bounded: typeof hits = [];
     const payload = (results: typeof hits) => ({
       hits: results,

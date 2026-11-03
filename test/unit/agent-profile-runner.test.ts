@@ -14,6 +14,7 @@ import {
   type AgentProfileRunnerHost,
 } from '../../srv/lib/agent-profile-runner';
 import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
+import { compactRagSearch } from '../../srv/lib/rag-search-context';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import {
   profileToolAllowed,
@@ -322,4 +323,40 @@ test('planner author receives registered docs as knowledge tools under its paren
   await runWithProfileTools(new AgentToolPermissions(['rag_read']), () =>
     f.runner.preparePlanAuthor({ systemPrompt: 'author', mode: 'create' }),
   );
+});
+
+test('compact search scope follows plan author process and stream iteration only', async () => {
+  const f = fixture();
+  f.host.catalogue = () =>
+    ['rag_search', 'rag_read', 'collection_records', 'collections_list'].map(
+      (name) => ({ name, effect: 'read' }),
+    );
+  f.host.grants = () => new Set(f.host.catalogue().map((tool) => tool.name));
+  f.host.buildPlanAuthor = async () => {
+    expect(compactRagSearch()).toBe(true);
+    const agent = await f.host.buildPlanner('author');
+    return {
+      process: async (...args) => {
+        await Promise.resolve();
+        expect(compactRagSearch()).toBe(true);
+        return agent.process(...args);
+      },
+      streamProcess: async function* () {
+        await Promise.resolve();
+        expect(compactRagSearch()).toBe(true);
+        yield* agent.streamProcess('question');
+      },
+    };
+  };
+  const author = await f.runner.preparePlanAuthor({
+    systemPrompt: 'author',
+    mode: 'create',
+  });
+  if (!author.ok) throw new Error(author.error.message);
+  expect(compactRagSearch()).toBe(false);
+  await author.value.process('question');
+  for await (const _chunk of author.value.streamProcess('question')) {
+    expect(compactRagSearch()).toBe(false);
+  }
+  expect(compactRagSearch()).toBe(false);
 });

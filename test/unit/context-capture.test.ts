@@ -47,7 +47,9 @@ const llm: ILlm = {
 
 let info: jest.SpyInstance;
 const saved = process.env.LLM_AGENT_CONTEXT_CAPTURE;
+const savedCanary = process.env.LLM_AGENT_CONTEXT_CANARY;
 beforeEach(() => {
+  delete process.env.LLM_AGENT_CONTEXT_CANARY;
   process.env.LLM_AGENT_CONTEXT_CAPTURE = 'stats';
   info = jest
     .spyOn(cds.log('context-capture'), 'info')
@@ -55,6 +57,8 @@ beforeEach(() => {
 });
 afterEach(() => {
   info.mockRestore();
+  if (savedCanary === undefined) delete process.env.LLM_AGENT_CONTEXT_CANARY;
+  else process.env.LLM_AGENT_CONTEXT_CANARY = savedCanary;
   if (saved === undefined) delete process.env.LLM_AGENT_CONTEXT_CAPTURE;
   else process.env.LLM_AGENT_CONTEXT_CAPTURE = saved;
 });
@@ -71,7 +75,7 @@ test('stats include only identifiers and numbers, preserving the call', async ()
   expect(stats).toMatchObject({
     component: 'executor',
     taskId: 'task1',
-    sessionKey: 'session1',
+    session: expect.stringMatching(/^[a-f0-9]{12}$/),
     model: 'model-id',
     messageCount: 7,
     roles: {
@@ -137,8 +141,8 @@ test('configuration validates the capture mode', () => {
     'stats',
   );
   expect(() =>
-    parseContextCapture({ LLM_AGENT_CONTEXT_CAPTURE: 'full' }),
-  ).toThrow('expected off or stats');
+    parseContextCapture({ LLM_AGENT_CONTEXT_CAPTURE: 'invalid' }),
+  ).toThrow('expected off, stats or full');
 });
 
 test('concurrent calls retain their own task scope and helpers remain other', async () => {
@@ -278,3 +282,53 @@ test.each(['chat', 'streamChat'] as const)(
     expect(info).not.toHaveBeenCalled();
   },
 );
+
+test('session hashes isolate concurrent sessions and fingerprints identify shared content without raw identities', async () => {
+  const capture = (sessionKey: string) =>
+    runWithContextCapture({ component: 'chat', sessionKey }, () =>
+      captureLlm(llm).chat(messages, tools),
+    );
+  await Promise.all([
+    capture('private-session-a'),
+    capture('private-session-b'),
+  ]);
+  await capture('private-session-a');
+  await captureLlm(llm).chat(messages, tools);
+  const lines: Array<{
+    session?: string;
+    fingerprints: Array<{ role: string; chars: number; h: string }>;
+  }> = info.mock.calls.map(([line]) => JSON.parse(line));
+  expect(lines[0].session).toMatch(/^[a-f0-9]{12}$/);
+  expect(lines[0].session).not.toBe(lines[1].session);
+  expect(lines[0].session).toBe(lines[2].session);
+  expect(lines[3]).not.toHaveProperty('session');
+  expect(lines[0].fingerprints).toEqual(lines[1].fingerprints);
+  expect(JSON.stringify(info.mock.calls)).not.toMatch(
+    /private-session|sk-secret/,
+  );
+});
+
+test('canary matches require opt-in and invalid regex warns without exposing its source', async () => {
+  const input: Message[] = [
+    { role: 'user', content: 'SESSION-TAG: ALPHA-7Q2 SESSION-TAG: ALPHA-7Q2' },
+  ];
+  await captureLlm(llm).chat(input);
+  expect(JSON.stringify(info.mock.calls)).not.toContain('ALPHA-7Q2');
+  process.env.LLM_AGENT_CONTEXT_CANARY = 'SESSION-TAG: [A-Z0-9-]+';
+  await captureLlm(llm).chat(input);
+  expect(JSON.parse(info.mock.calls[1][0])).toMatchObject({
+    canaries: [{ role: 'user', matches: ['SESSION-TAG: ALPHA-7Q2'] }],
+  });
+  const warn = jest
+    .spyOn(cds.log('context-capture'), 'warn')
+    .mockImplementation(() => {});
+  try {
+    process.env.LLM_AGENT_CONTEXT_CANARY = '[private-invalid';
+    await captureLlm(llm).chat(input);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('private-invalid');
+    expect(JSON.parse(info.mock.calls[2][0])).not.toHaveProperty('canaries');
+  } finally {
+    warn.mockRestore();
+  }
+});

@@ -270,3 +270,5 @@ including `checker` when permitted by caller grants.
 The session shares dialogue state with WebUI and protocol clients; orchestration
 calls are refused while a dialogue turn runs. See the [API reference](../architecture/API_REFERENCE.md#long-sessions)
 for schemas, limits and error behavior.
+
+`UNVERIFIED_WRITE` notices use deterministic tool-journal checks, with no automatic LLM review of workers or answers. Failed/unanswered write notices and recording placeholders remain. `LLM_AGENT_STEP_REVIEW_ENABLED=false` disables claim-based notices only. Verification checks are explicit coordinator decisions each turn: run a planned check, skip it stating why, or add an unplanned check; user input can require `plan_revise`. Checker failures need exact result quotes and cited supplied evidence (or `none provided`); invalid failures are unusable verdicts for the coordinator to assess, not failures. No tools executed alone is never grounds for fail.

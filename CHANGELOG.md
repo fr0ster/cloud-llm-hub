@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+- Remove automatic LLM review of dialogue workers/final answers, execute_step and single-agent answers; retain deterministic write notices. Make checks explicit coordinator decisions and bind negative checker verdicts to exact result quotes and supplied evidence. Remove critic wiring; deprecate and ignore `LLM_AGENT_SAP_RELEVANCE_SCORE` and `LLM_AGENT_STEP_REVIEW_TIMEOUT_MS`.
+
+- Disable coordinator/planner-author RAG translation and reject late LLM requests after session closure using stable session keys without retained tombstones.
+
+- Add opt-in full LLM context capture to container-local SQLite with credential redaction, session hashes, best-effort writes and an admin-managed size cap.
+
+- Reduce dialogue coordinator tools and prompt, compact planner-author knowledge search, and add salted session/context fingerprints with optional test-canary scanning.
+
 ## [10.4.5] - 2026-11-03
 
 - Require session-scoped write capability (any agent of the dialogue session offered or attempted a write tool) for claim-based unverified-write notices; retain failed and unanswered write safeguards.

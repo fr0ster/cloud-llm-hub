@@ -12,7 +12,11 @@ import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import cds from '@sap/cds';
 import type { DumpScope } from './principal';
 import { type SessionConfig, sessionConfig } from './session-config';
-import { disposeSessionLlms, runWithRequestLlms } from './session-llms';
+import {
+  disposeSessionLlms,
+  longSessionLlms,
+  runWithRequestLlms,
+} from './session-llms';
 
 export type CloseReason = 'explicit' | 'ttl' | 'shutdown';
 
@@ -120,6 +124,7 @@ export class LongSessionRegistry {
       active: 0,
       holds: 0,
     });
+    longSessionLlms(session);
     this.hooks.onOpen?.(session);
     this.hooks.onTouch?.(session);
     return session;

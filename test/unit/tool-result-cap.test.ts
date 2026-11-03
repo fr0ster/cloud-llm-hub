@@ -9,7 +9,6 @@ import {
   evaluateDeterministic,
   parseToolOutcome,
 } from '../../srv/lib/reviewer-core';
-import { buildReviewMessages } from '../../srv/lib/step-reviewer';
 import {
   capToolResult,
   withToolResultCap,
@@ -61,14 +60,6 @@ test.each([
   );
   expect(evaluateDeterministic('I activated the class.', records).ok).toBe(
     facts.success,
-  );
-  const messages = buildReviewMessages({
-    task: 'create and activate',
-    content: 'done',
-    executedTools: records.map(parseToolOutcome),
-  });
-  expect(messages[1].content).toContain(
-    facts.success ? 'active' : 'Create rejected',
   );
 });
 
@@ -169,27 +160,6 @@ test('truncation logging includes only known name and lengths, once per result',
   } finally {
     spy.mockRestore();
   }
-});
-test('honesty reviewer is told which portion was visible to the worker', () => {
-  const outcome = parseToolOutcome({
-    call: { id: 'read', name: 'GetTable', arguments: {} },
-    result: { content: 'abcde\n[result truncated]', isError: false },
-    ...{
-      truncation: {
-        truncated: true as const,
-        originalLength: 6,
-        keptLength: 5,
-      },
-    },
-  });
-  const messages = buildReviewMessages({
-    task: 'read',
-    content: 'done',
-    executedTools: [outcome],
-  });
-  expect(messages[1].content).toContain(
-    'result truncated: 5 of 6 characters shown to worker; omitted content is unknown',
-  );
 });
 
 test('tool-call budget is optional and must be a positive integer', () => {

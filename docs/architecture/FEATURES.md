@@ -204,7 +204,7 @@ Access to full ABAP ADT capabilities.
 
 ### 7. **Honesty Guard — claim verification against tool results** *(v6.28+)*
 
-Every channel (`execute_step`, `/v1/chat/completions`, `/v1/messages`) runs the executor and a **reviewer** that compares what the response claims to have written against the actual tool results; the chat channels put a controller in front of the executor, `execute_step` (the hub as an external agent's subagent) does not. The LLM part of the review runs only on suspicion.
+Every channel (`execute_step`, `/v1/chat/completions`, `/v1/messages`) runs the executor and a **reviewer** that compares what the response claims to have written against the actual tool results; the chat channels put a controller in front of the executor, `execute_step` (the hub as an external agent's subagent) does not. No automatic LLM critic runs on results or answers; notices use deterministic tool-journal checks. Explicit checks are coordinator decisions (run, skip with a reason, or add a check), reconsidered each turn with user input. Negative checker verdicts must quote the checked result and cite supplied evidence; unbound verdicts are unusable, not failures.
 
 **Features:**
 
@@ -419,3 +419,5 @@ mcpConnection:
 ---
 
 **Questions?** Check the [documentation](./) or open an issue!
+
+`UNVERIFIED_WRITE` notices use deterministic tool-journal checks, with no automatic LLM review of workers or answers. Failed/unanswered write notices and recording placeholders remain. `LLM_AGENT_STEP_REVIEW_ENABLED=false` disables claim-based notices only. Verification checks are explicit coordinator decisions each turn: run a planned check, skip it stating why, or add an unplanned check; user input can require `plan_revise`. Checker failures need exact result quotes and cited supplied evidence (or `none provided`); invalid failures are unusable verdicts for the coordinator to assess, not failures. No tools executed alone is never grounds for fail.

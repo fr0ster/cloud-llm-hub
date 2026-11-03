@@ -438,67 +438,26 @@ it('execute_step returns executor usage and ends with the footer with recording 
   }
 });
 
-it.each([true, false])(
-  'execute_step reports reviewer usage separately for verdict ok=%s',
-  async (ok: boolean) => {
-    const reviewer = await import('../../srv/lib/step-reviewer');
-    const usage = { promptTokens: 2, completionTokens: 1, totalTokens: 3 };
-    const review = jest.spyOn(reviewer, 'evaluateGated').mockResolvedValue(
-      ok
-        ? { ok: true, usage }
-        : {
-            ok: false,
-            usage,
-            issues: [
-              {
-                kind: 'unsupported-claim',
-                confidence: 'high',
-                reasons: 'test',
-              },
-            ],
-          },
-    );
-    const { handle } = await directHandle();
-    harness.process = async () => ({
-      ok: true,
-      value: {
-        content: 'done',
-        usage: { promptTokens: 7, completionTokens: 4, totalTokens: 11 },
-      },
+it('execute_step reports only execution usage and makes no critic call', async () => {
+  const { handle, criticLlm } = await directHandle();
+  harness.process = async () => ({
+    ok: true,
+    value: {
+      content: 'done',
+      usage: { promptTokens: 7, completionTokens: 4, totalTokens: 11 },
+    },
+  });
+  try {
+    const result = await executeStep(req, caller, { task: 'work' });
+    expect(result).toMatchObject({
+      structuredContent: { result: 'done', usage: { total_tokens: 11 } },
     });
-    try {
-      const result = await executeStep(req, caller, { task: 'work' });
-      expect(result).toMatchObject({
-        structuredContent: {
-          result: ok ? 'done' : expect.stringContaining('UNVERIFIED_WRITE'),
-          usage: {
-            prompt_tokens: 7,
-            completion_tokens: 4,
-            total_tokens: 11,
-            duration_ms: expect.any(Number),
-          },
-          usage_reviewer: {
-            prompt_tokens: 2,
-            completion_tokens: 1,
-            total_tokens: 3,
-          },
-        },
-      });
-      expect(result.content[0]?.text).toMatch(
-        /\[usage\] prompt=7 completion=4 total=11 reviewer=3 time=\d+\.\ds$/,
-      );
-      expect(review).toHaveBeenCalledTimes(1);
-      expect(result).toMatchObject({
-        structuredContent: {
-          result: result.content[0]?.text?.split('\n[usage]')[0],
-        },
-      });
-    } finally {
-      review.mockRestore();
-      Reflect.deleteProperty(handle, 'executor');
-    }
-  },
-);
+    expect(result).not.toHaveProperty('structuredContent.usage_reviewer');
+    expect(criticLlm.chat).not.toHaveBeenCalled();
+  } finally {
+    Reflect.deleteProperty(handle, 'executor');
+  }
+});
 
 it.each(['', ' \n\t'])(
   'execute_step reports empty executor content %j with usage',
@@ -644,7 +603,15 @@ it('agent MCP lists all 23 tools including orchestration', async () => {
   if (!internal.ok) throw new Error(internal.error.message);
   expect(internal.value.map((tool) => tool.name).sort()).toEqual(
     [...tools.keys(), 'deliver', 'new_request', 'search_knowledge']
-      .filter((name) => name !== 'session_open' && name !== 'session_close')
+      .filter(
+        (name) =>
+          ![
+            'session_open',
+            'session_close',
+            'execute_step',
+            'list_destinations',
+          ].includes(name),
+      )
       .sort(),
   );
   const { PlannerToolsClient } = await import('@mcp-abap-adt/llm-agent-libs');
@@ -667,20 +634,16 @@ it('agent MCP lists all 23 tools including orchestration', async () => {
   }>('@modelcontextprotocol/sdk/server/mcp.js');
   expect(definitions.get('execute_step')?.inputSchema).toBe(executeStepSchema);
   expect(definitions.get('list_destinations')).toBe(listDestinationsDefinition);
-  expect(
-    internal.value.find((tool) => tool.name === 'execute_step'),
-  ).toMatchObject({
-    description: EXECUTE_STEP_DESCRIPTION,
-    inputSchema: z.toJSONSchema(z.object(executeStepSchema)),
-  });
-  expect(
-    internal.value.find((tool) => tool.name === 'list_destinations'),
-  ).toMatchObject({
-    description: listDestinationsDefinition.description,
-    inputSchema: z.toJSONSchema(
-      z.object(listDestinationsDefinition.inputSchema),
-    ),
-  });
+  expect(EXECUTE_STEP_DESCRIPTION.length).toBeGreaterThan(1000);
+  for (const name of ['execute_step', 'list_destinations']) {
+    expect(internal.value.some((tool) => tool.name === name)).toBe(false);
+    expect(
+      await coordinatorToolsClient(coordinatorDependencies()).callTool(
+        name,
+        {},
+      ),
+    ).toMatchObject({ ok: true, value: { isError: true } });
+  }
   for (const name of [
     'plan_create',
     'plan_revise',
@@ -750,14 +713,10 @@ it.each(['checker', 'writer'])(
         undefined,
         'alice',
       );
-      if (worker === 'checker') {
-        await expect(internal).resolves.toMatchObject({
-          ok: true,
-          value: { content: '{"verdict":"pass"}' },
-        });
-      } else {
-        await expect(internal).rejects.toThrow('forbidden by caller grants');
-      }
+      await expect(internal).resolves.toMatchObject({
+        ok: true,
+        value: { isError: true },
+      });
 
       if (worker === 'checker') {
         expect(result.isError).toBeUndefined();
@@ -772,69 +731,20 @@ it.each(['checker', 'writer'])(
   },
 );
 
-it('internal execute_step completes synchronously in the current session scope', async () => {
+it('coordinator refuses execute_step without resolving a worker', async () => {
   const { coordinatorToolsClient } = await import(
     '../../srv/lib/coordinator-tools-client'
   );
-  const { runWithSessionId, getRequestSessionId, getRequestUserId } =
-    await import('../../srv/request-session');
-  const manager = jest.requireMock<typeof import('../../srv/agent-manager')>(
-    '../../srv/agent-manager',
+  const dependencies = coordinatorDependencies();
+  const resolve = jest.fn(dependencies.getSmartAgent);
+  const client = coordinatorToolsClient({
+    ...dependencies,
+    getSmartAgent: resolve,
+  });
+  expect(await client.callTool('execute_step', { task: 'Read' })).toMatchObject(
+    { ok: true, value: { isError: true } },
   );
-  const original = manager.getSmartAgent;
-  const session = await opened();
-  let finish = () => {};
-  const spy = jest
-    .spyOn(manager, 'getSmartAgent')
-    .mockImplementation(async (...args) => ({
-      ...(await original(...args)),
-      executor: undefined,
-      agent: Object.assign((await original(...args)).agent, {
-        process: async () => {
-          expect(getRequestSessionId()).toBe(session);
-          expect(getRequestUserId()).toBe('alice');
-          await new Promise<void>((resolve) => {
-            finish = resolve;
-          });
-          return {
-            ok: true as const,
-            value: {
-              content: 'step done',
-              iterations: 1,
-              toolCallCount: 0,
-              stopReason: 'stop' as const,
-            },
-          };
-        },
-      }),
-    }));
-  try {
-    let settled = false;
-    const call = runWithSessionId(
-      session,
-      () =>
-        coordinatorToolsClient(coordinatorDependencies())
-          .callTool('execute_step', { task: 'Read' })
-          .then((result) => {
-            settled = true;
-            return result;
-          }),
-      undefined,
-      'alice',
-    );
-    for (let i = 0; i < 30 && spy.mock.calls.length === 0; i++)
-      await new Promise((resolve) => setImmediate(resolve));
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(settled).toBe(false);
-    finish();
-    expect(await call).toMatchObject({
-      ok: true,
-      value: { content: 'step done', isError: false },
-    });
-  } finally {
-    finish();
-    spy.mockRestore();
-  }
+  expect(resolve).not.toHaveBeenCalled();
 });
 
 function coordinatorDependencies() {

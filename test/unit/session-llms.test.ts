@@ -2,6 +2,31 @@ import { resetQuotaGates, runWithThrottleRetry } from '@mcp-abap-adt/llm-agent';
 import { SessionLlms } from '../../srv/lib/session-llms';
 import { WaitAsNeeded } from '../../srv/lib/throttle-strategy';
 
+it('rejects late requests by stable key and permits explicit revival', async () => {
+  const {
+    disposeSessionLlms,
+    longSessionLlms,
+    runWithRequestLlms,
+    sessionLlms,
+  } = await import('../../srv/lib/session-llms');
+  const identity = { userId: 'late-user', key: 'late-key' };
+  const first = longSessionLlms(identity);
+  disposeSessionLlms({ ...identity });
+  const late = jest.fn(async () => {});
+  await expect(runWithRequestLlms({ ...identity }, late)).rejects.toThrow(
+    'closed',
+  );
+  expect(late).not.toHaveBeenCalled();
+  await expect(first.get('model', jest.fn())).rejects.toThrow('closed');
+  const revived = longSessionLlms({ ...identity });
+  expect(revived).not.toBe(first);
+  expect(revived.quotaScope).not.toBe(first.quotaScope);
+  await runWithRequestLlms({ ...identity }, async () => {
+    expect(sessionLlms.getStore()).toBe(revived);
+  });
+  disposeSessionLlms(identity);
+});
+
 it('isolates Retry-After across sessions while calls in one session wait together', async () => {
   jest.useFakeTimers();
   const a = new SessionLlms();

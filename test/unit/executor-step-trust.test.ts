@@ -9,10 +9,7 @@ import {
   getReviewProfile,
   recordReviewProfile,
 } from '../../srv/lib/review-scope';
-import {
-  buildReviewMessages,
-  evaluateGated,
-} from '../../srv/lib/step-reviewer';
+import { evaluateGated } from '../../srv/lib/step-reviewer';
 import { systemToolTrust } from '../../srv/lib/system-tool-trust';
 import {
   fixtureProfileSource,
@@ -24,7 +21,7 @@ jest.mock('../../srv/lib/step-reviewer', () => ({
   evaluateGated: jest.fn(async () => ({ ok: true })),
 }));
 
-test('executor-step and notice evidence use each reviewed profile without inheriting another worker map', async () => {
+test('executor-step and finalizer do not invoke a critic for any worker profile', async () => {
   const resolver = fixtureTrustResolver();
   let resolvedProfile: WorkerProfile;
   const critic = {
@@ -35,6 +32,7 @@ test('executor-step and notice evidence use each reviewed profile without inheri
     streamChat: async function* () {},
   };
   const baseHandle = await new SmartAgentBuilder().withMainLlm(critic).build();
+  critic.chat.mockClear();
   const agent = baseHandle.agent;
   jest.spyOn(agent, 'process').mockImplementation(async () => {
     recordReviewProfile(resolvedProfile);
@@ -84,7 +82,6 @@ test('executor-step and notice evidence use each reviewed profile without inheri
       agent,
       executor: agent,
       recMcp,
-      criticLlm: critic,
       trustResolver: resolver,
       toolTrust: systemToolTrust(() => true, resolver),
       toolTrustFor: (role: typeof resolver) =>
@@ -104,12 +101,7 @@ test('executor-step and notice evidence use each reviewed profile without inheri
     await runExecutorStep(createSource, handle, 'user', 'read', name, {});
     if (name === 'executor') expect(createSource).not.toHaveBeenCalled();
     else expect(createSource).toHaveBeenCalledWith('user');
-    const finalizer = new NoticeFinalizer(recMcp, critic, undefined, () =>
-      systemToolTrust(
-        () => true,
-        resolver.forProfile(getReviewProfile() ?? {}),
-      ),
-    );
+    const finalizer = new NoticeFinalizer(recMcp);
     await captureReviewProfile(async () => {
       recordReviewProfile(profile);
       await finalizer.finalize({
@@ -119,30 +111,10 @@ test('executor-step and notice evidence use each reviewed profile without inheri
         executionTrace: [],
       });
     });
+    expect(critic.chat).not.toHaveBeenCalled();
     for (const [args] of jest.mocked(evaluateGated).mock.calls.slice(-2)) {
-      const messages = buildReviewMessages({
-        task: 'read',
-        content: 'done',
-        executedTools: [],
-        toolTrust: args.toolTrust,
-        history: [
-          {
-            role: 'assistant',
-            content: '',
-            tool_calls: [
-              {
-                id: 'sap',
-                type: 'function',
-                function: { name: 'GetClass', arguments: '{}' },
-              },
-            ],
-          },
-          { role: 'tool', tool_call_id: 'sap', content: 'raw' },
-        ],
-      });
-      expect(messages[1].content).toContain(
-        `[source: target:GetClass; trust ${trust?.target ?? 4.3}]`,
-      );
+      expect(args).not.toHaveProperty('llm');
+      expect(args.records).toEqual([]);
     }
   }
 });
