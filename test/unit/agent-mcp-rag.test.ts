@@ -996,14 +996,15 @@ test('write argument limit counts UTF-8 and JSON escaping at the exact boundary'
   const overhead = Buffer.byteLength(JSON.stringify(input));
   const text = '\u00e9'.repeat(Math.floor((max - overhead) / 2));
   const write = jest.spyOn(registry, 'addDocument');
-  expect(
-    (
-      await executeRagMcpTool({ headers: {} }, 'alice', 'record_add', {
-        ...input,
-        text,
-      })
-    ).isError,
-  ).toBeUndefined();
+  const result = await executeRagMcpTool(
+    { headers: {} },
+    'alice',
+    'record_add',
+    { ...input, text },
+  );
+  // Include the backend error in a failure before checking the exact contract.
+  expect(result).not.toMatchObject({ isError: true });
+  expect(result.isError).toBeUndefined();
   const count = write.mock.calls.length;
   expect(
     assertWriteResult(

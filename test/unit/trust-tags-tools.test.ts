@@ -218,7 +218,12 @@ test('get_task projects embedded traces once without modifying board evidence', 
   for (let i = 0; i < 2; i++) {
     const result = await runInPlannerScope(
       { board, getPlan: () => undefined, setPlan: () => {} },
-      () => client.callTool('get_task', { task_id: 't1' }),
+      () =>
+        client.callTool('get_task', {
+          task_id: 't1',
+          view: 'full',
+          include_trace: true,
+        }),
     );
     expect(
       result.ok &&
@@ -545,7 +550,11 @@ test('DialogueSession forwards coordinator trust to its internal get_task client
   });
   try {
     for (let i = 0; i < 2; i++) {
-      const result = await session.callTool('get_task', { task_id: 't1' });
+      const result = await session.callTool('get_task', {
+        task_id: 't1',
+        view: 'full',
+        include_trace: true,
+      });
       expect(
         result.ok &&
           JSON.stringify(result.value).match(
