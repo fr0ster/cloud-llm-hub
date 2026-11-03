@@ -4,7 +4,9 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
-- Require turn-scoped write capability for claim-based unverified-write notices; retain failed and unanswered write safeguards.
+## [10.4.5] - 2026-11-03
+
+- Require session-scoped write capability (any agent of the dialogue session offered or attempted a write tool) for claim-based unverified-write notices; retain failed and unanswered write safeguards.
 - Log external documentation MCP call metadata with source and resolved trust, without arguments or content.
 - Emit documentation connection logs only on first connection, recovery, or tool name changes.
 
