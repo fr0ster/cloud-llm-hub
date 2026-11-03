@@ -47,6 +47,7 @@ import type {
   ISubAgentInput,
   ISubAgentResult,
   TokenUsage,
+  ToolCallRecord,
   ToolTrace,
 } from '@mcp-abap-adt/llm-agent';
 import { LlmError } from '@mcp-abap-adt/llm-agent';
@@ -99,6 +100,7 @@ const mockRun = jest.fn<Promise<ISubAgentResult>, [ISubAgentInput]>();
 const mockRelease = jest.fn();
 const mockDrain = jest.fn(async () => {});
 const mockDrop = jest.fn();
+const mockToolRecords = new Map<string, ToolCallRecord[]>();
 let mockSessionWriteGeneration = 0;
 let mockSessionReviewedGeneration = 0;
 const mockOpenSession = jest.fn();
@@ -110,6 +112,7 @@ let mockGoal = 'read';
 let mockWorkerTrust: { target: number } | undefined;
 let mockPlannerHook: ((text: string) => Promise<void>) | undefined;
 let mockFinalAnswer: string | undefined;
+let mockBackgroundAnswer: string | undefined;
 let mockPlanUsage: TokenUsage | undefined;
 let mockPlan:
   | {
@@ -210,7 +213,7 @@ jest.mock('../../srv/agent-manager', () => ({
         ok: true,
         value: {
           content: text.startsWith('[task events]')
-            ? text
+            ? (mockBackgroundAnswer ?? text)
             : (mockFinalAnswer ?? 'delegated'),
           usage: {
             promptTokens: 3,
@@ -301,8 +304,11 @@ jest.mock('../../srv/agent-manager', () => ({
         );
       },
       hadWriteCapability: (traceId?: string) => mockWriteCapability(traceId),
-      getToolRecords: () => [],
-      dropRequest: (id: string) => mockDrop(id),
+      getToolRecords: (id?: string) => (id && mockToolRecords.get(id)) || [],
+      dropRequest: (id: string) => {
+        mockToolRecords.delete(id);
+        mockDrop(id);
+      },
     },
     criticLlm: {},
   })),
@@ -358,6 +364,8 @@ beforeEach(() => {
   mockGoal = 'read';
   mockPlannerHook = undefined;
   mockFinalAnswer = undefined;
+  mockBackgroundAnswer = undefined;
+  mockToolRecords.clear();
   mockPlanUsage = undefined;
   mockPlan = undefined;
   mockRun.mockReset().mockResolvedValue({ output: 'read done' });
@@ -729,6 +737,87 @@ test.each([
     expect(h.session.snapshot().conversation.at(-1)?.content).not.toContain(
       'UNVERIFIED_WRITE:',
     );
+  },
+);
+
+test.each([true, false, 'close'] as const)(
+  'late worker evidence reaches the next coordinator review (write: %s)',
+  async (write) => {
+    const { h } = await ready();
+    let finish!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    let workerTrace: string | undefined;
+    mockWriteCapability.mockImplementation((id) => !!id && id === workerTrace);
+    mockRun.mockImplementation(async (input) => {
+      workerTrace = input.trace?.traceId;
+      mockSessionWriteGeneration++;
+      await blocked;
+      if (write && workerTrace)
+        mockToolRecords.set(workerTrace, [
+          {
+            call: { id: 'create', name: 'CreateObject', arguments: {} },
+            result: { content: { success: true } },
+          },
+        ]);
+      return { output: 'Finished.' };
+    });
+    await h.session.send('go');
+    await until(() => !!workerTrace);
+    let releaseBackground!: () => void;
+    const backgroundBlocked = new Promise<void>((resolve) => {
+      releaseBackground = resolve;
+    });
+    if (write === 'close')
+      mockPlannerHook = async (text) => {
+        if (text.startsWith('[task events]')) await backgroundBlocked;
+      };
+    mockBackgroundAnswer = 'I created X.';
+    jest
+      .mocked(evaluateGated)
+      .mockImplementation(async (input) =>
+        jest
+          .requireActual<typeof import('../../srv/lib/step-reviewer')>(
+            '../../srv/lib/step-reviewer',
+          )
+          .evaluateGated(input),
+      );
+    finish();
+    if (write === 'close') {
+      // The worker records have been buffered, but no coordinator has reviewed
+      // them yet. Closing must discard this pending evidence.
+      await until(() => mockDrop.mock.calls.some(([id]) => id === workerTrace));
+      const closing = closeDialogue('alice', 'key', 'ttl');
+      releaseBackground();
+      await closing;
+      mockPlannerHook = undefined;
+      const reopened = await ready();
+      mockPlan = { status: 'waiting_user', question: 'Continue?' };
+      jest.mocked(evaluateGated).mockClear();
+      await reopened.h.session.send('next');
+      expect(jest.mocked(evaluateGated)).not.toHaveBeenCalled();
+      return;
+    }
+    await until(() =>
+      h.session
+        .snapshot()
+        .conversation.some(
+          (message) =>
+            typeof message.content === 'string' &&
+            message.content.includes('I created X.'),
+        ),
+    );
+    const answer = h.session
+      .snapshot()
+      .conversation.find(
+        (message) =>
+          message.role === 'assistant' &&
+          typeof message.content === 'string' &&
+          message.content.includes('I created X.'),
+      )?.content;
+    expect(answer).toContain('I created X.');
+    expect(answer?.includes('UNVERIFIED_WRITE:')).toBe(!write);
   },
 );
 

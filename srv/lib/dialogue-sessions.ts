@@ -478,12 +478,25 @@ async function open(
       }
     }
   }
-  // Each scheduling turn owns its worker evidence, even when tasks outlive it.
+  // Late evidence is session-local. Keep at most 128 tool records, evicting
+  // oldest first; retain capability even after eviction so claims still warn.
+  const pendingWorkerRecords: ToolCallRecord[] = [];
+  let pendingWorkerWriteCapability = false;
+  const retainWorkerEvidence = (traceId: string) => {
+    if (stopped) return;
+    pendingWorkerWriteCapability ||= recMcp.hadWriteCapability(traceId);
+    pendingWorkerRecords.push(...recMcp.getToolRecords(traceId));
+    if (pendingWorkerRecords.length > 128) {
+      pendingWorkerWriteCapability = true;
+      pendingWorkerRecords.splice(0, pendingWorkerRecords.length - 128);
+    }
+  };
   type PlannerTurn = {
     traceId?: string;
     workerTraces: Set<string>;
     workerRecords: ToolCallRecord[];
     active: boolean;
+    reviewing: boolean;
   };
   const plannerTrace = new AsyncLocalStorage<PlannerTurn>();
   // Carry task admission into the worker callback and rebuild its request scope.
@@ -860,6 +873,8 @@ async function open(
     { source: slot(userId, key) },
   );
   const stopLifetime = () => {
+    pendingWorkerRecords.length = 0;
+    pendingWorkerWriteCapability = false;
     recMcp.closeSession(userId, key);
     pendingToolResults.length = 0;
     unsubscribeTaskCaller();
@@ -892,6 +907,7 @@ async function open(
       workerTraces: new Set<string>(),
       workerRecords: [],
       active: true,
+      reviewing: false,
     };
     // Set when content is reviewed; empty/failed turns settle at the generation
     // current when they end, so their own capability does not leak forward.
@@ -926,16 +942,20 @@ async function open(
         },
       );
       if (result.ok && result.value.content) {
+        turn.reviewing = true;
         reviewedGeneration = recMcp.writeGeneration(userId, key);
         const writeToolOffered =
+          pendingWorkerWriteCapability ||
           recMcp.hadWriteCapability(turn.traceId) ||
           recMcp.hadSessionWriteCapability(userId, key) ||
           [...turn.workerTraces].some((id) => recMcp.hadWriteCapability(id));
         const records = [
+          ...pendingWorkerRecords.splice(0),
           ...recMcp.getToolRecords(turn.traceId),
           ...turn.workerRecords,
           ...[...turn.workerTraces].flatMap((id) => recMcp.getToolRecords(id)),
         ];
+        pendingWorkerWriteCapability = false;
         if (writeToolOffered || records.length) {
           const verdict = await evaluateGated({
             writeToolOffered,
@@ -1285,9 +1305,11 @@ async function open(
             throw error;
           } finally {
             runningWorkers--;
-            if (turn?.active) {
+            if (turn?.active && !turn.reviewing) {
               turn.workerRecords.push(...recMcp.getToolRecords(traceId));
               turn.workerTraces.delete(traceId);
+            } else {
+              retainWorkerEvidence(traceId);
             }
             try {
               recMcp.dropRequest(traceId);
