@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+- Docs: connect Claude Code directly to the agent MCP endpoint with built-in XSUAA OAuth and `X-SAP-*` headers (`docs/usage/CLAUDE_CODE_AGENT_DIRECT.md`).
+
 ## [10.4.5] - 2026-11-03
 
 - Require session-scoped write capability (any agent of the dialogue session offered or attempted a write tool) for claim-based unverified-write notices; retain failed and unanswered write safeguards.
