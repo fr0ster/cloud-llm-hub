@@ -142,7 +142,7 @@ export class ExternalMcp {
     ) => Promise<ExternalMcpClient> = connectDestination,
     private readonly warn = (
       message: string,
-      detail: { destination: string },
+      detail?: { destination: string },
     ) => cds.log('external-mcp').warn(message, detail),
     private readonly now = Date.now,
     private readonly embedder?: () => IRetrievalEmbedder | undefined,
@@ -416,14 +416,28 @@ export class ExternalMcp {
             if (!result.ok) return result;
             const direct: RagResult[] = [];
             const ranked: RagResult[] = [];
-            const vector = this.available(role).some(
-              ([name, owner]) =>
-                this.mode(owner.destination) === 'rag' &&
-                this.vectors.has(name),
-            )
-              ? (await this.embedder?.()?.embedQuery(args[0].text, args[2]))
-                  ?.vector
-              : undefined;
+            let vector: number[] | undefined;
+            if (
+              this.available(role).some(
+                ([name, owner]) =>
+                  this.mode(owner.destination) === 'rag' &&
+                  this.vectors.has(name),
+              )
+            ) {
+              try {
+                // No artificial deadline: work stops only via the caller's abort.
+                vector = (
+                  await this.embedder?.()?.embedQuery(args[0].text, args[2])
+                )?.vector;
+                if (!vector?.length)
+                  throw new Error('Missing docs query vector');
+              } catch {
+                vector = undefined;
+                this.warn(
+                  'External docs MCP query embedding unavailable; no RAG docs hits',
+                );
+              }
+            }
             for (const [name, owner] of this.available(role)) {
               if (!profileToolAllowed(name)) continue;
               const record = {

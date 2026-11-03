@@ -76,6 +76,56 @@ async function names(rag: IRag, text = 'cds', k = 1) {
   return result.value.map((row) => row.metadata.id);
 }
 
+test.each(['rejected', 'empty'])(
+  '%s query embedding preserves corpus hits and direct candidates',
+  async (failure) => {
+    const warn = jest.fn();
+    const embedQuery = jest.fn<
+      ReturnType<IRetrievalEmbedder['embedQuery']>,
+      Parameters<IRetrievalEmbedder['embedQuery']>
+    >(async () => {
+      if (failure === 'rejected') throw new Error('private query content');
+      return { vector: [] };
+    });
+    const docs = new ExternalMcp(
+      parseExternalMcp({
+        LLM_AGENT_EXECUTOR_MCP: 'DIRECT,RAG',
+        LLM_AGENT_MCP_SELECTION: 'DIRECT=direct,RAG=rag',
+      }),
+      () => [],
+      async (destination) => ({
+        listTools: async () => ({
+          ok: true,
+          value: [destination === 'DIRECT' ? tools[0] : tools[1]],
+        }),
+        callTool: async () => ({ ok: true, value: { content: 'docs' } }),
+      }),
+      warn,
+      Date.now,
+      () => ({ ...embedder, embedQuery }),
+    );
+    await docs.clients('executor');
+    const options: Parameters<IRag['query']>[2] = {
+      signal: new AbortController().signal,
+    };
+    const result = await docs
+      .withToolsRag(corpus, 'executor')
+      .query(new TextOnlyEmbedding('cds'), 1, options);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+    expect(result.value.map((row) => row.metadata.id)).toEqual([
+      'tool:corpus',
+      'tool:DIRECT__search_cds',
+    ]);
+    expect(embedQuery).toHaveBeenCalledTimes(1);
+    expect(embedQuery.mock.calls[0][1]).toBe(options);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      'External docs MCP query embedding unavailable; no RAG docs hits',
+    );
+  },
+);
+
 test('the safety net aborts hung indexing and preserves the MCP connection', async () => {
   jest.useFakeTimers();
   try {
