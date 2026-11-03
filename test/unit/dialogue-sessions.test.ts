@@ -821,6 +821,56 @@ test.each([true, false, 'close'] as const)(
   },
 );
 
+test('a failed turn settles buffered late worker evidence', async () => {
+  const { h } = await ready();
+  let finish!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  let workerTrace: string | undefined;
+  mockWriteCapability.mockImplementation((id) => !!id && id === workerTrace);
+  mockRun.mockImplementation(async (input) => {
+    workerTrace = input.trace?.traceId;
+    await blocked;
+    return { output: 'Finished.' };
+  });
+  await h.session.send('go');
+  await until(() => !!workerTrace);
+  // The task-event turn that would review the buffered evidence fails.
+  let backgroundFailed = false;
+  mockPlannerHook = async (text) => {
+    if (text.startsWith('[task events]')) {
+      backgroundFailed = true;
+      throw new Error('planner failed');
+    }
+  };
+  finish();
+  await until(() => backgroundFailed);
+  await until(() => mockDrop.mock.calls.some(([id]) => id === workerTrace));
+  mockPlannerHook = undefined;
+  mockWriteCapability.mockImplementation(() => false);
+  mockFinalAnswer = 'X was created using the older syntax.';
+  jest
+    .mocked(evaluateGated)
+    .mockImplementation(async (input) =>
+      jest
+        .requireActual<typeof import('../../srv/lib/step-reviewer')>(
+          '../../srv/lib/step-reviewer',
+        )
+        .evaluateGated(input),
+    );
+  jest.mocked(evaluateGated).mockClear();
+  await h.session.send('read only');
+  expect(
+    jest
+      .mocked(evaluateGated)
+      .mock.calls.every(([input]) => !input.writeToolOffered),
+  ).toBe(true);
+  expect(h.session.snapshot().conversation.at(-1)?.content).not.toContain(
+    'UNVERIFIED_WRITE:',
+  );
+});
+
 test('failed load never registers session write state', async () => {
   const load = jest
     .spyOn(getDialogueStoreBackend(), 'load')

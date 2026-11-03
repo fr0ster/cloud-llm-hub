@@ -1023,12 +1023,19 @@ async function open(
       throw new Error(turnFailureCause);
     } finally {
       // Preserve evidence arriving during review, or during an empty/failed turn.
-      if (runningWorkers === 0)
+      if (runningWorkers === 0) {
         recMcp.markReviewed(
           userId,
           key,
           reviewedGeneration ?? recMcp.writeGeneration(userId, key),
         );
+        // An empty or failed turn never reviews, so evidence buffered before it
+        // is settled here. Evidence arriving during a review stays pending.
+        if (reviewedGeneration === undefined) {
+          pendingWorkerRecords.length = 0;
+          pendingWorkerWriteCapability = false;
+        }
+      }
       turn.active = false;
       turn.workerTraces.clear();
       turn.workerRecords.length = 0;
