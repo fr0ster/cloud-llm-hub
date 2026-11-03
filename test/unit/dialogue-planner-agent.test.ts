@@ -55,8 +55,10 @@ beforeAll(async () => {
     .map((seed) => seed.text);
 });
 test('coordinator seed retains delegation, briefing and verification guidance without executor storage/retry rules', () => {
-  expect(plannerText).toContain('Every delegate_task is a brief');
-  expect(plannerText).toContain('A [check] note is not user agreement.');
+  expect(plannerText).toContain(
+    'Briefs give goals, constraints, facts/ids, done criteria and return requirements',
+  );
+  expect(plannerText).toContain('A [check] note is not consent.');
   expect(plannerText).not.toContain('fails twice');
   expect(plannerText).not.toContain('Storing, collecting or remembering');
 });
@@ -146,6 +148,29 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
+test.each([false, true])(
+  'planner skips query translation for non-ASCII briefs (author: %s)',
+  async (author) => {
+    const fake = llm('planner');
+    jest.mocked(makeHubLlm).mockResolvedValue(fake.agent);
+    initProviders(await startProviders(config));
+    const client = author
+      ? {
+          listTools: async () => ({ ok: true as const, value: [] }),
+          callTool: async () => ({ ok: true as const, value: { content: [] } }),
+        }
+      : undefined;
+    const planner = await buildPlannerAgent(config, plannerText, client);
+    const result = await planner.process([
+      { role: 'user', content: 'Проаналізуй джерело CDS '.repeat(1000) },
+    ]);
+    expect(result.ok).toBe(true);
+    expect(fake.messages).toHaveLength(1);
+    expect(fake.messages[0]).toContain('Проаналізуй');
+    releasePlannerAgent(planner);
+  },
+);
+
 test('hard planner retains library turn tools and hub control tools, hub prompt, and keeps its coordinator model across unrelated requests', async () => {
   const first = llm('first');
   const second = llm('second');
@@ -157,13 +182,14 @@ test('hard planner retains library turn tools and hub control tools, hub prompt,
     expect(result.ok && result.value.content).toBe('first');
     expect(first.tools.flat().sort()).toEqual(
       [
-        ...ragToolNames,
+        'collections_list',
+        'collection_records',
+        'rag_read',
+        'rag_search',
         'delegate_task',
         'deliver',
         'new_request',
         'search_knowledge',
-        'execute_step',
-        'list_destinations',
         'plan_create',
         'plan_revise',
         'get_task',
@@ -175,7 +201,7 @@ test('hard planner retains library turn tools and hub control tools, hub prompt,
     );
     expect(first.messages.join('\n')).toContain(plannerText);
     // Hub notes are not the user, and the library's fixed default is replaced.
-    expect(plannerText).toContain('notes come from the hub, not from the user');
+    expect(plannerText).toContain('hub events are not user messages');
     expect(plannerText).not.toContain('(default: 3');
     jest.mocked(makeHubLlm).mockResolvedValue(second.agent);
     await getSmartAgent('second');
@@ -191,7 +217,7 @@ test('hard planner retains library turn tools and hub control tools, hub prompt,
 });
 
 test.each([false, true])(
-  'production planner records record_add results once (error: %s)',
+  'planner recorder with explicitly supplied write adapter records results once (error: %s)',
   async (invalid) => {
     const seen: string[] = [];
     const records: ToolCallRecord[] = [];
@@ -232,6 +258,12 @@ test.each([false, true])(
     const planner = await buildPlannerAgent(
       { ...config, llm: { ...config.llm, coordinatorModel: model.model } },
       plannerText,
+      new DialogueRagMcpClient({
+        listTools: async () => ({ ok: true, value: [] }),
+        callTool: async () => {
+          throw new Error('Unexpected external call');
+        },
+      }),
     );
     try {
       await runWithSessionId(
@@ -503,7 +535,7 @@ test.each([undefined, 7])(
   },
 );
 
-test('planner prompt allows skipping only with user agreement', () => {
+test('planner prompt preserves requested scope and permits reasoned check decisions', () => {
   for (const prompt of [DIALOGUE_PLANNER_SYSTEM]) {
     expect(prompt).not.toContain('skip them with a reason');
     expect(prompt).not.toContain(
@@ -514,9 +546,9 @@ test('planner prompt allows skipping only with user agreement', () => {
     );
   }
   expect(plannerText).toContain(
-    'Skip steps, drop items, sample or narrow scope only after plan_update sets status waiting_user with a question and the user answers.',
+    'Ask before sampling or narrowing the requested scope.',
   );
-  expect(plannerText).toContain('A [check] note is not user agreement.');
+  expect(plannerText).toContain('A [check] note is not consent.');
 });
 
 test('independent planner model survives request hot-swap and rebuilds', async () => {

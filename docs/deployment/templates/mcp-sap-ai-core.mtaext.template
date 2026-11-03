@@ -13,6 +13,11 @@ extends: cloud-llm-hub
 version: 1.0.0
 
 parameters:
+  # LLM_AGENT_CONTEXT_CAPTURE: full
+  # LLM_AGENT_CONTEXT_CAPTURE_FILE: context.sqlite
+  # LLM_AGENT_CONTEXT_CAPTURE_MAX_MB: 512
+  # Optional test markers only; enable LLM_AGENT_CONTEXT_CAPTURE: stats.
+  # LLM_AGENT_CONTEXT_CANARY: "SESSION-TAG: [A-Z0-9-]+"
   # Hub logging; sap-cloud-sdk=error silences SDK basic-auth warnings.
   LLM_AGENT_LOG_LEVEL: "info"
   LLM_AGENT_LOG_LEVELS: "sap-cloud-sdk=error"

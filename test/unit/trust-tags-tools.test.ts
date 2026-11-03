@@ -3,7 +3,6 @@ import {
   type ISkill,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
-import { buildReviewMessages } from '../../srv/lib/step-reviewer';
 import { systemToolTrust } from '../../srv/lib/system-tool-trust';
 import { parseTrustDefaults } from '../../srv/lib/trust';
 import { TrustResolver } from '../../srv/lib/trust-resolver';
@@ -78,17 +77,6 @@ test('skill bodies and descriptions resolve live without modifying raw content o
     ok: true,
     value: 'resource',
   });
-});
-test('reviewer critic tags embedded outcomes while preserving raw outcomes', () => {
-  const outcome = { name: 'GetClass', ok: true, status: 'active' };
-  const messages = buildReviewMessages({
-    task: 'read',
-    content: 'done',
-    executedTools: [outcome],
-    toolTrust: systemToolTrust((n) => n === 'GetClass', resolver),
-  });
-  expect(messages[1].content).toContain('[source: target:GetClass; trust 4.3]');
-  expect(outcome).toEqual({ name: 'GetClass', ok: true, status: 'active' });
 });
 
 import {
@@ -230,7 +218,12 @@ test('get_task projects embedded traces once without modifying board evidence', 
   for (let i = 0; i < 2; i++) {
     const result = await runInPlannerScope(
       { board, getPlan: () => undefined, setPlan: () => {} },
-      () => client.callTool('get_task', { task_id: 't1' }),
+      () =>
+        client.callTool('get_task', {
+          task_id: 't1',
+          view: 'full',
+          include_trace: true,
+        }),
     );
     expect(
       result.ok &&
@@ -441,36 +434,6 @@ test('every history strategy replays one system tag and preserves raw state', as
   expect(round.results[0].content).toBe('raw');
 });
 
-test('reviewer tags raw tool history after clipping and resolves names from call IDs', () => {
-  const toolTrust = systemToolTrust((n) => n === 'GetClass', resolver);
-  const history: Message[] = [
-    {
-      role: 'assistant',
-      content: '',
-      tool_calls: [
-        {
-          id: 'sap',
-          type: 'function',
-          function: { name: 'GetClass', arguments: '{}' },
-        },
-      ],
-    },
-    { role: 'tool', tool_call_id: 'sap', content: 'x'.repeat(900) },
-  ];
-  const messages = buildReviewMessages({
-    task: 'read',
-    content: 'done',
-    executedTools: [],
-    history,
-    toolTrust,
-  });
-  expect(
-    messages[1].content.match(/\[source: target:GetClass; trust 4.3\]/g),
-  ).toHaveLength(1);
-  expect(messages[1].content).toContain('x'.repeat(600));
-  expect(JSON.stringify(history)).not.toContain('[source:');
-});
-
 import { ExpositionFilteringRag } from '../../srv/agent-manager';
 import { runWithTrustResolver } from '../../srv/lib/trust-resolver';
 
@@ -587,7 +550,11 @@ test('DialogueSession forwards coordinator trust to its internal get_task client
   });
   try {
     for (let i = 0; i < 2; i++) {
-      const result = await session.callTool('get_task', { task_id: 't1' });
+      const result = await session.callTool('get_task', {
+        task_id: 't1',
+        view: 'full',
+        include_trace: true,
+      });
       expect(
         result.ok &&
           JSON.stringify(result.value).match(

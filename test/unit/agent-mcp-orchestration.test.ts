@@ -24,6 +24,10 @@ import { userCollectionId } from '../../srv/collection-ids';
 import { AgentProfileRunner } from '../../srv/lib/agent-profile-runner';
 import { LocalRagMcpClient } from '../../srv/lib/dialogue-rag-tools';
 import * as plannerMemory from '../../srv/lib/planner-memory';
+import {
+  disposeSessionLlms,
+  longSessionLlms,
+} from '../../srv/lib/session-llms';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import {
   getRagCallerIdentity,
@@ -62,7 +66,7 @@ const mockAuthorAgent: ISmartAgent = {
 let mockSession: DialogueSession;
 const mockHeadless = jest.fn(async () => ({ session: mockSession }));
 const mockRelease = jest.fn();
-const mockLongSession = { key: 'owned', destination: 'TEST' };
+const mockLongSession = { userId: 'alice', key: 'owned', destination: 'TEST' };
 const mockRun = jest.fn(async (_input: ISubAgentInput) => ({
   output: 'read done',
 }));
@@ -127,6 +131,7 @@ const call = (
   args: Parameters<typeof executeOrchestrationTool>[3] = {},
 ) => executeOrchestrationTool(req, caller, name, args);
 beforeEach(async () => {
+  longSessionLlms({ userId: 'alice', key: 'owned' });
   jest.clearAllMocks();
   mockRun.mockImplementation(async () => ({ output: 'read done' }));
   mockSession = await DialogueSession.open({
@@ -142,6 +147,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await mockSession.close();
+  disposeSessionLlms({ userId: 'alice', key: 'owned' });
 });
 
 test.each(

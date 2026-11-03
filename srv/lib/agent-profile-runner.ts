@@ -19,6 +19,7 @@ import {
   type RegisteredProfileTool,
 } from './agent-profile-tools';
 import { parseModelAllowlist, resolveAgentModel } from './model-policy';
+import { withCompactRagSearch } from './rag-search-context';
 import { recordReviewProfile } from './review-scope';
 import { runWithTrustResolver, type TrustResolver } from './trust-resolver';
 
@@ -171,7 +172,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
       if (!this.host.buildPlanAuthor)
         throw new Error('Plan author unavailable');
       await this.host.prepareTools?.('planner', options);
-      const scope = this.bind({
+      const bind = this.bind({
         name: 'planner-author',
         trust: input.trust,
         description: '',
@@ -187,6 +188,8 @@ export class AgentProfileRunner implements IAgentProfileRunner {
           ],
         },
       });
+      const scope = <T>(run: () => T): T =>
+        withCompactRagSearch(() => bind(run));
       const build = this.host.buildPlanAuthor;
       const agent = await scope(() => build(input, options));
       options?.signal?.throwIfAborted();

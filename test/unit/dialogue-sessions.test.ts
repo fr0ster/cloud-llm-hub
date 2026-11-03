@@ -1,5 +1,9 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { InMemoryRag, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import {
+  InMemoryRag,
+  symmetricEmbedder,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import {
   createUsageRecorder,
   directTransport,
@@ -14,7 +18,6 @@ import { clientTurnId, turnSource } from '../../srv/lib/dialogue-turn-source';
 import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import * as plannerMemory from '../../srv/lib/planner-memory';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
-import { buildReviewMessages } from '../../srv/lib/step-reviewer';
 import { systemToolTrust } from '../../srv/lib/system-tool-trust';
 import type { TrustResolver } from '../../srv/lib/trust-resolver';
 import { sumPlannerUsage } from '../../srv/lib/usage-wire';
@@ -44,6 +47,7 @@ jest.mock('../../srv/lib/background-connection', () => ({
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
 import { getRequestContext } from '@mcp-abap-adt/lib/request-context';
 import type {
+  ILlm,
   ISubAgentInput,
   ISubAgentResult,
   TokenUsage,
@@ -73,6 +77,12 @@ import {
   onDialogueCreated,
   sharedExecutorPool,
 } from '../../srv/lib/dialogue-sessions';
+import { scopedPlannerMemory } from '../../srv/lib/planner-memory-scope';
+import {
+  SessionHistoryRag,
+  turnOwner,
+} from '../../srv/lib/session-history-rag';
+import { longSessionLlms, sessionLlms } from '../../srv/lib/session-llms';
 
 function requiredExecutorPool() {
   const pool = sharedExecutorPool();
@@ -111,6 +121,8 @@ const mockEnvironments: string[] = [];
 let mockGoal = 'read';
 let mockWorkerTrust: { target: number } | undefined;
 let mockPlannerHook: ((text: string) => Promise<void>) | undefined;
+let mockCaptureLlm: (() => Promise<ILlm>) | undefined;
+let mockIsolationHistory: SessionHistoryRag | undefined;
 let mockFinalAnswer: string | undefined;
 let mockBackgroundAnswer: string | undefined;
 let mockPlanUsage: TokenUsage | undefined;
@@ -165,17 +177,20 @@ jest.mock('../../srv/agent-manager', () => ({
   createAgentProfileSource: () => ({
     list: async () => ({
       ok: true,
-      value: [{ name: 'executor', description: '', result: 'report' }],
+      value: [
+        { name: 'executor', description: '', result: 'report' },
+        { name: 'checker', description: '', result: 'verdict' },
+      ],
     }),
-    get: async () => ({
+    get: async (name: string) => ({
       ok: true,
       value: {
-        name: 'executor',
+        name,
         description: '',
         systemPrompt: '',
         trust: mockWorkerTrust,
         tools: 'all',
-        result: 'report',
+        result: name === 'checker' ? 'verdict' : 'report',
       },
     }),
     getPrompts: async () => ({
@@ -183,55 +198,68 @@ jest.mock('../../srv/agent-manager', () => ({
       value: { workerBase: '', planner: '' },
     }),
   }),
-  buildPlannerAgent: jest.fn(async () => ({
-    process: async (messages: { content: string }[]) => {
-      mockEnvironments.push(
-        messages.find((m) => m.content.startsWith('[environment]'))?.content ??
-          '',
-      );
-      const input = messages.at(-1)?.content ?? '';
-      const text = input.includes('[task events]')
-        ? input.slice(input.indexOf('[task events]'))
-        : input;
-      mockPlannerTurns.push(text);
-      await mockPlannerHook?.(text);
-      if (mockPlan) {
-        await new PlannerToolsClient().callTool('plan_update', mockPlan);
+  buildPlannerAgent: jest.fn(async () => {
+    if (mockCaptureLlm) {
+      const builder = new SmartAgentBuilder({
+        skipModelValidation: true,
+        agent: { classificationEnabled: false, ragTranslateEnabled: false },
+      })
+        .withMainLlm(await mockCaptureLlm())
+        .withMode('hard')
+        .withClassification(false);
+      if (mockIsolationHistory) builder.setHistoryRag(mockIsolationHistory);
+      return (await builder.build()).agent;
+    }
+    return {
+      process: async (messages: { content: string }[]) => {
+        mockEnvironments.push(
+          messages.find((m) => m.content.startsWith('[environment]'))
+            ?.content ?? '',
+        );
+        const input = messages.at(-1)?.content ?? '';
+        const text = input.includes('[task events]')
+          ? input.slice(input.indexOf('[task events]'))
+          : input;
+        mockPlannerTurns.push(text);
+        await mockPlannerHook?.(text);
+        if (mockPlan) {
+          await new PlannerToolsClient().callTool('plan_update', mockPlan);
+          return {
+            ok: true,
+            value: { content: 'Plan updated', usage: mockPlanUsage },
+          };
+        }
+        if (!text.startsWith('[task events]'))
+          await new PlannerToolsClient().callTool('delegate_task', {
+            worker: 'executor',
+            goal: mockGoal,
+          });
+        if (mockFinalAnswer && !text.startsWith('[task events]'))
+          await until(() => mockRun.mock.calls.length > 0);
         return {
           ok: true,
-          value: { content: 'Plan updated', usage: mockPlanUsage },
-        };
-      }
-      if (!text.startsWith('[task events]'))
-        await new PlannerToolsClient().callTool('delegate_task', {
-          worker: 'executor',
-          goal: mockGoal,
-        });
-      if (mockFinalAnswer && !text.startsWith('[task events]'))
-        await until(() => mockRun.mock.calls.length > 0);
-      return {
-        ok: true,
-        value: {
-          content: text.startsWith('[task events]')
-            ? (mockBackgroundAnswer ?? text)
-            : (mockFinalAnswer ?? 'delegated'),
-          usage: {
-            promptTokens: 3,
-            completionTokens: 2,
-            totalTokens: 5,
-            models: {
-              m: {
-                promptTokens: 3,
-                completionTokens: 2,
-                totalTokens: 5,
-                requests: 1,
+          value: {
+            content: text.startsWith('[task events]')
+              ? (mockBackgroundAnswer ?? text)
+              : (mockFinalAnswer ?? 'delegated'),
+            usage: {
+              promptTokens: 3,
+              completionTokens: 2,
+              totalTokens: 5,
+              models: {
+                m: {
+                  promptTokens: 3,
+                  completionTokens: 2,
+                  totalTokens: 5,
+                  requests: 1,
+                },
               },
             },
           },
-        },
-      };
-    },
-  })),
+        };
+      },
+    };
+  }),
   getSmartAgent: jest.fn(async () => ({
     toolTrust: systemToolTrust(() => true, fixtureTrustResolver()),
     toolTrustFor: (resolver: TrustResolver) =>
@@ -242,6 +270,10 @@ jest.mock('../../srv/agent-manager', () => ({
         value: {
           process: async (input: string) => {
             mockAuthorTurns.push(input);
+            if (mockCaptureLlm)
+              await (await mockCaptureLlm()).chat([
+                { role: 'user', content: input },
+              ]);
             return {
               ok: true,
               value: {
@@ -255,10 +287,14 @@ jest.mock('../../srv/agent-manager', () => ({
           streamProcess: async function* () {},
         },
       }),
-      createWorker: async () => ({
+      createWorker: async ({
+        profile,
+      }: {
+        profile: import('@mcp-abap-adt/llm-agent').WorkerProfile;
+      }) => ({
         ok: true,
         value: {
-          name: 'executor',
+          name: profile.name,
           capabilities: { contextPolicy: 'optional' },
           run: (input: ISubAgentInput) => mockRun(input),
         },
@@ -363,6 +399,8 @@ beforeEach(() => {
   mockEnvironments.length = 0;
   mockGoal = 'read';
   mockPlannerHook = undefined;
+  mockCaptureLlm = undefined;
+  mockIsolationHistory = undefined;
   mockFinalAnswer = undefined;
   mockBackgroundAnswer = undefined;
   mockToolRecords.clear();
@@ -1012,6 +1050,29 @@ test('worker write arriving during review remains pending for the next answer', 
   );
 });
 
+test('worker results and coordinator answers never call the critic', async () => {
+  const { h } = await ready();
+  const real = jest.requireActual<typeof import('../../srv/lib/step-reviewer')>(
+    '../../srv/lib/step-reviewer',
+  );
+  const chat = jest.fn();
+  jest.mocked(evaluateGated).mockImplementation((input) => {
+    const legacyInput = { ...input, llm: { chat, async *streamChat() {} } };
+    return real.evaluateGated(legacyInput);
+  });
+  mockRun.mockResolvedValue({
+    output: 'ZSOURCE selects item_id and amount from zitems.',
+  });
+  mockFinalAnswer = 'ZSOURCE analysis complete.';
+  mockSessionWriteGeneration++;
+  await h.session.send('Analyze ZSOURCE');
+  await until(() => h.session.snapshot().tasks[0]?.state === 'done');
+  expect(chat).not.toHaveBeenCalled();
+  expect(h.session.snapshot().tasks[0]?.output).not.toContain(
+    'UNVERIFIED_WRITE:',
+  );
+});
+
 test('honesty notice reaches task output and planner', async () => {
   const { h } = await ready();
   const events: DialogueEvent[] = [];
@@ -1022,9 +1083,9 @@ test('honesty notice reaches task output and planner', async () => {
     ok: false,
     issues: [
       {
-        kind: 'unsupported-claim',
-        confidence: 'high',
-        reasons: 'unsupported',
+        kind: 'unverified-write',
+        claimedOp: 'created',
+        reason: 'no successful write',
       },
     ],
   });
@@ -1064,7 +1125,7 @@ test('honesty notice reaches task output and planner', async () => {
 });
 
 test.each([5, undefined])(
-  'reviewer evidence uses worker profile target trust %s',
+  'deterministic notices need no LLM or profile trust (%s)',
   async (system) => {
     mockWorkerTrust = system === undefined ? undefined : { target: system };
     try {
@@ -1073,33 +1134,8 @@ test.each([5, undefined])(
       await h.session.send('go');
       await until(() => h.session.snapshot().tasks[0]?.state === 'done');
       const args = jest.mocked(evaluateGated).mock.calls.at(-1)?.[0];
-      expect(args?.toolTrust?.('GetClass')).toEqual({
-        source: 'target:GetClass',
-        trust: system ?? 4.3,
-      });
-      const messages = buildReviewMessages({
-        task: 'read',
-        content: 'done',
-        executedTools: ['GetClass'],
-        toolTrust: args?.toolTrust,
-        history: [
-          {
-            role: 'assistant',
-            content: '',
-            tool_calls: [
-              {
-                id: 'sap',
-                type: 'function',
-                function: { name: 'GetClass', arguments: '{}' },
-              },
-            ],
-          },
-          { role: 'tool', tool_call_id: 'sap', content: 'raw' },
-        ],
-      });
-      expect(messages[1].content).toContain(
-        `[source: target:GetClass; trust ${system ?? 4.3}]`,
-      );
+      expect(args).not.toHaveProperty('llm');
+      expect(args).not.toHaveProperty('toolTrust');
     } finally {
       mockWorkerTrust = undefined;
     }
@@ -1895,40 +1931,6 @@ test('a corrective user turn publishes consumed task usage after its live reply'
   }
 });
 
-test.each([true, false])(
-  'reviewer usage is included in task usage for verdict ok=%s',
-  async (ok) => {
-    const { h } = await ready();
-    mockRun.mockResolvedValue({
-      output: 'read done',
-      usage: { promptTokens: 7, completionTokens: 4, totalTokens: 11 },
-    });
-    const usage = { promptTokens: 2, completionTokens: 1, totalTokens: 3 };
-    jest.mocked(evaluateGated).mockResolvedValue(
-      ok
-        ? { ok: true, usage }
-        : {
-            ok: false,
-            usage,
-            issues: [
-              {
-                kind: 'unsupported-claim',
-                confidence: 'high',
-                reasons: 'test',
-              },
-            ],
-          },
-    );
-    await h.session.send('go');
-    await until(() => h.session.snapshot().tasks[0]?.state === 'done');
-    expect(h.session.snapshot().tasks[0].usage).toMatchObject({
-      promptTokens: 9,
-      completionTokens: 5,
-      totalTokens: 14,
-    });
-  },
-);
-
 test('wait signals are session scoped, live only and unsubscribe on close', async () => {
   const { h } = await ready();
   const events: DialogueEvent[] = [];
@@ -2559,6 +2561,120 @@ test.each(['queued', 'running'] as const)(
     }
   },
 );
+
+test('same-user dialogues isolate every LLM call, clients, quota and retrieval after close', async () => {
+  const marker = 'SESSION_A_PRIVATE_CDS_MARKER';
+  const memory = new InMemoryRag();
+  const histories = new InMemoryRag();
+  const embedding = symmetricEmbedder({
+    embed: async () => ({ vector: [1, 0] }),
+  });
+  const calls = new Map<string, string[]>();
+  const clients = new Map<string, ILlm>();
+  const history = new SessionHistoryRag(histories, () => {
+    const key = getRequestSessionId();
+    const user = getRequestUserId();
+    return key && user ? turnOwner(user, key) : undefined;
+  });
+  mockIsolationHistory = history;
+  mockCaptureLlm = async () => {
+    const owner = sessionLlms.getStore();
+    if (!owner) throw new Error('Missing session LLM owner');
+    return owner.get('isolation', async () => {
+      const llm: ILlm = {
+        async chat(messages) {
+          const entries = calls.get(owner.quotaScope) ?? [];
+          entries.push(JSON.stringify(messages));
+          calls.set(owner.quotaScope, entries);
+          return { ok: true, value: { content: 'Done', finishReason: 'stop' } };
+        },
+        async *streamChat(messages, tools, options) {
+          yield await llm.chat(messages, tools, options);
+        },
+      };
+      clients.set(owner.quotaScope, llm);
+      return llm;
+    });
+  };
+  const setup = jest
+    .spyOn(plannerMemory, 'plannerSessionOptions')
+    .mockImplementation(async (user, key) => ({
+      plannerMemory: {
+        rag: scopedPlannerMemory(memory, turnOwner(user, key), key),
+        queryEmbedder: embedding,
+        documentEmbedder: embedding,
+      },
+    }));
+  const open = jest.spyOn(DialogueSession, 'open');
+  const keys = ['isolation-A', 'isolation-B', 'isolation-C'];
+  try {
+    const a = await dialogueFor('alice', keys[0], 'TEST');
+    const aOwner = longSessionLlms({ userId: 'alice', key: keys[0] });
+    await a.session.send(marker);
+    expect(
+      await history.recordTurn({
+        owner: turnOwner('alice', keys[0]),
+        userText: marker,
+        assistantText: 'Done',
+      }),
+    ).toBe(true);
+    // Prove the marker was persisted before checking the negative cases.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const aMemory = await scopedPlannerMemory(
+      memory,
+      turnOwner('alice', keys[0]),
+      keys[0],
+    ).query(new TextOnlyEmbedding(marker), 100);
+    expect(
+      aMemory.ok && aMemory.value.some((row) => row.text.includes(marker)),
+    ).toBe(true);
+    const aHistory = await runWithSessionId(
+      keys[0],
+      () => history.query(new TextOnlyEmbedding(marker), 100),
+      [],
+      'alice',
+    );
+    expect(
+      aHistory.ok && aHistory.value.some((row) => row.text.includes(marker)),
+    ).toBe(true);
+
+    for (const key of keys.slice(1)) {
+      if (key === keys[2]) await closeDialogue('alice', keys[0], 'shutdown');
+      const h = await dialogueFor('alice', key, 'TEST');
+      const owner = longSessionLlms({ userId: 'alice', key });
+      await h.session.send('Review my CDS');
+      await h.session.callTool('plan_create', { goal: 'Plan my review' });
+      expect(owner.quotaScope).not.toBe(aOwner.quotaScope);
+      expect(clients.get(owner.quotaScope)).not.toBe(
+        clients.get(aOwner.quotaScope),
+      );
+      const captured = calls.get(owner.quotaScope) ?? [];
+      expect(captured.length).toBeGreaterThanOrEqual(2);
+      expect(captured.every((call) => !call.includes(marker))).toBe(true);
+      const options = open.mock.calls.find(
+        ([options]) => options.id === key,
+      )?.[0];
+      const recalled = await options?.plannerMemory?.rag.query(
+        new TextOnlyEmbedding(marker),
+        100,
+      );
+      expect(
+        recalled?.ok && recalled.value.some((row) => row.text.includes(marker)),
+      ).toBe(false);
+      const recalledHistory = await runWithSessionId(
+        key,
+        () => history.query(new TextOnlyEmbedding(marker), 100),
+        [],
+        'alice',
+      );
+      expect(recalledHistory.ok && recalledHistory.value).toEqual([]);
+    }
+  } finally {
+    for (const key of keys) await closeDialogue('alice', key, 'shutdown');
+    setup.mockRestore();
+    open.mockRestore();
+  }
+});
 
 test('dialogue opens with a stateless profile plan author and environment notes', async () => {
   const open = jest.spyOn(DialogueSession, 'open');
@@ -3221,3 +3337,90 @@ test('closing one user with a shared key preserves the other user LLMs and signa
   await until(() => bob.session.snapshot().tasks[0]?.state === 'done');
   expect(alice.session.snapshot().tasks).toEqual([]);
 });
+
+test.each(['valid', 'quote', 'evidence', 'bare', 'pass'] as const)(
+  'dialogue consumes evidence-bound checker verdict: %s',
+  async (kind) => {
+    const { h } = await ready();
+    const checked = 'The object is active.';
+    const verdict =
+      kind === 'bare'
+        ? 'FAIL'
+        : kind === 'pass'
+          ? '{"verdict":"pass","count":1,"note":"ok"}'
+          : JSON.stringify({
+              verdict: 'fail',
+              claims: [
+                {
+                  quote: kind === 'quote' ? 'Invented claim' : checked,
+                  evidence:
+                    kind === 'evidence'
+                      ? 'fabricated excerpt'
+                      : 'Expected state: inactive',
+                  reason: 'Brief contradicts claimed state',
+                },
+              ],
+            });
+    mockRun.mockImplementation(async (input) => ({
+      output: input.task === 'Verify state' ? verdict : checked,
+    }));
+    await h.session.callTool('plan_update', {
+      steps: [
+        {
+          id: 'work',
+          goal: 'Read state',
+          worker: 'executor',
+          result: 'report',
+          state: 'pending',
+        },
+        {
+          id: 'check',
+          goal: 'Verify state',
+          worker: 'checker',
+          result: 'verdict',
+          dependsOn: ['work'],
+          state: 'pending',
+        },
+      ],
+    });
+    await h.session.callTool('delegate_task', {
+      worker: 'executor',
+      step_id: 'work',
+      goal: 'Read state',
+    });
+    await until(() => h.session.snapshot().tasks[0]?.state === 'done');
+    const started = await h.session.callTool('delegate_task', {
+      worker: 'checker',
+      step_id: 'check',
+      goal: 'Verify state',
+      context: 'Expected state: inactive',
+    });
+    expect(started.ok && !started.value.isError).toBe(true);
+    await until(() => h.session.snapshot().tasks[1]?.state === 'done');
+    const state = h.session.snapshot();
+    if (!state.plan || typeof state.plan === 'string')
+      throw new Error('Missing structured plan');
+    const step = state.plan.steps.find((step) => step.id === 'check');
+    if (kind === 'valid' || kind === 'pass') {
+      expect(step?.verdict).toBe(kind === 'valid' ? 'fail' : 'pass');
+      expect(state.tasks[1]?.output).toBe(verdict);
+    } else {
+      expect(step?.verdict).toBeUndefined();
+      expect(step?.state).toBe('pending');
+      expect(state.tasks[1]?.output).toMatch(/^unusable verdict:/);
+      // Re-enter a coordinator turn: the internal library failure is cleared
+      // before the coordinator makes its next decision.
+      mockPlan = { status: 'waiting_user', question: 'How should we proceed?' };
+      await h.session.send('Decide what to do with this verdict');
+      const next = h.session.snapshot().plan;
+      if (!next || typeof next === 'string')
+        throw new Error('Missing structured plan');
+      expect(
+        next.steps.find((step) => step.id === 'check')?.verdict,
+      ).toBeUndefined();
+      expect(next.steps.find((step) => step.id === 'check')?.state).toBe(
+        'pending',
+      );
+    }
+  },
+);

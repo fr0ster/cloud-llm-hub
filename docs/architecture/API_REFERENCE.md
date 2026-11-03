@@ -171,7 +171,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
 - `401 Unauthorized` - Missing or invalid authentication
 - `503 Service Unavailable` - SmartAgent is initializing (MCP connect + tool corpus load), or the tool corpus was not built (`ToolCorpusMissingError` — run the build step)
 
-**Honesty guard note *(v6.28+)*:** the response (streaming or non-streaming, and the same on `/v1/messages` and `execute_step`) may carry a trailing `UNVERIFIED_WRITE:` line when the reviewer finds a claimed write (create/update/activate/…) unsupported by the actual tool results. It's a soft warning — verify against the system before relying on the claim — never a block. Disable via `LLM_AGENT_STEP_REVIEW_ENABLED=false`.
+**Honesty guard note *(v6.28+)*:** the response (streaming or non-streaming, and the same on `/v1/messages` and `execute_step`) may carry a trailing `UNVERIFIED_WRITE:` line when the deterministic check finds a claimed write (create/update/activate/…) unsupported by the actual tool results. It's a soft warning — verify against the system before relying on the claim — never a block. Disable via `LLM_AGENT_STEP_REVIEW_ENABLED=false`.
 
 ---
 
@@ -1258,3 +1258,5 @@ Disallowed choices return a tool error containing `MODEL_NOT_ALLOWED`. Both tool
 use the deploy `LLM_AGENT_MODELS` allowlist, with main and planner defaults always
 allowed. Agents should use their default model and escalate only for hard analysis
 or a failed check.
+
+`UNVERIFIED_WRITE` notices use deterministic tool-journal checks, with no automatic LLM review of workers or answers. Failed/unanswered write notices and recording placeholders remain. `LLM_AGENT_STEP_REVIEW_ENABLED=false` disables claim-based notices only. Verification checks are explicit coordinator decisions each turn: run a planned check, skip it stating why, or add an unplanned check; user input can require `plan_revise`. Checker failures need exact result quotes and cited supplied evidence (or `none provided`); invalid failures are unusable verdicts for the coordinator to assess, not failures. No tools executed alone is never grounds for fail.

@@ -122,6 +122,8 @@ export interface DialogueStoreBackend {
 const str = z.string();
 const num = z.number().finite();
 const tokenUsage = z.object({
+  cachedInputTokens: num.optional(),
+  cacheCreationInputTokens: num.optional(),
   promptTokens: num,
   completionTokens: num,
   totalTokens: num,
@@ -129,6 +131,8 @@ const tokenUsage = z.object({
     .record(
       str,
       z.object({
+        cachedInputTokens: num.optional(),
+        cacheCreationInputTokens: num.optional(),
         promptTokens: num,
         completionTokens: num,
         totalTokens: num,
@@ -302,9 +306,18 @@ const request = z.preprocess(
       >)
       .optional(),
     lastTurnOk: z.boolean().optional(),
+    resolvedFailures: ids.optional(),
     // Request transcripts permit 150k per part plus a truncation marker.
     // The overall byte guard bounds restored open transcripts.
-    transcript: z.array(message.extend({ content: str.nullable() })).optional(),
+    transcript: z
+      .array(
+        message.extend({
+          content: str.nullable(),
+          plannerReference: str.optional(),
+          internalKind: z.enum(['actions', 'events', 'note']).optional(),
+        }),
+      )
+      .optional(),
     legacy: z.literal(true).optional(),
   } satisfies Shape<NonNullable<DialogueState['requests']>[number]>),
 );
@@ -363,6 +376,10 @@ const taskEvent = z.object({
   task: taskRecord,
 } satisfies Shape<TaskEvent>);
 const schema = z.object({
+  conversationLeadingActions: z
+    .array(z.number().int().nonnegative())
+    .max(200)
+    .optional(),
   requests: z.array(request).max(200).optional(),
   requestSeq: num.optional(),
   taskRequests: z.record(id, id).optional(),

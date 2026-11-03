@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+- Adopt llm-agent 30.31.0, llm-agent-libs 30.29.0, llm-agent-mcp 30.10.1 and sap-aicore-llm 30.13.0 (compact task views, MCP SDK 1.32.2 for GHSA-46jr-4wx8-v453); persist the new dialogue state fields with backward-compatible restore.
+
+- Include checked tasks' tool-trace result excerpts as checker evidence, bound to dialogue task identities while excluding checked reports and trace arguments.
+
+- Mask URL userinfo credentials throughout context capture and accept quoted and multiline checker evidence from MCP text parts.
+
+- Redact `X-API-Key` credentials in full context capture.
+
+- Bind checker quotes and evidence to structured task outputs and coordinator inputs so report headings cannot supply independent evidence.
+
+- Redact numeric credentials, all cookie values and complete PEM private keys while preserving usage counters. Validate checker verdict envelopes before binding. Enforce the context SQLite size cap during inserts, counting dropped rows and warning once.
+
+- Mask credential strings across nested context JSON and text while preserving numeric token usage. Restrict checker evidence to source inputs and dependency/tool results, excluding checked reports and generated framing.
+
+- Redact credentials recursively in JSON-encoded context strings; move SQLite capture to a worker with a 64-row queue, counted overflow drops and disablement on worker failure. Fix documentation checks for retired settings without rewriting historical plans.
+
+- Remove automatic LLM review of dialogue workers/final answers, execute_step and single-agent answers; retain deterministic write notices. Make checks explicit coordinator decisions and bind negative checker verdicts to exact result quotes and supplied evidence. Remove critic wiring; deprecate and ignore `LLM_AGENT_SAP_RELEVANCE_SCORE` and `LLM_AGENT_STEP_REVIEW_TIMEOUT_MS`.
+
+- Disable coordinator/planner-author RAG translation and reject late LLM requests after session closure using stable session keys without retained tombstones.
+
+- Add opt-in full LLM context capture to container-local SQLite with credential redaction, session hashes, best-effort writes and an admin-managed size cap.
+
+- Reduce dialogue coordinator tools and prompt, compact planner-author knowledge search, and add salted session/context fingerprints with optional test-canary scanning.
+
 - Docs: connect Claude Code directly to the agent MCP endpoint with built-in XSUAA OAuth and `X-SAP-*` headers (`docs/usage/CLAUDE_CODE_AGENT_DIRECT.md`).
 
 ## [10.4.5] - 2026-11-03

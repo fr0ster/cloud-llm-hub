@@ -51,6 +51,7 @@ export class LocalRagMcpClient implements IMcpClient {
   constructor(
     private readonly inner: IMcpClient,
     private readonly registry?: () => CollectionRegistry,
+    private readonly coordinator = false,
   ) {
     this.healthCheck = inner.healthCheck?.bind(inner);
   }
@@ -62,13 +63,32 @@ export class LocalRagMcpClient implements IMcpClient {
         .filter((tool) => !isRagTool(tool.name) && !removedNames.has(tool.name))
         .map((tool) => [tool.name, tool]),
     );
-    return { ok: true, value: [...imported.values(), ...localRagTools()] };
+    return {
+      ok: true,
+      value: [
+        ...imported.values(),
+        ...localRagTools().filter(
+          (tool) =>
+            !this.coordinator ||
+            (isRagTool(tool.name) && ragToolEffect(tool.name) === 'read'),
+        ),
+      ],
+    };
   }
   async callTool(
     name: string,
     args: Parameters<IMcpClient['callTool']>[1],
     options?: CallOptions,
   ): Promise<Result<McpToolResult, McpError>> {
+    if (this.coordinator && isRagTool(name) && ragToolEffect(name) !== 'read')
+      return {
+        ok: true,
+        value: {
+          isError: true,
+          content:
+            'Tool unavailable to coordinator. Delegate collection and record changes to executor.',
+        },
+      };
     if (removedNames.has(name))
       return {
         ok: true,

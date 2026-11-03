@@ -38,11 +38,6 @@ export type ReviewIssue =
        */
       kind: 'unverified-read';
       reason: string;
-    }
-  | {
-      kind: 'unsupported-claim';
-      confidence: 'low' | 'medium' | 'high';
-      reasons: string;
     };
 
 export type ReviewVerdict = { ok: true } | { ok: false; issues: ReviewIssue[] };

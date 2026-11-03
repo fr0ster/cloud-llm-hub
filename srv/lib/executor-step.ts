@@ -3,18 +3,12 @@ import type {
   CallOptions,
   IAgentProfileSource,
   Message,
-  TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
 import type { getSmartAgent } from '../agent-manager';
-import { getRequestHistory, runWithToolGateBypass } from '../request-session';
+import { runWithToolGateBypass } from '../request-session';
 import { renderNotice } from './notify-policy';
-import {
-  captureReviewProfile,
-  getReviewSignals,
-  recordReviewProfile,
-} from './review-scope';
+import { captureReviewProfile, recordReviewProfile } from './review-scope';
 import { evaluateGated } from './step-reviewer';
-import { resolverFor } from './trust-resolver';
 
 const executorModel = new AsyncLocalStorage<string | undefined>();
 
@@ -29,7 +23,6 @@ export type ExecutorStepArgs = [
   worker: string,
   opts: CallOptions,
   history?: Message[],
-  onReviewerUsage?: (usage: TokenUsage | undefined) => void,
   model?: string,
 ];
 
@@ -43,12 +36,11 @@ export async function runExecutorStep(
     worker,
     opts,
     history = [],
-    onReviewerUsage,
     model,
   ]: ExecutorStepArgs
 ) {
   const traceId = opts.trace?.traceId ?? '';
-  const { result, profile: reviewedProfile } = await captureReviewProfile(() =>
+  const { result } = await captureReviewProfile(() =>
     runWithToolGateBypass(async () => {
       if (worker !== 'executor') {
         if (!agentHandle.profileRunner)
@@ -106,33 +98,12 @@ export async function runExecutorStep(
       );
     }),
   );
-  const toolTrust = reviewedProfile?.trust
-    ? (agentHandle.toolTrustFor?.(
-        (agentHandle.trustResolver ?? resolverFor({})).forProfile(
-          reviewedProfile,
-        ),
-      ) ?? agentHandle.toolTrust)
-    : agentHandle.toolTrust;
-  if (
-    result.ok &&
-    agentHandle.executor &&
-    agentHandle.recMcp &&
-    agentHandle.criticLlm
-  ) {
+  if (result.ok && agentHandle.executor && agentHandle.recMcp) {
     const verdict = await evaluateGated({
-      writeToolOffered: agentHandle.recMcp.hadWriteCapability(traceId),
-      signal: opts.signal,
-      toolTrust,
-      usage: opts.usage,
       content: result.value.content ?? '',
       records: agentHandle.recMcp.getToolRecords(traceId),
-      ...getReviewSignals(),
-      llm: agentHandle.criticLlm,
-      request: task,
-      task,
-      history: getRequestHistory(),
+      writeToolOffered: agentHandle.recMcp.hadWriteCapability(traceId),
     });
-    onReviewerUsage?.(verdict.usage);
     if (!verdict.ok) {
       return {
         ...result,

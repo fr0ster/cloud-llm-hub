@@ -248,10 +248,13 @@ export async function planAuthorContextNotes(
   } finally {
     controller.abort();
   }
-  // The public builder supplies the library's escaped, per-source budgeted blocks.
+  // The public builder projects nonempty transcripts before adding retrieval.
+  // Supply an anchor, then remove it so only escaped, budgeted evidence reaches
+  // the author. The retrieval renderer itself is not a public package export.
+  const anchor = 'Plan author retrieval';
   return new DefaultPlannerContextBuilder()
     .build({
-      open: { ...request, transcript: [{ role: 'user', content: '' }] },
+      open: { ...request, transcript: [{ role: 'user', content: anchor }] },
       memory: [...memory],
       knowledge: knowledge.flat(),
       notes: [],
@@ -259,6 +262,8 @@ export async function planAuthorContextNotes(
       knowledgeCharBudget: config.knowledgeCharBudget,
     })
     .map((message) => message.content ?? '')
+    .filter((content) => content.endsWith(anchor))
+    .map((content) => content.slice(0, -anchor.length).trimEnd())
     .filter(Boolean);
 }
 

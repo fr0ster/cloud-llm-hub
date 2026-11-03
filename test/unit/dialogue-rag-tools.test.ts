@@ -308,3 +308,28 @@ test('local rag_read uses loop pointers and restores text after eviction or anot
     });
   });
 });
+
+test('coordinator exposes only RAG reads and refuses all nine mutations; worker catalogue stays complete', async () => {
+  const { inner, registry, local } = setup();
+  const coordinator = new LocalRagMcpClient(inner, () => registry, true);
+  const result = await coordinator.listTools();
+  expect(result.ok && result.value.map((tool) => tool.name)).toEqual([
+    'GetTable',
+    ...ragToolNames.filter((name) => ragToolEffect(name) === 'read'),
+  ]);
+  const mutations = ragToolNames.filter(
+    (name) => ragToolEffect(name) === 'write',
+  );
+  expect(mutations).toHaveLength(9);
+  for (const name of mutations)
+    expect(await coordinator.callTool(name, {})).toMatchObject({
+      ok: true,
+      value: { isError: true },
+    });
+  const worker = await local.listTools();
+  expect(worker.ok && worker.value.map((tool) => tool.name)).toEqual([
+    'GetTable',
+    ...ragToolNames,
+  ]);
+  expect(inner.callTool).not.toHaveBeenCalled();
+});

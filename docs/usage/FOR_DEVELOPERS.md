@@ -91,7 +91,7 @@ Use session identity for conversation continuity and tracing. Do not use it as d
 
 ## Honesty guard — result-based claim verification *(v6.28+)*
 
-Chat (`/v1/chat/completions`, `/v1/messages`) uses the adaptive coordinator by default, with executor and checker workers; `LLM_AGENT_CHAT_COORDINATOR=fixed` restores the previous one-step DAG. The agent MCP `execute_step` runs the executor directly. A **reviewer** afterward compares the response's CLAIMS against the **actual tool results**, not tool names. Ground truth comes from `RecordingMcpClient`, a thin `IMcpClient` decorator that captures each executed ABAP tool's real result per request (freed after the request — no retention). On a contradiction the reviewer appends a trailing `UNVERIFIED_WRITE:` notice — NOTICE-ONLY, the executor's content still streams live, and it is a soft warning the consuming service can choose to surface or ignore, never a hard block.
+Chat (`/v1/chat/completions`, `/v1/messages`) uses the adaptive coordinator by default, with executor and checker workers; `LLM_AGENT_CHAT_COORDINATOR=fixed` restores the previous one-step DAG. The agent MCP `execute_step` runs the executor directly. A deterministic notice check afterward compares the response's CLAIMS against the **actual tool results**, not tool names. Ground truth comes from `RecordingMcpClient`, a thin `IMcpClient` decorator that captures each executed ABAP tool's real result per request (freed after the request — no retention). On a contradiction the reviewer appends a trailing `UNVERIFIED_WRITE:` notice — NOTICE-ONLY, the executor's content still streams live, and it is a soft warning the consuming service can choose to surface or ignore, never a hard block.
 
 Disable entirely with `LLM_AGENT_STEP_REVIEW_ENABLED=false` if your integration doesn't want the extra check.
 
@@ -109,3 +109,5 @@ The default pipeline applies in order:
 4. Bounded agent loop with explicit-completion signal.
 
 Pipeline composition is configurable per deployment — alternate components (different RAG type, additional preprocessors, custom classifier) can be wired in without touching consuming services.
+
+`UNVERIFIED_WRITE` notices use deterministic tool-journal checks, with no automatic LLM review of workers or answers. Failed/unanswered write notices and recording placeholders remain. `LLM_AGENT_STEP_REVIEW_ENABLED=false` disables claim-based notices only. Verification checks are explicit coordinator decisions each turn: run a planned check, skip it stating why, or add an unplanned check; user input can require `plan_revise`. Checker failures need exact result quotes and cited supplied evidence (or `none provided`); invalid failures are unusable verdicts for the coordinator to assess, not failures. No tools executed alone is never grounds for fail.

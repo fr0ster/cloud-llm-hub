@@ -5,7 +5,6 @@ export {
   listDestinationsDefinition,
 } from './lib/coordinator-tool-definitions';
 
-import type { TokenUsage } from '@mcp-abap-adt/llm-agent';
 import {
   type OrchestrationTool,
   registerOrchestrationTools,
@@ -474,7 +473,6 @@ async function executeStepRun(
 
     const history = longSession ? getSessionHistory(sessionId, userId) : [];
     const conn = connection;
-    let reviewerUsage: TokenUsage | undefined;
     const r = await admitted.run(() => {
       // Admitted, right before the run: this step's responsible person and
       // master system, visible to it alone — see `lib/request-system-context.ts`.
@@ -498,9 +496,6 @@ async function executeStepRun(
                   worker,
                   opts,
                   history,
-                  (usage) => {
-                    reviewerUsage = usage;
-                  },
                   model,
                 );
               },
@@ -563,7 +558,6 @@ async function executeStepRun(
     const wireUsage = tokens
       ? { ...tokens, duration_ms: durationMs }
       : undefined;
-    const wireReviewerUsage = tokenUsageToWire(reviewerUsage);
     const emptyResult = !/\S/.test(rawContent);
     const reply = emptyResult
       ? `EMPTY_RESULT on destination "${targetDestination}": The executor finished without a reply. The system state of the step is unknown and must be verified by a separate read step.${r.value.iterations !== undefined ? ` iterations=${r.value.iterations}` : ''}${r.value.toolCallCount !== undefined ? ` toolCallCount=${r.value.toolCallCount}` : ''}${r.value.stopReason !== undefined ? ` stopReason=${r.value.stopReason}` : ''}`
@@ -571,19 +565,16 @@ async function executeStepRun(
     const content = notice ? `${notice}\n${reply}` : reply;
     return {
       ...textResult(
-        wireUsage || wireReviewerUsage
-          ? `${content}\n[usage]${wireUsage ? ` prompt=${wireUsage.prompt_tokens} completion=${wireUsage.completion_tokens} total=${wireUsage.total_tokens}` : ''}${wireReviewerUsage ? ` reviewer=${wireReviewerUsage.total_tokens}` : ''} time=${(durationMs / 1000).toFixed(1)}s`
+        wireUsage
+          ? `${content}\n[usage]${wireUsage ? ` prompt=${wireUsage.prompt_tokens} completion=${wireUsage.completion_tokens} total=${wireUsage.total_tokens}` : ''} time=${(durationMs / 1000).toFixed(1)}s`
           : content,
         emptyResult,
       ),
-      ...(wireUsage || wireReviewerUsage
+      ...(wireUsage
         ? {
             structuredContent: {
               result: content,
               ...(wireUsage ? { usage: wireUsage } : {}),
-              ...(wireReviewerUsage
-                ? { usage_reviewer: wireReviewerUsage }
-                : {}),
             },
           }
         : {}),

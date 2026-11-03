@@ -179,3 +179,5 @@ Anthropic-style clients: point `ANTHROPIC_BASE_URL` at `http://localhost:3001`.
   that `x-sap-destination` is a real destination. See [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
 
 For user JWT authentication through Cloud Connector, see [Principal propagation](principal-propagation.md). PP destinations do not require `x-sap-login` / `x-sap-password`; creates use the connected SAP user, falling back to `x-sap-responsible` (explicit override) or uppercased `x-sap-login` when the endpoint is unavailable.
+
+`UNVERIFIED_WRITE` notices use deterministic tool-journal checks, with no automatic LLM review of workers or answers. Failed/unanswered write notices and recording placeholders remain. `LLM_AGENT_STEP_REVIEW_ENABLED=false` disables claim-based notices only. Verification checks are explicit coordinator decisions each turn: run a planned check, skip it stating why, or add an unplanned check; user input can require `plan_revise`. Checker failures need exact result quotes and cited supplied evidence (or `none provided`); invalid failures are unusable verdicts for the coordinator to assess, not failures. No tools executed alone is never grounds for fail.

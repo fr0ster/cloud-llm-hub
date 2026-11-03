@@ -253,7 +253,6 @@ test('execute_step uses executor profile default, main fallback, and a call-only
       'executor',
       {},
       [],
-      undefined,
       'A',
     );
     await runExecutorStep(
@@ -273,7 +272,6 @@ test('execute_step uses executor profile default, main fallback, and a call-only
         'executor',
         {},
         [],
-        undefined,
         'foreign',
       ),
     ).rejects.toThrow('MODEL_NOT_ALLOWED');

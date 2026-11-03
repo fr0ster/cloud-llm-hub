@@ -37,6 +37,89 @@ const state: DialogueState = {
   savedAt: 1,
 };
 beforeEach(() => initializeDialogueStore(loadSessionConfig({})));
+it('round-trips planner projection metadata, resolved failures and cache usage', async () => {
+  const store = new MemoryDialogueStore();
+  const usage = {
+    promptTokens: 10,
+    completionTokens: 2,
+    totalTokens: 12,
+    cachedInputTokens: 5,
+    cacheCreationInputTokens: 3,
+    models: {
+      planner: {
+        promptTokens: 10,
+        completionTokens: 2,
+        totalTokens: 12,
+        requests: 1,
+        cachedInputTokens: 5,
+        cacheCreationInputTokens: 3,
+      },
+    },
+  };
+  const snapshot: DialogueState = {
+    ...state,
+    conversationLeadingActions: [0],
+    requests: [
+      {
+        id: 'closed',
+        openedAt: 1,
+        closedAt: 2,
+        text: 'previous',
+        resolvedFailures: ['failed-previous'],
+      },
+      {
+        id: 'open',
+        openedAt: 3,
+        text: 'current',
+        resolvedFailures: ['failed-current'],
+        transcript: [
+          { role: 'user', content: 'current' },
+          {
+            role: 'assistant',
+            content: 'Complete answer',
+            plannerReference: 'Delivered answer',
+          },
+          { role: 'user', content: '[actions] none', internalKind: 'actions' },
+          {
+            role: 'user',
+            content: '[task events] task t1 done',
+            internalKind: 'events',
+          },
+          {
+            role: 'user',
+            content: '[dropped 1 earlier messages]',
+            internalKind: 'note',
+          },
+        ],
+      },
+    ],
+    tasks: [
+      {
+        id: 't1',
+        worker: 'executor',
+        goal: 'read',
+        state: 'done',
+        createdAt: 1,
+        usage,
+      },
+    ],
+    pending: [
+      {
+        id: 'reply',
+        text: 'done',
+        createdAt: 4,
+        trigger: 'event',
+        usage: { planner: usage },
+      },
+    ],
+  };
+  await store.save('alice', 'projection', snapshot);
+  const restored = await store.load('alice', 'projection');
+  expect(restored).toEqual(snapshot);
+  if (!restored) throw new Error('missing restored state');
+  await store.save('alice', 'projection', restored);
+  expect(await store.load('alice', 'projection')).toEqual(snapshot);
+});
 it('strips legacy archives and closed transcripts while preserving open transcripts', async () => {
   const store = new MemoryDialogueStore();
   const closed = { id: 'r1', openedAt: 1, closedAt: 2, text: 'earlier' };

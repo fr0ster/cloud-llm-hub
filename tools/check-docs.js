@@ -207,11 +207,37 @@ function knownEnvNames() {
  * the file — such a page exists to describe configuration that does not exist
  * yet, so the rule cannot apply to it.
  */
+// Retired variables in live migration notes and immutable historical plans.
+// Pin counts per file so new claims cannot silently inherit an exemption.
+const RETIRED_ENV_MENTIONS = new Map([
+  [
+    'docs/architecture/ARCHITECTURE.md',
+    { LLM_AGENT_SAP_RELEVANCE_SCORE: 1, LLM_AGENT_STEP_REVIEW_TIMEOUT_MS: 1 },
+  ],
+  [
+    'docs/llm-agent/CONFIG_USAGE.md',
+    { LLM_AGENT_SAP_RELEVANCE_SCORE: 2, LLM_AGENT_STEP_REVIEW_TIMEOUT_MS: 2 },
+  ],
+  [
+    'docs/superpowers/plans/2026-10-21-agent-latency.md',
+    { LLM_AGENT_SAP_RELEVANCE_SCORE: 2 },
+  ],
+]);
+
 function checkEnvNames(file, lines, known) {
   if (projectRoot(file) !== ROOT) return;
   if (lines.some((l) => l.includes('docs-check:proposed-env'))) return;
+  const budget = {
+    ...(RETIRED_ENV_MENTIONS.get(
+      path.relative(ROOT, file).split(path.sep).join('/'),
+    ) ?? {}),
+  };
   lines.forEach((line, i) => {
     for (const m of line.matchAll(/\b(?:LLM_AGENT|SAP_CORE_AI)_[A-Z0-9_]+/g)) {
+      if (budget[m[0]] > 0) {
+        budget[m[0]]--;
+        continue;
+      }
       if (!known.has(m[0]))
         fail(
           file,
@@ -220,6 +246,10 @@ function checkEnvNames(file, lines, known) {
         );
     }
   });
+  for (const [name, left] of Object.entries(budget)) {
+    if (left > 0)
+      fail(file, 1, `retired allowance for ${name} is ${left} too high`);
+  }
 }
 
 /**

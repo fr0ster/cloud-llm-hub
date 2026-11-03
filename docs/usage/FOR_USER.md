@@ -113,3 +113,5 @@ Cloud LLM Hub matters when the user wants the same controlled assistant across c
 - MCP-native clients for direct tool access.
 
 The user does not have to rebuild the connection model in each client. The hub provides the shared server-side pieces: sign-in, token issuance, destination selection, role-scoped ABAP tools, RAG collections, streaming, and session continuity.
+
+`UNVERIFIED_WRITE` notices use deterministic tool-journal checks, with no automatic LLM review of workers or answers. Failed/unanswered write notices and recording placeholders remain. `LLM_AGENT_STEP_REVIEW_ENABLED=false` disables claim-based notices only. Verification checks are explicit coordinator decisions each turn: run a planned check, skip it stating why, or add an unplanned check; user input can require `plan_revise`. Checker failures need exact result quotes and cited supplied evidence (or `none provided`); invalid failures are unusable verdicts for the coordinator to assess, not failures. No tools executed alone is never grounds for fail.

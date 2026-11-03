@@ -1,13 +1,10 @@
 import type {
-  ILlm,
   ISubAgent,
   ISubAgentInput,
   ISubAgentResult,
   SubAgentCapabilities,
   ToolCallRecord,
-  ToolTrust,
 } from '@mcp-abap-adt/llm-agent';
-import { getRequestHistory } from '../request-session';
 import { evaluateGated } from './step-reviewer';
 
 export interface ReviewerSubAgentDeps {
@@ -17,21 +14,9 @@ export interface ReviewerSubAgentDeps {
    *  dependency on the concrete recording client here. */
   getToolRecords: (traceId?: string) => ToolCallRecord[];
   hadWriteCapability?: (traceId?: string) => boolean;
-  llm: ILlm;
-  toolTrust?: ToolTrust;
 }
 
-/**
- * Portable `ISubAgent` wrapper over the deterministic+gated reviewer core
- * (`evaluateGated`). Intended as the future coordinator's review worker; the
- * interim path calls the same `evaluateGated` core directly from
- * `NoticeFinalizer` (Task 7) instead of dispatching through this class.
- *
- * IMPORTANT (Verified library fact 2): `epicfail`/failed-step results are
- * DISCARDED by the coordinator before final assembly (`output: ''`), so this
- * class must NEVER set `errorClass: 'epicfail'` — a problem verdict is still
- * a SUCCESSFUL `ISubAgentResult`, carried in `metadata.verdict`.
- */
+/** Optional deterministic notice worker; never invokes an LLM. */
 export class ReviewerSubAgent implements ISubAgent {
   readonly name = 'reviewer';
   readonly description =
@@ -49,16 +34,8 @@ export class ReviewerSubAgent implements ISubAgent {
     const records = this.deps.getToolRecords(input.trace?.traceId);
     const verdict = await evaluateGated({
       writeToolOffered: this.deps.hadWriteCapability?.(input.trace?.traceId),
-      signal: input.signal,
-      toolTrust: this.deps.toolTrust,
-      usage: input.usage,
       content,
       records,
-      llm: this.deps.llm,
-      // Same two inputs the finalizer supplies, so the two review paths cannot
-      // reach different verdicts on the same answer.
-      task: input.task,
-      history: getRequestHistory(),
     });
     return {
       output: content,

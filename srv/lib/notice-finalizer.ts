@@ -9,13 +9,9 @@ import type {
   FinalizerInput,
   FinalizerResult,
   IFinalizer,
-  ILlm,
-  ToolTrust,
 } from '@mcp-abap-adt/llm-agent';
-import { getRequestHistory } from '../request-session';
 import { renderNotice } from './notify-policy';
 import type { RecordingMcpClient } from './recording-mcp-client';
-import { getReviewSignals } from './review-scope';
 import { evaluateGated } from './step-reviewer';
 
 export class NoticeFinalizer implements IFinalizer {
@@ -23,12 +19,7 @@ export class NoticeFinalizer implements IFinalizer {
   readonly streamsInterpreterContent = true;
   readonly model?: string;
 
-  constructor(
-    private readonly recMcp: RecordingMcpClient,
-    private readonly criticLlm: ILlm,
-    private readonly toolTrust?: ToolTrust,
-    private readonly resolveToolTrust?: () => ToolTrust | Promise<ToolTrust>,
-  ) {}
+  constructor(private readonly recMcp: RecordingMcpClient) {}
 
   async finalize(input: FinalizerInput): Promise<FinalizerResult> {
     // Re-emit only when the full answer was not streamed. Skip empty output.
@@ -39,26 +30,9 @@ export class NoticeFinalizer implements IFinalizer {
     const records = this.recMcp.getToolRecords(input.trace?.traceId);
 
     const verdict = await evaluateGated({
-      writeToolOffered: this.recMcp.hadWriteCapability(input.trace?.traceId),
-      signal: input.signal,
-      toolTrust: this.resolveToolTrust
-        ? await this.resolveToolTrust()
-        : this.toolTrust,
-      usage: input.usage,
       content: input.interpreterOutput,
       records,
-      ...getReviewSignals(),
-      llm: this.criticLlm,
-      // What was asked, and the conversation it was asked in. Both were absent
-      // before: the reviewer received an empty task and no earlier turns, so it
-      // judged every answer as the first thing ever said and flagged correct
-      // ones — "42", after the user had supplied 42 — as unsupported.
-      // Both: what the user asked, and the coordinator's restatement of it. A
-      // restatement can drift, and a response that satisfies the restatement
-      // while missing the request is exactly the failure worth catching.
-      request: input.prompt,
-      task: input.objective || input.prompt,
-      history: getRequestHistory(),
+      writeToolOffered: this.recMcp.hadWriteCapability(input.trace?.traceId),
     });
 
     // Trailing NOTICE (after the answer) on a contradiction — NOTICE-ONLY
