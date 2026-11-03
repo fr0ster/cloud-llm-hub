@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.4.8] - 2026-11-03
+
 ### Fixed
 
 - Validate checker verdicts through a typed local tool and retry missing verdicts once within the worker task.
