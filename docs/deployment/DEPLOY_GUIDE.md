@@ -209,3 +209,9 @@ The `.mtaext` file is in `.gitignore` and will not be committed to Git.
 The extension templates include a commented docs MCP block. Merge it into your extension's existing `parameters` and `resources` sections. Under the existing `cloud-llm-hub-destination` resource, `parameters.config.init_data.subaccount` creates a subaccount destination during deployment with `existing_destinations_policy: update`. Set its configurable `Name` and docs MCP endpoint `URL`; keep `Type: HTTP`, `ProxyType: Internet`, and `Authentication: NoAuthentication`.
 
 List that same destination name in the desired comma-separated role variables: `LLM_AGENT_PLANNER_MCP`, `LLM_AGENT_EXECUTOR_MCP`, `LLM_AGENT_CHECKER_MCP`, and `LLM_AGENT_ANALYST_MCP`. Optionally set `LLM_AGENT_MCP_TRUST` to `DOCS_MCP=4.2` using your destination name. Empty role lists disable docs MCP; empty trust uses the profile/deployment `docs` default. Deploy the extension with the MTA as usual: deployment provisions the destination without manual cockpit creation. The hub resolves it through `resolveHttpDestination` and the bound destination service. Customer URLs belong only in the extension.
+
+### External documentation MCP selection
+
+`LLM_AGENT_MCP_SELECTION` accepts comma-separated `DEST=direct|rag|auto` entries. Empty means `auto` for every destination. Direct mode always includes connected tools permitted for the worker role and profile policy. RAG mode embeds tool names and descriptions into a separate runtime memory index and selects relevant tools alongside corpus results. Refresh replaces only that destination's index entries.
+
+`LLM_AGENT_MCP_DIRECT_MAX` is a positive integer (default `12`); invalid values warn and use the default. Auto uses direct mode at or below this tool count and RAG above it. RAG requires the hub embedder. For example, set `LLM_AGENT_EXECUTOR_MCP=DOCS_MCP` and `LLM_AGENT_MCP_SELECTION=DOCS_MCP=auto`. Role destination lists still control access.

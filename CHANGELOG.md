@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+- Add per-destination direct, RAG, and automatic external documentation tool selection, runtime indexing, planner awareness, and connection logs.
+- Use system trust for global skills and correction trust for user skill overrides.
+- Avoid unverified-write notices for historical prose beginning with `Created before` and similar phrases.
+
 ## [10.4.3] - 2026-11-03
 
 ### Changed

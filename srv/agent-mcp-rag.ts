@@ -571,7 +571,7 @@ async function runRagTool(
       const input = await resolverFor(registry).inputForSkill(
         doc.id,
         false,
-        doc.metadata.kind === 'correction' ? 'correction' : 'global',
+        doc.metadata.kind === 'correction' ? 'correction' : 'system',
       );
       const start = args.offset ?? 0;
 
@@ -601,7 +601,7 @@ async function runRagTool(
             await resolverFor(registry).inputForSkill(
               doc.id,
               false,
-              doc.metadata.kind === 'correction' ? 'correction' : 'global',
+              doc.metadata.kind === 'correction' ? 'correction' : 'system',
             ),
           ),
         })),

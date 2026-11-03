@@ -407,10 +407,13 @@ test('returns distinct trust maps for each prompt role and worker', async () => 
   });
 });
 
-test('worker and planner resolutions use cached tools while discovery hangs, then recover', async () => {
+test('worker and planner resolutions use cached tools while discovery is pending, then recover', async () => {
   jest.useFakeTimers();
   try {
-    let reachable = false;
+    let finish: () => void = () => {};
+    const ready = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
     const external = new ExternalMcp(
       parseExternalMcp({
         LLM_AGENT_EXECUTOR_MCP: 'docs',
@@ -419,7 +422,7 @@ test('worker and planner resolutions use cached tools while discovery hangs, the
       }),
       () => [],
       async (): Promise<IMcpClient> => {
-        if (!reachable) return new Promise<IMcpClient>(() => {});
+        await ready;
         return {
           listTools: async () => ({
             ok: true,
@@ -446,9 +449,8 @@ test('worker and planner resolutions use cached tools while discovery hangs, the
       expect(await f.source.resolveWorker(name)).toMatchObject({ ok: true });
     expect(await f.source.getPrompts()).toMatchObject({ ok: true });
     expect(external.catalogue()).toEqual([]);
-    await jest.advanceTimersByTimeAsync(600_000);
-    reachable = true;
-    await jest.advanceTimersByTimeAsync(30001);
+    finish();
+    await external.clients('executor');
     expect(await f.source.getPrompts()).toMatchObject({ ok: true });
     await jest.advanceTimersByTimeAsync(0);
     for (const name of ['executor', 'checker'])

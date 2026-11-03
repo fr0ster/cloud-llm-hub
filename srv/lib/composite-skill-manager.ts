@@ -193,7 +193,7 @@ export class CompositeSkillManager implements ISkillManager {
               resolve().skill(
                 skillId(skill),
                 skill.meta.trustAmbiguous === true,
-                skill.meta.kind === 'correction' ? 'correction' : 'global',
+                skill.meta.kind === 'correction' ? 'correction' : 'system',
               ),
             )
           : skill;

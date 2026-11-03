@@ -7,6 +7,26 @@ import {
   isWriteTool,
 } from '../../srv/lib/write-guardrail';
 
+test.each(['before', 'after', 'during', 'for', 'with', 'as', 'when'])(
+  'historical prose starting Created %s is not a write claim',
+  (word) => {
+    expect(
+      applyWriteGuardrail(
+        `   - Created ${word} RAP's strict composition semantics were established`,
+      ).warned,
+    ).toBe(false);
+  },
+);
+
+test.each(['- Created ZCL_FOO', '\u2705 Created class ZCL_X'])(
+  'real status line remains a write claim: %s',
+  (line) => expect(applyWriteGuardrail(line).warned).toBe(true),
+);
+
+test('Created metadata stays excluded', () => {
+  expect(applyWriteGuardrail('Created: yesterday').warned).toBe(false);
+});
+
 describe('extractExecutedTools', () => {
   it('pulls tool names from [SmartAgent: Executing X...] markers', () => {
     const c =

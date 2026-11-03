@@ -136,12 +136,12 @@ export async function skillDocumentView(
     await resolver.inputForSkill(
       doc.id,
       false,
-      doc.metadata.kind === 'correction' ? 'correction' : 'global',
+      doc.metadata.kind === 'correction' ? 'correction' : 'system',
     ),
   );
 }
 export async function skillCollectionView(resolver: TrustResolver) {
-  const input = await resolver.inputForSkill('');
+  const input = await resolver.inputForSkill('', false, 'global');
   return collectionView(
     {
       id: '@skills',

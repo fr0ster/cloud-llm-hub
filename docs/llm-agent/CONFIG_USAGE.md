@@ -453,3 +453,9 @@ See [the timeout audit](../superpowers/verification/2026-11-02-timeout-audit.md)
 Each dialogue session lazily owns its LLM clients, including coordinator, workers, classifier and critic. A session-specific provider quotaScope isolates Retry-After waits from all other sessions. Calls within one session share the provider/model quota gate. Closing or evicting a session drops its clients; usage and context capture remain enabled. Providers currently expose no transport disposal API. llm-agent releases quota leases after calls and prunes idle, open gates (with a bounded registry); penalized or leased gates remain until safe to reclaim.
 
 Dialogue sessions lazily own provider clients and quota scopes: a 429 pauses only that session, while its calls share their provider/model gate. Usage and context capture remain enabled. Closing or evicting a session drops client references. Providers expose no close/dispose API. llm-agent releases gate leases after calls and reclaims open idle gates with a bounded registry; penalized and leased entries remain until safe to reclaim.
+
+### External documentation MCP selection
+
+`LLM_AGENT_MCP_SELECTION` accepts comma-separated `DEST=direct|rag|auto` entries. Empty means `auto` for every destination. Direct mode always includes connected tools permitted for the worker role and profile policy. RAG mode embeds tool names and descriptions into a separate runtime memory index and selects relevant tools alongside corpus results. Refresh replaces only that destination's index entries.
+
+`LLM_AGENT_MCP_DIRECT_MAX` is a positive integer (default `12`); invalid values warn and use the default. Auto uses direct mode at or below this tool count and RAG above it. RAG requires the hub embedder. For example, set `LLM_AGENT_EXECUTOR_MCP=DOCS_MCP` and `LLM_AGENT_MCP_SELECTION=DOCS_MCP=auto`. Role destination lists still control access.

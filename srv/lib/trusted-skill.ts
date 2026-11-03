@@ -34,7 +34,7 @@ export function withSkillTrust(
           return result.ok
             ? {
                 ...result,
-                value: `${formatTrustTag(`${target.meta.kind === 'correction' ? 'correction' : 'global'}:skills/${skillId(target)}`, await trust())}\n${result.value}`,
+                value: `${formatTrustTag(`${target.meta.kind === 'correction' ? 'correction' : 'system'}:skills/${skillId(target)}`, await trust())}\n${result.value}`,
               }
             : result;
         };
@@ -68,14 +68,14 @@ export async function trustedSkillResults(
         ...row,
         metadata: {
           ...row.metadata,
-          source: `${skills?.value.find((skill) => skillId(skill) === name)?.meta.kind === 'correction' ? 'correction' : 'global'}:skills/${name}`,
+          source: `${skills?.value.find((skill) => skillId(skill) === name)?.meta.kind === 'correction' ? 'correction' : 'system'}:skills/${name}`,
           trust: await resolver.skill(
             name,
             ambiguous.has(name),
             skills?.value.find((skill) => skillId(skill) === name)?.meta
               .kind === 'correction'
               ? 'correction'
-              : 'global',
+              : 'system',
           ),
         },
       };

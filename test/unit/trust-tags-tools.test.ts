@@ -58,18 +58,18 @@ test('skill bodies and descriptions resolve live without modifying raw content o
   ];
   expect(await wrapped.getContent()).toEqual({
     ok: true,
-    value: '[source: global:skills/info; trust 3]\nbody',
+    value: '[source: system:skills/info; trust 4.8]\nbody',
   });
-  expect((await trustedSkillResults(rows, live))[0].metadata.trust).toBe(3);
+  expect((await trustedSkillResults(rows, live))[0].metadata.trust).toBe(4.8);
   await store.setRecord('skills', 'info', 2, 'admin');
   expect(await wrapped.getContent()).toEqual({
     ok: true,
-    value: '[source: global:skills/info; trust 2]\nbody',
+    value: '[source: system:skills/info; trust 2]\nbody',
   });
   const next = await trustedSkillResults(rows, live);
   expect(next[0].metadata).toEqual({
     id: 'skill:info',
-    source: 'global:skills/info',
+    source: 'system:skills/info',
     trust: 2,
   });
   expect(next[1]).toEqual(rows[1]);
@@ -373,12 +373,12 @@ test.each(['pipeline', 'rag-orchestrator'])(
       return messages.map((m) => m.content).join('\n');
     };
     expect(await run()).toContain(
-      '[source: global:skills/info; trust 3]\nbody',
+      '[source: system:skills/info; trust 4.8]\nbody',
     );
     await store.setRecord('skills', 'info', 2, 'admin');
     const next = await run();
-    expect(next).toContain('[source: global:skills/info; trust 2]\nbody');
-    expect(next).toContain('[source: global:skills/info; trust 2] description');
+    expect(next).toContain('[source: system:skills/info; trust 2]\nbody');
+    expect(next).toContain('[source: system:skills/info; trust 2] description');
     expect(next).not.toContain('trust 3]');
     selected = false;
     expect(await run()).not.toContain('## Active Skills');
@@ -516,7 +516,7 @@ test('hub tools/skills store projects live trust using the querying role and lea
     first.ok &&
       first.value.find((row) => row.metadata.id === 'skill:info')?.metadata
         .trust,
-  ).toBe(3);
+  ).toBe(4.8);
   await store.setRecord('skills', 'info', 1, 'admin');
   const next = await query();
   expect(
@@ -524,7 +524,7 @@ test('hub tools/skills store projects live trust using the querying role and lea
       next.value.find((row) => row.metadata.id === 'skill:info')?.metadata,
   ).toEqual({
     id: 'skill:info',
-    source: 'global:skills/info',
+    source: 'system:skills/info',
     trust: 1,
   });
   expect(

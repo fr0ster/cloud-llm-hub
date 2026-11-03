@@ -1709,13 +1709,17 @@ export function getHandlerExporterConfig() {
 /** Static, destination-free tool list from HandlerExporter (same config as buildEmbeddedMcpAdapter). */
 let embeddedToolNames: ReadonlySet<string> | undefined;
 let externalDocs: ExternalMcp | undefined;
-function docsMcp(): ExternalMcp {
+export function docsMcp(): ExternalMcp {
   externalDocs ??= new ExternalMcp(
     getAgentConfig().externalMcp ?? {
       roles: { planner: [], executor: [], checker: [], analyst: [] },
       trust: {},
     },
     () => [...getToolExpositionMap().keys(), ...ragToolNames],
+    undefined,
+    undefined,
+    undefined,
+    () => providers?.embedding?.retrieval,
   );
   return externalDocs;
 }
@@ -2908,8 +2912,14 @@ async function configureDestinationAgentBuilder(
           ),
     ]);
 
-  // Tools RAG store for MCP tool selection (auto-vectorized)
-  if (!opts?.skipRetrieval) builder.setToolsRag(withDialogueRagTools(toolsRag));
+  // Docs candidates are role-scoped reads, merged after SAP exposition filtering.
+  // Their runtime index never writes into the prebuilt corpus.
+  if (!opts?.skipRetrieval)
+    builder.setToolsRag(
+      withDialogueRagTools(
+        docsMcp().withToolsRag(toolsRag, opts?.role ?? 'executor'),
+      ),
+    );
 
   // Recall of earlier turns. The pipeline already queries `history` on every
   // request; until now nothing wrote to it, so it answered nothing every time.
