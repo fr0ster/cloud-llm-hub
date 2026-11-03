@@ -343,7 +343,6 @@ async function open(
   )
     throw new Error('Destination profile runner unavailable');
   const { recMcp, criticLlm, profileRunner } = destinationHandle;
-  recMcp.openSession(userId, key);
   let runningWorkers = 0;
   const trustResolver = destinationHandle.trustResolver ?? resolverFor({});
   const usage = usageRuntime()?.forSession({
@@ -894,6 +893,7 @@ async function open(
       workerRecords: [],
       active: true,
     };
+    let reviewedGeneration = recMcp.writeGeneration(userId, key);
     try {
       let result = await observeLlmSpend(
         () =>
@@ -924,6 +924,7 @@ async function open(
         },
       );
       if (result.ok && result.value.content) {
+        reviewedGeneration = recMcp.writeGeneration(userId, key);
         const writeToolOffered =
           recMcp.hadWriteCapability(turn.traceId) ||
           recMcp.hadSessionWriteCapability(userId, key) ||
@@ -948,8 +949,6 @@ async function open(
             request: input.at(-1)?.content ?? '',
             history: getRequestHistory(),
           });
-          if (runningWorkers === 0)
-            recMcp.consumeSessionWriteCapability(userId, key);
           result = {
             ...result,
             value: {
@@ -1001,6 +1000,9 @@ async function open(
       turnFailureCause = llmFailure(error);
       throw new Error(turnFailureCause);
     } finally {
+      // Preserve evidence arriving during review, or during an empty/failed turn.
+      if (runningWorkers === 0)
+        recMcp.markReviewed(userId, key, reviewedGeneration);
       turn.active = false;
       turn.workerTraces.clear();
       turn.workerRecords.length = 0;
@@ -1027,6 +1029,7 @@ async function open(
       trust: prompts.ok ? prompts.value.trust?.coordinator : undefined,
     });
   };
+  recMcp.openSession(userId, key);
   try {
     const retrieval = await plannerSessionOptions(
       userId,
@@ -1316,6 +1319,7 @@ async function open(
     });
     await drainPending();
   } catch (error) {
+    recMcp.closeSession(userId, key);
     stopLifetime();
     await session?.close();
     await pool.closeAll();

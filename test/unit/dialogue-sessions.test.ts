@@ -99,7 +99,9 @@ const mockRun = jest.fn<Promise<ISubAgentResult>, [ISubAgentInput]>();
 const mockRelease = jest.fn();
 const mockDrain = jest.fn(async () => {});
 const mockDrop = jest.fn();
-let mockSessionWriteCapability = false;
+let mockSessionWriteGeneration = 0;
+let mockSessionReviewedGeneration = 0;
+const mockOpenSession = jest.fn();
 const mockWriteCapability = jest.fn((_traceId?: string) => false);
 const mockPlannerTurns: string[] = [];
 const mockAuthorTurns: string[] = [];
@@ -284,12 +286,19 @@ jest.mock('../../srv/agent-manager', () => ({
       withSession: <T>(_user: string, _session: string, run: () => T): T =>
         run(),
       openSession: () => {
-        mockSessionWriteCapability = false;
+        mockSessionWriteGeneration = 0;
+        mockSessionReviewedGeneration = 0;
+        mockOpenSession();
       },
       closeSession: jest.fn(),
-      hadSessionWriteCapability: () => mockSessionWriteCapability,
-      consumeSessionWriteCapability: () => {
-        mockSessionWriteCapability = false;
+      hadSessionWriteCapability: () =>
+        mockSessionWriteGeneration > mockSessionReviewedGeneration,
+      writeGeneration: () => mockSessionWriteGeneration,
+      markReviewed: (_user: string, _key: string, snapshot: number) => {
+        mockSessionReviewedGeneration = Math.max(
+          mockSessionReviewedGeneration,
+          snapshot,
+        );
       },
       hadWriteCapability: (traceId?: string) => mockWriteCapability(traceId),
       getToolRecords: () => [],
@@ -688,7 +697,7 @@ test.each([
     mockRun.mockImplementation(async (input) => {
       if (offered && input.trace?.traceId) {
         workerTraces.add(input.trace.traceId);
-        mockSessionWriteCapability = true;
+        mockSessionWriteGeneration++;
       }
       return { output: 'Finished analysis.' };
     });
@@ -722,6 +731,82 @@ test.each([
     );
   },
 );
+
+test('failed load never registers session write state', async () => {
+  const load = jest
+    .spyOn(getDialogueStoreBackend(), 'load')
+    .mockRejectedValueOnce(new Error('load failed'));
+  try {
+    await expect(dialogueFor('alice', 'key', 'TEST')).rejects.toThrow(
+      'load failed',
+    );
+    expect(mockOpenSession).not.toHaveBeenCalled();
+  } finally {
+    load.mockRestore();
+  }
+});
+
+test.each(['failure', 'empty'] as const)(
+  '%s coordinator turn retires prior capability',
+  async (outcome) => {
+    const { h } = await ready();
+    mockSessionWriteGeneration++;
+    mockPlannerHook = async () => {
+      if (outcome === 'failure') throw new Error('planner failed');
+    };
+    mockFinalAnswer = '';
+    if (outcome === 'failure') {
+      await expect(h.session.send('go')).rejects.toThrow('planner failed');
+    } else {
+      await h.session.send('go');
+      await until(
+        () => mockSessionReviewedGeneration === mockSessionWriteGeneration,
+      );
+    }
+    mockPlannerHook = undefined;
+    mockFinalAnswer = 'X was created using the older syntax.';
+    jest.mocked(evaluateGated).mockClear();
+    await h.session.send('read only');
+    expect(
+      jest
+        .mocked(evaluateGated)
+        .mock.calls.every(([input]) => !input.writeToolOffered),
+    ).toBe(true);
+    expect(h.session.snapshot().conversation.at(-1)?.content).not.toContain(
+      'UNVERIFIED_WRITE:',
+    );
+  },
+);
+
+test('worker write arriving during review remains pending for the next answer', async () => {
+  const { h } = await ready();
+  mockPlan = { status: 'waiting_user', question: 'Proceed?' };
+  mockSessionWriteGeneration++;
+  let entered!: () => void;
+  const reviewing = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let finish!: () => void;
+  const release = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  jest.mocked(evaluateGated).mockImplementationOnce(async () => {
+    entered();
+    await release;
+    return { ok: true };
+  });
+  const sending = h.session.send('go');
+  await reviewing;
+  mockSessionWriteGeneration++;
+  finish();
+  await sending;
+  expect(mockSessionReviewedGeneration).toBe(1);
+  jest.mocked(evaluateGated).mockClear();
+  await h.session.send('next answer');
+  expect(jest.mocked(evaluateGated).mock.calls[0][0].writeToolOffered).toBe(
+    true,
+  );
+});
 
 test('honesty notice reaches task output and planner', async () => {
   const { h } = await ready();

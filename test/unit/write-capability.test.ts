@@ -126,7 +126,11 @@ test.each(['late worker', 'background event', 'nested execute_step'])(
     expect(review()).toContain('claims "created"');
     // A review while workers still run leaves the accumulator intact.
     expect(review()).toContain('claims "created"');
-    recorder.consumeSessionWriteCapability('alice', 'dialogue');
+    recorder.markReviewed(
+      'alice',
+      'dialogue',
+      recorder.writeGeneration('alice', 'dialogue'),
+    );
     expect(recorder.hadSessionWriteCapability('alice', 'dialogue')).toBe(false);
   },
 );
@@ -172,4 +176,32 @@ test('session capability isolates owners and sessions and clears on close', asyn
     'alice',
   );
   expect(recorder.hadSessionWriteCapability('alice', 'write')).toBe(false);
+});
+
+test('reviewing a snapshot preserves later worker writes across recorder views', async () => {
+  const recorder = new RecordingMcpClient(inner);
+  const worker = recorder.includeClients([inner]);
+  recorder.openSession('alice', 'dialogue');
+  const offer = () =>
+    recorder.withSession('alice', 'dialogue', () =>
+      worker
+        .trackOfferedTools(llm)
+        .chat([], [{ name: 'CreateClass', description: '', inputSchema: {} }]),
+    );
+  await offer();
+  const snapshot = recorder.writeGeneration('alice', 'dialogue');
+  await offer();
+  expect(recorder.writeGeneration('alice', 'dialogue')).toBeGreaterThan(
+    snapshot,
+  );
+  recorder.markReviewed('alice', 'dialogue', snapshot);
+  expect(recorder.hadSessionWriteCapability('alice', 'dialogue')).toBe(true);
+  recorder.markReviewed(
+    'alice',
+    'dialogue',
+    recorder.writeGeneration('alice', 'dialogue'),
+  );
+  // An older review settling last cannot roll back the reviewed generation.
+  recorder.markReviewed('alice', 'dialogue', snapshot);
+  expect(recorder.hadSessionWriteCapability('alice', 'dialogue')).toBe(false);
 });

@@ -85,7 +85,10 @@ export class RecordingMcpClient implements IMcpClient {
   private readonly knownNames: Set<string>;
   private readonly deltas: Map<string, ToolCallRecord[]>;
   private readonly offeredWrites: Set<string>;
-  private readonly sessionWrites: Map<string, boolean>;
+  private readonly sessionWrites: Map<
+    string,
+    { generation: number; reviewed: number }
+  >;
 
   /** Present iff `inner` implements it, so callers relying on `?.` see the
    *  same optionality the inner client exposes. */
@@ -102,7 +105,7 @@ export class RecordingMcpClient implements IMcpClient {
     // A view shares its origin's records: one reviewer evidence per request.
     shared?: RecordingMcpClient,
   ) {
-    this.sessionWrites = shared?.sessionWrites ?? new Map<string, boolean>();
+    this.sessionWrites = shared?.sessionWrites ?? new Map();
     this.offeredWrites = shared?.offeredWrites ?? new Set<string>();
     this.knownNames = shared?.knownNames ?? new Set<string>();
     this.deltas = shared?.deltas ?? new Map<string, ToolCallRecord[]>();
@@ -316,16 +319,31 @@ export class RecordingMcpClient implements IMcpClient {
 
   /** Register only dialogue sessions; ordinary request reviews remain trace-scoped. */
   openSession(userId: string, sessionId: string): void {
-    this.sessionWrites.set(JSON.stringify([userId, sessionId]), false);
+    this.sessionWrites.set(JSON.stringify([userId, sessionId]), {
+      generation: 0,
+      reviewed: 0,
+    });
   }
 
   hadSessionWriteCapability(userId: string, sessionId: string): boolean {
-    return this.sessionWrites.get(JSON.stringify([userId, sessionId])) === true;
+    const state = this.sessionWrites.get(JSON.stringify([userId, sessionId]));
+    return !!state && state.generation > state.reviewed;
   }
 
-  consumeSessionWriteCapability(userId: string, sessionId: string): void {
-    const key = JSON.stringify([userId, sessionId]);
-    if (this.sessionWrites.has(key)) this.sessionWrites.set(key, false);
+  writeGeneration(userId: string, sessionId: string): number {
+    return (
+      this.sessionWrites.get(JSON.stringify([userId, sessionId]))?.generation ??
+      0
+    );
+  }
+
+  markReviewed(userId: string, sessionId: string, snapshot: number): void {
+    const state = this.sessionWrites.get(JSON.stringify([userId, sessionId]));
+    if (state)
+      state.reviewed = Math.max(
+        state.reviewed,
+        Math.min(snapshot, state.generation),
+      );
   }
 
   closeSession(userId: string, sessionId: string): void {
@@ -335,7 +353,8 @@ export class RecordingMcpClient implements IMcpClient {
   withSession<T>(userId: string, sessionId: string, run: () => T): T {
     const key = JSON.stringify([userId, sessionId]);
     return sessionWriteRecorder.run(() => {
-      if (this.sessionWrites.has(key)) this.sessionWrites.set(key, true);
+      const state = this.sessionWrites.get(key);
+      if (state) state.generation++;
     }, run);
   }
 

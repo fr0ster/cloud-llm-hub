@@ -245,7 +245,8 @@ jest.mock('../../srv/agent-manager', (): object => ({
       | 'dropRequest'
       | 'openSession'
       | 'hadSessionWriteCapability'
-      | 'consumeSessionWriteCapability'
+      | 'writeGeneration'
+      | 'markReviewed'
       | 'closeSession'
       | 'withSession'
     >;
@@ -261,7 +262,8 @@ jest.mock('../../srv/agent-manager', (): object => ({
       hadWriteCapability: () => false,
       openSession(): void {},
       hadSessionWriteCapability: () => false,
-      consumeSessionWriteCapability(): void {},
+      writeGeneration: () => 0,
+      markReviewed(): void {},
       closeSession(): void {},
       withSession: <T>(_userId: string, _sessionId: string, run: () => T): T =>
         run(),
