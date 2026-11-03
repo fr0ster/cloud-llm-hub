@@ -139,6 +139,15 @@ test('coordinator profile prescribes no check rules and stays within budget', ()
   expect(profile).toContain('plan_revise');
 });
 
+test.each(['{"verdict":"pass","count":-1}', '{"verdict":"pass","count":1.5}'])(
+  'malformed count %s remains undecided',
+  (output) => {
+    expect(bindCheckerVerdict(output, context, '', [])).toBe(
+      'unusable verdict: invalid_envelope',
+    );
+  },
+);
+
 test('non-verdict output remains undecided', () => {
   expect(bindCheckerVerdict('Cannot verify yet', context, '', [])).toBe(
     'unusable verdict: invalid_envelope',

@@ -5,7 +5,7 @@ import { z } from 'zod';
 const verdictSchema = z
   .object({
     verdict: z.enum(['pass', 'fail']),
-    count: z.number().optional(),
+    count: z.number().int().nonnegative().optional(),
     note: z.string().optional(),
     claims: z
       .array(
