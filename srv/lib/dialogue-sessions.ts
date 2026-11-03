@@ -893,7 +893,9 @@ async function open(
       workerRecords: [],
       active: true,
     };
-    let reviewedGeneration = recMcp.writeGeneration(userId, key);
+    // Set when content is reviewed; empty/failed turns settle at the generation
+    // current when they end, so their own capability does not leak forward.
+    let reviewedGeneration: number | undefined;
     try {
       let result = await observeLlmSpend(
         () =>
@@ -1002,7 +1004,11 @@ async function open(
     } finally {
       // Preserve evidence arriving during review, or during an empty/failed turn.
       if (runningWorkers === 0)
-        recMcp.markReviewed(userId, key, reviewedGeneration);
+        recMcp.markReviewed(
+          userId,
+          key,
+          reviewedGeneration ?? recMcp.writeGeneration(userId, key),
+        );
       turn.active = false;
       turn.workerTraces.clear();
       turn.workerRecords.length = 0;

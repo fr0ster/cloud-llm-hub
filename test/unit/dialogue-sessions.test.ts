@@ -746,12 +746,18 @@ test('failed load never registers session write state', async () => {
   }
 });
 
-test.each(['failure', 'empty'] as const)(
-  '%s coordinator turn retires prior capability',
-  async (outcome) => {
+test.each([
+  ['failure', 'prior'],
+  ['empty', 'prior'],
+  ['failure', 'during'],
+  ['empty', 'during'],
+] as const)(
+  '%s coordinator turn retires %s capability',
+  async (outcome, acquired) => {
     const { h } = await ready();
-    mockSessionWriteGeneration++;
+    if (acquired === 'prior') mockSessionWriteGeneration++;
     mockPlannerHook = async () => {
+      if (acquired === 'during') mockSessionWriteGeneration++;
       if (outcome === 'failure') throw new Error('planner failed');
     };
     mockFinalAnswer = '';
