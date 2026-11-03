@@ -137,7 +137,8 @@ If you changed `scopes`, use Re-authenticate: the stored token carries the old s
 - **OAuth client secret:** only in Claude Code's `.credentials.json`. Not in `.mcp.json`, git or a chat.
 - **SAP user and password:** only in environment variables. `.mcp.json` holds only `${...}`.
 - **`.credentials.json` and its `.bak-*` copies:** never copy or commit them. Delete backups when they are no longer needed.
-- **If a secret leaked into a chat or log:** create a new service key (`cf create-service-key`) and repeat sections 2–4.
+- **If the OAuth client secret leaked into a chat or log:** delete the compromised service key (`cf delete-service-key`), create a new one (`cf create-service-key`) and repeat sections 2–4.
+- **If the SAP password leaked:** change the SAP password, update the env file and repeat sections 3–4.
 - **Token:** short-lived; Claude Code refreshes it. If not, Authenticate again.
 
 ## 7. Common errors
@@ -148,7 +149,8 @@ If you changed `scopes`, use Re-authenticate: the stored token carries the old s
 | `invalid_scope` on `MCP_Reader` or `MCP_Developer` | the user has no role collection with that role | assign the role in the BTP cockpit |
 | `Bad credentials` after login | no secret under the expected hash | section 4 |
 | `needs authentication` after changing headers or the password | the hash changed | sections 2–4 |
-| 401 from the hub | missing or expired token, or missing role | Authenticate again, check roles |
+| 401 from the hub | missing or expired token | Authenticate again |
+| 403 from the hub | the user lacks `MCP_Reader` or `MCP_Developer` | assign the role collection in the BTP cockpit, then Re-authenticate |
 | redirect URI error | `http://localhost:7888/callback` not allowed for the client | adjust `xs-security` |
 | `Bad credentials` from SAP | wrong user or password, locked user, wrong client | check the env file and `X-SAP-Client` |
 | empty `X-SAP-*` headers | variables not set in the terminal | section 3 |
