@@ -479,17 +479,16 @@ async function open(
     }
   }
   // Late evidence is session-local. Keep at most 128 tool records, evicting
-  // oldest first; retain capability even after eviction so claims still warn.
+  // oldest first. Capability is accumulated before eviction (it already covers
+  // attempted writes), so an evicted write still makes claims warn.
   const pendingWorkerRecords: ToolCallRecord[] = [];
   let pendingWorkerWriteCapability = false;
   const retainWorkerEvidence = (traceId: string) => {
     if (stopped) return;
     pendingWorkerWriteCapability ||= recMcp.hadWriteCapability(traceId);
     pendingWorkerRecords.push(...recMcp.getToolRecords(traceId));
-    if (pendingWorkerRecords.length > 128) {
-      pendingWorkerWriteCapability = true;
+    if (pendingWorkerRecords.length > 128)
       pendingWorkerRecords.splice(0, pendingWorkerRecords.length - 128);
-    }
   };
   type PlannerTurn = {
     traceId?: string;

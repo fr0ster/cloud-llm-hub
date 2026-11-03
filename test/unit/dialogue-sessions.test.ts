@@ -821,6 +821,65 @@ test.each([true, false, 'close'] as const)(
   },
 );
 
+test('evicting read-only late worker records grants no write capability', async () => {
+  const { h } = await ready();
+  let finish!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  let workerTrace: string | undefined;
+  mockWriteCapability.mockImplementation(() => false);
+  mockRun.mockImplementation(async (input) => {
+    workerTrace = input.trace?.traceId;
+    await blocked;
+    if (workerTrace)
+      mockToolRecords.set(
+        workerTrace,
+        Array.from({ length: 129 }, (_, i) => ({
+          call: { id: `read-${i}`, name: 'GetTable', arguments: {} },
+          result: { content: { success: true } },
+        })),
+      );
+    return { output: 'Finished.' };
+  });
+  await h.session.send('go');
+  await until(() => !!workerTrace);
+  mockBackgroundAnswer = 'X was created using the older syntax.';
+  jest
+    .mocked(evaluateGated)
+    .mockImplementation(async (input) =>
+      jest
+        .requireActual<typeof import('../../srv/lib/step-reviewer')>(
+          '../../srv/lib/step-reviewer',
+        )
+        .evaluateGated(input),
+    );
+  jest.mocked(evaluateGated).mockClear();
+  finish();
+  await until(() =>
+    h.session
+      .snapshot()
+      .conversation.some(
+        (message) =>
+          typeof message.content === 'string' &&
+          message.content.includes('X was created using'),
+      ),
+  );
+  expect(
+    jest
+      .mocked(evaluateGated)
+      .mock.calls.every(([input]) => !input.writeToolOffered),
+  ).toBe(true);
+  const answer = h.session
+    .snapshot()
+    .conversation.find(
+      (message) =>
+        typeof message.content === 'string' &&
+        message.content.includes('X was created using'),
+    )?.content;
+  expect(answer).not.toContain('UNVERIFIED_WRITE:');
+});
+
 test('a failed turn settles buffered late worker evidence', async () => {
   const { h } = await ready();
   let finish!: () => void;
