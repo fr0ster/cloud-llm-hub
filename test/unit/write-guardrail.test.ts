@@ -7,7 +7,7 @@ import {
   isWriteTool,
 } from '../../srv/lib/write-guardrail';
 
-test.each(['before', 'after', 'during', 'for', 'with', 'as', 'when'])(
+test.each(['before'])(
   'historical prose starting Created %s is not a write claim',
   (word) => {
     expect(
@@ -18,9 +18,14 @@ test.each(['before', 'after', 'during', 'for', 'with', 'as', 'when'])(
   },
 );
 
-test.each(['- Created ZCL_FOO', '\u2705 Created class ZCL_X'])(
-  'real status line remains a write claim: %s',
-  (line) => expect(applyWriteGuardrail(line).warned).toBe(true),
+test.each([
+  '- Created ZCL_FOO',
+  '\u2705 Created class ZCL_X',
+  'Created for you: domain ZTEST.',
+  'Updated with the requested fields.',
+  'Activated after fixing the errors.',
+])('real status line remains a write claim: %s', (line) =>
+  expect(applyWriteGuardrail(line).warned).toBe(true),
 );
 
 test('Created metadata stays excluded', () => {

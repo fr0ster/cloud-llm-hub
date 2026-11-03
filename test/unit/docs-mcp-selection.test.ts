@@ -76,6 +76,115 @@ async function names(rag: IRag, text = 'cds', k = 1) {
   return result.value.map((row) => row.metadata.id);
 }
 
+test('the safety net aborts hung indexing and preserves the MCP connection', async () => {
+  jest.useFakeTimers();
+  try {
+    const warn = jest.fn();
+    const disconnect = jest.fn(async () => {});
+    let finish: (value: { vector: number[] }) => void = () => {};
+    const embedDocument = jest.fn<
+      ReturnType<IRetrievalEmbedder['embedDocument']>,
+      Parameters<IRetrievalEmbedder['embedDocument']>
+    >(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const embedQuery = jest.fn(embedder.embedQuery);
+    const docs = new ExternalMcp(
+      parseExternalMcp({
+        LLM_AGENT_EXECUTOR_MCP: 'DOCS',
+        LLM_AGENT_MCP_SELECTION: 'DOCS=rag',
+      }),
+      () => [],
+      async () => ({
+        listTools: async () => ({ ok: true, value: [tools[0]] }),
+        callTool: async () => ({ ok: true, value: { content: 'docs' } }),
+        disconnect,
+      }),
+      warn,
+      Date.now,
+      () => ({ embedDocument, embedQuery }),
+    );
+    let resolved = false;
+    const ready = docs.clients('executor').then((clients) => {
+      resolved = true;
+      return clients;
+    });
+    await jest.advanceTimersByTimeAsync(599_999);
+    expect(resolved).toBe(false);
+    expect(embedDocument).toHaveBeenCalledTimes(1);
+    const signal = embedDocument.mock.calls[0][1]?.signal;
+    expect(signal?.aborted).toBe(false);
+    expect(warn).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    const clients = await ready;
+    expect(clients).toHaveLength(1);
+    expect(signal?.aborted).toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      'External docs MCP indexing unavailable; no docs hits',
+      { destination: 'DOCS' },
+    );
+    expect(disconnect).not.toHaveBeenCalled();
+    expect(await clients[0].callTool('search_cds', {})).toMatchObject({
+      ok: true,
+    });
+    expect(await names(docs.withToolsRag(corpus, 'executor'))).toEqual([
+      'tool:corpus',
+    ]);
+    expect(embedQuery).not.toHaveBeenCalled();
+    // An embedder ignoring cancellation must not publish late vectors.
+    finish({ vector: [1, 0] });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(await names(docs.withToolsRag(corpus, 'executor'))).toEqual([
+      'tool:corpus',
+    ]);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test.each(['direct', 'rag'])(
+  'indexing failure keeps a %s connection usable',
+  async (mode) => {
+    const warn = jest.fn();
+    const disconnect = jest.fn(async () => {});
+    const docs = new ExternalMcp(
+      parseExternalMcp({
+        LLM_AGENT_EXECUTOR_MCP: 'DOCS',
+        LLM_AGENT_MCP_SELECTION: `DOCS=${mode}`,
+      }),
+      () => [],
+      async () => ({
+        listTools: async () => ({ ok: true, value: tools }),
+        callTool: async () => ({ ok: true, value: { content: 'docs' } }),
+        disconnect,
+      }),
+      warn,
+      Date.now,
+      () => ({
+        ...embedder,
+        embedDocument: async () => {
+          throw new Error('offline');
+        },
+      }),
+    );
+    const clients = await docs.clients('executor');
+    expect(clients).toHaveLength(1);
+    expect(await clients[0].callTool('search_cds', {})).toMatchObject({
+      ok: true,
+    });
+    expect(disconnect).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(mode === 'rag' ? 1 : 0);
+    expect(await names(docs.withToolsRag(corpus, 'executor'))).toEqual(
+      mode === 'rag'
+        ? ['tool:corpus']
+        : ['tool:corpus', 'tool:search_cds', 'tool:search_ui'],
+    );
+  },
+);
+
 test('selection configuration validates modes and defaults', () => {
   expect(parseExternalMcp({})).toMatchObject({ selection: {}, directMax: 12 });
   expect(

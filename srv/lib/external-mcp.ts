@@ -210,15 +210,17 @@ export class ExternalMcp {
     if ((this.retryAt.get(destination) ?? 0) > this.now())
       return Promise.resolve(this.cached.get(destination));
     // Background discovery has no caller signal and never blocks profiles.
-    // Release a truly hung refresh after ten minutes; failed() logs a warning.
+    // Release hung discovery or indexing after ten minutes and log a warning.
     let timer: ReturnType<typeof setTimeout> | undefined;
     let expired = false;
+    let indexing = false;
+    const controller = new AbortController();
     let candidate: ExternalMcpClient | undefined;
     const previous = this.cached.get(destination);
     const pending = (async () => {
       try {
-        const connection = await Promise.race([
-          (async (): Promise<Connection> => {
+        await Promise.race([
+          (async (): Promise<void> => {
             candidate =
               previous && !this.unhealthy.has(destination)
                 ? previous.client
@@ -229,32 +231,35 @@ export class ExternalMcp {
             }
             const listed = await candidate.listTools();
             if (!listed.ok) throw listed.error;
-            return {
+            const connection: Connection = {
               client: candidate,
               tools: listed.value,
               active: 0,
               retired: false,
             };
+            controller.signal.throwIfAborted();
+            // Keep the activity counter when refreshing the same live client.
+            if (previous?.client === connection.client) {
+              previous.tools = connection.tools;
+              this.cached.set(destination, previous);
+            } else {
+              this.cached.set(destination, connection);
+              if (previous) this.retire(previous);
+            }
+            this.unhealthy.delete(destination);
+            this.rebuildOwners();
+            indexing = true;
+            await this.indexDestination(destination, controller.signal);
           })(),
           new Promise<never>((_resolve, reject) => {
             timer = setTimeout(() => {
               expired = true;
               reject(new Error('Discovery timed out'));
+              controller.abort();
             }, 600_000);
             timer.unref();
           }),
         ]);
-        // Keep the activity counter when refreshing the same live client.
-        if (previous?.client === connection.client) {
-          previous.tools = connection.tools;
-          this.cached.set(destination, previous);
-        } else {
-          this.cached.set(destination, connection);
-          if (previous) this.retire(previous);
-        }
-        this.unhealthy.delete(destination);
-        this.rebuildOwners();
-        await this.indexDestination(destination);
         cds.log('external-mcp').info('External docs MCP connected', {
           destination,
           mode: this.mode(destination),
@@ -265,6 +270,16 @@ export class ExternalMcp {
         this.retryAt.set(destination, this.now() + 30000);
         return this.cached.get(destination);
       } catch {
+        if (indexing) {
+          for (const [name, entry] of this.vectors) {
+            if (entry.destination === destination) this.vectors.delete(name);
+          }
+          this.warn('External docs MCP indexing unavailable; no docs hits', {
+            destination,
+          });
+          this.retryAt.set(destination, this.now() + 30000);
+          return this.cached.get(destination);
+        }
         if (candidate && this.cached.get(destination)?.client !== candidate) {
           if (previous?.client === candidate) this.retire(previous);
           else await this.disconnect(candidate);
@@ -334,7 +349,10 @@ export class ExternalMcp {
       );
     });
   }
-  private async indexDestination(destination: string): Promise<void> {
+  private async indexDestination(
+    destination: string,
+    signal: AbortSignal,
+  ): Promise<void> {
     const entries = this.available().filter(
       ([, owner]) => owner.destination === destination,
     );
@@ -365,9 +383,10 @@ export class ExternalMcp {
         name,
         destination,
         text,
-        vector: (await embedder.embedDocument(text)).vector,
+        vector: (await embedder.embedDocument(text, { signal })).vector,
       })),
     );
+    signal.throwIfAborted();
     // Publish one destination atomically; other destinations retain their vectors.
     for (const [name, entry] of this.vectors) {
       if (entry.destination === destination) this.vectors.delete(name);
@@ -398,7 +417,9 @@ export class ExternalMcp {
             const direct: RagResult[] = [];
             const ranked: RagResult[] = [];
             const vector = this.available(role).some(
-              ([, owner]) => this.mode(owner.destination) === 'rag',
+              ([name, owner]) =>
+                this.mode(owner.destination) === 'rag' &&
+                this.vectors.has(name),
             )
               ? (await this.embedder?.()?.embedQuery(args[0].text, args[2]))
                   ?.vector
