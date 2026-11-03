@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type {
   CallOptions,
   ILlm,
@@ -25,6 +26,8 @@ import {
 import { capToolResult } from './tool-result-cap';
 import { reportWorkerActivity } from './worker-activity';
 import { isWriteTool } from './write-guardrail';
+
+const sessionWriteRecorder = new AsyncLocalStorage<() => void>();
 
 /**
  * `McpClientAdapter.callTool` (`@mcp-abap-adt/llm-agent-mcp`) never rejects: it
@@ -82,6 +85,7 @@ export class RecordingMcpClient implements IMcpClient {
   private readonly knownNames: Set<string>;
   private readonly deltas: Map<string, ToolCallRecord[]>;
   private readonly offeredWrites: Set<string>;
+  private readonly sessionWrites: Map<string, boolean>;
 
   /** Present iff `inner` implements it, so callers relying on `?.` see the
    *  same optionality the inner client exposes. */
@@ -98,6 +102,7 @@ export class RecordingMcpClient implements IMcpClient {
     // A view shares its origin's records: one reviewer evidence per request.
     shared?: RecordingMcpClient,
   ) {
+    this.sessionWrites = shared?.sessionWrites ?? new Map<string, boolean>();
     this.offeredWrites = shared?.offeredWrites ?? new Set<string>();
     this.knownNames = shared?.knownNames ?? new Set<string>();
     this.deltas = shared?.deltas ?? new Map<string, ToolCallRecord[]>();
@@ -146,12 +151,10 @@ export class RecordingMcpClient implements IMcpClient {
       options: Parameters<ILlm['chat']>[2],
     ) => {
       const traceId = options?.trace?.traceId;
-      if (
-        traceId &&
-        this.retainRecords &&
-        tools?.some((tool) => isWriteTool(tool.name))
-      )
-        this.offeredWrites.add(traceId);
+      if (tools?.some((tool) => isWriteTool(tool.name))) {
+        this.recordSessionWrite();
+        if (traceId && this.retainRecords) this.offeredWrites.add(traceId);
+      }
     };
     return {
       model: inner.model,
@@ -182,6 +185,7 @@ export class RecordingMcpClient implements IMcpClient {
     args: Record<string, unknown>,
     options?: CallOptions,
   ): Promise<Result<McpToolResult, McpError>> {
+    if (isWriteTool(name)) this.recordSessionWrite();
     const requestId = options?.trace?.traceId;
     if (requestId && this.retainRecords && isWriteTool(name))
       this.offeredWrites.add(requestId);
@@ -310,6 +314,35 @@ export class RecordingMcpClient implements IMcpClient {
     );
   }
 
+  /** Register only dialogue sessions; ordinary request reviews remain trace-scoped. */
+  openSession(userId: string, sessionId: string): void {
+    this.sessionWrites.set(JSON.stringify([userId, sessionId]), false);
+  }
+
+  hadSessionWriteCapability(userId: string, sessionId: string): boolean {
+    return this.sessionWrites.get(JSON.stringify([userId, sessionId])) === true;
+  }
+
+  consumeSessionWriteCapability(userId: string, sessionId: string): void {
+    const key = JSON.stringify([userId, sessionId]);
+    if (this.sessionWrites.has(key)) this.sessionWrites.set(key, false);
+  }
+
+  closeSession(userId: string, sessionId: string): void {
+    this.sessionWrites.delete(JSON.stringify([userId, sessionId]));
+  }
+
+  withSession<T>(userId: string, sessionId: string, run: () => T): T {
+    const key = JSON.stringify([userId, sessionId]);
+    return sessionWriteRecorder.run(() => {
+      if (this.sessionWrites.has(key)) this.sessionWrites.set(key, true);
+    }, run);
+  }
+
+  private recordSessionWrite(): void {
+    sessionWriteRecorder.getStore()?.();
+  }
+
   /** Frees `requestId`'s delta bucket. */
   dropRequest(requestId?: string): void {
     if (!requestId) return;
@@ -318,6 +351,7 @@ export class RecordingMcpClient implements IMcpClient {
   }
 
   reset(): void {
+    this.sessionWrites.clear();
     this.deltas.clear();
     this.offeredWrites.clear();
   }

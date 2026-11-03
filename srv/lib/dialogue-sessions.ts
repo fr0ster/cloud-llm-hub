@@ -343,6 +343,8 @@ async function open(
   )
     throw new Error('Destination profile runner unavailable');
   const { recMcp, criticLlm, profileRunner } = destinationHandle;
+  recMcp.openSession(userId, key);
+  let runningWorkers = 0;
   const trustResolver = destinationHandle.trustResolver ?? resolverFor({});
   const usage = usageRuntime()?.forSession({
     sessionId: key,
@@ -482,7 +484,6 @@ async function open(
     traceId?: string;
     workerTraces: Set<string>;
     workerRecords: ToolCallRecord[];
-    workerWriteCapability: boolean;
     active: boolean;
   };
   const plannerTrace = new AsyncLocalStorage<PlannerTurn>();
@@ -860,6 +861,7 @@ async function open(
     { source: slot(userId, key) },
   );
   const stopLifetime = () => {
+    recMcp.closeSession(userId, key);
     pendingToolResults.length = 0;
     unsubscribeTaskCaller();
     unsubscribeTurnCaller();
@@ -890,7 +892,6 @@ async function open(
       traceId: options.trace?.traceId,
       workerTraces: new Set<string>(),
       workerRecords: [],
-      workerWriteCapability: false,
       active: true,
     };
     try {
@@ -900,15 +901,17 @@ async function open(
             runWithSessionId(
               key,
               () =>
-                plannerTrace.run(turn, () =>
-                  decoratePlanner(planner).process(input, {
-                    ...options,
-                    onPartial(chunk) {
-                      if (chunk.kind === 'content' && chunk.delta)
-                        contentStreamed = true;
-                      options.onPartial?.(chunk);
-                    },
-                  }),
+                recMcp.withSession(userId, key, () =>
+                  plannerTrace.run(turn, () =>
+                    decoratePlanner(planner).process(input, {
+                      ...options,
+                      onPartial(chunk) {
+                        if (chunk.kind === 'content' && chunk.delta)
+                          contentStreamed = true;
+                        options.onPartial?.(chunk);
+                      },
+                    }),
+                  ),
                 ),
               undefined,
               caller.userId,
@@ -923,7 +926,7 @@ async function open(
       if (result.ok && result.value.content) {
         const writeToolOffered =
           recMcp.hadWriteCapability(turn.traceId) ||
-          turn.workerWriteCapability ||
+          recMcp.hadSessionWriteCapability(userId, key) ||
           [...turn.workerTraces].some((id) => recMcp.hadWriteCapability(id));
         const records = [
           ...recMcp.getToolRecords(turn.traceId),
@@ -945,6 +948,8 @@ async function open(
             request: input.at(-1)?.content ?? '',
             history: getRequestHistory(),
           });
+          if (runningWorkers === 0)
+            recMcp.consumeSessionWriteCapability(userId, key);
           result = {
             ...result,
             value: {
@@ -999,7 +1004,6 @@ async function open(
       turn.active = false;
       turn.workerTraces.clear();
       turn.workerRecords.length = 0;
-      turn.workerWriteCapability = false;
       const traceId = options.trace?.traceId;
       if (
         recMcp.hadWriteCapability(traceId) ||
@@ -1207,6 +1211,7 @@ async function open(
           };
           const turn = plannerTrace.getStore();
           const writeToolOffered = recMcp.hadWriteCapability(turn?.traceId);
+          runningWorkers++;
           const startedAt = Date.now();
           // No free text from goals or errors reaches the logs: a goal may carry
           // whatever the user typed, credentials included. Ids correlate with
@@ -1222,39 +1227,41 @@ async function open(
           if (turn?.active) turn.workerTraces.add(traceId);
           emitTask(task);
           try {
-            const result = await runAdmitted(async (acquiredLease, pipeline) =>
-              scope.run(
-                {
-                  lease: acquiredLease,
-                  pipeline,
-                  traceId,
-                  writeToolOffered,
-                  taskId: task.id,
-                  ...caller,
-                },
-                () =>
-                  runWithContextCapture(
-                    { component: 'other', taskId: task.id, sessionKey: key },
-                    // Workers report spend on TaskRecord, outside the planner bucket.
-                    () =>
-                      observeLlmSpend(
-                        () =>
-                          withWorkerActivity(
-                            taskActivity(
-                              task.id,
-                              task.worker,
-                              (action) => {
-                                session?.noteActivity(task.id, action);
-                              },
-                              emit,
+            const result = await recMcp.withSession(userId, key, () =>
+              runAdmitted(async (acquiredLease, pipeline) =>
+                scope.run(
+                  {
+                    lease: acquiredLease,
+                    pipeline,
+                    traceId,
+                    writeToolOffered,
+                    taskId: task.id,
+                    ...caller,
+                  },
+                  () =>
+                    runWithContextCapture(
+                      { component: 'other', taskId: task.id, sessionKey: key },
+                      // Workers report spend on TaskRecord, outside the planner bucket.
+                      () =>
+                        observeLlmSpend(
+                          () =>
+                            withWorkerActivity(
+                              taskActivity(
+                                task.id,
+                                task.worker,
+                                (action) => {
+                                  session?.noteActivity(task.id, action);
+                                },
+                                emit,
+                              ),
+                              run,
                             ),
-                            run,
-                          ),
-                        (usage) => {
-                          spent = addTokenUsage(spent, usage);
-                        },
-                      ),
-                  ),
+                          (usage) => {
+                            spent = addTokenUsage(spent, usage);
+                          },
+                        ),
+                    ),
+                ),
               ),
             );
             const healthy =
@@ -1268,8 +1275,8 @@ async function open(
             if (spent) failedWorkerSpend.set(task.id, spent);
             throw error;
           } finally {
+            runningWorkers--;
             if (turn?.active) {
-              turn.workerWriteCapability ||= recMcp.hadWriteCapability(traceId);
               turn.workerRecords.push(...recMcp.getToolRecords(traceId));
               turn.workerTraces.delete(traceId);
             }

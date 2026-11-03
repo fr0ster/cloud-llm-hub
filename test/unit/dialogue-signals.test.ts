@@ -39,11 +39,24 @@ jest.mock('../../srv/agent-manager', () => ({
     workers: new Map(),
     recMcp: {
       hadWriteCapability: () => false,
+      openSession(): void {},
+      hadSessionWriteCapability: () => false,
+      consumeSessionWriteCapability(): void {},
+      closeSession(): void {},
+      withSession: <T>(_userId: string, _sessionId: string, run: () => T): T =>
+        run(),
       getToolRecords: () => [],
       dropRequest: jest.fn(),
     } satisfies Pick<
       import('../../srv/lib/recording-mcp-client').RecordingMcpClient,
-      'hadWriteCapability' | 'getToolRecords' | 'dropRequest'
+      | 'hadWriteCapability'
+      | 'getToolRecords'
+      | 'dropRequest'
+      | 'openSession'
+      | 'hadSessionWriteCapability'
+      | 'consumeSessionWriteCapability'
+      | 'closeSession'
+      | 'withSession'
     >,
     criticLlm: {},
   })),

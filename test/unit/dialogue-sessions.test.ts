@@ -99,6 +99,7 @@ const mockRun = jest.fn<Promise<ISubAgentResult>, [ISubAgentInput]>();
 const mockRelease = jest.fn();
 const mockDrain = jest.fn(async () => {});
 const mockDrop = jest.fn();
+let mockSessionWriteCapability = false;
 const mockWriteCapability = jest.fn((_traceId?: string) => false);
 const mockPlannerTurns: string[] = [];
 const mockAuthorTurns: string[] = [];
@@ -280,6 +281,16 @@ jest.mock('../../srv/agent-manager', () => ({
       ],
     ]),
     recMcp: {
+      withSession: <T>(_user: string, _session: string, run: () => T): T =>
+        run(),
+      openSession: () => {
+        mockSessionWriteCapability = false;
+      },
+      closeSession: jest.fn(),
+      hadSessionWriteCapability: () => mockSessionWriteCapability,
+      consumeSessionWriteCapability: () => {
+        mockSessionWriteCapability = false;
+      },
       hadWriteCapability: (traceId?: string) => mockWriteCapability(traceId),
       getToolRecords: () => [],
       dropRequest: (id: string) => mockDrop(id),
@@ -675,8 +686,10 @@ test.each([
       (id) => !!id && workerTraces.has(id),
     );
     mockRun.mockImplementation(async (input) => {
-      if (offered && input.trace?.traceId)
+      if (offered && input.trace?.traceId) {
         workerTraces.add(input.trace.traceId);
+        mockSessionWriteCapability = true;
+      }
       return { output: 'Finished analysis.' };
     });
     jest
