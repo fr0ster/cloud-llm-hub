@@ -35,12 +35,22 @@ export function contextWorker(): void {
       (Number.isFinite(rawMax) && rawMax > 0 ? rawMax : 512) * 1024 * 1024;
     if (!stopped && existsSync(path) && statSync(path).size >= max) {
       stopped = true;
-      parentPort?.postMessage({ warning: 'MAX_MB_REACHED' });
+      parentPort?.postMessage({ warning: 'MAX_MB_REACHED', dropped: true });
       return;
     }
-    if (!stopped) {
+    if (stopped) {
+      parentPort?.postMessage({ dropped: true });
+      return;
+    }
+    try {
       if (!database) {
         database = new DatabaseSync(path);
+        const pageSize = database.prepare('PRAGMA page_size').get()?.page_size;
+        if (typeof pageSize !== 'number')
+          throw new Error('Invalid SQLite page size');
+        database.exec(
+          `PRAGMA max_page_count = ${Math.max(1, Math.floor(max / pageSize))}`,
+        );
         database.exec(`CREATE TABLE IF NOT EXISTS context_calls (
           id TEXT PRIMARY KEY, ts TEXT, session TEXT, component TEXT, model TEXT,
           trace TEXT, messages TEXT, tools TEXT, options TEXT, response TEXT,
@@ -68,6 +78,16 @@ export function contextWorker(): void {
         row.ok ? 1 : 0,
         row.error,
       );
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        !('errcode' in error) ||
+        error.errcode !== 13
+      )
+        throw error;
+      stopped = true;
+      parentPort?.postMessage({ warning: 'MAX_MB_REACHED', dropped: true });
+      return;
     }
     parentPort?.postMessage({});
   });

@@ -1,4 +1,4 @@
-﻿import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -360,4 +360,114 @@ test('worker failure disables capture without changing subsequent LLM results', 
   expect(contextStoreStatus()).toMatchObject({ disabled: true, active: false });
   await expect(captured.chat(messages)).resolves.toMatchObject({ ok: true });
   expect(contextStoreStatus().active).toBe(false);
+});
+
+test.each([
+  'password=123456&safe=visible',
+
+  '?password=123abc&safe=visible',
+
+  'payload: {"password":123456}',
+
+  'Password: 123456',
+
+  '{"password":123456}',
+])('redacts complete numeric and alphanumeric credentials: %s', (value) => {
+  expect(redactContext(value)).not.toMatch(/123456|123abc/);
+
+  expect(redactContext(value)).toContain('redacted');
+});
+
+test.each(['Cookie', 'Set-Cookie'])(
+  'redacts every %s value inline and on header lines',
+  (header) => {
+    for (const prefix of ['', 'request headers: ']) {
+      expect(
+        redactContext(`${prefix}${header}: sid=secret; refresh=secret2`),
+      ).toBe(
+        `${prefix}${header}: sid=\u00abredacted\u00bb; refresh=\u00abredacted\u00bb`,
+      );
+    }
+  },
+);
+
+test.each([
+  'PRIVATE KEY',
+  'RSA PRIVATE KEY',
+  'EC PRIVATE KEY',
+  'ENCRYPTED PRIVATE KEY',
+])(
+  'redacts full multiline PEM %s blocks including nested JSON strings',
+  (label) => {
+    const pem = `-----BEGIN ${label}-----\nprivatebody1\nprivatebody2\n-----END ${label}-----`;
+
+    expect(redactContext(`before\n${pem}\nafter`)).toBe(
+      'before\n\u00abredacted\u00bb\nafter',
+    );
+
+    expect(contextJson({ content: JSON.stringify({ pem }) })).not.toContain(
+      'privatebody',
+    );
+  },
+);
+
+test.each([
+  'input_tokens',
+  'output_tokens',
+  'total_tokens',
+  'cached_tokens',
+  'promptTokens',
+  'completion_tokens',
+  'tokens',
+])('preserves numeric usage by key: %s', (key) => {
+  const usage = { [key]: 123456 };
+
+  expect(contextJson(usage)).toBe(JSON.stringify(usage));
+
+  for (const value of [
+    `${key}=123456`,
+    `${key}: 123456`,
+    `usage: {"${key}":123456}`,
+  ])
+    expect(redactContext(value)).toBe(value);
+});
+
+test('SQLite cap drops oversized rows, retains existing data and stops writes', async () => {
+  process.env.LLM_AGENT_CONTEXT_CAPTURE_MAX_MB = '0.0625';
+
+  const warn = jest
+    .spyOn(cds.log('context-capture'), 'warn')
+    .mockImplementation(() => {});
+
+  const captured = captureLlm(llm, 'chat', 'full');
+
+  await captured.chat(messages);
+
+  await drainContext();
+
+  const before = rows();
+
+  expect(before).toHaveLength(1);
+
+  await captured.chat([{ role: 'user', content: 'x'.repeat(128 * 1024) }]);
+
+  await drainContext();
+
+  await captured.chat(messages);
+
+  await drainContext();
+
+  expect(rows()).toEqual(before);
+
+  expect(statSync(join(dir, 'context.sqlite')).size).toBeLessThanOrEqual(65536);
+
+  expect(contextStoreStatus()).toMatchObject({
+    pending: 0,
+    dropped: 2,
+    disabled: false,
+  });
+
+  expect(warn).toHaveBeenCalledTimes(1);
+
+  expect(warn).toHaveBeenCalledWith('Context capture: MAX_MB_REACHED');
 });

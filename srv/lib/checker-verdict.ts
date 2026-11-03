@@ -2,14 +2,22 @@ import type { DialogueState, ToolCallRecord } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { z } from 'zod';
 
-const verdictSchema = z.object({
-  verdict: z.string(),
-  claims: z
-    .array(
-      z.object({ quote: z.string(), evidence: z.string(), reason: z.string() }),
-    )
-    .optional(),
-});
+const verdictSchema = z
+  .object({
+    verdict: z.enum(['pass', 'fail']),
+    count: z.number().optional(),
+    note: z.string().optional(),
+    claims: z
+      .array(
+        z.object({
+          quote: z.string(),
+          evidence: z.string(),
+          reason: z.string(),
+        }),
+      )
+      .optional(),
+  })
+  .refine((value) => value.verdict !== 'fail' || value.claims !== undefined);
 const normalize = (text: string): string => text.replace(/\s+/g, ' ').trim();
 
 /** Bind negative verdicts before the dialogue library interprets worker output. */
@@ -29,8 +37,16 @@ export function bindCheckerVerdict(
   } catch {
     // Legacy PASS remains accepted; a bare FAIL cannot carry evidence.
   }
-  if (parsed?.verdict.toLowerCase() === 'pass' || /^PASS$/i.test(output.trim()))
-    return output;
+  if (/^PASS$/i.test(output.trim())) return output;
+  if (!parsed) {
+    cds.log('checker-verdict').warn('discarded checker verdict', {
+      reason: 'invalid_envelope',
+      claims: 0,
+      validClaims: 0,
+    });
+    return 'unusable verdict: invalid_envelope';
+  }
+  if (parsed.verdict === 'pass') return output;
 
   // The library supplies each checked output before its tool-trace heading.
   // Do not allow a quote from the brief or tool evidence to stand in for it.

@@ -5,9 +5,11 @@ import { contextWorker } from './context-worker';
 const secretKey =
   /^(?:password|passwd|pwd|.*secret.*|.*token.*|authorization|(?:set-)?cookie|api[_-]?key|private[_-]?key|sap-password|x-sap-.*)$/i;
 const textCredential = new RegExp(
-  `(["']?)(${secretKey.source.slice(1, -1).replaceAll('.*', '[\\w-]*')})\\1(\\s*[=:]\\s*)("(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|(?:Basic|Bearer)\\s+[^\\s&;,}]+|[^\\s&;,}]+)`,
+  `(?<![\\w-])(["']?)(${secretKey.source.slice(1, -1).replaceAll('.*', '[\\w-]*')})\\1(\\s*[=:]\\s*)("(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|(?:Basic|Bearer)\\s+[^\\s&;,}]+|[^\\s&;,}]+)`,
   'gi',
 );
+const usageKey =
+  /^(?:tokens|(?:input|output|total|cached|prompt|completion|reasoning|cache_read_input|cache_creation_input|max)[_-]?tokens)$/i;
 const replacement = '\u00abredacted\u00bb';
 type JsonValue =
   | string
@@ -24,7 +26,7 @@ function redactValue(value: JsonValue): JsonValue {
     return Object.fromEntries(
       Object.entries(value).map(([key, item]) => [
         key,
-        typeof item === 'string' && secretKey.test(key)
+        secretKey.test(key) && !(usageKey.test(key) && typeof item === 'number')
           ? replacement
           : redactValue(item),
       ]),
@@ -42,21 +44,40 @@ export function redactContext(value: string): string {
   }
   return value
     .replace(
-      /^([\w-]+)(:\s*)([^\r\n]+)$/gm,
+      /-----BEGIN ([A-Z0-9 ]*PRIVATE KEY)-----[\s\S]*?-----END \1-----/g,
+      replacement,
+    )
+    .replace(
+      /\b((?:Set-)?Cookie)(:\s*)([^\r\n]+)/gi,
+      (_match, key: string, separator: string, item: string) =>
+        `${key}${separator}${item.replace(/([^\s;,=]+)(\s*=\s*)("[^"\r\n]*"|[^;,\r\n]*)/g, `$1$2${replacement}`)}`,
+    )
+    .replace(
+      /^([\w-]+)(:[ \t]*)([^\r\n]+)$/gm,
       (match, key: string, separator: string, item: string) =>
         secretKey.test(key) &&
-        !/^(?:-?\d+(?:\.\d+)?|true|false|null)$/.test(item.trim())
+        !/^(?:set-)?cookie$/i.test(key) &&
+        !(
+          usageKey.test(key) &&
+          /^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(item.trim())
+        )
           ? `${key}${separator}${replacement}`
           : match,
     )
     .replace(
       textCredential,
       (match, quote: string, key: string, separator: string, item: string) => {
-        if (!secretKey.test(key)) return match;
-        const trimmed = item.trim();
-        // Bare JSON numbers, booleans and null are data, not credentials.
         if (
-          /^(?:-?\d+(?:\.\d+)?(?:e[+-]?\d+)?|true|false|null)$/i.test(trimmed)
+          !quote &&
+          /^(?:set-)?cookie$/i.test(key) &&
+          separator.includes(':') &&
+          item.includes('=')
+        )
+          return match;
+        if (!secretKey.test(key)) return match;
+        if (
+          usageKey.test(key) &&
+          /^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(item.trim())
         )
           return match;
         return `${quote}${key}${quote}${separator}${replacement}`;
@@ -167,15 +188,19 @@ export function appendContext(row: ContextRow): void {
         eval: true,
       });
       worker = created;
-      created.on('message', (message: { warning?: string }) => {
-        if (worker !== created) return;
-        if (message.warning) warnContext(message.warning);
-        queue.shift();
-        busy = false;
-        overflow = false;
-        dispatch();
-        settled();
-      });
+      created.on(
+        'message',
+        (message: { warning?: string; dropped?: boolean }) => {
+          if (worker !== created) return;
+          if (message.warning) warnContext(message.warning);
+          if (message.dropped) dropped++;
+          queue.shift();
+          busy = false;
+          overflow = false;
+          dispatch();
+          settled();
+        },
+      );
       created.on('error', () => {
         if (worker === created) failWorker();
       });

@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+- Redact numeric credentials, all cookie values and complete PEM private keys while preserving usage counters. Validate checker verdict envelopes before binding. Enforce the context SQLite size cap during inserts, counting dropped rows and warning once.
+
 - Mask credential strings across nested context JSON and text while preserving numeric token usage. Restrict checker evidence to source inputs and dependency/tool results, excluding checked reports and generated framing.
 
 - Redact credentials recursively in JSON-encoded context strings; move SQLite capture to a worker with a 64-row queue, counted overflow drops and disablement on worker failure. Fix documentation checks for retired settings without rewriting historical plans.

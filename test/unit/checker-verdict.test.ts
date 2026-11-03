@@ -107,7 +107,7 @@ test('coordinator profile prescribes no check rules and stays within budget', ()
 
 test('non-verdict output remains undecided', () => {
   expect(bindCheckerVerdict('Cannot verify yet', context, '', [])).toBe(
-    'unusable verdict: invalid_verdict',
+    'unusable verdict: invalid_envelope',
   );
 });
 
@@ -153,4 +153,35 @@ test('every failure claim must bind, including claims after a valid one', () => 
   expect(bindCheckerVerdict(output, context, '', [])).toBe(
     'unusable verdict: quote_absent',
   );
+});
+
+test.each([
+  { verdict: 'pass', count: '2' },
+  { verdict: 'pass', count: null },
+  { verdict: 'pass', note: 2 },
+  { verdict: 'pass', note: null },
+  { verdict: 'other' },
+  { verdict: 'fail' },
+  { verdict: 'PASS' },
+  { verdict: 'fail', count: '2', claims: [] },
+  { verdict: 'fail', note: false, claims: [] },
+  {
+    verdict: 'fail',
+    claims: [
+      { quote: 'The object is active.', evidence: 'inactive', reason: 2 },
+    ],
+  },
+])('rejects invalid downstream envelope: %j', (envelope) => {
+  expect(bindCheckerVerdict(JSON.stringify(envelope), context, '', [])).toBe(
+    'unusable verdict: invalid_envelope',
+  );
+});
+
+test('accepts complete valid fail envelope', () => {
+  const output = JSON.stringify({
+    ...JSON.parse(fail()),
+    count: 1,
+    note: 'checked',
+  });
+  expect(bindCheckerVerdict(output, context, '', [])).toBe(output);
 });
