@@ -45,12 +45,17 @@ import {
 } from './brief-plan-author';
 import {
   bindCheckerVerdict,
+  checkerInputs,
   clearUnusableCheckerFailures,
   unusableCheckerPlanSteps,
 } from './checker-verdict';
 import { runWithContextCapture } from './context-capture';
 import { withCoordinatorModel } from './coordinator-model';
-import { withCoordinatorRun } from './coordinator-tools-client';
+import {
+  currentDelegateBrief,
+  withCoordinatorRun,
+  withDelegateBrief,
+} from './coordinator-tools-client';
 import { DialogueOutbox, type OutboxEntry } from './dialogue-outbox';
 import {
   plannerWithAttachments,
@@ -579,9 +584,13 @@ async function open(
                   const checked = isChecker
                     ? bindCheckerVerdict(
                         result.output,
-                        input.context ?? '',
-                        input.task,
-                        recMcp.getToolRecords(ctx.traceId),
+                        checkerInputs(
+                          session?.snapshot(),
+                          ctx.taskId,
+                          input.task,
+                          recMcp.getToolRecords(ctx.traceId),
+                          currentDelegateBrief(),
+                        ),
                       )
                     : result.output;
                   if (isChecker) return { ...result, output: checked };
@@ -1387,7 +1396,7 @@ async function open(
         const reset = await callTool('plan_update', { steps });
         if (!reset.ok || reset.value.isError) return reset;
       }
-      return callTool(...args);
+      return withDelegateBrief(args[0], args[1], () => callTool(...args));
     });
   const send = session.send.bind(session);
   session.send = (text, options = {}) => {

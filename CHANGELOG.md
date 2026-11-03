@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+- Bind checker quotes and evidence to structured task outputs and coordinator inputs so report headings cannot supply independent evidence.
+
 - Redact numeric credentials, all cookie values and complete PEM private keys while preserving usage counters. Validate checker verdict envelopes before binding. Enforce the context SQLite size cap during inserts, counting dropped rows and warning once.
 
 - Mask credential strings across nested context JSON and text while preserving numeric token usage. Restrict checker evidence to source inputs and dependency/tool results, excluding checked reports and generated framing.

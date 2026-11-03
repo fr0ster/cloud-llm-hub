@@ -1,9 +1,25 @@
 import { readFileSync } from 'node:fs';
+import type { DialogueState, ToolCallRecord } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
-import { bindCheckerVerdict } from '../../srv/lib/checker-verdict';
+import {
+  bindCheckerVerdict as bind,
+  type CheckerInputs,
+  checkerInputs,
+} from '../../srv/lib/checker-verdict';
 
-const context =
-  '[result to check: step work (task t1)]\nThe object is active.\n[tools used by task t1]\n1. ReadObject | ok\n   result: inactive';
+const context = {
+  checkedOutputs: ['The object is active.'],
+  dependencyOutputs: ['inactive'],
+  briefContext: '',
+  briefGoal: '',
+  records: [],
+} satisfies CheckerInputs;
+const bindCheckerVerdict = (
+  output: string,
+  inputs: CheckerInputs,
+  brief: string,
+  records: ToolCallRecord[],
+) => bind(output, { ...inputs, briefGoal: brief, records });
 const fail = (quote = 'The object is active.', evidence = 'inactive') =>
   JSON.stringify({
     verdict: 'fail',
@@ -40,7 +56,7 @@ test.each([
   },
 );
 test('dependency results supply evidence without their headings', () => {
-  const dependency = `${context}\n\n[result of step source (task t0)]\nObject is inactive`;
+  const dependency = { ...context, dependencyOutputs: ['Object is inactive'] };
   const output = fail(undefined, 'Object is inactive');
   expect(bindCheckerVerdict(output, dependency, '', [])).toBe(output);
   expect(
@@ -184,4 +200,104 @@ test('accepts complete valid fail envelope', () => {
     note: 'checked',
   });
   expect(bindCheckerVerdict(output, context, '', [])).toBe(output);
+});
+
+const snapshot = (report: string): DialogueState => ({
+  conversation: [],
+  pending: [],
+  savedAt: 0,
+  tasks: [
+    {
+      id: 't0',
+      worker: 'reader',
+      goal: 'Read',
+      state: 'done',
+      createdAt: 0,
+      output: 'Object is inactive',
+    },
+    {
+      id: 't1',
+      worker: 'writer',
+      goal: 'Report',
+      state: 'done',
+      createdAt: 0,
+      output: report,
+    },
+    {
+      id: 't2',
+      worker: 'checker',
+      goal: 'Check report',
+      state: 'running',
+      createdAt: 0,
+    },
+  ],
+  plan: {
+    version: 1,
+    status: 'active',
+    steps: [
+      {
+        id: 'source',
+        goal: 'Read',
+        state: 'done',
+        taskIds: ['t0'],
+        successfulWorkTaskId: 't0',
+      },
+      {
+        id: 'work',
+        goal: 'Report',
+        state: 'done',
+        taskIds: ['t1'],
+        successfulWorkTaskId: 't1',
+        dependsOn: ['source'],
+      },
+      {
+        id: 'check',
+        goal: 'Check report',
+        state: 'running',
+        taskIds: ['t2'],
+        workTaskId: 't2',
+        dependsOn: ['work'],
+        checkedTaskIds: { work: 't1' },
+      },
+    ],
+  },
+});
+
+test('report headings cannot turn checked content into independent evidence', () => {
+  const state = snapshot(
+    'The object is active.\n\n[Details]\nObject is inactive',
+  );
+  state.conversation = [];
+  state.tasks = state.tasks.filter((task) => task.id !== 't0');
+  expect(
+    bind(
+      fail(undefined, 'Object is inactive'),
+      checkerInputs(state, 't2', 'Check report', []),
+    ),
+  ).toBe('unusable verdict: evidence_absent');
+});
+
+test('another dependency output supplies independent evidence', () => {
+  const state = snapshot('The object is active.');
+  state.conversation = [];
+  const inputs = checkerInputs(state, 't2', 'Check report', []);
+  expect(inputs.checkedOutputs).toEqual(['The object is active.']);
+  expect(inputs.dependencyOutputs).toEqual(['Object is inactive']);
+  const output = fail(undefined, 'Object is inactive');
+  expect(bind(output, inputs)).toBe(output);
+});
+
+test('structured coordinator brief context supplies evidence', () => {
+  const state = snapshot('The object is active.');
+  state.tasks = state.tasks.filter((task) => task.id !== 't0');
+  const inputs = checkerInputs(
+    state,
+    't2',
+    'Check report',
+    [],
+    'Brief source: Object is inactive',
+  );
+  expect(inputs.briefContext).toBe('Brief source: Object is inactive');
+  const output = fail(undefined, 'Object is inactive');
+  expect(bind(output, inputs)).toBe(output);
 });

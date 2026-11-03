@@ -20,12 +20,53 @@ const verdictSchema = z
   .refine((value) => value.verdict !== 'fail' || value.claims !== undefined);
 const normalize = (text: string): string => text.replace(/\s+/g, ' ').trim();
 
+export interface CheckerInputs {
+  checkedOutputs: string[];
+  dependencyOutputs: string[];
+  briefContext: string;
+  briefGoal: string;
+  records: ToolCallRecord[];
+}
+
+/** Resolve provenance from task identities, never from worker-authored headings. */
+export function checkerInputs(
+  state: DialogueState | undefined,
+  taskId: string,
+  briefGoal: string,
+  records: ToolCallRecord[],
+  briefContext = '',
+): CheckerInputs {
+  const steps = typeof state?.plan === 'object' ? state.plan.steps : [];
+  const step = steps.find((entry) => entry.workTaskId === taskId);
+  const checkedIds = new Set(Object.values(step?.checkedTaskIds ?? {}));
+  const dependencyIds = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (id: string): void => {
+    if (visited.has(id)) return;
+    visited.add(id);
+    const dependency = steps.find((entry) => entry.id === id);
+    if (dependency?.successfulWorkTaskId)
+      dependencyIds.add(dependency.successfulWorkTaskId);
+    for (const parent of dependency?.dependsOn ?? []) visit(parent);
+  };
+  for (const id of step?.dependsOn ?? []) visit(id);
+  return {
+    checkedOutputs: (state?.tasks ?? [])
+      .filter((task) => checkedIds.has(task.id))
+      .map((task) => task.output ?? ''),
+    dependencyOutputs: (state?.tasks ?? [])
+      .filter((task) => dependencyIds.has(task.id) && !checkedIds.has(task.id))
+      .map((task) => task.output ?? ''),
+    briefContext,
+    briefGoal,
+    records,
+  };
+}
+
 /** Bind negative verdicts before the dialogue library interprets worker output. */
 export function bindCheckerVerdict(
   output: string,
-  context: string,
-  brief: string,
-  records: ToolCallRecord[],
+  inputs: CheckerInputs,
 ): string {
   let parsed: z.infer<typeof verdictSchema> | undefined;
   try {
@@ -48,39 +89,13 @@ export function bindCheckerVerdict(
   }
   if (parsed.verdict === 'pass') return output;
 
-  // The library supplies each checked output before its tool-trace heading.
-  // Do not allow a quote from the brief or tool evidence to stand in for it.
-  const checked = [
-    ...context.matchAll(
-      /\[result to check: step [^\n]+\]\n([\s\S]*?)(?=\n\[tools used by task |\n\n\[result to check: step |$)/g,
-    ),
-  ].map((match) => normalize(match[1] ?? ''));
-  // Select source sections explicitly: checked reports and generated guidance
-  // must never become evidence merely because they share the context string.
-  const sources: string[] = [];
-  for (const section of context.matchAll(
-    /(?:^|\n)\[(result of step [^\n]+|tools used by task [^\n]+)\][^\n]*\n([\s\S]*?)(?=\n\n\[|\n\[(?:result to check: step |result of step |tools used by task )|$)/g,
-  )) {
-    const body = section[2] ?? '';
-    if (section[1]?.startsWith('result of step ')) sources.push(body);
-    else
-      for (const result of body.matchAll(
-        /^ {3}(?:\[[^\n]*?\] )?result: (.*)$/gm,
-      ))
-        sources.push(result[1] ?? '');
-  }
-  // Coordinator-supplied brief context outside the generated sections is a
-  // brief input; checked results, source sections and their headings are not.
-  const briefContext = context.replace(
-    /(?:^|\n)\[(?:result to check: step |result of step |tools used by task )[^\n]*\][^\n]*\n[\s\S]*?(?=\n\n\[|\n\[(?:result to check: step |result of step |tools used by task )|$)/g,
-    '\n',
-  );
+  const checked = inputs.checkedOutputs.map(normalize);
   const evidence = normalize(
     [
-      ...sources,
-      briefContext,
-      brief,
-      ...records.map((record) =>
+      ...inputs.dependencyOutputs,
+      inputs.briefContext,
+      inputs.briefGoal,
+      ...inputs.records.map((record) =>
         typeof record.result.content === 'string'
           ? record.result.content
           : JSON.stringify(record.result.content),

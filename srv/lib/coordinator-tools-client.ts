@@ -14,6 +14,27 @@ export type CoordinatorRun = <T extends { ok: boolean }>(
 
 const coordinatorRuns = new AsyncLocalStorage<CoordinatorRun>();
 
+// Capture only the original delegate argument before the library appends results.
+// TaskBoard scheduling preserves this scope through queue waits and worker runs.
+const delegateBriefs = new AsyncLocalStorage<string>();
+
+export function currentDelegateBrief(): string {
+  return delegateBriefs.getStore() ?? '';
+}
+
+export function withDelegateBrief<T>(
+  name: string,
+  args: Record<string, unknown>,
+  run: () => T,
+): T {
+  return name === 'delegate_task'
+    ? delegateBriefs.run(
+        typeof args.context === 'string' ? args.context : '',
+        run,
+      )
+    : run();
+}
+
 /** Carries the dialogue's connection/admission runner into planner construction. */
 export function withCoordinatorRun<T>(
   run: CoordinatorRun,
@@ -65,7 +86,7 @@ export function coordinatorToolsClient(_dependencies: {
             content: 'Tool unavailable to coordinator. Use delegate_task.',
           },
         };
-      return planner.callTool(name, args);
+      return withDelegateBrief(name, args, () => planner.callTool(name, args));
     },
   };
 }
