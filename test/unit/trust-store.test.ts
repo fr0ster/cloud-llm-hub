@@ -36,9 +36,9 @@ test('role maps are separate', () => {
   );
   for (const value of [1, 2, 3, 4, 5])
     expect(
-      resolver.forProfile({ trust: { system: value } }).systemTool('GetClass'),
+      resolver.forProfile({ trust: { target: value } }).systemTool('GetClass'),
     ).toBe(value);
-  expect(resolver.systemTool('GetClass')).toBe(4.5);
+  expect(resolver.systemTool('GetClass')).toBe(4.3);
 });
 
 test('writes touch only their own key and reads never use a facade cache', async () => {
@@ -198,7 +198,7 @@ test('five role maps remain bound through coordinator, author, executor and chec
   expect(observed).toEqual(
     [1, 2, 3, 4, 5].map((value) => `[source: user:Notes/r; trust ${value}]`),
   );
-  expect(root.classDefault('user')).toBe(3);
+  expect(root.classDefault('user')).toBe(3.5);
 });
 
 test('rebinding a role starts from deploy defaults rather than the previous role map', () => {
@@ -210,7 +210,7 @@ test('rebinding a role starts from deploy defaults rather than the previous role
   const coordinator = root.forProfile({ trust: { user: 5 } });
   expect(
     coordinator.forProfile({ trust: { docs: 4 } }).classDefault('user'),
-  ).toBe(3);
+  ).toBe(3.5);
 });
 
 test('orphan sweep recognizes prefixed trust stores', () => {

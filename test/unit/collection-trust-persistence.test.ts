@@ -79,7 +79,7 @@ test('shared projections resolve override and inheritance without changing uploa
   });
   expect(
     collectionView(meta, resolver.inputFor({ ...doc, metadata: {} }, meta)),
-  ).toMatchObject({ trusted: true, trust: 3, trustClass: 'user' });
+  ).toMatchObject({ trusted: true, trust: 3.5, trustClass: 'user' });
   expect(documentView(doc, { trusted: false })).toMatchObject({
     trusted: false,
   });

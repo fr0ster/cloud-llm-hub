@@ -1,4 +1,5 @@
 import type { ToolTrust } from '@mcp-abap-adt/llm-agent';
+import { clientToolTrust } from './lib/client-tool-trust';
 import { coordinatorModel } from './lib/coordinator-model';
 import {
   coordinatorToolsClient as createCoordinatorToolsClient,
@@ -1720,7 +1721,9 @@ function docsMcp(): ExternalMcp {
 }
 function builtInToolTrust(resolver: TrustResolver): ToolTrust {
   const system = systemToolTrust(isEmbeddedSystemTool, resolver);
-  return (name) => docsMcp().toolTrust(name, resolver) ?? system(name);
+  const client = clientToolTrust(resolver);
+  return (name) =>
+    docsMcp().toolTrust(name, resolver) ?? system(name) ?? client(name);
 }
 
 export function isEmbeddedSystemTool(name: string): boolean {
@@ -3732,7 +3735,8 @@ export async function buildLlmOnlyAgent(
             : 'Say plainly that the SAP destination exists but cannot be reached right now, and that its connectivity (the destination, the Cloud Connector) needs checking — do not suggest adding a destination.',
           "Respond in the user's language. Code and object names always in English.",
         ].join('\n'),
-        buildSkillsPool(),
+        // Base skill tags follow the deployment's configured trust defaults.
+        buildSkillsPool({ resolver: () => getTrustResolver() }),
       ),
     },
   })

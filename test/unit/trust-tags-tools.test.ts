@@ -33,10 +33,10 @@ test.each(['chat', 'planner', 'executor', 'checker'])(
   (role) => {
     const trust = systemToolTrust(
       (n) => n === 'GetClass',
-      resolver.forProfile({ trust: { system: role === 'checker' ? 5 : 4 } }),
+      resolver.forProfile({ trust: { target: role === 'checker' ? 5 : 4 } }),
     );
     expect(trust('GetClass')).toEqual({
-      source: 'system:GetClass',
+      source: 'target:GetClass',
       trust: role === 'checker' ? 5 : 4,
     });
     for (const name of ['rag_read', 'get_task', 'delegate_task'])
@@ -58,9 +58,9 @@ test('skill bodies and descriptions resolve live without modifying raw content o
   ];
   expect(await wrapped.getContent()).toEqual({
     ok: true,
-    value: '[source: global:skills/info; trust 4.5]\nbody',
+    value: '[source: global:skills/info; trust 3]\nbody',
   });
-  expect((await trustedSkillResults(rows, live))[0].metadata.trust).toBe(4.5);
+  expect((await trustedSkillResults(rows, live))[0].metadata.trust).toBe(3);
   await store.setRecord('skills', 'info', 2, 'admin');
   expect(await wrapped.getContent()).toEqual({
     ok: true,
@@ -87,7 +87,7 @@ test('reviewer critic tags embedded outcomes while preserving raw outcomes', () 
     executedTools: [outcome],
     toolTrust: systemToolTrust((n) => n === 'GetClass', resolver),
   });
-  expect(messages[1].content).toContain('[source: system:GetClass; trust 4.5]');
+  expect(messages[1].content).toContain('[source: target:GetClass; trust 4.3]');
   expect(outcome).toEqual({ name: 'GetClass', ok: true, status: 'active' });
 });
 
@@ -167,7 +167,7 @@ test.each(['chat', 'planner', 'executor', 'checker'])(
     expect(result.ok).toBe(true);
     const model = seen.flat().filter((m) => m.role === 'tool');
     const sap = model.find((m) => m.tool_call_id === 'sap');
-    expect(sap?.content).toContain('[source: system:GetClass; trust 4.5]\n');
+    expect(sap?.content).toContain('[source: target:GetClass; trust 4.3]\n');
     expect(String(sap?.content).match(/\[source:/g)).toHaveLength(1);
     expect(String(sap?.content).match(/\[result truncated:/g)).toHaveLength(1);
     for (const id of ['rag', 'hub'])
@@ -184,10 +184,10 @@ test.each(['chat', 'planner', 'executor', 'checker'])(
     expect(JSON.stringify(trace)).not.toContain('[source:');
     const evidence = renderToolTrace('t1', trace, toolTrust);
     expect(
-      evidence.match(/\[source: system:GetClass; trust 4.5\]/g),
+      evidence.match(/\[source: target:GetClass; trust 4.3\]/g),
     ).toHaveLength(1);
     expect(evidence).toContain(
-      '[source: system:GetClass; trust 4.5] result: "',
+      '[source: target:GetClass; trust 4.3] result: "',
     );
     const assembled = await new ContextAssembler({ toolTrust }).assemble(
       { type: 'action', text: 'read' },
@@ -196,7 +196,7 @@ test.each(['chat', 'planner', 'executor', 'checker'])(
     );
     expect(
       assembled.ok && assembled.value.map((m) => m.content).join('\n'),
-    ).toContain('[source: system:GetClass; trust 4.5]');
+    ).toContain('[source: target:GetClass; trust 4.3]');
   },
 );
 
@@ -235,7 +235,7 @@ test('get_task projects embedded traces once without modifying board evidence', 
     expect(
       result.ok &&
         JSON.stringify(result.value).match(
-          /\[source: system:GetClass; trust 4.5\]/g,
+          /\[source: target:GetClass; trust 4.3\]/g,
         ),
     ).toHaveLength(1);
   }
@@ -373,13 +373,13 @@ test.each(['pipeline', 'rag-orchestrator'])(
       return messages.map((m) => m.content).join('\n');
     };
     expect(await run()).toContain(
-      '[source: global:skills/info; trust 4.5]\nbody',
+      '[source: global:skills/info; trust 3]\nbody',
     );
     await store.setRecord('skills', 'info', 2, 'admin');
     const next = await run();
     expect(next).toContain('[source: global:skills/info; trust 2]\nbody');
     expect(next).toContain('[source: global:skills/info; trust 2] description');
-    expect(next).not.toContain('trust 4.5');
+    expect(next).not.toContain('trust 3]');
     selected = false;
     expect(await run()).not.toContain('## Active Skills');
   },
@@ -433,7 +433,7 @@ test('every history strategy replays one system tag and preserves raw state', as
         model
           .map((m) => m.content)
           .join('\n')
-          .match(/\[source: system:GetClass; trust 4.5\]/g),
+          .match(/\[source: target:GetClass; trust 4.3\]/g),
       ).toHaveLength(1);
     }
     expect(JSON.stringify(strategy.snapshot())).not.toContain('[source:');
@@ -465,7 +465,7 @@ test('reviewer tags raw tool history after clipping and resolves names from call
     toolTrust,
   });
   expect(
-    messages[1].content.match(/\[source: system:GetClass; trust 4.5\]/g),
+    messages[1].content.match(/\[source: target:GetClass; trust 4.3\]/g),
   ).toHaveLength(1);
   expect(messages[1].content).toContain('x'.repeat(600));
   expect(JSON.stringify(history)).not.toContain('[source:');
@@ -570,7 +570,7 @@ test('DialogueSession forwards coordinator trust to its internal get_task client
     id: 'trust',
     toolTrust: systemToolTrust(
       (n) => n === 'GetClass',
-      resolver.forProfile({ trust: { system: 3 } }),
+      resolver.forProfile({ trust: { target: 3 } }),
     ),
     board: { workers: new Map() },
     store: {
@@ -591,7 +591,7 @@ test('DialogueSession forwards coordinator trust to its internal get_task client
       expect(
         result.ok &&
           JSON.stringify(result.value).match(
-            /\[source: system:GetClass; trust 3\]/g,
+            /\[source: target:GetClass; trust 3\]/g,
           ),
       ).toHaveLength(1);
     }

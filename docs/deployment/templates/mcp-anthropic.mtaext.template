@@ -89,3 +89,24 @@ resources:
   # - name: cloud-llm-hub-hdi
   #   active: true
   #   parameters: { service-name: "hdi-llm" }
+
+# Optional docs MCP: merge into the existing parameters/resources sections.
+# parameters:
+#   LLM_AGENT_PLANNER_MCP: ""
+#   LLM_AGENT_EXECUTOR_MCP: "DOCS_MCP"
+#   LLM_AGENT_CHECKER_MCP: ""
+#   LLM_AGENT_ANALYST_MCP: "DOCS_MCP"
+#   LLM_AGENT_MCP_TRUST: "DOCS_MCP=4.2"
+# resources:
+#   - name: cloud-llm-hub-destination
+#     parameters:
+#       config:
+#         init_data:
+#           subaccount:
+#             existing_destinations_policy: update
+#             destinations:
+#               - Name: "DOCS_MCP" # configurable; match the role lists
+#                 Type: HTTP
+#                 ProxyType: Internet
+#                 Authentication: NoAuthentication
+#                 URL: "https://docs.example.com/mcp"

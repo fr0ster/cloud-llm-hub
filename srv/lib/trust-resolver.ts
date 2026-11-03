@@ -36,7 +36,7 @@ export class TrustResolver {
     return this.classes[c];
   }
   systemTool(_name: string): number {
-    return this.classDefault('system');
+    return this.classDefault('target');
   }
   private meta(meta: CollectionMeta): CollectionMeta {
     return this.registry?.currentMeta?.(meta.id) ?? meta;
@@ -69,22 +69,30 @@ export class TrustResolver {
         : {}),
     };
   }
-  async inputForSkill(name: string, ambiguous = false): Promise<TrustInput> {
+  async inputForSkill(
+    name: string,
+    ambiguous = false,
+    sourceClass: 'global' | 'correction' = 'global',
+  ): Promise<TrustInput> {
     const collectionTrust = await this.store?.getSource('skills');
     const recordTrust = ambiguous
       ? undefined
       : await this.store?.getRecord('skills', name);
     return {
       trusted: true,
-      class: 'global',
-      source: `global:skills/${name}`,
-      classTrust: this.classDefault('global'),
+      class: sourceClass,
+      source: `${sourceClass}:skills/${name}`,
+      classTrust: this.classDefault(sourceClass),
       ...(collectionTrust !== undefined ? { collectionTrust } : {}),
       ...(recordTrust !== undefined ? { recordTrust } : {}),
     };
   }
-  async skill(name: string, ambiguous = false): Promise<number> {
-    const input = await this.inputForSkill(name, ambiguous);
+  async skill(
+    name: string,
+    ambiguous = false,
+    sourceClass: 'global' | 'correction' = 'global',
+  ): Promise<number> {
+    const input = await this.inputForSkill(name, ambiguous, sourceClass);
     return input.recordTrust ?? input.collectionTrust ?? input.classTrust;
   }
 }

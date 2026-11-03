@@ -13,7 +13,11 @@
  * Skills are identified by id. Equal display names do not hide other skills.
  */
 import path from 'node:path';
-import type { ISkill, ISkillManager } from '@mcp-abap-adt/llm-agent';
+import {
+  formatTrustTag,
+  type ISkill,
+  type ISkillManager,
+} from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 
 import { resolverFor, type TrustResolver } from './trust-resolver';
@@ -35,7 +39,7 @@ export class CompositeSkillManager implements ISkillManager {
   }
 
   /** Cache in-flight reads too, so concurrent agent builds share each body. */
-  async baseSkillContents(): Promise<readonly string[]> {
+  async baseSkillContents(tagged = false): Promise<readonly string[]> {
     return Promise.all(
       (await this.baseSkills()).map((skill) => {
         const key = JSON.stringify([skill.meta.source, skillId(skill)]);
@@ -51,7 +55,12 @@ export class CompositeSkillManager implements ISkillManager {
           if (skill.meta.trustAmbiguous !== true)
             this.baseContent.set(key, content);
         }
-        return content;
+        return tagged
+          ? content.then(
+              (body) =>
+                `${formatTrustTag(`system:skills/${skillId(skill)}`, this.resolver().classDefault('system'))}\n${body}`,
+            )
+          : content;
       }),
     );
   }
@@ -184,6 +193,7 @@ export class CompositeSkillManager implements ISkillManager {
               resolve().skill(
                 skillId(skill),
                 skill.meta.trustAmbiguous === true,
+                skill.meta.kind === 'correction' ? 'correction' : 'global',
               ),
             )
           : skill;

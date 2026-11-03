@@ -62,7 +62,7 @@ afterEach(() => {
 });
 test('old and spoofed records get their real source and default', async () => {
   expect(await tag(trustedRetrievalStore(rag, () => resolver, meta))).toBe(
-    '[source: user:Notes/r1; trust 3]\ntext',
+    '[source: user:Notes/r1; trust 3.5]\ntext',
   );
   expect(row.metadata.source).toBe('system:x');
 });
@@ -87,12 +87,12 @@ test('executor profile and coordinator resolve independently', async () => {
     ),
   ).toContain('trust 4]');
   expect(await tag(trustedRetrievalStore(rag, () => resolver, meta))).toContain(
-    'trust 3]',
+    'trust 3.5]',
   );
 });
 test('legacy planner memory is session data despite stored provenance', async () => {
   expect(await tag(trustedRetrievalStore(rag, () => resolver))).toBe(
-    '[source: session; trust 2]\ntext',
+    '[source: session; trust 4]\ntext',
   );
 });
 jest.mock('../../srv/agent-manager', () => ({
@@ -112,7 +112,7 @@ test('library pipeline ContextAssembler renders real provenance', async () => {
   );
   if (!messages.ok) throw messages.error;
   expect(messages.value.map((message) => message.content).join('\n')).toContain(
-    '- [source: user:Notes/r1; trust 3] text',
+    '- [source: user:Notes/r1; trust 3.5] text',
   );
 });
 test.each(['coordinator', 'planner-create', 'planner-revise'])(
@@ -124,7 +124,7 @@ test.each(['coordinator', 'planner-create', 'planner-revise'])(
       embedder,
     );
     const entries = await source.search({ text: 'q' }, 4);
-    expect(entries[0]).toMatchObject({ source: 'user:Notes/r1', trust: 3 });
+    expect(entries[0]).toMatchObject({ source: 'user:Notes/r1', trust: 3.5 });
     const block = new DefaultPlannerContextBuilder().build({
       open: {
         id: 'q',
@@ -137,14 +137,14 @@ test.each(['coordinator', 'planner-create', 'planner-revise'])(
       notes: [],
     });
     expect(block.map((message) => message.content).join('\n')).toContain(
-      '(user:Notes/r1; trust 3) text',
+      '(user:Notes/r1; trust 3.5) text',
     );
     const notes = await planAuthorContextNotes(
       { plannerKnowledge: [source] },
       's',
       { id: 'q', text: 'q', openedAt: 1 },
     );
-    expect(notes.join('\n')).toContain('(user:Notes/r1; trust 3) text');
+    expect(notes.join('\n')).toContain('(user:Notes/r1; trust 3.5) text');
   },
 );
 test('rag_search, rag_read and collection_records expose derived trust', async () => {
@@ -208,8 +208,8 @@ test('coordinator retrieval and search_knowledge render the same derived label',
   });
   try {
     await session.send('q');
-    expect(rendered).toContain('(user:Notes/r1; trust 3) text');
-    expect(searched).toContain('(user:Notes/r1; trust 3) text');
+    expect(rendered).toContain('(user:Notes/r1; trust 3.5) text');
+    expect(searched).toContain('(user:Notes/r1; trust 3.5) text');
   } finally {
     await session.close();
   }
@@ -223,7 +223,7 @@ test('session history overwrites spoofed provenance with role session defaults',
   const history = new SessionHistoryRag(inner, () => 'alice', undefined, {
     trustResolver: () => resolver,
   });
-  expect(await tag(history)).toBe('[source: session; trust 2]\ntext');
+  expect(await tag(history)).toBe('[source: session; trust 4]\ntext');
 });
 test('an existing store sees collection and record trust writes on its next retrieval', async () => {
   const registry = new CollectionRegistry();
@@ -247,7 +247,7 @@ test('an existing store sees collection and record trust writes on its next retr
     parseTrustDefaults(undefined),
   );
   const store = trustedRetrievalStore(raw, () => live, collection);
-  expect(await tag(store)).toContain('[source: global:Live/r1; trust 4.5]');
+  expect(await tag(store)).toContain('[source: global:Live/r1; trust 3]');
   await registry.updateCollection(collection.id, { trust: 4 });
   expect(await tag(store)).toContain('trust 4]');
   await registry.setRecordTrust(collection.id, 'r1', 1, 'admin');
@@ -264,7 +264,7 @@ test('a role resolver observes skills source and record writes without rebuildin
   ).forProfile({});
   const render = async () =>
     formatTrustTag('global:skills/guide', await live.skill('guide'));
-  expect(await render()).toBe('[source: global:skills/guide; trust 4.5]');
+  expect(await render()).toBe('[source: global:skills/guide; trust 3]');
   await store.setSource('skills', 3, 'admin');
   expect(await render()).toBe('[source: global:skills/guide; trust 3]');
   await store.setRecord('skills', 'guide', 1, 'admin');
@@ -308,13 +308,13 @@ test('coordinator and plan author recall legacy planner memory with session trus
   });
   try {
     await session.send('q');
-    expect(rendered).toContain('(session; trust 2) old memory');
+    expect(rendered).toContain('(session; trust 4) old memory');
     const notes = await planAuthorContextNotes(
       { plannerMemory: memory },
       'recall',
       { id: 'current', text: 'q', openedAt: 1 },
     );
-    expect(notes.join('\n')).toContain('(session; trust 2) old memory');
+    expect(notes.join('\n')).toContain('(session; trust 4) old memory');
   } finally {
     await session.close();
   }

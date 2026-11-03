@@ -225,3 +225,8 @@ approuter.
 ## Left to the builder
 
 File layout, helper names, exact JSON field order, UI styling, trust history storage shape, test structure.
+
+
+## Addendum: 2026-11-02 trust ordering
+
+This decision supersedes the historical defaults above: `correction=4.9,system=4.8,client=4.4,target=4.3,docs=4.2,session=4,user=3.5,global=3`. The new `correction` class covers system-prompt corrections, corrective skills (`kind: correction`) and user profile copies overriding the global preset. `system` covers the global preset and base skills. Embedded ABAP/SAP tools use `target`; external docs MCP uses `docs`. Corrections outrank their base, instruction classes outrank informational records, and MCP results outrank session information. Explicit admin, user and profile overrides retain precedence over defaults.

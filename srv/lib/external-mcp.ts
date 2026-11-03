@@ -41,7 +41,7 @@ export function parseExternalMcp(env: NodeJS.ProcessEnv): ExternalMcpConfig {
     } satisfies Record<ExternalMcpRole, string[]>,
     trust: {},
   };
-  if (env.LLM_AGENT_MCP_TRUST !== undefined)
+  if (env.LLM_AGENT_MCP_TRUST?.trim())
     for (const entry of env.LLM_AGENT_MCP_TRUST.split(',')) {
       const [destination, raw, extra] = entry.split('=').map((s) => s.trim());
       const trust = raw ? normalizeTrust(Number(raw)) : undefined;

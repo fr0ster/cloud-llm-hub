@@ -25,14 +25,14 @@ test('same-name base and informational skills load and startup succeeds', async 
     const pool = buildSkillsPool({ dirs });
     await expect(logSkillsPool(pool)).resolves.toBeUndefined();
     await expect(appendBaseSkills('system', pool)).resolves.toBe(
-      'system\n\nbody',
+      'system\n\n[source: system:skills/base/duplicate; trust 4.8]\nbody',
     );
     const result = await pool.informationalSkills().listSkills();
     if (!result.ok) throw result.error;
     expect(result.value).toHaveLength(1);
     expect(await result.value[0].getContent()).toEqual({
       ok: true,
-      value: `[source: global:skills/${path.basename(dirs[1])}/duplicate; trust 4.5]\nbody`,
+      value: `[source: global:skills/${path.basename(dirs[1])}/duplicate; trust 3]\nbody`,
     });
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -52,7 +52,7 @@ test('one filesystem source preserves different ids with the same name and kind'
     const pool = buildSkillsPool({ dirs: [dir] });
     await expect(logSkillsPool(pool)).resolves.toBeUndefined();
     await expect(appendBaseSkills('system', pool)).resolves.toBe(
-      'system\n\nbase-one\n\nbase-two',
+      `system\n\n[source: system:skills/${path.basename(dir)}/base-one; trust 4.8]\nbase-one\n\n[source: system:skills/${path.basename(dir)}/base-two; trust 4.8]\nbase-two`,
     );
     const info = await pool.informationalSkills().listSkills();
     if (!info.ok) throw info.error;
@@ -61,7 +61,7 @@ test('one filesystem source preserves different ids with the same name and kind'
     ]);
     expect(await info.value[0].getContent()).toEqual({
       ok: true,
-      value: `[source: global:skills/${path.basename(dir)}/info; trust 4.5]\ninfo`,
+      value: `[source: global:skills/${path.basename(dir)}/info; trust 3]\ninfo`,
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });

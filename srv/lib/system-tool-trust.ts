@@ -8,6 +8,6 @@ export function systemToolTrust(
 ): ToolTrust {
   return (name) =>
     isSystemTool(name)
-      ? { source: `system:${name}`, trust: resolver.systemTool(name) }
+      ? { source: `target:${name}`, trust: resolver.systemTool(name) }
       : undefined;
 }

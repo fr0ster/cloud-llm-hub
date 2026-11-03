@@ -65,7 +65,16 @@ jest.mock('../../srv/lib/llm-factory', () => ({
 }));
 const config: AgentConfig = {
   trust: {
-    defaults: { global: 4.5, system: 4.5, docs: 3.5, user: 3, session: 2 },
+    defaults: {
+      global: 3,
+      system: 4.8,
+      correction: 4.9,
+      target: 4.3,
+      docs: 4.2,
+      client: 4.4,
+      user: 3.5,
+      session: 4,
+    },
   },
   llm: {
     provider: 'openai',
@@ -713,7 +722,7 @@ test('every profile role appends plugin base skills after its prompt and exclude
       model.messages.length = 0;
       trustSpy.mockClear();
       const roleTrust = {
-        system:
+        target:
           role === 'coordinator'
             ? 1
             : role === 'planner-create'
@@ -755,8 +764,8 @@ test('every profile role appends plugin base skills after its prompt and exclude
       }
       const trust = trustSpy.mock.calls[0]?.[0];
       expect(trust?.('GetClass')).toEqual({
-        source: 'system:GetClass',
-        trust: roleTrust.system,
+        source: 'target:GetClass',
+        trust: roleTrust.target,
       });
       expect(trust?.('rag_read')).toBeUndefined();
       expect(trust?.('get_task')).toBeUndefined();

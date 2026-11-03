@@ -63,7 +63,7 @@ test('executor-step and notice evidence use each reviewed profile without inheri
     ],
   ]);
   for (const [name, trust] of [
-    ['executor', { system: 5 }],
+    ['executor', { target: 5 }],
     ['other', undefined],
   ] as const) {
     const profile: WorkerProfile = {
@@ -141,7 +141,7 @@ test('executor-step and notice evidence use each reviewed profile without inheri
         ],
       });
       expect(messages[1].content).toContain(
-        `[source: system:GetClass; trust ${trust?.system ?? 4.5}]`,
+        `[source: target:GetClass; trust ${trust?.target ?? 4.3}]`,
       );
     }
   }

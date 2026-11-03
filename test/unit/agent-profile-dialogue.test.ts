@@ -230,7 +230,10 @@ test('dialogue discovers arbitrary names, resolves planner variants and executes
     expect(plannerTexts.length).toBeGreaterThan(0);
     expect(await source.getPrompts()).toMatchObject({
       ok: true,
-      value: { coordinator: 'VARIANT_BODY' },
+      value: {
+        coordinator:
+          '[source: system:profiles/coordinator-custom; trust 4.8]\nVARIANT_BODY',
+      },
     });
   } finally {
     await session.close();

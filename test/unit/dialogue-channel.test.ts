@@ -765,7 +765,7 @@ for (const sessionTrust of [undefined, 4])
             if (retrieved === 'uploads') {
               expect(input).toContain('[attached files]');
               expect(input).toContain('attached content');
-              expect(input).toContain(`trust ${sessionTrust ?? 2}]`);
+              expect(input).toContain(`trust ${sessionTrust ?? 4}]`);
             } else expect(input).not.toContain('[attached files]');
             expect(retrieve).not.toHaveBeenCalled();
             expect(embedder).not.toHaveBeenCalled();

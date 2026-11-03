@@ -103,7 +103,7 @@ const mockPlannerTurns: string[] = [];
 const mockAuthorTurns: string[] = [];
 const mockEnvironments: string[] = [];
 let mockGoal = 'read';
-let mockWorkerTrust: { system: number } | undefined;
+let mockWorkerTrust: { target: number } | undefined;
 let mockPlannerHook: ((text: string) => Promise<void>) | undefined;
 let mockPlanUsage: TokenUsage | undefined;
 let mockPlan:
@@ -685,9 +685,9 @@ test('honesty notice reaches task output and planner', async () => {
 });
 
 test.each([5, undefined])(
-  'reviewer evidence uses worker profile system trust %s',
+  'reviewer evidence uses worker profile target trust %s',
   async (system) => {
-    mockWorkerTrust = system === undefined ? undefined : { system };
+    mockWorkerTrust = system === undefined ? undefined : { target: system };
     try {
       const { h } = await ready();
       mockRun.mockResolvedValue({ output: 'read done' });
@@ -695,8 +695,8 @@ test.each([5, undefined])(
       await until(() => h.session.snapshot().tasks[0]?.state === 'done');
       const args = jest.mocked(evaluateGated).mock.calls.at(-1)?.[0];
       expect(args?.toolTrust?.('GetClass')).toEqual({
-        source: 'system:GetClass',
-        trust: system ?? 4.5,
+        source: 'target:GetClass',
+        trust: system ?? 4.3,
       });
       const messages = buildReviewMessages({
         task: 'read',
@@ -719,7 +719,7 @@ test.each([5, undefined])(
         ],
       });
       expect(messages[1].content).toContain(
-        `[source: system:GetClass; trust ${system ?? 4.5}]`,
+        `[source: target:GetClass; trust ${system ?? 4.3}]`,
       );
     } finally {
       mockWorkerTrust = undefined;

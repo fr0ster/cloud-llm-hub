@@ -227,8 +227,10 @@ test.each(['worker', 'planner'] as const)(
     expect(await f.source.getPrompts({})).toEqual({
       ok: true,
       value: {
-        workerBase: 'OTHER_BASE',
-        coordinator: 'OTHER_PLANNER',
+        workerBase:
+          '[source: correction:profiles/_worker-base; trust 4.9]\nOTHER_BASE',
+        coordinator:
+          '[source: correction:profiles/coordinator; trust 4.9]\nOTHER_PLANNER',
         plannerCreate: '',
         plannerRevise: '',
       },
@@ -257,7 +259,10 @@ test.each(['executor', 'checker'] as const)(
     expect(await f.source.resolveWorker(name)).toMatchObject({
       ok: true,
       value: {
-        profile: { name, systemPrompt: `body:${name}` },
+        profile: {
+          name,
+          systemPrompt: `[source: system:profiles/${name}; trust 4.8]\nbody:${name}`,
+        },
         workerBase: '',
       },
     });
@@ -334,10 +339,13 @@ test('maps each prompt body by its exact record and kind', async () => {
   expect(await f.source.getPrompts()).toEqual({
     ok: true,
     value: {
-      workerBase: 'BASE',
-      coordinator: 'COORDINATE',
-      plannerCreate: 'CREATE',
-      plannerRevise: 'REVISE',
+      workerBase: '[source: system:profiles/_worker-base; trust 4.8]\nBASE',
+      coordinator:
+        '[source: system:profiles/coordinator; trust 4.8]\nCOORDINATE',
+      plannerCreate:
+        '[source: system:profiles/planner-create; trust 4.8]\nCREATE',
+      plannerRevise:
+        '[source: system:profiles/planner-revise; trust 4.8]\nREVISE',
     },
   });
   expect(await f.source.get('planner-create')).toMatchObject({
@@ -449,4 +457,47 @@ test('worker and planner resolutions use cached tools while discovery hangs, the
   } finally {
     jest.useRealTimers();
   }
+});
+
+test('user profile copies are corrections and explicit class maps override deployment defaults', async () => {
+  const { TrustResolver } = await import('../../srv/lib/trust-resolver');
+  const { parseTrustDefaults } = await import('../../srv/lib/trust');
+  const f = fixture();
+  f.select('own');
+  f.metadata({ id: 'own', scope: 'user', owner: 'reader' });
+  const copied = profile('custom');
+  f.records([copied]);
+  const source = new AgentProfileSource(
+    {
+      readAgentCollection: f.read,
+      trustResolver: new TrustResolver(
+        undefined,
+        undefined,
+        parseTrustDefaults('correction=4.9'),
+      ),
+    },
+    {
+      userId: 'reader',
+      globalCollectionId: 'agents',
+      selectedCollectionId: () => 'own',
+      plannerRecord: 'coordinator',
+    },
+  );
+  expect(await source.get('custom')).toMatchObject({
+    ok: true,
+    value: {
+      systemPrompt:
+        '[source: correction:profiles/custom; trust 4.9]\nbody:custom',
+    },
+  });
+  f.records([
+    { ...copied, metadata: { ...copied.metadata, trust: { correction: 4.7 } } },
+  ]);
+  expect(await source.get('custom')).toMatchObject({
+    ok: true,
+    value: {
+      systemPrompt:
+        '[source: correction:profiles/custom; trust 4.7]\nbody:custom',
+    },
+  });
 });

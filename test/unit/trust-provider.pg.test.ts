@@ -326,7 +326,7 @@ test('old collections inherit defaults without a write on read', async () => {
   await registry.restore();
   expect((await registry.getCollection(id))?.trust).toBeUndefined();
   expect(await registry.getDocument(id, 'r')).toMatchObject({
-    trust: 3,
+    trust: 3.5,
     source: 'user:Legacy/r',
   });
   const rows = await provider.describeCollections();
