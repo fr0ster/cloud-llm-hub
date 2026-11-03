@@ -19,6 +19,7 @@ import {
   guardProfileWorker,
   type RegisteredProfileTool,
 } from './agent-profile-tools';
+import { runWithVerdictTools } from './checker-verdict-tool';
 import { parseModelAllowlist, resolveAgentModel } from './model-policy';
 import { withCompactRagSearch } from './rag-search-context';
 import { recordReviewProfile } from './review-scope';
@@ -70,11 +71,13 @@ export class AgentProfileRunner implements IAgentProfileRunner {
     const resolver = this.host.trustResolver?.().forProfile(profile);
     return <T>(run: () => T): T => {
       const scoped = () =>
-        runWithRequiredProfileTools(() =>
-          runWithProfileTools(permissions, () =>
-            profile.tools === 'read-only' || profile.result === 'verdict'
-              ? runWithReadOnlyTools(run)
-              : run(),
+        runWithVerdictTools(profile.result === 'verdict', () =>
+          runWithRequiredProfileTools(() =>
+            runWithProfileTools(permissions, () =>
+              profile.tools === 'read-only' || profile.result === 'verdict'
+                ? runWithReadOnlyTools(run)
+                : run(),
+            ),
           ),
         );
       return resolver ? runWithTrustResolver(resolver, scoped) : scoped();

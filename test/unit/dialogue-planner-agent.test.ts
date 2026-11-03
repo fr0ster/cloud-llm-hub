@@ -384,15 +384,19 @@ test('dialogue tool-loop offers hub storage to executor and only readback to che
       [],
       'alice',
     );
-    expect([...new Set(model.tools.flat())].sort()).toEqual(
+    const offered = [...new Set(model.tools.flat())].sort();
+    if (name === 'checker') expect(offered).toContain('submit_verdict');
+    else expect(offered).not.toContain('submit_verdict');
+    expect(offered).toEqual(
       name === 'executor'
         ? ragToolNames.filter((tool) => tool !== 'rag_persist').sort()
-        : ragToolNames
-            .filter(
+        : [
+            ...ragToolNames.filter(
               (tool) =>
                 tool !== 'rag_persist' && ragToolEffect(tool) !== 'write',
-            )
-            .sort(),
+            ),
+            'submit_verdict',
+          ].sort(),
     );
   }
   expect(model.messages.join('\n')).toContain(

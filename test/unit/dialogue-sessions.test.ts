@@ -3338,7 +3338,16 @@ test('closing one user with a shared key preserves the other user LLMs and signa
   expect(alice.session.snapshot().tasks).toEqual([]);
 });
 
-test.each(['valid', 'quote', 'evidence', 'bare', 'pass'] as const)(
+test.each([
+  'valid',
+  'quote',
+  'evidence',
+  'bare',
+  'pass',
+  'tool',
+  'retry',
+  'retry-fails',
+] as const)(
   'dialogue consumes evidence-bound checker verdict: %s',
   async (kind) => {
     const { h } = await ready();
@@ -3361,9 +3370,28 @@ test.each(['valid', 'quote', 'evidence', 'bare', 'pass'] as const)(
                 },
               ],
             });
-    mockRun.mockImplementation(async (input) => ({
-      output: input.task === 'Verify state' ? verdict : checked,
-    }));
+    let checkerRuns = 0;
+    mockRun.mockImplementation(async (input) => {
+      if (!input.task.startsWith('Verify state')) return { output: checked };
+      checkerRuns++;
+      if (kind === 'tool') {
+        mockToolRecords.set(input.trace?.traceId ?? '', [
+          {
+            call: {
+              id: 'submit',
+              name: 'submit_verdict',
+              arguments: { verdict: 'pass' },
+            },
+            result: { content: 'verdict recorded' },
+          },
+        ]);
+        return { output: 'FAIL' };
+      }
+      if (kind === 'retry')
+        return { output: checkerRuns === 1 ? 'Prose only' : 'PASS' };
+      if (kind === 'retry-fails') return { output: 'Prose only' };
+      return { output: verdict };
+    });
     await h.session.callTool('plan_update', {
       steps: [
         {
@@ -3401,7 +3429,15 @@ test.each(['valid', 'quote', 'evidence', 'bare', 'pass'] as const)(
     if (!state.plan || typeof state.plan === 'string')
       throw new Error('Missing structured plan');
     const step = state.plan.steps.find((step) => step.id === 'check');
-    if (kind === 'valid' || kind === 'pass') {
+    expect(checkerRuns).toBe(
+      kind === 'bare' || kind === 'retry' || kind === 'retry-fails' ? 2 : 1,
+    );
+    if (kind === 'tool' || kind === 'retry') {
+      expect(step?.verdict).toBe('pass');
+      expect(state.tasks[1]?.output).toBe(
+        kind === 'tool' ? '{"verdict":"pass"}' : 'PASS',
+      );
+    } else if (kind === 'valid' || kind === 'pass') {
       expect(step?.verdict).toBe(kind === 'valid' ? 'fail' : 'pass');
       expect(state.tasks[1]?.output).toBe(verdict);
     } else {

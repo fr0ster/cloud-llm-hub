@@ -542,35 +542,40 @@ test('real hub dialogue pipeline retains background context, two successive requ
       };
     },
   };
-  const executorLlm = fakeLlm(
-    (messages: Message[]): LlmResponse =>
-      messages.some((m: Message): boolean => m.role === 'tool')
-        ? plainAnswer()
-        : {
-            content: '',
-            finishReason: 'tool_calls',
-            toolCalls: [
-              {
-                id: 'read-call',
-                name: 'read',
-                arguments: { key: 'TOOL_ARGUMENT_SENTINEL' },
-              },
-            ],
-          },
-  );
-  const worker = await new SmartAgentBuilder({
-    skipModelValidation: true,
-    agent: {
-      classificationEnabled: false,
-      ragTranslateEnabled: false,
-      maxIterations: 5,
-    },
-  })
-    .withMainLlm(executorLlm)
-    .withMcpClients([mcp])
-    .build();
-  mockWorkers.set('executor', new SmartAgentSubAgent('executor', worker.agent));
-  mockWorkers.set('checker', new SmartAgentSubAgent('checker', worker.agent));
+  const workerLlm = (checker: boolean): ILlm =>
+    fakeLlm(
+      (messages: Message[]): LlmResponse =>
+        messages.some((m: Message): boolean => m.role === 'tool')
+          ? // Keep one physical read per task; the checker must not need a retry.
+            checker
+            ? { ...plainAnswer(), content: '{"verdict":"pass"}' }
+            : plainAnswer()
+          : {
+              content: '',
+              finishReason: 'tool_calls',
+              toolCalls: [
+                {
+                  id: 'read-call',
+                  name: 'read',
+                  arguments: { key: 'TOOL_ARGUMENT_SENTINEL' },
+                },
+              ],
+            },
+    );
+  for (const name of ['executor', 'checker']) {
+    const worker = await new SmartAgentBuilder({
+      skipModelValidation: true,
+      agent: {
+        classificationEnabled: false,
+        ragTranslateEnabled: false,
+        maxIterations: 5,
+      },
+    })
+      .withMainLlm(workerLlm(name === 'checker'))
+      .withMcpClients([mcp])
+      .build();
+    mockWorkers.set(name, new SmartAgentSubAgent(name, worker.agent));
+  }
   let delegates = 0;
   const plannerLlm = fakeLlm(
     (

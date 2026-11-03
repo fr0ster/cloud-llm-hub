@@ -1,23 +1,55 @@
 import type { DialogueState, ToolCallRecord } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
-import { z } from 'zod';
+import { type CheckerVerdict, verdictSchema } from './checker-verdict-schema';
+import { submitVerdictTool } from './checker-verdict-tool';
 
-const verdictSchema = z
-  .object({
-    verdict: z.enum(['pass', 'fail']),
-    count: z.number().int().nonnegative().optional(),
-    note: z.string().optional(),
-    claims: z
-      .array(
-        z.object({
-          quote: z.string(),
-          evidence: z.string(),
-          reason: z.string(),
-        }),
-      )
-      .optional(),
-  })
-  .refine((value) => value.verdict !== 'fail' || value.claims !== undefined);
+export { type CheckerVerdict, verdictSchema } from './checker-verdict-schema';
+
+export function parseCheckerVerdict(
+  output: string,
+): CheckerVerdict | undefined {
+  try {
+    const result = verdictSchema.safeParse(
+      JSON.parse(
+        output.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, '$1'),
+      ),
+    );
+    return result.success ? result.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function recordedCheckerVerdict(
+  records: ToolCallRecord[],
+): CheckerVerdict | undefined {
+  for (const record of [...records].reverse()) {
+    if (record.call.name !== submitVerdictTool.name || record.result.isError)
+      continue;
+    const result = verdictSchema.safeParse(record.call.arguments);
+    if (result.success) return result.data;
+  }
+  return undefined;
+}
+
+export function checkerVerdictInput(
+  output: string,
+  records: ToolCallRecord[],
+): string {
+  const verdict = recordedCheckerVerdict(records);
+  return verdict ? JSON.stringify(verdict) : output;
+}
+
+export function needsCheckerVerdictRetry(
+  output: string,
+  records: ToolCallRecord[],
+): boolean {
+  return (
+    !recordedCheckerVerdict(records) &&
+    !parseCheckerVerdict(output) &&
+    !/^PASS$/i.test(output.trim())
+  );
+}
 const normalize = (text: string): string => text.replace(/\s+/g, ' ').trim();
 
 export interface CheckerInputs {
@@ -74,16 +106,7 @@ export function bindCheckerVerdict(
   output: string,
   inputs: CheckerInputs,
 ): string {
-  let parsed: z.infer<typeof verdictSchema> | undefined;
-  try {
-    const json = output
-      .trim()
-      .replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, '$1');
-    const result = verdictSchema.safeParse(JSON.parse(json));
-    if (result.success) parsed = result.data;
-  } catch {
-    // Legacy PASS remains accepted; a bare FAIL cannot carry evidence.
-  }
+  const parsed = parseCheckerVerdict(output);
   if (/^PASS$/i.test(output.trim())) return output;
   if (!parsed) {
     cds.log('checker-verdict').warn('discarded checker verdict', {

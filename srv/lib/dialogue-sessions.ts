@@ -46,9 +46,12 @@ import {
 import {
   bindCheckerVerdict,
   checkerInputs,
+  checkerVerdictInput,
   clearUnusableCheckerFailures,
+  needsCheckerVerdictRetry,
   unusableCheckerPlanSteps,
 } from './checker-verdict';
+import { submitVerdictTool } from './checker-verdict-tool';
 import { runWithContextCapture } from './context-capture';
 import { withCoordinatorModel } from './coordinator-model';
 import {
@@ -551,7 +554,7 @@ async function open(
               runWithRequestConnection(
                 ctx.lease.connection,
                 async () => {
-                  const { result, profile: resolvedProfile } =
+                  let { result, profile: resolvedProfile } =
                     await captureReviewProfile(() =>
                       runWithToolGateBypass(() =>
                         runWithDialogueRagTools(() =>
@@ -581,9 +584,49 @@ async function open(
                   const isChecker =
                     (profile ?? resolvedProfile)?.result === 'verdict' ||
                     name === 'checker';
+                  if (
+                    isChecker &&
+                    needsCheckerVerdictRetry(
+                      result.output,
+                      recMcp.getToolRecords(ctx.traceId),
+                    )
+                  ) {
+                    const retry = await captureReviewProfile(() =>
+                      runWithToolGateBypass(() =>
+                        runWithDialogueRagTools(() =>
+                          runWithContextCapture(
+                            {
+                              component: 'checker',
+                              taskId: ctx.taskId,
+                              sessionKey: key,
+                            },
+                            () =>
+                              worker.run({
+                                ...input,
+                                task:
+                                  input.task +
+                                  `\nYour previous answer had no valid verdict. Call ${submitVerdictTool.name} with {verdict:"pass"} or {verdict:"fail",claims:[{quote,evidence,reason}]}; fail requires at least one claim.`,
+                                trace: { traceId: ctx.traceId },
+                                signal: ctx.pipeline.signal,
+                              }),
+                          ),
+                        ),
+                      ),
+                    );
+                    result = retry.result;
+                    if (
+                      result.errorClass === 'epicfail' ||
+                      result.stopped ||
+                      result.status === 'awaiting-external'
+                    )
+                      return result;
+                  }
                   const checked = isChecker
                     ? bindCheckerVerdict(
-                        result.output,
+                        checkerVerdictInput(
+                          result.output,
+                          recMcp.getToolRecords(ctx.traceId),
+                        ),
                         checkerInputs(
                           session?.snapshot(),
                           ctx.taskId,
