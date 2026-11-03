@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { IMcpClient, McpToolResult } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
-import { verdictSchema } from './checker-verdict-schema';
+import { verdictSchema, verdictToolSchema } from './checker-verdict-schema';
 
 const scope = new AsyncLocalStorage<boolean>();
 export function runWithVerdictTools<T>(enabled: boolean, run: () => T): T {
@@ -13,8 +13,8 @@ export function verdictToolsEnabled(): boolean {
 export const submitVerdictTool = {
   name: 'submit_verdict',
   description:
-    'Submit the checker verdict. A fail requires at least one evidence-bound claim.',
-  inputSchema: z.toJSONSchema(verdictSchema, { io: 'input' }),
+    'Submit the checker verdict. Claims are required and non-empty when verdict is fail; each claim must be evidence-bound.',
+  inputSchema: z.toJSONSchema(verdictToolSchema, { io: 'input' }),
   annotations: { readOnlyHint: true },
 };
 export function submitVerdict(

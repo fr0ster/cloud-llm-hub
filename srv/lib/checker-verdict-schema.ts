@@ -6,19 +6,27 @@ const claimSchema = z.object({
   reason: z.string().min(1),
 });
 const verdictFields = {
+  verdict: z.enum(['pass', 'fail']),
   count: z.number().int().nonnegative().optional(),
   note: z.string().optional(),
+  claims: z
+    .array(claimSchema)
+    .describe('Claims are required and non-empty when verdict is fail.'),
 };
+export const verdictToolSchema = z.object({
+  ...verdictFields,
+  claims: verdictFields.claims.optional(),
+});
 export const verdictSchema = z.discriminatedUnion('verdict', [
   z.object({
-    verdict: z.literal('pass'),
     ...verdictFields,
-    claims: z.array(claimSchema).optional(),
+    verdict: z.literal(verdictFields.verdict.enum.pass),
+    claims: verdictFields.claims.optional(),
   }),
   z.object({
-    verdict: z.literal('fail'),
     ...verdictFields,
-    claims: z.array(claimSchema).min(1),
+    verdict: z.literal(verdictFields.verdict.enum.fail),
+    claims: verdictFields.claims.min(1),
   }),
 ]);
 export type CheckerVerdict = z.infer<typeof verdictSchema>;
