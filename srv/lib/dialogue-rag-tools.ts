@@ -19,6 +19,7 @@ import {
 } from '../request-session';
 import { currentAdmission } from './admission-scope';
 import { currentContextTaskId } from './context-capture';
+import { isDialogueRagWorker } from './dialogue-rag-scope';
 import {
   buildRagToolSchemas,
   isRagTool,
@@ -26,9 +27,7 @@ import {
 } from './rag-tool-catalogue';
 import { usageRuntime } from './usage/runtime';
 
-export function runWithDialogueRagTools<T>(fn: () => T): T {
-  return fn();
-}
+export { runWithDialogueRagTools } from './dialogue-rag-scope';
 
 const removedNames = new Set([
   'rag_list',
@@ -36,8 +35,8 @@ const removedNames = new Set([
   'rag_correct',
   'rag_deprecate',
 ]);
-export function localRagTools(): McpTool[] {
-  return buildRagToolSchemas().map(({ function: tool }) => ({
+export function localRagTools(coordinator = false): McpTool[] {
+  return buildRagToolSchemas(coordinator).map(({ function: tool }) => ({
     name: tool.name,
     description: tool.description,
     inputSchema: tool.parameters,
@@ -67,10 +66,12 @@ export class LocalRagMcpClient implements IMcpClient {
       ok: true,
       value: [
         ...imported.values(),
-        ...localRagTools().filter(
+        ...localRagTools(this.coordinator).filter(
           (tool) =>
             !this.coordinator ||
-            (isRagTool(tool.name) && ragToolEffect(tool.name) === 'read'),
+            (isRagTool(tool.name) &&
+              (ragToolEffect(tool.name) === 'read' ||
+                tool.name === 'rag_persist')),
         ),
       ],
     };
@@ -80,7 +81,12 @@ export class LocalRagMcpClient implements IMcpClient {
     args: Parameters<IMcpClient['callTool']>[1],
     options?: CallOptions,
   ): Promise<Result<McpToolResult, McpError>> {
-    if (this.coordinator && isRagTool(name) && ragToolEffect(name) !== 'read')
+    if (
+      this.coordinator &&
+      isRagTool(name) &&
+      ragToolEffect(name) !== 'read' &&
+      name !== 'rag_persist'
+    )
       return {
         ok: true,
         value: {
@@ -106,6 +112,11 @@ export class LocalRagMcpClient implements IMcpClient {
     const value = await executeRagTool(
       {
         registry: this.registry?.(),
+        dialogueRole: this.coordinator
+          ? 'coordinator'
+          : isDialogueRagWorker()
+            ? 'worker'
+            : undefined,
         userId,
         admin: identity.admin,
         sessionKey,

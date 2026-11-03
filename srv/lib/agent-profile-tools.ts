@@ -5,11 +5,12 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { hasProfileToolScope } from '../request-session';
 import { profileToolPolicy } from './agent-profile-records';
+import { allowsReadOnlyEffect } from './dialogue-rag-scope';
 import { ToolAuthorizationError } from './tool-authorization';
 
 export interface RegisteredProfileTool {
   readonly name: string;
-  readonly effect: 'read' | 'write';
+  readonly effect: 'read' | 'knowledge' | 'write';
 }
 
 /** The private set is copied at construction and never exposed to callers. */
@@ -57,8 +58,8 @@ export function effectiveProfileTools(input: {
         (tool) =>
           input.grants.has(tool.name) &&
           (!input.parent || input.parent.allows(tool.name)) &&
-          (input.result !== 'verdict' || tool.effect === 'read') &&
-          (policy !== 'read-only' || tool.effect === 'read') &&
+          (input.result !== 'verdict' || allowsReadOnlyEffect(tool.effect)) &&
+          (policy !== 'read-only' || allowsReadOnlyEffect(tool.effect)) &&
           (typeof policy !== 'object' ||
             ((!policy.allow || policy.allow.includes(tool.name)) &&
               !policy.deny?.includes(tool.name))),

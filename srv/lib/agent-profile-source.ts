@@ -230,7 +230,7 @@ export class AgentProfileSource implements IAgentProfileSource {
         if (record.metadata.kind === 'profile')
           summaries.push({
             name: record.id,
-            description: record.metadata.description,
+            description: `${record.metadata.description} Can read hub RAG and store results with collection_create, record_add and record_update (session scope; coordinator persists results, subject to tool policy and caller permissions).${record.metadata.tools === 'read-only' || record.metadata.result === 'verdict' ? ' Does not change SAP objects.' : ''}`,
             result: record.metadata.result,
           });
       }

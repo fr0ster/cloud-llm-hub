@@ -182,6 +182,7 @@ test('hard planner retains library turn tools and hub control tools, hub prompt,
     expect(result.ok && result.value.content).toBe('first');
     expect(first.tools.flat().sort()).toEqual(
       [
+        'rag_persist',
         'collections_list',
         'collection_records',
         'rag_read',
@@ -276,7 +277,7 @@ test.each([false, true])(
             },
           }).callTool('collection_create', {
             name: 'planner-results',
-            scope: 'user',
+            scope: 'session',
           }),
         [],
         'alice',
@@ -385,8 +386,13 @@ test('dialogue tool-loop offers hub storage to executor and only readback to che
     );
     expect([...new Set(model.tools.flat())].sort()).toEqual(
       name === 'executor'
-        ? [...ragToolNames].sort()
-        : ragToolNames.filter((tool) => ragToolEffect(tool) === 'read').sort(),
+        ? ragToolNames.filter((tool) => tool !== 'rag_persist').sort()
+        : ragToolNames
+            .filter(
+              (tool) =>
+                tool !== 'rag_persist' && ragToolEffect(tool) !== 'write',
+            )
+            .sort(),
     );
   }
   expect(model.messages.join('\n')).toContain(
@@ -492,7 +498,7 @@ test.each(['adaptive', 'dialogue'] as const)(
         runWithDialogueRagTools(async () => {
           await client.callTool('collection_create', {
             name: 'results',
-            scope: 'user',
+            scope: 'session',
           });
           await client.callTool('record_add', {
             collection: 'results',

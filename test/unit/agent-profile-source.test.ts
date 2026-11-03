@@ -86,13 +86,34 @@ function fixture(selection: Partial<AgentProfileSelection> = {}) {
     },
   };
 }
+test('stored worker descriptions gain code-owned RAG capabilities', async () => {
+  const f = fixture();
+  const result = await f.source.list();
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error(result.error.message);
+  for (const worker of result.value) {
+    expect(worker.description).toContain('Can read hub RAG and store results');
+    expect(worker.description).toContain(
+      'collection_create, record_add and record_update',
+    );
+  }
+});
+
 test('fresh exact listing, disabled descriptions omitted, empty prompt text preserved', async () => {
   const f = fixture();
   expect(await f.source.list()).toEqual({
     ok: true,
     value: [
-      { name: 'A', description: 'description:A', result: 'report' },
-      { name: 'z', description: 'description:z', result: 'report' },
+      {
+        name: 'A',
+        description: expect.stringContaining('description:A'),
+        result: 'report',
+      },
+      {
+        name: 'z',
+        description: expect.stringContaining('description:z'),
+        result: 'report',
+      },
     ],
   });
   expect(await f.source.get('a')).toMatchObject({

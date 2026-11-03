@@ -100,6 +100,7 @@ let other: string;
 const cid = userCollectionId('notes', 'alice');
 const second = userCollectionId('second', 'alice');
 const inputs: Record<RagMcpTool, Parameters<typeof executeRagMcpTool>[3]> = {
+  rag_persist: { collection: 'scratch', name: 'saved' },
   collection_set_trust: { collection: 'notes', trust: 3 },
   record_set_trust: { collection: 'notes', record: 'visible', trust: 3 },
   collection_create: { name: 'new-notes', scope: 'user' },
@@ -1416,7 +1417,7 @@ test.each(['all', 'checker', 'allow-deny'] as const)(
         (name) =>
           ceiling === 'all' ||
           (ceiling === 'checker'
-            ? ragToolEffect(name) === 'read'
+            ? ragToolEffect(name) !== 'write'
             : ['rag_read', 'record_add'].includes(name)),
       ),
     );

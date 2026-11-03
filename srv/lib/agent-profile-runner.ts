@@ -11,6 +11,7 @@ import type {
 import {
   currentProfileTools,
   runWithProfileTools,
+  runWithReadOnlyTools,
   runWithRequiredProfileTools,
 } from '../request-session';
 import {
@@ -70,7 +71,11 @@ export class AgentProfileRunner implements IAgentProfileRunner {
     return <T>(run: () => T): T => {
       const scoped = () =>
         runWithRequiredProfileTools(() =>
-          runWithProfileTools(permissions, run),
+          runWithProfileTools(permissions, () =>
+            profile.tools === 'read-only' || profile.result === 'verdict'
+              ? runWithReadOnlyTools(run)
+              : run(),
+          ),
         );
       return resolver ? runWithTrustResolver(resolver, scoped) : scoped();
     };
@@ -133,7 +138,11 @@ export class AgentProfileRunner implements IAgentProfileRunner {
         await buildScope(() =>
           this.host.buildWorker(
             profile,
-            [input.workerBase ?? '', profile.systemPrompt].join('\n'),
+            [
+              input.workerBase ?? '',
+              profile.systemPrompt,
+              'Hub RAG knowledge tools include collection_create, record_add and record_update for session results; coordinator persists them. Read-only refers to SAP/system mutations; knowledge storage is available subject to the effective tool policy.',
+            ].join('\n'),
             options,
           ),
         ),

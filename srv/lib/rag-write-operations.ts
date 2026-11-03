@@ -11,6 +11,7 @@ import {
   type RagDocument,
   sessionCollectionTtlMs,
 } from '../rag-collections';
+import { isReadOnlyTools } from '../request-session';
 import { collectionAccessError } from './collection-access';
 import { CollectionBackendError } from './collection-persistence';
 
@@ -175,6 +176,12 @@ export async function resolveRagWriteTarget(
   );
   if (hidden)
     throw new RagWriteError('COLLECTION_NOT_FOUND', 404, hidden.message);
+  if (meta.scope === 'global' && isReadOnlyTools())
+    throw new RagWriteError(
+      'TOOL_FORBIDDEN',
+      403,
+      'Global mutations require write tools',
+    );
   if (meta.collectionKind === 'agents')
     throw new RagWriteError(
       'TOOL_FORBIDDEN',
@@ -337,5 +344,98 @@ export function ragWriteFailure(
           ? error.httpStatus
           : fallback,
     message: error.message,
+  };
+}
+
+/** Deterministic promotion through normal quota and trust-sanitizing ingress. */
+export async function persistRagRecords(
+  registry: CollectionRegistry,
+  source: string,
+  targetName: string,
+  records: string[] | undefined,
+  identity: RagWriteIdentity,
+) {
+  if (
+    !identity.userId ||
+    identity.userId === 'anonymous' ||
+    !identity.sessionId
+  )
+    throw new RagWriteError(
+      'TOOL_FORBIDDEN',
+      403,
+      'Authenticated session required',
+    );
+  const sourceId = await resolveRouteId(
+    registry,
+    source,
+    identity.userId,
+    identity.sessionId,
+    false,
+  );
+  const meta = sourceId ? await registry.getCollection(sourceId) : null;
+  if (
+    !sourceId ||
+    !meta ||
+    meta.scope !== 'session' ||
+    meta.owner !== identity.userId ||
+    meta.sessionId !== identity.sessionId
+  )
+    throw new RagWriteError(
+      'COLLECTION_NOT_FOUND',
+      404,
+      'Session collection not found',
+    );
+  const documents: RagDocument[] = [];
+  if (records) {
+    for (const id of new Set(records)) {
+      const doc = await registry.getDocument(sourceId, id);
+      if (!doc)
+        throw new RagWriteError('RECORD_NOT_FOUND', 404, 'Document not found');
+      documents.push(doc);
+    }
+  } else {
+    let offset = 0;
+    for (;;) {
+      const page = await registry.listDocuments(sourceId, {
+        offset,
+        limit: 200,
+      });
+      if (!page)
+        throw new RagWriteError(
+          'COLLECTION_NOT_FOUND',
+          404,
+          'Collection not found',
+        );
+      documents.push(
+        ...page.documents.filter((doc) => doc.metadata.enabled !== false),
+      );
+      offset += page.documents.length;
+      if (offset >= page.total) break;
+    }
+  }
+  const target = await createAgentKnowledgeCollection(
+    registry,
+    targetName,
+    'user',
+    { ...identity, admin: false },
+  );
+  const timestamp = new Date().toISOString();
+  for (const doc of documents) {
+    await addRagRecord(registry, target.collection.id, {
+      id: doc.id,
+      text: doc.text,
+      metadata: {
+        ...doc.metadata,
+        persistenceProvenance: {
+          sourceCollection: sourceId,
+          sourceRecord: doc.id,
+          timestamp,
+        },
+      },
+    });
+  }
+  return {
+    collection: target.collection.id,
+    records: documents.map((doc) => doc.id),
   };
 }

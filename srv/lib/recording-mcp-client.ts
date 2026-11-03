@@ -16,8 +16,9 @@ import {
   profileToolAllowed,
 } from '../request-session';
 import { compositeMcpClient } from './composite-mcp-client';
+import { allowsReadOnlyEffect } from './dialogue-rag-scope';
 import { isOutageError } from './mcp-outage';
-import { isRagTool } from './rag-tool-catalogue';
+import { isRagTool, ragToolEffect } from './rag-tool-catalogue';
 import { parseToolOutcome, type RecordedToolCall } from './reviewer-core';
 import {
   isReadOnlyTool,
@@ -177,6 +178,8 @@ export class RecordingMcpClient implements IMcpClient {
   }
 
   private isReadOnly(tool: McpTool): boolean {
+    if (isRagTool(tool.name))
+      return allowsReadOnlyEffect(ragToolEffect(tool.name));
     return isReadOnlyTool(
       tool.name,
       (tool as McpTool & { annotations?: ToolEffectAnnotations }).annotations,

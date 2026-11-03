@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { isReadOnlyTools, profileToolAllowed } from '../request-session';
+import { allowsReadOnlyEffect } from './dialogue-rag-scope';
 import { collectionTrustArgs, recordTrustArgs } from './trust-guard';
 
 const session = z
@@ -17,6 +18,14 @@ const offset = z.number().int().nonnegative().optional();
 const enabled = z.boolean();
 
 export const ragMcpSchemas = {
+  rag_persist: z
+    .object({
+      session,
+      collection,
+      records: z.array(z.string().min(1)).optional(),
+      name: z.string().min(1),
+    })
+    .strict(),
   collection_set_trust: collectionTrustArgs
     .extend({ session, collection })
     .strict(),
@@ -90,6 +99,7 @@ export const ragMcpSchemas = {
 };
 export type RagMcpTool = keyof typeof ragMcpSchemas;
 export const ragToolNames: RagMcpTool[] = [
+  'rag_persist',
   'collection_set_trust',
   'record_set_trust',
   'collection_create',
@@ -107,6 +117,8 @@ export const ragToolNames: RagMcpTool[] = [
 const writeConditions =
   ' Eligible user/session knowledge collections; existing global mutations require MCP_Admin where REST resolves them; agents collections are excluded. Requires a live caller-owned session (argument or x-clh-session). Maximum UTF-8 JSON arguments: 10 MiB.';
 export const ragDescriptions: Record<RagMcpTool, string> = {
+  rag_persist:
+    'Copy session records verbatim into a user collection, creating it if missing. Coordinator only; idempotent by record id. Omitted records selects all enabled records.',
   collection_set_trust:
     'Set global informational source trust (0 to 5, one decimal). MCP_Admin required; @skills addresses informational skills.',
   record_set_trust:
@@ -139,25 +151,37 @@ export const ragDescriptions: Record<RagMcpTool, string> = {
 export function isRagTool(name: string): name is RagMcpTool {
   return ragToolNames.some((candidate) => candidate === name);
 }
-export function ragToolEffect(name: RagMcpTool): 'read' | 'write' {
-  return [
-    'rag_search',
-    'rag_read',
-    'collections_list',
-    'collection_records',
-  ].includes(name)
-    ? 'read'
-    : 'write';
+/** Knowledge effects retain the target's existing ownership/admin checks. */
+const ragToolEffects = {
+  rag_persist: 'knowledge',
+  collection_set_trust: 'write',
+  record_set_trust: 'write',
+  collection_create: 'knowledge',
+  collection_delete: 'knowledge',
+  record_add: 'knowledge',
+  record_update: 'knowledge',
+  record_delete: 'knowledge',
+  rag_search: 'read',
+  rag_read: 'read',
+  collections_list: 'read',
+  collection_set_enabled: 'knowledge',
+  collection_records: 'read',
+  record_set_enabled: 'knowledge',
+} as const satisfies Record<RagMcpTool, 'read' | 'knowledge' | 'write'>;
+
+export function ragToolEffect(name: RagMcpTool) {
+  return ragToolEffects[name];
 }
-export function eligibleRagTools(): RagMcpTool[] {
+export function eligibleRagTools(coordinator = false): RagMcpTool[] {
   return ragToolNames.filter(
     (name) =>
+      (name !== 'rag_persist' || coordinator) &&
       profileToolAllowed(name) &&
-      (!isReadOnlyTools() || ragToolEffect(name) === 'read'),
+      (!isReadOnlyTools() || allowsReadOnlyEffect(ragToolEffect(name))),
   );
 }
-export function buildRagToolSchemas() {
-  return eligibleRagTools().map((name) => ({
+export function buildRagToolSchemas(coordinator = false) {
+  return eligibleRagTools(coordinator).map((name) => ({
     type: 'function' as const,
     function: {
       name,

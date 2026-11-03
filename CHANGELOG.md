@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+- Dialogue workers (including read-only analyst and checker) read hub RAG and write only to their own session collections, enforced at execution; outside dialogues read-only and verdict profiles keep read-only access. The dialogue coordinator gains `rag_persist`, a deterministic copy of own-session records into the user's persistent collection with provenance, idempotent by record id; it has no other RAG write tool. Planners receive the storage capabilities from code even for existing stored profiles. Context capture labels RAG translation calls `rag-translation`.
+
 ## [10.4.6] - 2026-11-03
 
 - Adopt llm-agent 30.31.0, llm-agent-libs 30.29.0, llm-agent-mcp 30.10.1 and sap-aicore-llm 30.13.0 (compact task views, MCP SDK 1.32.2 for GHSA-46jr-4wx8-v453); persist the new dialogue state fields with backward-compatible restore.
