@@ -24,7 +24,7 @@ export function currentDelegateBrief(): string {
 
 export function withDelegateBrief<T>(
   name: string,
-  args: Record<string, unknown>,
+  args: Parameters<IMcpClient['callTool']>[1],
   run: () => T,
 ): T {
   return name === 'delegate_task'

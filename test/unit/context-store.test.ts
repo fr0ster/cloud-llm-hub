@@ -471,3 +471,15 @@ test('SQLite cap drops oversized rows, retains existing data and stops writes', 
 
   expect(warn).toHaveBeenCalledWith('Context capture: MAX_MB_REACHED');
 });
+
+test('X-API-Key credentials are redacted in JSON headers and header text', () => {
+  const json = JSON.stringify({ headers: { 'X-API-Key': 'KEY123secret' } });
+  expect(redactContext(json)).not.toContain('KEY123secret');
+  const text = 'GET /x HTTP/1.1\nX-API-Key: KEY456secret\nAccept: */*';
+  const redacted = redactContext(text);
+  expect(redacted).not.toContain('KEY456secret');
+  expect(redacted).toContain('Accept: */*');
+  expect(redactContext('x-api-key=KEY789secret&a=1')).not.toContain(
+    'KEY789secret',
+  );
+});

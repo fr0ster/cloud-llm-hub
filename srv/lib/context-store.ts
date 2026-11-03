@@ -3,7 +3,7 @@ import cds from '@sap/cds';
 import { contextWorker } from './context-worker';
 
 const secretKey =
-  /^(?:password|passwd|pwd|.*secret.*|.*token.*|authorization|(?:set-)?cookie|api[_-]?key|private[_-]?key|sap-password|x-sap-.*)$/i;
+  /^(?:password|passwd|pwd|.*secret.*|.*token.*|authorization|(?:set-)?cookie|(?:.*[_-])?api[_-]?key|private[_-]?key|sap-password|x-sap-.*)$/i;
 const textCredential = new RegExp(
   `(?<![\\w-])(["']?)(${secretKey.source.slice(1, -1).replaceAll('.*', '[\\w-]*')})\\1(\\s*[=:]\\s*)("(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|(?:Basic|Bearer)\\s+[^\\s&;,}]+|[^\\s&;,}]+)`,
   'gi',
