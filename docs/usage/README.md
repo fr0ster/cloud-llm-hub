@@ -14,6 +14,7 @@ User guides for connecting to and using Cloud LLM Hub.
 - [**Connect MCP via proxy (on-prem destination)**](CONNECT_MCP_VIA_PROXY_ONPREM_DEST.md) — for MCP-tool users: Cline/Cursor → MCP through the local `mcp-abap-adt-proxy`, on-prem ABAP via BTP destination
 - [**Connect the agent via proxy (on-prem destination)**](CONNECT_AGENT_VIA_PROXY_ONPREM_DEST.md) — for chat-agent users: Cline/Cursor → `/v1` through the local proxy, on-prem ABAP via BTP destination
 - [**Claude Code Sub-Agent**](CLAUDE_CODE_AGENT.md) — wire Cloud LLM Hub as a named sub-agent in Claude Code (`~/.claude/agents/cloud-llm-hub.md`), with full example
+- [**Claude Code → agent MCP, direct**](CLAUDE_CODE_AGENT_DIRECT.md) — connect Claude Code straight to `/mcp/agent/stream/http` with built-in XSUAA OAuth and `X-SAP-*` headers, no proxy
 - [**Troubleshooting**](TROUBLESHOOTING.md) — common issues and solutions
 
 ## Quick Links
