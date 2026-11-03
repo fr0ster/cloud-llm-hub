@@ -9,6 +9,8 @@ import {
   runWithContextCapture,
 } from '../../srv/lib/context-capture';
 import {
+  contextJson,
+  contextStoreStatus,
   drainContext,
   redactContext,
   resetContextStore,
@@ -114,6 +116,7 @@ test('off creates no file', async () => {
   await captureLlm(llm, 'chat', 'off').chat(messages);
   const { existsSync } = await import('node:fs');
   expect(existsSync(join(dir, 'context.sqlite'))).toBe(false);
+  expect(contextStoreStatus().active).toBe(false);
 });
 test.each([
   'password=abc',
@@ -191,4 +194,60 @@ test('stream tool deltas assemble and JSON credentials are redacted on both side
   expect(JSON.parse(String(row.response))).toMatchObject({
     toolCalls: [{ id: 'x', name: 'tool' }],
   });
+});
+
+test('nested JSON strings redact escaped passwords, keys and credential values', () => {
+  const nested = JSON.stringify({
+    password: 'prefix"suffix',
+    Authorization: 'Basic hidden',
+    values: ['Bearer hidden', 'Basic hidden', 'password=hidden&safe=visible'],
+  });
+  const result = contextJson({
+    content: JSON.stringify({ tool: nested }),
+    secret: 'hidden',
+    token: 'hidden',
+    api_key: 'hidden',
+  });
+  expect(result).not.toContain('hidden');
+  expect(result).not.toContain('suffix');
+  expect(result).toContain('safe=visible');
+  const ordinary = { content: 'ordinary text', list: [1, true, null] };
+  expect(contextJson(ordinary)).toBe(JSON.stringify(ordinary));
+  expect(redactContext('password=abc%22suffix&safe=visible')).not.toContain(
+    'suffix',
+  );
+});
+
+test('quoted text redacts the entire password through escaped delimiters', () => {
+  const value = String.raw`password="prefix\"suffix" safe=visible`;
+  expect(redactContext(value)).toBe(
+    'password=\u00abredacted\u00bb safe=visible',
+  );
+});
+
+test('bounded worker queue counts drops and warns once per burst', async () => {
+  const warn = jest
+    .spyOn(cds.log('context-capture'), 'warn')
+    .mockImplementation(() => {});
+  const captured = captureLlm(llm, 'chat', 'full');
+  await Promise.all(Array.from({ length: 70 }, () => captured.chat(messages)));
+  expect(contextStoreStatus()).toMatchObject({ pending: 64, dropped: 6 });
+  expect(warn).toHaveBeenCalledTimes(1);
+  await drainContext();
+  expect(rows()).toHaveLength(64);
+  await Promise.all(Array.from({ length: 66 }, () => captured.chat(messages)));
+  expect(contextStoreStatus().dropped).toBe(8);
+  expect(warn).toHaveBeenCalledTimes(2);
+  await drainContext();
+});
+
+test('worker failure disables capture without changing subsequent LLM results', async () => {
+  process.env.LLM_AGENT_CONTEXT_CAPTURE_FILE = dir;
+  jest.spyOn(cds.log('context-capture'), 'warn').mockImplementation(() => {});
+  const captured = captureLlm(llm, 'chat', 'full');
+  await expect(captured.chat(messages)).resolves.toMatchObject({ ok: true });
+  await drainContext();
+  expect(contextStoreStatus()).toMatchObject({ disabled: true, active: false });
+  await expect(captured.chat(messages)).resolves.toMatchObject({ ok: true });
+  expect(contextStoreStatus().active).toBe(false);
 });

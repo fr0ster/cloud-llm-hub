@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+- Redact credentials recursively in JSON-encoded context strings; move SQLite capture to a worker with a 64-row queue, counted overflow drops and disablement on worker failure. Fix documentation checks for retired settings without rewriting historical plans.
+
 - Remove automatic LLM review of dialogue workers/final answers, execute_step and single-agent answers; retain deterministic write notices. Make checks explicit coordinator decisions and bind negative checker verdicts to exact result quotes and supplied evidence. Remove critic wiring; deprecate and ignore `LLM_AGENT_SAP_RELEVANCE_SCORE` and `LLM_AGENT_STEP_REVIEW_TIMEOUT_MS`.
 
 - Disable coordinator/planner-author RAG translation and reject late LLM requests after session closure using stable session keys without retained tombstones.

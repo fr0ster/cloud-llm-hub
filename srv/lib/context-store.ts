@@ -1,38 +1,50 @@
-import { randomUUID } from 'node:crypto';
-import { existsSync, statSync } from 'node:fs';
-import type { DatabaseSync, StatementSync } from 'node:sqlite';
+import { Worker } from 'node:worker_threads';
 import cds from '@sap/cds';
+import { contextWorker } from './context-worker';
 
-/** Redact strings before JSON encoding, including JSON embedded in tool arguments. */
+const secretKey =
+  /^(password|passwd|secret|client_secret|clientsecret|authorization|token|api[_-]?key|sap-password|x-sap-.*)$/i;
+const replacement = '\u00abredacted\u00bb';
+type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+function redactValue(value: JsonValue): JsonValue {
+  if (typeof value === 'string') return redactContext(value);
+  if (Array.isArray(value)) return value.map(redactValue);
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        secretKey.test(key) ? replacement : redactValue(item),
+      ]),
+    );
+  return value;
+}
+
 export function redactContext(value: string): string {
+  try {
+    const parsed: JsonValue = JSON.parse(value);
+    if (parsed !== null && typeof parsed === 'object')
+      return JSON.stringify(redactValue(parsed));
+  } catch {
+    /* Plain text. */
+  }
   return value
     .replace(
-      /((?:password|passwd|client_secret|clientsecret|sap-password|x-sap-[\w-]+|authorization)["']?\s*[=:]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}\r\n]+(?:[ \t]+[^\s,;}\r\n]+)?)/gi,
-      (match, prefix: string) => {
-        const raw = match.slice(prefix.length);
-        // Only authorization consumes a scheme plus its credential.
-        const tail =
-          !/authorization/i.test(prefix) && !/^["']/.test(raw)
-            ? raw.indexOf(' ')
-            : -1;
-        return `${prefix}${/^["']/.test(raw) ? '"«redacted»"' : '«redacted»'}${tail >= 0 ? raw.slice(tail) : ''}`;
-      },
+      /((?:password|passwd|secret|client_secret|clientsecret|authorization|token|api[_-]?key|sap-password|x-sap-[\w-]+)["']?\s*[=:]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:Basic|Bearer)\s+[^\s&;,}]+|[^\s&;,}]+)/gi,
+      (_match, prefix: string) => `${prefix}${replacement}`,
     )
-    .replace(/(bearer\s+)[^\s"',;}]+/gi, '$1«redacted»');
+    .replace(/\b(Basic|Bearer)(\s+)[^\s"'&,;}]+/gi, `$1$2${replacement}`);
 }
 
 export function contextJson(value: object): string {
-  return JSON.stringify(
-    value,
-    (key, item: object | string | number | boolean | null) =>
-      /^(password|passwd|client_secret|clientsecret|sap-password|x-sap-[\w-]+|authorization)$/i.test(
-        key,
-      )
-        ? '\u00abredacted\u00bb'
-        : typeof item === 'string'
-          ? redactContext(item)
-          : item,
-  );
+  const serialized: JsonValue = JSON.parse(JSON.stringify(value));
+  return JSON.stringify(redactValue(serialized));
 }
 
 export interface ContextRow {
@@ -61,115 +73,137 @@ export function warnContext(kind: string): void {
     cds.log('context-capture').warn(`Context capture: ${kind}`);
   } catch {}
 }
-let database: DatabaseSync | undefined;
-let statement: StatementSync | undefined;
-let activePath: string | undefined;
-let stopped = false;
-const queue: ContextRow[] = [];
-let draining = false;
 
-/** Bounded, ordered queue; SQLite work runs after the caller receives its result. */
-export function appendContext(row: ContextRow): void {
-  if (queue.length >= 64) {
-    warnContext('QUEUE_FULL');
-    return;
-  }
-  queue.push(row);
-  if (draining) return;
-  draining = true;
-  setImmediate(() => {
-    void drainContext();
-  });
+// At most 64 serialized rows, including the single row in flight to the worker.
+export const CONTEXT_QUEUE_LIMIT = 64;
+const queue: string[] = [];
+let worker: Worker | undefined;
+let disabled = false;
+let busy = false;
+let overflow = false;
+let dropped = 0;
+const waiters: Array<() => void> = [];
+
+export function contextStoreStatus(): {
+  pending: number;
+  dropped: number;
+  active: boolean;
+  disabled: boolean;
+} {
+  return {
+    pending: queue.length,
+    dropped,
+    active: worker !== undefined,
+    disabled,
+  };
 }
-
-export async function drainContext(): Promise<void> {
-  if (!queue.length) {
-    draining = false;
+function settled(): void {
+  if (queue.length) return;
+  worker?.unref();
+  for (const resolve of waiters.splice(0)) resolve();
+}
+function failWorker(): void {
+  disabled = true;
+  busy = false;
+  queue.length = 0;
+  warnContext('WORKER_FAILED');
+  const failed = worker;
+  worker = undefined;
+  void failed?.terminate();
+  settled();
+}
+function dispatch(): void {
+  if (busy || !queue.length || !worker) return;
+  busy = true;
+  worker.ref();
+  try {
+    worker.postMessage(queue[0]);
+  } catch {
+    failWorker();
+  }
+}
+export function appendContext(row: ContextRow): void {
+  if (disabled) return;
+  if (queue.length >= CONTEXT_QUEUE_LIMIT) {
+    dropped++;
+    if (!overflow) {
+      overflow = true;
+      try {
+        cds
+          .log('context-capture')
+          .warn(
+            'Context capture: QUEUE_FULL (dropping new rows; see contextStoreStatus().dropped)',
+          );
+      } catch {}
+    }
     return;
   }
   try {
-    const { DatabaseSync } = await import('node:sqlite');
-    while (queue.length) {
-      const row = queue.shift();
-      if (!row) continue;
-      try {
-        const path =
-          process.env.LLM_AGENT_CONTEXT_CAPTURE_FILE?.trim() ||
-          'context.sqlite';
-        if (path !== activePath) {
-          database?.close();
-          database = undefined;
-          statement = undefined;
-          activePath = path;
-          stopped = false;
-        }
-        if (stopped) continue;
-        const rawMax = Number(
-          process.env.LLM_AGENT_CONTEXT_CAPTURE_MAX_MB || 512,
-        );
-        const max =
-          (Number.isFinite(rawMax) && rawMax > 0 ? rawMax : 512) * 1024 * 1024;
-        const size = existsSync(path) ? statSync(path).size : 0;
-        if (size >= max) {
-          stopped = true;
-          warnContext('MAX_MB_REACHED');
-          continue;
-        }
-        if (!database) {
-          database = new DatabaseSync(path);
-          database.exec(`CREATE TABLE IF NOT EXISTS context_calls (
-            id TEXT PRIMARY KEY, ts TEXT, session TEXT, component TEXT, model TEXT,
-            trace TEXT, messages TEXT, tools TEXT, options TEXT, response TEXT,
-            input_tokens INTEGER, output_tokens INTEGER, cached_tokens INTEGER,
-            duration_ms REAL, ok INTEGER, error TEXT)`);
-          statement = database.prepare(
-            'INSERT INTO context_calls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          );
-        }
-        statement?.run(
-          randomUUID(),
-          row.ts,
-          row.session,
-          row.component,
-          row.model,
-          row.trace,
-          row.messages,
-          row.tools,
-          row.options,
-          row.response,
-          row.inputTokens,
-          row.outputTokens,
-          row.cachedTokens,
-          row.durationMs,
-          row.ok ? 1 : 0,
-          row.error,
-        );
-      } catch (error) {
-        warnContext(
-          error instanceof Error &&
-            'code' in error &&
-            typeof error.code === 'string'
-            ? error.code
-            : error instanceof Error
-              ? error.name
-              : 'WRITE_FAILED',
-        );
-      }
+    if (!worker) {
+      const created = new Worker(`(${contextWorker.toString()})()`, {
+        eval: true,
+      });
+      worker = created;
+      created.on('message', (message: { warning?: string }) => {
+        if (worker !== created) return;
+        if (message.warning) warnContext(message.warning);
+        queue.shift();
+        busy = false;
+        overflow = false;
+        dispatch();
+        settled();
+      });
+      created.on('error', () => {
+        if (worker === created) failWorker();
+      });
+      created.on('exit', () => {
+        if (worker === created) failWorker();
+      });
     }
+    queue.push(
+      JSON.stringify({
+        row,
+        path:
+          process.env.LLM_AGENT_CONTEXT_CAPTURE_FILE?.trim() ||
+          'context.sqlite',
+        maxMb: process.env.LLM_AGENT_CONTEXT_CAPTURE_MAX_MB || '512',
+      }),
+    );
+    dispatch();
   } catch {
-    queue.length = 0;
-    warnContext('SQLITE_UNAVAILABLE');
-  } finally {
-    draining = false;
+    failWorker();
   }
 }
-
+export function drainContext(): Promise<void> {
+  if (!queue.length) return Promise.resolve();
+  return new Promise((resolve) => waiters.push(resolve));
+}
 export function resetContextStore(): void {
-  database?.close();
-  database = undefined;
-  statement = undefined;
-  activePath = undefined;
-  stopped = false;
+  const previous = worker;
+  worker = undefined;
+  void previous?.terminate();
+  disabled = false;
+  busy = false;
+  overflow = false;
+  dropped = 0;
   warned.clear();
   queue.length = 0;
+  settled();
 }
+// Pending writes keep the worker referenced. On natural shutdown, close its port
+// and SQLite connection before allowing exit. Forced exit remains best effort.
+process.once('beforeExit', () => {
+  const closing = worker;
+  if (!closing) return;
+  worker = undefined;
+  disabled = true;
+  closing.ref();
+  try {
+    closing.postMessage(null);
+  } catch {
+    void closing.terminate();
+  }
+});
+process.once('exit', () => {
+  void worker?.terminate();
+});
