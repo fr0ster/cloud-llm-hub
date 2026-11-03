@@ -18,6 +18,7 @@ import {
   buildAgentForDestination,
   buildExecutorWorker,
   buildPlannerAgent,
+  docsMcp,
   ExpositionFilteringRag,
   getCollectionRegistry,
   getCurrentPlannerModel,
@@ -31,6 +32,7 @@ import {
   DialogueRagMcpClient,
   runWithDialogueRagTools,
 } from '../../srv/lib/dialogue-rag-tools';
+import { ExternalMcp, parseExternalMcp } from '../../srv/lib/external-mcp';
 import { makeHubLlm } from '../../srv/lib/llm-factory';
 import { startProviders } from '../../srv/lib/providers';
 import { ragToolEffect, ragToolNames } from '../../srv/lib/rag-tool-catalogue';
@@ -783,3 +785,58 @@ test('every profile role appends plugin base skills after its prompt and exclude
     trustSpy.mockRestore();
   }
 });
+
+test.each(['direct', 'rag', 'auto'])(
+  'planner offers role-scoped %s docs and retains control tools',
+  async (mode) => {
+    const docs = new ExternalMcp(
+      parseExternalMcp({
+        LLM_AGENT_PLANNER_MCP: 'DOCS',
+        LLM_AGENT_MCP_SELECTION: `DOCS=${mode}`,
+        LLM_AGENT_MCP_DIRECT_MAX: '1',
+      }),
+      () => [],
+      async () => ({
+        listTools: async () => ({
+          ok: true,
+          value: ['cds', 'ui'].map((name) => ({
+            name,
+            description: name,
+            inputSchema: {},
+          })),
+        }),
+        callTool: async () => ({ ok: true, value: { content: 'docs' } }),
+      }),
+      jest.fn(),
+      Date.now,
+      () => ({
+        embedDocument: async (text) => ({
+          vector: text.includes('cds') ? [1, 0] : [0, 1],
+        }),
+        embedQuery: async () => ({ vector: [1, 0] }),
+      }),
+    );
+    const model = llm(`docs-${mode}`);
+    jest.mocked(makeHubLlm).mockResolvedValue(model.agent);
+    initProviders(await startProviders(config));
+    jest
+      .spyOn(docsMcp(), 'clients')
+      .mockImplementation(docs.clients.bind(docs));
+    jest
+      .spyOn(docsMcp(), 'withToolsRag')
+      .mockImplementation(docs.withToolsRag.bind(docs));
+    const planner = await buildPlannerAgent(
+      { ...config, agent: { ...config.agent, ragQueryK: 1 } },
+      plannerText,
+    );
+    try {
+      await planner.process([{ role: 'user', content: 'cds' }]);
+      expect(model.tools[0]).toContain('cds');
+      expect(model.tools[0].includes('ui')).toBe(mode === 'direct');
+      expect(model.tools[0]).toContain('delegate_task');
+      expect(model.tools[0]).toContain('search_knowledge');
+    } finally {
+      releasePlannerAgent(planner);
+    }
+  },
+);

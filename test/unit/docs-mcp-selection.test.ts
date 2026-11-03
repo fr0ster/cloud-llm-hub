@@ -4,7 +4,7 @@ import type {
   IRetrievalEmbedder,
   McpTool,
 } from '@mcp-abap-adt/llm-agent';
-import { TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+import { RagError, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { ExpositionFilteringRag } from '../../srv/agent-manager';
 import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
@@ -410,4 +410,87 @@ test('skills default to system and correction while collection classes stay info
       ),
     ),
   ).toEqual([3, 3.5, 4]);
+});
+
+test('failed corpus retains direct docs candidates', async () => {
+  const { docs } = setup('direct');
+  await docs.clients('executor');
+  const failed: IRag = {
+    ...corpus,
+    query: async () => ({
+      ok: false,
+      error: new RagError('private corpus content'),
+    }),
+  };
+  expect(await names(docs.withToolsRag(failed, 'executor'))).toEqual([
+    'tool:search_cds',
+    'tool:search_ui',
+  ]);
+});
+
+test('caller abort preserves the corpus failure unchanged', async () => {
+  const { docs } = setup('direct');
+  await docs.clients('executor');
+  const controller = new AbortController();
+  const failure = { ok: false as const, error: new RagError('aborted') };
+  controller.abort(failure.error);
+  const failed: IRag = { ...corpus, query: async () => failure };
+  expect(
+    await docs
+      .withToolsRag(failed, 'executor')
+      .query(new TextOnlyEmbedding('cds'), 1, { signal: controller.signal }),
+  ).toBe(failure);
+});
+
+test('failed corpus returns direct and ranked docs only and warns without content', async () => {
+  const warn = jest.fn();
+  const docs = new ExternalMcp(
+    parseExternalMcp({
+      LLM_AGENT_EXECUTOR_MCP: 'DIRECT,RAG',
+      LLM_AGENT_MCP_SELECTION: 'DIRECT=direct,RAG=rag',
+    }),
+    () => [],
+    async () => ({
+      listTools: async () => ({ ok: true, value: tools }),
+      callTool: async () => ({ ok: true, value: { content: 'docs' } }),
+    }),
+    warn,
+    Date.now,
+    () => embedder,
+  );
+  await docs.clients('executor');
+  const failed: IRag = {
+    ...corpus,
+    query: async () => ({
+      ok: false,
+      error: new RagError('private corpus content'),
+    }),
+  };
+  expect(await names(docs.withToolsRag(failed, 'executor'))).toEqual([
+    'tool:RAG__search_cds',
+    'tool:DIRECT__search_cds',
+    'tool:DIRECT__search_ui',
+  ]);
+  expect(warn.mock.calls).toEqual([
+    ['Tool corpus query unavailable; returning docs candidates only'],
+  ]);
+});
+
+test('thrown caller abort propagates unchanged', async () => {
+  const { docs } = setup('direct');
+  await docs.clients('executor');
+  const controller = new AbortController();
+  const reason = new Error('caller stopped');
+  const failed: IRag = {
+    ...corpus,
+    query: async () => {
+      controller.abort(reason);
+      throw reason;
+    },
+  };
+  await expect(
+    docs
+      .withToolsRag(failed, 'executor')
+      .query(new TextOnlyEmbedding('cds'), 1, { signal: controller.signal }),
+  ).rejects.toBe(reason);
 });

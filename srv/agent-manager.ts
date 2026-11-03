@@ -3020,6 +3020,25 @@ export async function buildPlannerAgent(
   const roleResolver = resolverFor(getCollectionRegistry());
   const skillsPool = buildSkillsPool({ resolver: () => roleResolver });
   const system = await appendBaseSkills(systemPrompt, skillsPool);
+  const plannerClient =
+    authorClient ?? new DialogueRagMcpClient(coordinatorToolsClient());
+  // Hard planners retain every SAP/control tool; only docs use semantic selection.
+  const plannerTools: IRag = {
+    query: async (_query, _k, options) => {
+      const listed = await plannerClient.listTools(options);
+      if (!listed.ok) return listed;
+      return {
+        ok: true,
+        value: listed.value.map((tool) => ({
+          text: `Tool: ${tool.name}`,
+          metadata: { id: `tool:${tool.name}`, name: tool.name },
+          score: 1,
+        })),
+      };
+    },
+    getById: async () => ({ ok: true, value: null }),
+    healthCheck: async () => ({ ok: true, value: undefined }),
+  };
   const builder = new SmartAgentBuilder({
     // Authors are built per call; validation would send an unattributed completion.
     skipModelValidation:
@@ -3028,6 +3047,7 @@ export async function buildPlannerAgent(
       timeZone: config.timeZone,
       maxIterations: config.agent.maxIterations,
       classificationEnabled: false,
+      ragQueryK: config.agent.ragQueryK,
     },
     prompts: {
       system,
@@ -3039,13 +3059,14 @@ export async function buildPlannerAgent(
       new RecordingMcpClient(
         compositeMcpClient([
           ...(await docsMcp().clients('planner', options)),
-          authorClient ?? new DialogueRagMcpClient(coordinatorToolsClient()),
+          plannerClient,
         ]),
         undefined,
         config.agent.toolResultMaxChars,
         false,
       ),
     ])
+    .setToolsRag(docsMcp().withToolsRag(plannerTools, 'planner'))
     .withClassification(false)
     .withMode('hard');
   if (config.agent.maxToolCalls !== undefined)
