@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+- Adopt llm-agent 30.31.0, llm-agent-libs 30.29.0, llm-agent-mcp 30.10.1 and sap-aicore-llm 30.13.0 (compact task views, MCP SDK 1.32.2 for GHSA-46jr-4wx8-v453); persist the new dialogue state fields with backward-compatible restore.
+
 - Include checked tasks' tool-trace result excerpts as checker evidence, bound to dialogue task identities while excluding checked reports and trace arguments.
 
 - Mask URL userinfo credentials throughout context capture and accept quoted and multiline checker evidence from MCP text parts.
@@ -25,6 +27,8 @@ All notable changes to this project will be documented in this file. The format 
 - Add opt-in full LLM context capture to container-local SQLite with credential redaction, session hashes, best-effort writes and an admin-managed size cap.
 
 - Reduce dialogue coordinator tools and prompt, compact planner-author knowledge search, and add salted session/context fingerprints with optional test-canary scanning.
+
+- Docs: connect Claude Code directly to the agent MCP endpoint with built-in XSUAA OAuth and `X-SAP-*` headers (`docs/usage/CLAUDE_CODE_AGENT_DIRECT.md`).
 
 ## [10.4.5] - 2026-11-03
 
