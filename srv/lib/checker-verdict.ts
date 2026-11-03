@@ -22,6 +22,7 @@ const normalize = (text: string): string => text.replace(/\s+/g, ' ').trim();
 
 export interface CheckerInputs {
   checkedOutputs: string[];
+  checkedToolResults: string[];
   dependencyOutputs: string[];
   briefContext: string;
   briefGoal: string;
@@ -54,6 +55,11 @@ export function checkerInputs(
     checkedOutputs: (state?.tasks ?? [])
       .filter((task) => checkedIds.has(task.id))
       .map((task) => task.output ?? ''),
+    checkedToolResults: (state?.tasks ?? [])
+      .filter((task) => checkedIds.has(task.id))
+      .flatMap((task) =>
+        (task.toolTrace?.entries ?? []).map((entry) => entry.resultExcerpt),
+      ),
     dependencyOutputs: (state?.tasks ?? [])
       .filter((task) => dependencyIds.has(task.id) && !checkedIds.has(task.id))
       .map((task) => task.output ?? ''),
@@ -93,6 +99,7 @@ export function bindCheckerVerdict(
   const evidence = normalize(
     [
       ...inputs.dependencyOutputs,
+      ...inputs.checkedToolResults,
       inputs.briefContext,
       inputs.briefGoal,
       ...inputs.records.map((record) =>

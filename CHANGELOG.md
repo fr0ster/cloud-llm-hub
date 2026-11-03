@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+- Include checked tasks' tool-trace result excerpts as checker evidence, bound to dialogue task identities while excluding checked reports and trace arguments.
+
 - Mask URL userinfo credentials throughout context capture and accept quoted and multiline checker evidence from MCP text parts.
 
 - Redact `X-API-Key` credentials in full context capture.

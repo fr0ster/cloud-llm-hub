@@ -9,6 +9,7 @@ import {
 
 const context = {
   checkedOutputs: ['The object is active.'],
+  checkedToolResults: [],
   dependencyOutputs: ['inactive'],
   briefContext: '',
   briefGoal: '',
@@ -303,6 +304,61 @@ test('another dependency output supplies independent evidence', () => {
   const output = fail(undefined, 'Object is inactive');
   expect(bind(output, inputs)).toBe(output);
 });
+
+test.each(['Object is inactive', 'Object is\n"inactive"'])(
+  'checked task trace results supply independent evidence: %s',
+  (resultExcerpt) => {
+    const state = snapshot('The object is active.\nReport-only evidence');
+    state.tasks = state.tasks.filter((task) => task.id !== 't0');
+    const checked = state.tasks.find((task) => task.id === 't1');
+    if (!checked) throw new Error('Missing checked task');
+    checked.toolTrace = {
+      entries: [
+        {
+          sequence: 1,
+          toolName: 'ReadObject',
+          arguments: 'Argument-only evidence',
+          resultExcerpt,
+          outcome: 'ok',
+        },
+      ],
+      omittedCount: 0,
+      complete: true,
+    };
+    state.tasks.push({
+      ...checked,
+      id: 'unrelated',
+      toolTrace: {
+        ...checked.toolTrace,
+        entries: [
+          {
+            ...checked.toolTrace.entries[0],
+            resultExcerpt: 'Unrelated trace evidence',
+          },
+        ],
+      },
+    });
+    const inputs = checkerInputs(state, 't2', 'Check report', []);
+    expect(inputs.checkedToolResults).toEqual([resultExcerpt]);
+    const output = fail(undefined, resultExcerpt);
+    expect(bind(output, inputs)).toBe(output);
+    for (const evidence of [
+      'Report-only evidence',
+      'The object is active.',
+      'Argument-only evidence',
+      'ReadObject',
+      'Unrelated trace evidence',
+    ]) {
+      expect(bind(fail(undefined, evidence), inputs)).toBe(
+        'unusable verdict: evidence_absent',
+      );
+    }
+    delete checked.toolTrace;
+    expect(bind(output, checkerInputs(state, 't2', 'Check report', []))).toBe(
+      'unusable verdict: evidence_absent',
+    );
+  },
+);
 
 test('structured coordinator brief context supplies evidence', () => {
   const state = snapshot('The object is active.');
