@@ -112,6 +112,72 @@ test('full captures complete requests and chat/stream responses with isolated se
     ok: 1,
   });
 });
+test.each([
+  [
+    'https://alice:MY_PRIVATE_PASSWORD@example.com/path',
+    'https://alice:«redacted»@example.com/path',
+  ],
+  [
+    'https://MY_PRIVATE_TOKEN@example.com/path',
+    'https://«redacted»@example.com/path',
+  ],
+  [
+    'postgres://alice:encoded%40password@example.com:5432/db',
+    'postgres://alice:«redacted»@example.com:5432/db',
+  ],
+])('redacts URL userinfo in text and nested JSON: %s', (url, masked) => {
+  expect(redactContext(`Open ${url}`)).toBe(`Open ${masked}`);
+  expect(contextJson({ nested: [JSON.stringify({ url })] })).toBe(
+    JSON.stringify({ nested: [JSON.stringify({ url: masked })] }),
+  );
+});
+
+test('URL credentials are redacted in persisted messages and tool arguments', async () => {
+  const url = 'https://alice:MY_PRIVATE_PASSWORD@example.com/path';
+  const tokenUrl = 'https://MY_PRIVATE_TOKEN@example.com/path';
+  const payload = { nested: { url, links: [tokenUrl] } };
+  const urlLlm: ILlm = {
+    ...llm,
+    async chat() {
+      return {
+        ok: true,
+        value: {
+          content: JSON.stringify(payload),
+          finishReason: 'stop',
+          toolCalls: [{ id: 'url', name: 'tool', arguments: payload }],
+        },
+      };
+    },
+  };
+  await captureLlm(urlLlm, 'chat', 'full').chat([
+    { role: 'user', content: `Open ${url} and ${tokenUrl}` },
+    {
+      role: 'user',
+      content: JSON.stringify({ data: JSON.stringify(payload) }),
+    },
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [
+        {
+          id: 'url',
+          type: 'function',
+          function: { name: 'tool', arguments: JSON.stringify(payload) },
+        },
+      ],
+    },
+  ]);
+  await drainContext();
+  const row = rows()[0];
+  for (const field of [row.messages, row.response]) {
+    expect(String(field)).not.toMatch(/MY_PRIVATE_PASSWORD|MY_PRIVATE_TOKEN/);
+    expect(String(field)).toContain(
+      'https://alice:«redacted»@example.com/path',
+    );
+    expect(String(field)).toContain('https://«redacted»@example.com/path');
+  }
+});
+
 test('off creates no file', async () => {
   await captureLlm(llm, 'chat', 'off').chat(messages);
   const { existsSync } = await import('node:fs');

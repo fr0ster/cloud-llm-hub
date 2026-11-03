@@ -87,6 +87,23 @@ test('checker tool results and brief source inputs supply evidence', () => {
     ).toBe(output);
   }
 });
+test.each([
+  'Object is "inactive"',
+  'Object is\n"inactive"\nPending activation',
+])('accepts quoted and multiline evidence from MCP text: %s', (text) => {
+  const output = fail(undefined, text);
+  for (const content of [text, [{ type: 'text', text }]]) {
+    expect(
+      bindCheckerVerdict(output, { ...context, dependencyOutputs: [] }, '', [
+        {
+          call: { id: 'read', name: 'ReadObject', arguments: {} },
+          result: { content },
+        },
+      ]),
+    ).toBe(output);
+  }
+});
+
 test.each(['FAIL', '{"verdict":"fail"}', '{"verdict":"fail","claims":[]}'])(
   'unbound failure %s is unusable',
   (output) => {

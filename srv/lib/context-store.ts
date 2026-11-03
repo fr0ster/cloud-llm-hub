@@ -44,6 +44,13 @@ export function redactContext(value: string): string {
   }
   return value
     .replace(
+      /\b([a-z][a-z0-9+.-]*:\/\/)([^\s/?#@"'<>]+)@/gi,
+      (_match, scheme: string, userinfo: string) => {
+        const colon = userinfo.indexOf(':');
+        return `${scheme}${colon < 0 ? replacement : `${userinfo.slice(0, colon)}:${replacement}`}@`;
+      },
+    )
+    .replace(
       /-----BEGIN ([A-Z0-9 ]*PRIVATE KEY)-----[\s\S]*?-----END \1-----/g,
       replacement,
     )

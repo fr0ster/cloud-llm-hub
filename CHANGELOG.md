@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+- Mask URL userinfo credentials throughout context capture and accept quoted and multiline checker evidence from MCP text parts.
+
 - Redact `X-API-Key` credentials in full context capture.
 
 - Bind checker quotes and evidence to structured task outputs and coordinator inputs so report headings cannot supply independent evidence.

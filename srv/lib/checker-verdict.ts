@@ -98,7 +98,15 @@ export function bindCheckerVerdict(
       ...inputs.records.map((record) =>
         typeof record.result.content === 'string'
           ? record.result.content
-          : JSON.stringify(record.result.content),
+          : Array.isArray(record.result.content)
+            ? record.result.content
+                .map((part) =>
+                  part.type === 'text' && typeof part.text === 'string'
+                    ? part.text
+                    : JSON.stringify(part),
+                )
+                .join('\n')
+            : JSON.stringify(record.result.content),
       ),
     ].join('\n'),
   );
