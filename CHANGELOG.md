@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+- Require turn-scoped write capability for claim-based unverified-write notices; retain failed and unanswered write safeguards.
+- Log external documentation MCP call metadata with source and resolved trust, without arguments or content.
+- Emit documentation connection logs only on first connection, recovery, or tool name changes.
+
 ## [10.4.4] - 2026-11-03
 
 - Add per-destination direct, RAG, and automatic external documentation tool selection, runtime indexing, planner awareness, and connection logs.

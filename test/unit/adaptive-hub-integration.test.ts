@@ -12,6 +12,7 @@ import { makeHubLlm } from '../../srv/lib/llm-factory';
 import { startProviders } from '../../srv/lib/providers';
 import { getRunRecordStore } from '../../srv/lib/run-record-store';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
+import { isWriteTool } from '../../srv/lib/write-guardrail';
 import {
   profileToolAllowed,
   runWithSessionId,
@@ -329,7 +330,7 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     expect(callTool).not.toHaveBeenCalled();
   });
   it.each(['throw', 'invalid'] as const)(
-    'falls back after %s planning and appends the honesty notice',
+    'falls back after %s planning without a write notice when no SAP write tool is offered',
     async (failure) => {
       scenario = failure;
       const result = await run(
@@ -339,7 +340,15 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       expect(calls[0]).toBe('controller');
       expect(calls).toContain('executor');
       expect(result.text).toContain(answer);
-      expect(result.text).toContain('UNVERIFIED_WRITE:');
+      const offered = jest
+        .mocked(llm.streamChat)
+        .mock.calls.filter(
+          (call) => call[2]?.trace?.traceId === `adaptive-${scenario}`,
+        )
+        .flatMap((call) => call[1] ?? []);
+      expect(offered.length).toBeGreaterThan(0);
+      expect(offered.some((tool) => isWriteTool(tool.name))).toBe(false);
+      expect(result.text).not.toContain('UNVERIFIED_WRITE:');
       expect(result.callTool).not.toHaveBeenCalled();
       expect(result.record?.outcome).toBe('answered');
       expect(result.record?.steps.some((s) => s.kind === 'work')).toBe(true);

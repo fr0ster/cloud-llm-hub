@@ -238,7 +238,10 @@ jest.mock('../../srv/agent-manager', (): object => ({
       | { deps: { ragStores: Record<string, never> } };
     workers: Map<string, ISubAgent>;
     profileRunner: IAgentProfileRunner;
-    recMcp: { getToolRecords: () => never[]; dropRequest(): void };
+    recMcp: Pick<
+      import('../../srv/lib/recording-mcp-client').RecordingMcpClient,
+      'hadWriteCapability' | 'getToolRecords' | 'dropRequest'
+    >;
     criticLlm: Record<string, never>;
   }> => ({
     agent: mockStepAgent ?? { deps: { ragStores: {} } },
@@ -247,7 +250,11 @@ jest.mock('../../srv/agent-manager', (): object => ({
       () => mockPlanner,
       () => mockWorkers,
     ),
-    recMcp: { getToolRecords: (): never[] => [], dropRequest(): void {} },
+    recMcp: {
+      hadWriteCapability: () => false,
+      getToolRecords: (): never[] => [],
+      dropRequest(): void {},
+    },
     criticLlm: {},
   }),
   buildPlannerAgent: async (): Promise<

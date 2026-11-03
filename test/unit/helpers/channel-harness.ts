@@ -118,12 +118,22 @@ const handle = {
     },
   },
   recMcp: {
+    hadWriteCapability: () => false,
     dropRequest: () => {
       harness.events.push('dropRequest');
       if (harness.dropRequestThrows) throw new Error('dropRequest failed');
     },
     unanswered: (_traceId: string) => harness.unanswered,
-  },
+  } satisfies Pick<
+    import('../../../srv/lib/recording-mcp-client').RecordingMcpClient,
+    'hadWriteCapability' | 'dropRequest'
+  > &
+    Pick<
+      NonNullable<
+        import('../../../srv/lib/throttle-surfacing').RecMcpHandle['recMcp']
+      >,
+      'unanswered'
+    >,
 };
 
 export function agentManagerMock() {

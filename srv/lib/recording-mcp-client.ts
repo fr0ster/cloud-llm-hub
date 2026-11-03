@@ -1,5 +1,6 @@
 import type {
   CallOptions,
+  ILlm,
   IMcpClient,
   McpError,
   McpTool,
@@ -80,6 +81,7 @@ function isTransportFailure(error: unknown): boolean {
 export class RecordingMcpClient implements IMcpClient {
   private readonly knownNames: Set<string>;
   private readonly deltas: Map<string, ToolCallRecord[]>;
+  private readonly offeredWrites: Set<string>;
 
   /** Present iff `inner` implements it, so callers relying on `?.` see the
    *  same optionality the inner client exposes. */
@@ -96,6 +98,7 @@ export class RecordingMcpClient implements IMcpClient {
     // A view shares its origin's records: one reviewer evidence per request.
     shared?: RecordingMcpClient,
   ) {
+    this.offeredWrites = shared?.offeredWrites ?? new Set<string>();
     this.knownNames = shared?.knownNames ?? new Set<string>();
     this.deltas = shared?.deltas ?? new Map<string, ToolCallRecord[]>();
     if (inner.healthCheck) {
@@ -136,6 +139,37 @@ export class RecordingMcpClient implements IMcpClient {
     return value.length === result.value.length ? result : { ok: true, value };
   }
 
+  /** Record tools actually sent to the model, rather than discovery candidates. */
+  trackOfferedTools(inner: ILlm): ILlm {
+    const record = (
+      tools: Parameters<ILlm['chat']>[1],
+      options: Parameters<ILlm['chat']>[2],
+    ) => {
+      const traceId = options?.trace?.traceId;
+      if (
+        traceId &&
+        this.retainRecords &&
+        tools?.some((tool) => isWriteTool(tool.name))
+      )
+        this.offeredWrites.add(traceId);
+    };
+    return {
+      model: inner.model,
+      chat: (...args) => {
+        record(args[1], args[2]);
+        return inner.chat(...args);
+      },
+      streamChat: (...args) => {
+        record(args[1], args[2]);
+        return inner.streamChat(...args);
+      },
+      ...(inner.healthCheck
+        ? { healthCheck: inner.healthCheck.bind(inner) }
+        : {}),
+      ...(inner.getModels ? { getModels: inner.getModels.bind(inner) } : {}),
+    };
+  }
+
   private isReadOnly(tool: McpTool): boolean {
     return isReadOnlyTool(
       tool.name,
@@ -148,6 +182,9 @@ export class RecordingMcpClient implements IMcpClient {
     args: Record<string, unknown>,
     options?: CallOptions,
   ): Promise<Result<McpToolResult, McpError>> {
+    const requestId = options?.trace?.traceId;
+    if (requestId && this.retainRecords && isWriteTool(name))
+      this.offeredWrites.add(requestId);
     if (!profileToolAllowed(name))
       return {
         ok: true,
@@ -262,13 +299,26 @@ export class RecordingMcpClient implements IMcpClient {
     return requestId ? [...(this.deltas.get(requestId) ?? [])] : [];
   }
 
+  /** Capability is scoped to one turn and shared by all recorder views. */
+  hadWriteCapability(requestId?: string): boolean {
+    return (
+      !!requestId &&
+      (this.offeredWrites.has(requestId) ||
+        this.getToolRecords(requestId).some((record) =>
+          isWriteTool(record.call.name),
+        ))
+    );
+  }
+
   /** Frees `requestId`'s delta bucket. */
   dropRequest(requestId?: string): void {
     if (!requestId) return;
     this.deltas.delete(requestId);
+    this.offeredWrites.delete(requestId);
   }
 
   reset(): void {
     this.deltas.clear();
+    this.offeredWrites.clear();
   }
 }

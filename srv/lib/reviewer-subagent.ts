@@ -16,6 +16,7 @@ export interface ReviewerSubAgentDeps {
    *  so this class stays portable and unit-testable with a stub — no
    *  dependency on the concrete recording client here. */
   getToolRecords: (traceId?: string) => ToolCallRecord[];
+  hadWriteCapability?: (traceId?: string) => boolean;
   llm: ILlm;
   toolTrust?: ToolTrust;
 }
@@ -47,6 +48,7 @@ export class ReviewerSubAgent implements ISubAgent {
     const content = input.context ?? input.task;
     const records = this.deps.getToolRecords(input.trace?.traceId);
     const verdict = await evaluateGated({
+      writeToolOffered: this.deps.hadWriteCapability?.(input.trace?.traceId),
       signal: input.signal,
       toolTrust: this.deps.toolTrust,
       usage: input.usage,

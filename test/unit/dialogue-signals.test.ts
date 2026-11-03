@@ -37,7 +37,14 @@ jest.mock('../../srv/agent-manager', () => ({
       }),
     },
     workers: new Map(),
-    recMcp: { getToolRecords: () => [], dropRequest: jest.fn() },
+    recMcp: {
+      hadWriteCapability: () => false,
+      getToolRecords: () => [],
+      dropRequest: jest.fn(),
+    } satisfies Pick<
+      import('../../srv/lib/recording-mcp-client').RecordingMcpClient,
+      'hadWriteCapability' | 'getToolRecords' | 'dropRequest'
+    >,
     criticLlm: {},
   })),
 }));

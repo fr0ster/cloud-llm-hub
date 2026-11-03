@@ -99,12 +99,14 @@ const mockRun = jest.fn<Promise<ISubAgentResult>, [ISubAgentInput]>();
 const mockRelease = jest.fn();
 const mockDrain = jest.fn(async () => {});
 const mockDrop = jest.fn();
+const mockWriteCapability = jest.fn((_traceId?: string) => false);
 const mockPlannerTurns: string[] = [];
 const mockAuthorTurns: string[] = [];
 const mockEnvironments: string[] = [];
 let mockGoal = 'read';
 let mockWorkerTrust: { target: number } | undefined;
 let mockPlannerHook: ((text: string) => Promise<void>) | undefined;
+let mockFinalAnswer: string | undefined;
 let mockPlanUsage: TokenUsage | undefined;
 let mockPlan:
   | {
@@ -199,10 +201,14 @@ jest.mock('../../srv/agent-manager', () => ({
           worker: 'executor',
           goal: mockGoal,
         });
+      if (mockFinalAnswer && !text.startsWith('[task events]'))
+        await until(() => mockRun.mock.calls.length > 0);
       return {
         ok: true,
         value: {
-          content: text.startsWith('[task events]') ? text : 'delegated',
+          content: text.startsWith('[task events]')
+            ? text
+            : (mockFinalAnswer ?? 'delegated'),
           usage: {
             promptTokens: 3,
             completionTokens: 2,
@@ -274,6 +280,7 @@ jest.mock('../../srv/agent-manager', () => ({
       ],
     ]),
     recMcp: {
+      hadWriteCapability: (traceId?: string) => mockWriteCapability(traceId),
       getToolRecords: () => [],
       dropRequest: (id: string) => mockDrop(id),
     },
@@ -325,10 +332,12 @@ async function ready(user = 'alice') {
 }
 beforeEach(() => {
   jest.clearAllMocks();
+  mockWriteCapability.mockReset().mockReturnValue(false);
   mockPlannerTurns.length = 0;
   mockEnvironments.length = 0;
   mockGoal = 'read';
   mockPlannerHook = undefined;
+  mockFinalAnswer = undefined;
   mockPlanUsage = undefined;
   mockPlan = undefined;
   mockRun.mockReset().mockResolvedValue({ output: 'read done' });
@@ -638,6 +647,69 @@ test('delegated worker has system, session, owner, an empty history scope, admis
   expect(lease.connection).toBe(connection);
   await lease.release(true);
 });
+test.each([false, true])(
+  'worker inherits only its scheduling turn write capability (%s)',
+  async (offered) => {
+    const { h } = await ready();
+    mockWriteCapability.mockImplementation(
+      (traceId) => offered && traceId === 'planner-capability',
+    );
+    await h.session.send('go', { trace: { traceId: 'planner-capability' } });
+    await until(() => jest.mocked(evaluateGated).mock.calls.length > 0);
+    expect(jest.mocked(evaluateGated).mock.calls[0][0].writeToolOffered).toBe(
+      offered,
+    );
+  },
+);
+
+test.each([
+  [true, 'I created X.'],
+  [false, 'X was created using the older syntax.'],
+] as const)(
+  'coordinator final answer uses this turn worker capability (%s)',
+  async (offered, answer) => {
+    const { h } = await ready();
+    const workerTraces = new Set<string>();
+    mockFinalAnswer = answer;
+    mockWriteCapability.mockImplementation(
+      (id) => !!id && workerTraces.has(id),
+    );
+    mockRun.mockImplementation(async (input) => {
+      if (offered && input.trace?.traceId)
+        workerTraces.add(input.trace.traceId);
+      return { output: 'Finished analysis.' };
+    });
+    jest
+      .mocked(evaluateGated)
+      .mockImplementation(async (input) =>
+        jest
+          .requireActual<typeof import('../../srv/lib/step-reviewer')>(
+            '../../srv/lib/step-reviewer',
+          )
+          .evaluateGated(input),
+      );
+    await h.session.send('go', { trace: { traceId: 'coordinator-final' } });
+    const content =
+      h.session
+        .snapshot()
+        .conversation.find(
+          (message) =>
+            message.role === 'assistant' &&
+            typeof message.content === 'string' &&
+            message.content.includes(answer),
+        )?.content ?? '';
+    expect(content).toContain(answer);
+    expect(content.includes('UNVERIFIED_WRITE:')).toBe(offered);
+    // A later read-only turn in the same session must not inherit the capability.
+    mockFinalAnswer = 'X was created using the older syntax.';
+    mockRun.mockImplementation(async () => ({ output: 'Finished analysis.' }));
+    await h.session.send('read only', { trace: { traceId: 'next-final' } });
+    expect(h.session.snapshot().conversation.at(-1)?.content).not.toContain(
+      'UNVERIFIED_WRITE:',
+    );
+  },
+);
+
 test('honesty notice reaches task output and planner', async () => {
   const { h } = await ready();
   const events: DialogueEvent[] = [];

@@ -1,4 +1,5 @@
-import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
+import { type IMcpClient, McpError } from '@mcp-abap-adt/llm-agent';
+import cds from '@sap/cds';
 import { ExternalMcp, parseExternalMcp } from '../../srv/lib/external-mcp';
 import { parseTrustDefaults } from '../../srv/lib/trust';
 import { TrustResolver } from '../../srv/lib/trust-resolver';
@@ -519,3 +520,143 @@ test('caller abort settles a stalled first discovery without cancelling it', asy
   expect(clients).toHaveLength(1);
   expect(await clients[0].listTools()).toEqual(await adapter.listTools());
 });
+
+test('call logs contain only metadata and resolved profile or destination trust', async () => {
+  const info = jest
+    .spyOn(cds.log('external-mcp'), 'info')
+    .mockImplementation(() => {});
+  try {
+    for (const override of [undefined, 'docs=5']) {
+      let now = 10;
+      const external = new ExternalMcp(
+        parseExternalMcp({
+          LLM_AGENT_EXECUTOR_MCP: 'docs',
+          LLM_AGENT_MCP_TRUST: override,
+        }),
+        () => [],
+        async () => ({
+          ...adapter,
+          callTool: async () => {
+            now += 7;
+            return { ok: true, value: { content: 'secret result' } };
+          },
+        }),
+        undefined,
+        () => now,
+      );
+      const [client] = await external.clients(
+        'executor',
+        undefined,
+        resolver.forProfile({ trust: { docs: 2 } }),
+      );
+      await client.callTool('search', { query: 'secret arguments' });
+      expect(info).toHaveBeenCalledWith('External docs MCP call', {
+        destination: 'docs',
+        tool: 'search',
+        source: 'docs:search',
+        trust: override ? 5 : 2,
+        ok: true,
+        durationMs: 7,
+      });
+    }
+  } finally {
+    info.mockRestore();
+  }
+});
+
+test('connection logs change only after tool names change or a failed connection recovers', async () => {
+  const info = jest
+    .spyOn(cds.log('external-mcp'), 'info')
+    .mockImplementation(() => {});
+  try {
+    let now = 0;
+    let names = ['search'];
+    let failed = false;
+    const external = new ExternalMcp(
+      parseExternalMcp({ LLM_AGENT_EXECUTOR_MCP: 'docs' }),
+      () => [],
+      async () => ({
+        ...adapter,
+        listTools: async () => {
+          if (failed) throw new Error('offline');
+          return {
+            ok: true,
+            value: names.map((name) => ({
+              name,
+              description: '',
+              inputSchema: {},
+            })),
+          };
+        },
+      }),
+      () => {},
+      () => now,
+    );
+    const refresh = async () => {
+      now += 30001;
+      external.refresh();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    };
+    const count = () =>
+      info.mock.calls.filter(
+        ([message]) => message === 'External docs MCP connected',
+      ).length;
+    await external.clients('executor');
+    await refresh();
+    expect(count()).toBe(1);
+    names = ['search', 'fetch'];
+    await refresh();
+    expect(count()).toBe(2);
+    names.reverse();
+    await refresh();
+    expect(count()).toBe(2);
+    failed = true;
+    await refresh();
+    failed = false;
+    await refresh();
+    expect(count()).toBe(3);
+  } finally {
+    info.mockRestore();
+  }
+});
+
+test.each(['returned', 'tool-error', 'thrown'] as const)(
+  'failed docs calls log ok false without content (%s)',
+  async (failure) => {
+    const info = jest
+      .spyOn(cds.log('external-mcp'), 'info')
+      .mockImplementation(() => {});
+    try {
+      const external = new ExternalMcp(
+        parseExternalMcp({ LLM_AGENT_EXECUTOR_MCP: 'docs' }),
+        () => [],
+        async () => ({
+          ...adapter,
+          callTool: async () => {
+            if (failure === 'thrown') throw new Error('private failure');
+            if (failure === 'returned')
+              return { ok: false, error: new McpError('private failure') };
+            return {
+              ok: true,
+              value: { isError: true, content: 'private result' },
+            };
+          },
+        }),
+        () => {},
+        () => 0,
+      );
+      const [client] = await external.clients('executor');
+      await client.callTool('search', { query: 'private arguments' });
+      expect(info).toHaveBeenCalledWith('External docs MCP call', {
+        destination: 'docs',
+        tool: 'search',
+        source: 'docs:search',
+        trust: 4.2,
+        ok: false,
+        durationMs: 0,
+      });
+    } finally {
+      info.mockRestore();
+    }
+  },
+);
