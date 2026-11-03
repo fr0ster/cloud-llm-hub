@@ -225,6 +225,116 @@ test('quoted text redacts the entire password through escaped delimiters', () =>
   );
 });
 
+const credentialKeys = [
+  'password',
+  'passwd',
+  'pwd',
+  'mySecretValue',
+  'client_secret',
+  'client-secret',
+  'access_token',
+  'refresh_token',
+  'id_token',
+  'session_token',
+  'x-csrf-token',
+  'Authorization',
+  'Cookie',
+  'Set-Cookie',
+  'api-key',
+  'api_key',
+  'private-key',
+  'private_key',
+  'sap-password',
+  'x-sap-login',
+];
+test.each(credentialKeys)(
+  'redacts credential key %s in objects, JSON strings and text',
+  (key) => {
+    const credentials = {
+      [key.toUpperCase()]: 'sensitive-value',
+      client_id: 'visible',
+    };
+    const expected = {
+      [key.toUpperCase()]: '\u00abredacted\u00bb',
+      client_id: 'visible',
+    };
+    expect(contextJson({ nested: [credentials] })).toBe(
+      JSON.stringify({ nested: [expected] }),
+    );
+    expect(
+      contextJson({ content: JSON.stringify({ nested: credentials }) }),
+    ).toBe(JSON.stringify({ content: JSON.stringify({ nested: expected }) }));
+    for (const text of [
+      `${key}=sensitive-value&safe=visible`,
+      `payload: {"${key}": "sensitive-value"}`,
+      `${key.toUpperCase()}: sensitive-value; extra-cookie=hidden`,
+    ]) {
+      const result = redactContext(text);
+      expect(result).not.toContain('sensitive-value');
+      expect(result).toContain('\u00abredacted\u00bb');
+    }
+  },
+);
+test('numeric token usage remains intact in objects, JSON strings and plain text', () => {
+  const usage = {
+    tokens: 9,
+    input_tokens: 2,
+    output_tokens: 3,
+    total_tokens: 5,
+  };
+  expect(contextJson({ usage })).toBe(JSON.stringify({ usage }));
+  expect(contextJson({ content: JSON.stringify(usage) })).toBe(
+    JSON.stringify({ content: JSON.stringify(usage) }),
+  );
+  const text =
+    'usage: {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}';
+  expect(redactContext(text)).toBe(text);
+});
+test('nested OAuth request and response JSON is redacted in persisted capture', async () => {
+  const payload = {
+    nested: {
+      access_token: 'oauth-access-value',
+      refresh_token: 'oauth-refresh-value',
+    },
+    usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 },
+  };
+  const oauthLlm: ILlm = {
+    ...llm,
+    async chat() {
+      return {
+        ok: true,
+        value: {
+          content: JSON.stringify(payload),
+          finishReason: 'stop',
+          toolCalls: [{ id: 'oauth', name: 'tool', arguments: payload }],
+        },
+      };
+    },
+  };
+  await captureLlm(oauthLlm, 'chat', 'full').chat([
+    { role: 'user', content: JSON.stringify(payload) },
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [
+        {
+          id: 'oauth',
+          type: 'function',
+          function: { name: 'tool', arguments: JSON.stringify(payload) },
+        },
+      ],
+    },
+  ]);
+  await drainContext();
+  const row = rows()[0];
+  for (const field of [row.messages, row.response]) {
+    expect(String(field)).not.toContain('oauth-access-value');
+    expect(String(field)).not.toContain('oauth-refresh-value');
+    expect(String(field)).toContain('redacted');
+    expect(String(field)).toContain('input_tokens');
+  }
+});
+
 test('bounded worker queue counts drops and warns once per burst', async () => {
   const warn = jest
     .spyOn(cds.log('context-capture'), 'warn')

@@ -3,7 +3,11 @@ import cds from '@sap/cds';
 import { contextWorker } from './context-worker';
 
 const secretKey =
-  /^(password|passwd|secret|client_secret|clientsecret|authorization|token|api[_-]?key|sap-password|x-sap-.*)$/i;
+  /^(?:password|passwd|pwd|.*secret.*|.*token.*|authorization|(?:set-)?cookie|api[_-]?key|private[_-]?key|sap-password|x-sap-.*)$/i;
+const textCredential = new RegExp(
+  `(["']?)(${secretKey.source.slice(1, -1).replaceAll('.*', '[\\w-]*')})\\1(\\s*[=:]\\s*)("(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|(?:Basic|Bearer)\\s+[^\\s&;,}]+|[^\\s&;,}]+)`,
+  'gi',
+);
 const replacement = '\u00abredacted\u00bb';
 type JsonValue =
   | string
@@ -20,7 +24,9 @@ function redactValue(value: JsonValue): JsonValue {
     return Object.fromEntries(
       Object.entries(value).map(([key, item]) => [
         key,
-        secretKey.test(key) ? replacement : redactValue(item),
+        typeof item === 'string' && secretKey.test(key)
+          ? replacement
+          : redactValue(item),
       ]),
     );
   return value;
@@ -36,8 +42,25 @@ export function redactContext(value: string): string {
   }
   return value
     .replace(
-      /((?:password|passwd|secret|client_secret|clientsecret|authorization|token|api[_-]?key|sap-password|x-sap-[\w-]+)["']?\s*[=:]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:Basic|Bearer)\s+[^\s&;,}]+|[^\s&;,}]+)/gi,
-      (_match, prefix: string) => `${prefix}${replacement}`,
+      /^([\w-]+)(:\s*)([^\r\n]+)$/gm,
+      (match, key: string, separator: string, item: string) =>
+        secretKey.test(key) &&
+        !/^(?:-?\d+(?:\.\d+)?|true|false|null)$/.test(item.trim())
+          ? `${key}${separator}${replacement}`
+          : match,
+    )
+    .replace(
+      textCredential,
+      (match, quote: string, key: string, separator: string, item: string) => {
+        if (!secretKey.test(key)) return match;
+        const trimmed = item.trim();
+        // Bare JSON numbers, booleans and null are data, not credentials.
+        if (
+          /^(?:-?\d+(?:\.\d+)?(?:e[+-]?\d+)?|true|false|null)$/i.test(trimmed)
+        )
+          return match;
+        return `${quote}${key}${quote}${separator}${replacement}`;
+      },
     )
     .replace(/\b(Basic|Bearer)(\s+)[^\s"'&,;}]+/gi, `$1$2${replacement}`);
 }

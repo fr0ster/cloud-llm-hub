@@ -39,9 +39,23 @@ export function bindCheckerVerdict(
       /\[result to check: step [^\n]+\]\n([\s\S]*?)(?=\n\[tools used by task |\n\n\[result to check: step |$)/g,
     ),
   ].map((match) => normalize(match[1] ?? ''));
+  // Select source sections explicitly: checked reports and generated guidance
+  // must never become evidence merely because they share the context string.
+  const sources: string[] = [];
+  for (const section of context.matchAll(
+    /(?:^|\n)\[(result of step [^\n]+|tools used by task [^\n]+)\][^\n]*\n([\s\S]*?)(?=\n\n\[|\n\[(?:result to check: step |result of step |tools used by task )|$)/g,
+  )) {
+    const body = section[2] ?? '';
+    if (section[1]?.startsWith('result of step ')) sources.push(body);
+    else
+      for (const result of body.matchAll(
+        /^ {3}(?:\[[^\n]*?\] )?result: (.*)$/gm,
+      ))
+        sources.push(result[1] ?? '');
+  }
   const evidence = normalize(
     [
-      context,
+      ...sources,
       brief,
       ...records.map((record) =>
         typeof record.result.content === 'string'

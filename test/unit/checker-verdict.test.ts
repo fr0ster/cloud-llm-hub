@@ -4,7 +4,7 @@ import { bindCheckerVerdict } from '../../srv/lib/checker-verdict';
 
 const context =
   '[result to check: step work (task t1)]\nThe object is active.\n[tools used by task t1]\n1. ReadObject | ok\n   result: inactive';
-const fail = (quote = 'The object is active.', evidence = 'result: inactive') =>
+const fail = (quote = 'The object is active.', evidence = 'inactive') =>
   JSON.stringify({
     verdict: 'fail',
     claims: [
@@ -25,6 +25,51 @@ test('fabricated evidence is unusable', () => {
   expect(
     bindCheckerVerdict(fail(undefined, 'result: deleted'), context, '', []),
   ).toBe('unusable verdict: evidence_absent');
+});
+test.each([
+  'The object is active.',
+  'result to check: step work',
+  'tools used by task t1',
+  'ReadObject | ok',
+])(
+  'checked output and generated framing cannot supply evidence: %s',
+  (evidence) => {
+    expect(bindCheckerVerdict(fail(undefined, evidence), context, '', [])).toBe(
+      'unusable verdict: evidence_absent',
+    );
+  },
+);
+test('dependency results supply evidence without their headings', () => {
+  const dependency = `${context}\n\n[result of step source (task t0)]\nObject is inactive`;
+  const output = fail(undefined, 'Object is inactive');
+  expect(bindCheckerVerdict(output, dependency, '', [])).toBe(output);
+  expect(
+    bindCheckerVerdict(
+      fail(undefined, 'result of step source'),
+      dependency,
+      '',
+      [],
+    ),
+  ).toBe('unusable verdict: evidence_absent');
+});
+test('checker tool results and brief source inputs supply evidence', () => {
+  const output = fail(undefined, 'Object is inactive');
+  expect(bindCheckerVerdict(output, context, 'Object is inactive', [])).toBe(
+    output,
+  );
+  for (const content of [
+    'Object is inactive',
+    [{ type: 'text' as const, text: 'Object is inactive' }],
+  ]) {
+    expect(
+      bindCheckerVerdict(output, context, '', [
+        {
+          call: { id: 'read', name: 'ReadObject', arguments: {} },
+          result: { content },
+        },
+      ]),
+    ).toBe(output);
+  }
 });
 test.each(['FAIL', '{"verdict":"fail"}', '{"verdict":"fail","claims":[]}'])(
   'unbound failure %s is unusable',
@@ -95,7 +140,7 @@ test('every failure claim must bind, including claims after a valid one', () => 
     claims: [
       {
         quote: 'The object is active.',
-        evidence: 'result: inactive',
+        evidence: 'inactive',
         reason: 'Task t1 contradicts this',
       },
       {
