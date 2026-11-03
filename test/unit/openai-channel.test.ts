@@ -762,7 +762,9 @@ describe('host RAG tool contract', () => {
 
   test('deduplicates exact canonical definitions while retaining consumer tools', async () => {
     const tools = buildRagToolSchemas();
-    expect(tools.map((tool) => tool.function.name)).toEqual(ragToolNames);
+    expect(tools.map((tool) => tool.function.name)).toEqual(
+      ragToolNames.filter((name) => name !== 'rag_persist'),
+    );
     const consumer = {
       type: 'function',
       function: { name: 'GenerateFile', parameters: { type: 'object' } },
@@ -913,13 +915,14 @@ test.each([false, true])(
     const execute = async () => {
       const listed = await client.listTools();
       expect(listed.ok && listed.value.map((tool) => tool.name)).toEqual(
-        ragToolNames,
+        ragToolNames.filter((name) => name !== 'rag_persist'),
       );
       const inputs = {
         collections_list: {},
         rag_search: { query: 'keep' },
         rag_read: { collection: 'results', id: 'id' },
         collection_records: { collection: 'results' },
+        rag_persist: { collection: 'scratch', name: 'saved' },
         collection_set_trust: { collection: 'notes', trust: 3 },
         record_set_trust: { collection: 'notes', record: 'visible', trust: 3 },
         collection_create: { name: 'results', scope: 'user' },
@@ -930,7 +933,9 @@ test.each([false, true])(
         collection_set_enabled: { collection: 'results', enabled: true },
         record_set_enabled: { collection: 'results', id: 'id', enabled: true },
       };
-      for (const name of ragToolNames) {
+      for (const name of ragToolNames.filter(
+        (name) => name !== 'rag_persist',
+      )) {
         const result = await client.callTool(name, inputs[name]);
         expect(result).toMatchObject({
           value: {

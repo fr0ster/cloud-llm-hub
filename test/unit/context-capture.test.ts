@@ -332,3 +332,30 @@ test('canary matches require opt-in and invalid regex warns without exposing its
     warn.mockRestore();
   }
 });
+
+test.each(['analyst', 'checker', 'executor'] as const)(
+  'RAG translation has its own component inside %s scope',
+  async (component) => {
+    const translation: Message[] = [
+      {
+        role: 'system',
+        content:
+          'Translate the user request to English for search purposes. Preserve technical terms if present. Reply with only the expanded English terms, no explanation.',
+      },
+      { role: 'user', content: 'Find requirements' },
+    ];
+    await runWithContextCapture({ component, taskId: 'task1' }, async () => {
+      const client = captureLlm(llm, 'chat');
+      await client.chat(translation, []);
+      await client.chat(
+        [{ role: 'system', content: 'Unrecognized translation prompt' }],
+        tools,
+      );
+    });
+    expect(JSON.parse(info.mock.calls[0][0])).toMatchObject({
+      component: 'rag-translation',
+      taskId: 'task1',
+    });
+    expect(JSON.parse(info.mock.calls[1][0])).toMatchObject({ component });
+  },
+);

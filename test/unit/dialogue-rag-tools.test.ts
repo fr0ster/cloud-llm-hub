@@ -5,10 +5,14 @@ import {
   createCallRegister,
   runWithAdmission,
 } from '../../srv/lib/admission-scope';
-import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
+import {
+  AgentToolPermissions,
+  effectiveProfileTools,
+} from '../../srv/lib/agent-profile-tools';
 import {
   LocalRagMcpClient,
   localRagTools,
+  runWithDialogueRagTools,
   withDialogueRagTools,
 } from '../../srv/lib/dialogue-rag-tools';
 import { longSessions } from '../../srv/lib/long-session';
@@ -46,7 +50,7 @@ test('all canonical tools are local, upstream collisions and duplicates cannot s
   const result = await inSession(() => client.listTools());
   expect(result.ok && result.value.map((tool) => tool.name)).toEqual([
     'GetTable',
-    ...ragToolNames,
+    ...ragToolNames.filter((name) => name !== 'rag_persist'),
   ]);
   expect(
     result.ok &&
@@ -56,24 +60,30 @@ test('all canonical tools are local, upstream collisions and duplicates cannot s
   expect(inner.callTool).not.toHaveBeenCalled();
 });
 
-test('checker gets exactly four reads; allow/deny and cached adapters reject forged mutations', async () => {
+test('checker gets reads and knowledge; allow/deny and cached adapters reject forbidden mutations', async () => {
   const { client, registry } = setup();
   await inSession(() =>
-    runWithReadOnlyTools(async () => {
-      const result = await client.listTools();
-      expect(
-        result.ok &&
-          result.value
-            .filter((tool) => ragToolNames.some((name) => name === tool.name))
-            .map((tool) => tool.name),
-      ).toEqual(ragToolNames.filter((name) => ragToolEffect(name) === 'read'));
-      expect(
-        await client.callTool('collection_create', {
-          name: 'denied',
-          scope: 'user',
-        }),
-      ).toMatchObject({ value: { isError: true } });
-    }),
+    runWithDialogueRagTools(() =>
+      runWithReadOnlyTools(async () => {
+        const result = await client.listTools();
+        expect(
+          result.ok &&
+            result.value
+              .filter((tool) => ragToolNames.some((name) => name === tool.name))
+              .map((tool) => tool.name),
+        ).toEqual(
+          ragToolNames.filter(
+            (name) => name !== 'rag_persist' && ragToolEffect(name) !== 'write',
+          ),
+        );
+        expect(
+          await client.callTool('collection_set_trust', {
+            collection: 'denied',
+            trust: 3,
+          }),
+        ).toMatchObject({ value: { isError: true } });
+      }),
+    ),
   );
   await inSession(() =>
     runWithProfileTools(new AgentToolPermissions(['rag_read']), async () => {
@@ -137,7 +147,7 @@ test('local calls use enclosing sessions, physical ids and structured results; r
   expect((await registry.listCollections('alice'))[0].documentCount).toBe(1);
 });
 
-test.each(ragToolNames)(
+test.each(ragToolNames.filter((name) => name !== 'rag_persist'))(
   '%s stays listed without a session and returns SESSION_REQUIRED',
   async (name) => {
     const { local } = setup();
@@ -250,7 +260,9 @@ test('canonical tool candidates deduplicate imported names and obey the read cei
   );
   expect(result.ok && result.value.map((row) => row.metadata.id)).toEqual(
     ragToolNames
-      .filter((name) => ragToolEffect(name) === 'read')
+      .filter(
+        (name) => name !== 'rag_persist' && ragToolEffect(name) === 'read',
+      )
       .map((name) => `tool:${name}`),
   );
   for (const tool of localRagTools())
@@ -315,10 +327,12 @@ test('coordinator exposes only RAG reads and refuses all nine mutations; worker 
   const result = await coordinator.listTools();
   expect(result.ok && result.value.map((tool) => tool.name)).toEqual([
     'GetTable',
-    ...ragToolNames.filter((name) => ragToolEffect(name) === 'read'),
+    ...ragToolNames.filter(
+      (name) => name === 'rag_persist' || ragToolEffect(name) === 'read',
+    ),
   ]);
   const mutations = ragToolNames.filter(
-    (name) => ragToolEffect(name) === 'write',
+    (name) => name !== 'rag_persist' && ragToolEffect(name) !== 'read',
   );
   expect(mutations).toHaveLength(9);
   for (const name of mutations)
@@ -329,7 +343,259 @@ test('coordinator exposes only RAG reads and refuses all nine mutations; worker 
   const worker = await local.listTools();
   expect(worker.ok && worker.value.map((tool) => tool.name)).toEqual([
     'GetTable',
-    ...ragToolNames,
+    ...ragToolNames.filter((name) => name !== 'rag_persist'),
   ]);
   expect(inner.callTool).not.toHaveBeenCalled();
 });
+
+import { persistRagRecords } from '../../srv/lib/rag-write-operations';
+
+test('dialogue workers write session collections only; plain user calls retain user writes', async () => {
+  const { client } = setup();
+  await inSession(async () => {
+    await client.callTool('collection_create', {
+      name: 'persistent',
+      scope: 'user',
+    });
+    await runWithDialogueRagTools(async () => {
+      expect(
+        await client.callTool('collection_create', {
+          name: 'denied',
+          scope: 'user',
+        }),
+      ).toMatchObject({ value: { isError: true } });
+      for (const name of [
+        'record_add',
+        'record_update',
+        'record_set_enabled',
+      ]) {
+        expect(
+          await client.callTool(
+            name,
+            name === 'record_set_enabled'
+              ? { collection: 'persistent', id: 'r', enabled: false }
+              : { collection: 'persistent', record: 'r', text: 'text' },
+          ),
+        ).toMatchObject({ value: { isError: true } });
+      }
+      expect(
+        await client.callTool('collection_create', {
+          name: 'scratch',
+          scope: 'session',
+        }),
+      ).toMatchObject({ value: { structuredContent: { created: true } } });
+      expect(
+        await client.callTool('record_add', {
+          collection: 'scratch',
+          record: 'r',
+          text: 'text',
+        }),
+      ).toMatchObject({ value: { structuredContent: { created: true } } });
+      expect(
+        await client.callTool('record_update', {
+          collection: 'scratch',
+          record: 'r',
+          text: 'updated',
+        }),
+      ).toMatchObject({ value: { structuredContent: { updated: true } } });
+      expect(
+        await client.callTool('record_set_enabled', {
+          collection: 'scratch',
+          id: 'r',
+          enabled: false,
+        }),
+      ).toMatchObject({ value: { content: expect.any(String) } });
+    });
+    expect(
+      await client.callTool('record_add', {
+        collection: 'persistent',
+        text: 'user text',
+      }),
+    ).toMatchObject({ value: { structuredContent: { created: true } } });
+  });
+});
+
+test('persistence creates target, copies verbatim, upserts ids and isolates source sessions and users', async () => {
+  const { registry, client, inner } = setup();
+  await inSession(async () => {
+    const created = await client.callTool('collection_create', {
+      name: 'scratch',
+      scope: 'session',
+    });
+    const source = z
+      .object({ collection: z.string() })
+      .parse(
+        created.ok ? JSON.parse(String(created.value.content)) : {},
+      ).collection;
+    await registry.addDocument(source, {
+      id: 'r',
+      text: '  Verbatim\ntext  ',
+      metadata: { title: 'Title', custom: { x: 1 } },
+    });
+    await registry.addDocument(source, {
+      id: 'disabled',
+      text: 'hidden',
+      metadata: { enabled: false },
+    });
+    const identity = { userId: 'alice', sessionId: 'dialogue-1', admin: false };
+    const target = await persistRagRecords(
+      registry,
+      source,
+      'saved',
+      undefined,
+      identity,
+    );
+    await persistRagRecords(registry, source, 'saved', undefined, identity);
+    expect((await registry.listDocuments(target.collection))?.total).toBe(1);
+    expect(await registry.getDocument(target.collection, 'r')).toMatchObject({
+      text: '  Verbatim\ntext  ',
+      metadata: {
+        title: 'Title',
+        custom: { x: 1 },
+        persistenceProvenance: {
+          sourceCollection: source,
+          sourceRecord: 'r',
+          timestamp: expect.any(String),
+        },
+      },
+    });
+    for (const other of [
+      { ...identity, sessionId: 'other' },
+      { ...identity, userId: 'bob', admin: true },
+    ])
+      await expect(
+        persistRagRecords(registry, source, 'saved', undefined, other),
+      ).rejects.toThrow('Session collection not found');
+    const coordinator = new LocalRagMcpClient(inner, () => registry, true);
+    expect(
+      await coordinator.callTool('rag_persist', {
+        collection: source,
+        name: 'saved',
+        records: ['r'],
+      }),
+    ).toMatchObject({ value: { content: expect.stringContaining('saved') } });
+  });
+});
+
+test.each([
+  { name: 'checker', result: 'verdict' as const, policy: 'all' as const },
+  { name: 'analyst', result: 'report' as const, policy: 'read-only' as const },
+])(
+  '$name knowledge writes require an active dialogue worker and its own session',
+  async ({ result, policy }) => {
+    const { client, local, registry } = setup();
+    const catalogue = ragToolNames.map((name) => ({
+      name,
+      effect: ragToolEffect(name),
+    }));
+    const permissions = () =>
+      effectiveProfileTools({
+        catalogue,
+        grants: new Set(ragToolNames),
+        result,
+        policy,
+      });
+    const mutations = [
+      ['collection_delete', { collection: 'persistent' }],
+      [
+        'record_add',
+        { collection: 'persistent', record: 'r', text: 'changed' },
+      ],
+      ['record_delete', { collection: 'persistent', id: 'r' }],
+    ] as const;
+    await inSession(async () => {
+      await client.callTool('collection_create', {
+        name: 'persistent',
+        scope: 'user',
+      });
+      await client.callTool('record_add', {
+        collection: 'persistent',
+        record: 'r',
+        text: 'original',
+      });
+      const plain = permissions();
+      await runWithProfileTools(plain, () =>
+        runWithReadOnlyTools(async () => {
+          const listed = await client.listTools();
+          for (const [name, args] of mutations) {
+            expect(plain.allows(name)).toBe(false);
+            expect(
+              listed.ok && listed.value.some((tool) => tool.name === name),
+            ).toBe(false);
+            expect(await client.callTool(name, args)).toMatchObject({
+              value: { isError: true },
+            });
+          }
+        }),
+      );
+      // Reuse permissions captured in a dialogue to bypass list filtering and
+      // prove that the local execution guard rejects a lost worker context.
+      const stale = runWithDialogueRagTools(permissions);
+      await runWithProfileTools(stale, () =>
+        runWithReadOnlyTools(async () => {
+          for (const [name, args] of mutations)
+            expect(await local.callTool(name, args)).toMatchObject({
+              value: {
+                isError: true,
+                structuredContent: { error: { code: 'TOOL_FORBIDDEN' } },
+              },
+            });
+        }),
+      );
+      await runWithDialogueRagTools(() =>
+        runWithProfileTools(permissions(), () =>
+          runWithReadOnlyTools(async () => {
+            const listed = await client.listTools();
+            expect(
+              listed.ok &&
+                listed.value.some((tool) => tool.name === 'record_add'),
+            ).toBe(true);
+            for (const [name, args] of mutations)
+              expect(await local.callTool(name, args)).toMatchObject({
+                value: { isError: true },
+              });
+            expect(
+              await client.callTool('collection_create', {
+                name: 'scratch',
+                scope: 'session',
+              }),
+            ).toMatchObject({
+              value: { structuredContent: { created: true } },
+            });
+            expect(
+              await client.callTool('record_add', {
+                collection: 'scratch',
+                record: 'r',
+                text: 'initial',
+              }),
+            ).toMatchObject({
+              value: { structuredContent: { created: true } },
+            });
+            expect(
+              await client.callTool('record_update', {
+                collection: 'scratch',
+                record: 'r',
+                text: 'updated',
+              }),
+            ).toMatchObject({
+              value: { structuredContent: { updated: true } },
+            });
+            expect(
+              await client.callTool('collection_create', {
+                name: 'denied',
+                scope: 'user',
+              }),
+            ).toMatchObject({ value: { isError: true } });
+          }),
+        ),
+      );
+      const persistent = (await registry.listCollections('alice')).find(
+        (collection) => collection.logicalId === 'persistent',
+      );
+      if (!persistent) throw new Error('Persistent collection was deleted');
+      expect(await registry.getDocument(persistent.id, 'r')).toMatchObject({
+        text: 'original',
+      });
+    });
+  },
+);

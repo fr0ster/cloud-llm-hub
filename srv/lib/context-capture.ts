@@ -32,6 +32,7 @@ function canaryRegex(): RegExp | undefined {
 }
 
 type Component =
+  | 'rag-translation'
   | 'summarizer'
   | 'analyst'
   | 'classifier'
@@ -66,7 +67,19 @@ export function captureLlm(
   mode: 'off' | 'stats' | 'full' = parseContextCapture(),
   defaults: { temperature?: number; maxTokens?: number } = {},
 ): ILlm {
+  // llm-agent-libs toEnglishForRag uses the caller's helper/main client.
+  // Identify its dedicated system prompt before inheriting the worker component.
+  const callComponent = (messages: Message[]): Component =>
+    messages.some(
+      (message) =>
+        message.role === 'system' &&
+        message.content ===
+          'Translate the user request to English for search purposes. Preserve technical terms if present. Reply with only the expanded English terms, no explanation.',
+    )
+      ? 'rag-translation'
+      : component;
   function start(messages: Message[], tools: Parameters<ILlm['chat']>[1]) {
+    const component = callComponent(messages);
     if (mode !== 'stats') return () => {};
     const context = scope.getStore();
     const sessionKey = context?.sessionKey ?? getRequestSessionId();
@@ -209,6 +222,7 @@ export function captureLlm(
     };
   }
   function full(args: Parameters<ILlm['chat']>) {
+    const component = callComponent(args[0]);
     const started = performance.now();
     const ts = new Date().toISOString();
     const context = scope.getStore();

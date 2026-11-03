@@ -1,4 +1,5 @@
 import { isReadOnlyTools, profileToolAllowed } from '../request-session';
+import { allowsReadOnlyEffect } from './dialogue-rag-scope';
 import { isRagTool, ragToolEffect } from './rag-tool-catalogue';
 /**
  * Execution-time authorization for MCP tools.
@@ -50,7 +51,12 @@ export function assertToolAllowed(
       `Tool "${toolName}" was not executed: the agent profile forbids it.`,
     );
   }
-  if (isReadOnlyTools() && !isReadOnlyTool(toolName, annotations)) {
+  if (
+    isReadOnlyTools() &&
+    !(isRagTool(toolName)
+      ? allowsReadOnlyEffect(ragToolEffect(toolName))
+      : isReadOnlyTool(toolName, annotations))
+  ) {
     throw new ToolAuthorizationError(
       `Tool "${toolName}" was not executed: checker tools are read-only.`,
     );

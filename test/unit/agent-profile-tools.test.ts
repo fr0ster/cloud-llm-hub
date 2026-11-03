@@ -8,7 +8,13 @@ import {
   guardProfileWorker,
   type RegisteredProfileTool,
 } from '../../srv/lib/agent-profile-tools';
-import { buildRagToolSchemas } from '../../srv/lib/rag-tool-catalogue';
+import { runWithDialogueRagTools } from '../../srv/lib/dialogue-rag-tools';
+import {
+  buildRagToolSchemas,
+  ragToolEffect,
+  ragToolNames,
+} from '../../srv/lib/rag-tool-catalogue';
+import { resolveRagWriteTarget } from '../../srv/lib/rag-write-operations';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { assertToolAllowed } from '../../srv/lib/tool-authorization';
 import { CollectionRegistry } from '../../srv/rag-collections';
@@ -25,7 +31,7 @@ const catalogue: RegisteredProfileTool[] = [
   { name: 'CreateTable', effect: 'write' },
   { name: 'GetDumpSection', effect: 'read' },
   { name: 'collection_records', effect: 'read' },
-  { name: 'record_add', effect: 'write' },
+  { name: 'record_add', effect: 'knowledge' },
 ];
 const grants = new Set(catalogue.map((tool) => tool.name));
 test('ceilings, caller grants, deny and inherited permissions intersect', () => {
@@ -157,9 +163,9 @@ test('direct RAG calls are guarded before any registry operation, including lega
   );
   await runWithReadOnlyTools(async () =>
     expect(
-      await callRag(registry, 'record_add', {
+      await callRag(registry, 'collection_set_trust', {
         collection: 'notes',
-        text: 'x',
+        trust: 3,
       }),
     ).toMatchObject({
       isError: true,
@@ -243,27 +249,122 @@ test('RAG definitions expose typed JSON schema keywords', () => {
 
 test.each(['all', 'read-only'] as const)(
   'canonical mutations follow %s worker policies and local authorization',
-  (policy: 'all' | 'read-only') => {
-    const names = [
-      'collection_create',
-      'collection_delete',
-      'record_add',
-      'record_update',
-      'record_delete',
-    ];
-    const entries: RegisteredProfileTool[] = names.map((name: string) => ({
-      name,
-      effect: 'write',
-    }));
-    const permissions = effectiveProfileTools({
-      catalogue: entries,
-      grants: new Set(names),
-      result: 'report',
-      policy,
-    });
-    for (const name of names) {
-      expect(permissions.allows(name)).toBe(policy === 'all');
-      expect(() => assertToolAllowed(name, undefined, undefined)).not.toThrow();
-    }
-  },
+  (policy: 'all' | 'read-only') =>
+    runWithDialogueRagTools(() => {
+      const names = [
+        'collection_create',
+        'collection_delete',
+        'record_add',
+        'record_update',
+        'record_delete',
+      ];
+      const entries: RegisteredProfileTool[] = ragToolNames.map((name) => ({
+        name,
+        effect: ragToolEffect(name),
+      }));
+      const permissions = effectiveProfileTools({
+        catalogue: entries,
+        grants: new Set(names),
+        result: 'report',
+        policy,
+      });
+      for (const name of names) {
+        expect(permissions.allows(name)).toBe(true);
+        expect(() =>
+          assertToolAllowed(name, undefined, undefined),
+        ).not.toThrow();
+      }
+    }),
 );
+
+test.each(['report', 'verdict'] as const)(
+  'read-only %s permits knowledge while deny wins',
+  (result) =>
+    runWithDialogueRagTools(() => {
+      const catalogue = ragToolNames.map((name) => ({
+        name,
+        effect: ragToolEffect(name),
+      }));
+      const grants = new Set(ragToolNames);
+      const permissions = effectiveProfileTools({
+        catalogue,
+        grants,
+        result,
+        policy: 'read-only',
+      });
+      for (const name of ragToolNames)
+        expect(permissions.allows(name)).toBe(ragToolEffect(name) !== 'write');
+      const denied = effectiveProfileTools({
+        catalogue,
+        grants,
+        result,
+        policy: { deny: ['record_add'] },
+      });
+      expect(denied.allows('record_add')).toBe(false);
+      runWithReadOnlyTools(() => {
+        expect(buildRagToolSchemas().map((tool) => tool.function.name)).toEqual(
+          ragToolNames.filter(
+            (name) => name !== 'rag_persist' && ragToolEffect(name) !== 'write',
+          ),
+        );
+        expect(() =>
+          assertToolAllowed('record_add', undefined, undefined),
+        ).not.toThrow();
+        expect(() =>
+          assertToolAllowed('collection_set_trust', undefined, undefined),
+        ).toThrow();
+        expect(() =>
+          assertToolAllowed('CreateTable', 'high', ['high']),
+        ).toThrow();
+      });
+    }),
+);
+
+test('read-only worker cannot mutate a global collection even with admin identity', async () => {
+  const registry = new CollectionRegistry();
+  await registry.createCollection({
+    id: 'global-notes',
+    logicalId: 'global-notes',
+    scope: 'global',
+    displayName: 'Notes',
+    description: '',
+  });
+  await runWithReadOnlyTools(async () => {
+    await expect(
+      resolveRagWriteTarget(registry, 'global-notes', {
+        userId: 'alice',
+        admin: true,
+      }),
+    ).rejects.toThrow('Collection not found');
+  });
+});
+
+test('recording MCP exposes and dispatches knowledge in a read-only scope', async () => {
+  const call = jest.fn<
+    ReturnType<IMcpClient['callTool']>,
+    Parameters<IMcpClient['callTool']>
+  >(async () => ({ ok: true, value: { content: 'stored' } }));
+  const client = new RecordingMcpClient({
+    listTools: async () => ({
+      ok: true,
+      value: ragToolNames.map((name) => ({
+        name,
+        description: '',
+        inputSchema: {},
+      })),
+    }),
+    callTool: call,
+  });
+  await runWithDialogueRagTools(() =>
+    runWithReadOnlyTools(async () => {
+      const result = await client.listTools();
+      expect(result.ok && result.value.map((tool) => tool.name)).toEqual(
+        ragToolNames.filter((name) => ragToolEffect(name) !== 'write'),
+      );
+      await client.callTool('record_add', {});
+      expect(call).toHaveBeenCalledTimes(1);
+      await client.callTool('record_set_trust', {});
+      expect(call).toHaveBeenCalledTimes(1);
+    }),
+  );
+});

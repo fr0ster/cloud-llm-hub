@@ -24,6 +24,7 @@ import {
   createAgentKnowledgeCollection,
   deleteRagCollection,
   deleteRagRecord,
+  persistRagRecords,
   RagWriteError,
   ragWriteFailure,
   resolveRagWriteTarget,
@@ -51,6 +52,7 @@ import {
 import {
   isReadOnlyTools,
   profileToolAllowed,
+  runWithReadOnlyTools,
   runWithSessionId,
 } from './request-session';
 import { resolveSessionKey } from './session-id';
@@ -67,6 +69,7 @@ import {
 } from './lib/rag-tool-catalogue';
 
 type Args = {
+  records?: string[];
   trust?: z.infer<ReturnType<typeof z.json>>;
   name?: string;
   scope?: string;
@@ -267,7 +270,7 @@ async function executeRagMcpToolImpl(
     isWriteTool(name) || context.internal
       ? writeError(code, status, message)
       : ragTextResult(message, true);
-  if (isWriteTool(name)) {
+  if (isWriteTool(name) || name === 'rag_persist') {
     try {
       validateRagWriteSize(input);
     } catch (error) {
@@ -282,7 +285,11 @@ async function executeRagMcpToolImpl(
   }
   if (
     !context.permissions.allows(name) ||
-    (context.readOnly && ragToolEffect(name) === 'write')
+    (context.readOnly &&
+      ragToolEffect(name) !== 'read' &&
+      !(
+        ragToolEffect(name) === 'knowledge' && context.dialogueRole === 'worker'
+      ))
   )
     return fail('TOOL_FORBIDDEN', 403, `TOOL_FORBIDDEN: ${name}`);
   const parsed = ragMcpSchemas[name].safeParse(input);
@@ -296,6 +303,46 @@ async function executeRagMcpToolImpl(
       parsed.error.message,
     );
   const args: ValidatedArgs = parsed.data;
+  if (name === 'rag_persist' && context.dialogueRole !== 'coordinator')
+    return fail(
+      'TOOL_FORBIDDEN',
+      403,
+      'Persistence requires dialogue coordinator',
+    );
+  if (context.dialogueRole === 'worker' && ragToolEffect(name) !== 'read') {
+    if (name === 'collection_create') {
+      if (args.scope !== 'session')
+        return fail(
+          'TOOL_FORBIDDEN',
+          403,
+          'Workers create session collections only',
+        );
+    } else if (
+      name === 'record_add' ||
+      name === 'record_update' ||
+      name === 'record_set_enabled'
+    ) {
+      const registry = context.registry ?? ragHost().getCollectionRegistry();
+      const id = await resolveRouteId(
+        registry,
+        args.collection ?? '',
+        userId,
+        context.sessionKey,
+        false,
+      );
+      const meta = id ? await registry.getCollection(id) : null;
+      if (
+        meta?.scope !== 'session' ||
+        meta.owner !== userId ||
+        meta.sessionId !== context.sessionKey
+      )
+        return fail(
+          'TOOL_FORBIDDEN',
+          403,
+          'Workers write only their own session collections',
+        );
+    } else return fail('TOOL_FORBIDDEN', 403, 'Worker mutation unavailable');
+  }
   if (
     name === 'record_set_enabled' &&
     Boolean(args.id) === Boolean(args.source)
@@ -362,18 +409,19 @@ async function executeRagMcpToolImpl(
           lease.refused === 'closed' ? 'SESSION_CLOSED' : 'SESSION_RETENTION',
         );
       try {
+        const invoke = () =>
+          runRagTool(
+            userId,
+            key,
+            name,
+            args,
+            context.admin,
+            traceId,
+            context.registry,
+          );
         return await runWithSessionId(
           key,
-          () =>
-            runRagTool(
-              userId,
-              key,
-              name,
-              args,
-              context.admin,
-              traceId,
-              context.registry,
-            ),
+          () => (context.readOnly ? runWithReadOnlyTools(invoke) : invoke()),
           undefined,
           userId,
         );
@@ -434,6 +482,16 @@ async function runRagTool(
   hideAgents = false,
 ): Promise<Result> {
   const registry = suppliedRegistry ?? ragHost().getCollectionRegistry();
+  if (name === 'rag_persist') {
+    const target = await persistRagRecords(
+      registry,
+      args.collection ?? '',
+      args.name ?? '',
+      args.records,
+      { userId, sessionId: sid, admin: false },
+    );
+    return ragTextResult(JSON.stringify(target));
+  }
   if (isWriteTool(name)) {
     const identity = { userId, sessionId: sid, admin };
     if (name === 'collection_set_trust' || name === 'record_set_trust') {
@@ -863,6 +921,7 @@ async function runRagTool(
 }
 
 export interface RagExecutionContext {
+  readonly dialogueRole?: 'worker' | 'coordinator';
   readonly registry?: CollectionRegistry;
   readonly userId: string;
   readonly admin: boolean;

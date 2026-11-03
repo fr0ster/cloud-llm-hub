@@ -120,7 +120,11 @@ test('arbitrary profiles build isolated workers with ordered static text and imm
   const second = await worker(f.runner);
   expect(first).not.toBe(second);
   expect(first.name).toBe('custom_42');
-  expect(f.preambles).toEqual(['BASE\nPROFILE', 'BASE\nPROFILE']);
+  expect(f.preambles).toHaveLength(2);
+  for (const preamble of f.preambles) {
+    expect(preamble).toMatch(/^BASE\nPROFILE\n/);
+    expect(preamble).toContain('knowledge storage is available');
+  }
   selected.tools = 'all';
   await first.run({ task: 'CreateTable' });
   expect(f.offered).toEqual([['GetTable', 'GetDumpSection']]);
