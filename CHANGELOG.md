@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.4.6] - 2026-11-03
+
 - Adopt llm-agent 30.31.0, llm-agent-libs 30.29.0, llm-agent-mcp 30.10.1 and sap-aicore-llm 30.13.0 (compact task views, MCP SDK 1.32.2 for GHSA-46jr-4wx8-v453); persist the new dialogue state fields with backward-compatible restore.
 
 - Include checked tasks' tool-trace result excerpts as checker evidence, bound to dialogue task identities while excluding checked reports and trace arguments.
