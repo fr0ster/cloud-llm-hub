@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- Finish checker tool loops immediately after a valid submitted verdict, preserving session-isolated task completion signals.
+
 ## [10.4.9] - 2026-11-03
 
 ### Fixed

@@ -1,4 +1,9 @@
-import type { DialogueSignals } from '@mcp-abap-adt/llm-agent';
+import {
+  createDialogueTaskContext,
+  type DialogueSignals,
+  finishDialogueTask,
+  type ISignalSubscriber,
+} from '@mcp-abap-adt/llm-agent';
 import { DialogueSession } from '@mcp-abap-adt/llm-agent-libs';
 import { createSignalBus } from '@mcp-abap-adt/llm-signals';
 import { closeDialogue, dialogueFor } from '../../srv/lib/dialogue-sessions';
@@ -93,6 +98,52 @@ test('a dialogue session publishes to the hub bus', async () => {
   expect(
     dialogueSignals().last('dialogue.turn.settled', source)?.payload,
   ).toMatchObject({ outcome: 'ok' });
+});
+
+test('library finish reads stay in the owning session slot and rewrite the source', async () => {
+  const open = jest.spyOn(DialogueSession, 'open');
+  try {
+    await dialogueFor('alice', key, 'TEST');
+    const emitter = open.mock.calls.at(-1)?.[0].signals;
+    if (!emitter || !('last' in emitter) || typeof emitter.last !== 'function')
+      throw new Error('Session signals must support retained reads');
+    // Check the production wrapper with the exact subscriber signature.
+    const last = emitter.last as ISignalSubscriber<DialogueSignals>['last'];
+    const bus = dialogueSignals();
+    const otherSource = JSON.stringify(['bob', key]);
+    const otherSession = JSON.stringify(['alice', 'other-session']);
+    const payload = {
+      taskId: 'checker',
+      runId: 'run',
+      output: 'other verdict',
+    };
+    bus.emit('dialogue.task.finish', payload, otherSource, 'run');
+    bus.emit('dialogue.task.finish', payload, otherSession, 'run');
+    for (const requestedSource of [key, otherSource, otherSession])
+      expect(
+        last('dialogue.task.finish', requestedSource, 'run'),
+      ).toBeUndefined();
+    const task = createDialogueTaskContext(
+      { ...emitter, last },
+      key,
+      'checker',
+    );
+    finishDialogueTask(task, '{"verdict":"pass"}', 'submit_verdict');
+    expect(last('dialogue.task.finish', key, task.runId)).toMatchObject({
+      source: key,
+      key: task.runId,
+      payload: { output: '{"verdict":"pass"}' },
+    });
+    expect(task.readFinish()?.output).toBe('{"verdict":"pass"}');
+    expect(bus.last('dialogue.task.finish', source, task.runId)?.source).toBe(
+      source,
+    );
+    expect(
+      bus.last('dialogue.task.finish', otherSource, task.runId),
+    ).toBeUndefined();
+  } finally {
+    open.mockRestore();
+  }
 });
 
 test('closing retires the source', async () => {

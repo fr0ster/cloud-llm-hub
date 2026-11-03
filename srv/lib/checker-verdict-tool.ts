@@ -1,5 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { IMcpClient, McpToolResult } from '@mcp-abap-adt/llm-agent';
+import {
+  type CallOptions,
+  finishDialogueTask,
+  type IMcpClient,
+  type McpToolResult,
+} from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import { verdictSchema, verdictToolSchema } from './checker-verdict-schema';
 
@@ -19,10 +24,17 @@ export const submitVerdictTool = {
 };
 export function submitVerdict(
   args: Parameters<IMcpClient['callTool']>[1],
+  options?: CallOptions,
 ): McpToolResult {
   if (!verdictToolsEnabled())
     return { isError: true, content: 'Tool unavailable to this profile.' };
   const result = verdictSchema.safeParse(args);
+  if (result.success && options?.dialogueTask)
+    finishDialogueTask(
+      options.dialogueTask,
+      JSON.stringify(result.data),
+      'submit_verdict',
+    );
   return result.success
     ? { content: 'verdict recorded' }
     : {

@@ -1,7 +1,17 @@
-import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
+import {
+  createDialogueTaskContext,
+  type DialogueSignals,
+  type IMcpClient,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  SmartAgentBuilder,
+  SmartAgentSubAgent,
+} from '@mcp-abap-adt/llm-agent-libs';
+import { createSignalBus } from '@mcp-abap-adt/llm-signals';
 import { z } from 'zod';
 import {
   checkerVerdictInput,
+  parseCheckerVerdict,
   recordedCheckerVerdict,
   verdictSchema,
 } from '../../srv/lib/checker-verdict';
@@ -26,6 +36,103 @@ const inner: IMcpClient = {
     value: { isError: true, content: 'Unknown tool' },
   }),
 };
+
+test('only valid verdict calls in verdict profiles finish their task', async () => {
+  for (const coordinator of [false, true]) {
+    for (const enabled of [false, true]) {
+      const bus = createSignalBus<DialogueSignals>();
+      const dialogueTask = createDialogueTaskContext(bus, 'session', 'checker');
+      const client = new RecordingMcpClient(
+        new LocalRagMcpClient(inner, undefined, coordinator),
+      );
+      const options = { dialogueTask, trace: { traceId: 'checker-run' } };
+      await runWithVerdictTools(enabled, async () => {
+        await client.callTool('submit_verdict', { verdict: 'fail' }, options);
+        expect(dialogueTask.readFinish()).toBeUndefined();
+        const verdict = {
+          verdict: 'fail',
+          claims: [{ quote: 'q', evidence: 'e', reason: 'r' }],
+        };
+        await client.callTool('submit_verdict', verdict, options);
+        const finish = dialogueTask.readFinish();
+        if (enabled && !coordinator) {
+          expect(finish).toMatchObject({
+            output: JSON.stringify(verdict),
+            tool: 'submit_verdict',
+          });
+          expect(parseCheckerVerdict(finish?.output ?? '')).toEqual(verdict);
+          expect(
+            recordedCheckerVerdict(client.getToolRecords('checker-run')),
+          ).toEqual(parseCheckerVerdict(finish?.output ?? ''));
+        } else expect(finish).toBeUndefined();
+      });
+    }
+  }
+});
+
+test.each(['pass', 'retry'] as const)(
+  'checker worker finishes after submit_verdict without another model call (%s)',
+  async (mode) => {
+    const dialogueTask = createDialogueTaskContext(
+      createSignalBus<DialogueSignals>(),
+      'session',
+      'checker',
+    );
+    let calls = 0;
+    const verdict = { verdict: 'pass', note: 'Verified' };
+    const answer = () => {
+      calls++;
+      if (calls > (mode === 'retry' ? 2 : 1))
+        throw new Error('Unexpected model call after valid verdict');
+      return {
+        ok: true as const,
+        value: {
+          content: '',
+          finishReason: 'tool_calls' as const,
+          toolCalls: [
+            {
+              id: `verdict-${calls}`,
+              name: 'submit_verdict',
+              arguments:
+                mode === 'retry' && calls === 1 ? { verdict: 'fail' } : verdict,
+            },
+          ],
+        },
+      };
+    };
+    const client = new RecordingMcpClient(new LocalRagMcpClient(inner));
+    await runWithVerdictTools(true, async () => {
+      const { agent } = await new SmartAgentBuilder({
+        skipModelValidation: true,
+        agent: {
+          maxIterations: 5,
+          classificationEnabled: false,
+          ragTranslateEnabled: false,
+        },
+      })
+        .withMainLlm({
+          model: 'scripted',
+          chat: async () => answer(),
+          streamChat: async function* () {
+            yield answer();
+          },
+        })
+        .withMcpClients([client])
+        .build();
+      const worker = new SmartAgentSubAgent('checker', agent);
+      const result = await worker.run({
+        task: 'Check the report',
+        dialogueTask,
+        trace: { traceId: 'worker-run' },
+      });
+      expect(result.output).toBe(JSON.stringify(verdict));
+      expect(calls).toBe(mode === 'retry' ? 2 : 1);
+      expect(parseCheckerVerdict(result.output)).toEqual(
+        recordedCheckerVerdict(client.getToolRecords('worker-run')),
+      );
+    });
+  },
+);
 
 test('model tool catalogues expose top-level object schemas', async () => {
   const coordinatorClient = coordinatorToolsClient({

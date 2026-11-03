@@ -99,7 +99,7 @@ export class LocalRagMcpClient implements IMcpClient {
         ok: true,
         value: this.coordinator
           ? { isError: true, content: 'Tool unavailable to coordinator.' }
-          : submitVerdict(args),
+          : submitVerdict(args, options),
       };
     if (
       this.coordinator &&
