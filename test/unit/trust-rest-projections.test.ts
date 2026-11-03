@@ -108,7 +108,7 @@ test('REST and MCP virtual skill reads resolve live source and record trust', as
   await store.setSource('skills', 4, 'admin');
   expect(await read()).toMatchObject({
     trust: 4,
-    source: `global:skills/${name}`,
+    source: `system:skills/${name}`,
   });
   await store.setRecord('skills', name, 1.5, 'admin');
   expect(await read()).toMatchObject({ trust: 1.5, trustOverride: 1.5 });
@@ -121,7 +121,7 @@ test('REST and MCP virtual skill reads resolve live source and record trust', as
     attributes: {
       trust: 1.5,
       trustOverride: 1.5,
-      source: `global:skills/${name}`,
+      source: `system:skills/${name}`,
     },
   });
   expect(JSON.parse(mcp.content[0].text).text).not.toMatch(/^\[source:/);

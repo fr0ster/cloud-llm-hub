@@ -96,7 +96,7 @@ test('virtual skills share live inherited, overridden and cleared document proje
   await store.setSource('skills', 4, 'admin');
   expect(await skillDocumentView(doc, resolver)).toMatchObject({
     trust: 4,
-    source: 'global:skills/r1',
+    source: 'system:skills/r1',
   });
   await store.setRecord('skills', 'r1', 1, 'admin');
   expect(await skillDocumentView(doc, resolver)).toMatchObject({

@@ -222,38 +222,24 @@ test.each([
   },
 );
 
-test('background discovery never waits for a hung destination and retries after cooldown', async () => {
-  jest.useFakeTimers();
-  try {
-    let reachable = false;
-    const external = new ExternalMcp(
-      parseExternalMcp({
-        LLM_AGENT_EXECUTOR_MCP: 'docs',
-        LLM_AGENT_CHECKER_MCP: 'docs',
-        LLM_AGENT_PLANNER_MCP: 'docs',
-      }),
-      () => [],
-      () =>
-        reachable
-          ? Promise.resolve(adapter)
-          : new Promise<IMcpClient>(() => {}),
-      jest.fn(),
-    );
-    external.refresh();
-    for (const role of ['executor', 'checker', 'planner'] as const)
-      expect(external.catalogue(role)).toEqual([]);
-    await jest.advanceTimersByTimeAsync(600_000);
-    reachable = true;
-    await jest.advanceTimersByTimeAsync(30001);
-    external.refresh();
-    await jest.advanceTimersByTimeAsync(0);
-    for (const role of ['executor', 'checker', 'planner'] as const)
-      expect(external.catalogue(role)).toEqual([
-        { name: 'search', effect: 'read' },
-      ]);
-  } finally {
-    jest.useRealTimers();
-  }
+test('background discovery returns immediately and publishes when discovery completes', async () => {
+  let finish: (client: IMcpClient) => void = () => {};
+  const pending = new Promise<IMcpClient>((resolve) => {
+    finish = resolve;
+  });
+  const external = new ExternalMcp(
+    parseExternalMcp({ LLM_AGENT_EXECUTOR_MCP: 'docs' }),
+    () => [],
+    () => pending,
+    jest.fn(),
+  );
+  external.refresh();
+  expect(external.catalogue('executor')).toEqual([]);
+  finish(adapter);
+  await external.clients('executor');
+  expect(external.catalogue('executor')).toEqual([
+    { name: 'search', effect: 'read' },
+  ]);
 });
 
 test('recovery preserves names and routes existing agents to the replacement', async () => {
@@ -312,42 +298,84 @@ test('healthy refresh lists tools again without reconnecting', async () => {
   expect(disconnect).not.toHaveBeenCalled();
 });
 
-test.each(['throw', 'timeout', 'late-connect'])(
-  'discovery cleans up the connected client on %s',
-  async (failure) => {
-    jest.useFakeTimers();
-    try {
-      const disconnect = jest.fn(async () => {});
-      const client = {
-        ...adapter,
-        disconnect,
-        listTools:
-          failure === 'late-connect'
-            ? adapter.listTools
-            : async (): ReturnType<IMcpClient['listTools']> => {
-                if (failure === 'throw') throw new Error('list failed');
-                return new Promise(() => {});
-              },
-      };
-      const external = new ExternalMcp(
-        parseExternalMcp({ LLM_AGENT_EXECUTOR_MCP: 'docs' }),
-        () => [],
-        async () => {
-          if (failure === 'late-connect')
-            await new Promise((resolve) => setTimeout(resolve, 600_001));
-          return client;
-        },
-        jest.fn(),
-      );
-      const ready = external.clients('executor');
-      await jest.advanceTimersByTimeAsync(600_001);
-      expect(await ready).toEqual([]);
-      expect(disconnect).toHaveBeenCalledTimes(1);
-    } finally {
-      jest.useRealTimers();
-    }
-  },
-);
+test('clients use a live cached connection while a refresh hangs', async () => {
+  jest.useFakeTimers();
+  try {
+    let now = 0;
+    const listTools = jest.fn(adapter.listTools);
+    const callTool = jest.fn(adapter.callTool);
+    const external = new ExternalMcp(
+      parseExternalMcp({ LLM_AGENT_EXECUTOR_MCP: 'docs' }),
+      () => [],
+      async () => ({ ...adapter, listTools, callTool }),
+      jest.fn(),
+      () => now,
+    );
+    await external.clients('executor');
+    listTools.mockImplementationOnce(() => new Promise(() => {}));
+    now = 30001;
+    external.refresh();
+    const clients = await external.clients('executor');
+    expect(listTools).toHaveBeenCalledTimes(2);
+    expect(clients).toHaveLength(1);
+    expect(await clients[0].listTools()).toEqual(await adapter.listTools());
+    await clients[0].callTool('search', {});
+    expect(callTool).toHaveBeenCalledWith('search', {}, undefined);
+    // Release the background refresh before restoring real timers.
+    await jest.advanceTimersByTimeAsync(600_000);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test('the discovery safety net releases a hung first listing and warns', async () => {
+  jest.useFakeTimers();
+  try {
+    const warn = jest.fn();
+    const disconnect = jest.fn(async () => {});
+    const listTools = jest.fn(
+      (): ReturnType<IMcpClient['listTools']> => new Promise(() => {}),
+    );
+    const external = new ExternalMcp(
+      parseExternalMcp({ LLM_AGENT_EXECUTOR_MCP: 'docs' }),
+      () => [],
+      async () => ({ ...adapter, listTools, disconnect }),
+      warn,
+    );
+    const ready = external.clients('executor');
+    await jest.advanceTimersByTimeAsync(599_999);
+    expect(listTools).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    expect(await ready).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith('External docs MCP unavailable', {
+      destination: 'docs',
+    });
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    expect(external.catalogue()).toEqual([]);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test('discovery cleans up after a failed tool listing', async () => {
+  const disconnect = jest.fn(async () => {});
+  const external = new ExternalMcp(
+    parseExternalMcp({ LLM_AGENT_EXECUTOR_MCP: 'docs' }),
+    () => [],
+    async () => ({
+      ...adapter,
+      disconnect,
+      listTools: async () => {
+        throw new Error('list failed');
+      },
+    }),
+    jest.fn(),
+  );
+  expect(await external.clients('executor')).toEqual([]);
+  expect(disconnect).toHaveBeenCalledTimes(1);
+});
 
 test('undiscovered external policy entries match nothing and retain strict validation without destinations', async () => {
   const { effectiveProfileTools } = await import(
@@ -429,5 +457,65 @@ test('empty MTA MCP parameters disable connections and use default trust', () =>
   ).toEqual({
     roles: { planner: [], executor: [], checker: [], analyst: [] },
     trust: {},
+    selection: {},
+    directMax: 12,
   });
+});
+
+test('executor waits only for its destinations while other discovery stalls', async () => {
+  let finish: (client: IMcpClient) => void = () => {};
+  const stalled = new Promise<IMcpClient>((resolve) => {
+    finish = resolve;
+  });
+  const connect = jest.fn((destination: string) =>
+    destination === 'DOCS_A' ? Promise.resolve(adapter) : stalled,
+  );
+  const external = new ExternalMcp(
+    parseExternalMcp({
+      LLM_AGENT_EXECUTOR_MCP: 'DOCS_A',
+      LLM_AGENT_PLANNER_MCP: 'DOCS_B',
+    }),
+    () => [],
+    connect,
+  );
+  try {
+    const clients = await external.clients('executor');
+    expect(connect).toHaveBeenCalledWith('DOCS_B');
+    expect(clients).toHaveLength(1);
+    expect(await clients[0].listTools()).toEqual({
+      ok: true,
+      value: [{ name: 'DOCS_A__search', description: 'docs', inputSchema: {} }],
+    });
+  } finally {
+    finish(adapter);
+    await external.clients('planner');
+  }
+  expect(external.toolNames('executor')).toEqual(['DOCS_A__search']);
+});
+
+test('caller abort settles a stalled first discovery without cancelling it', async () => {
+  let finish: (client: IMcpClient) => void = () => {};
+  const stalled = new Promise<IMcpClient>((resolve) => {
+    finish = resolve;
+  });
+  const connect = jest.fn(() => stalled);
+  const external = new ExternalMcp(
+    parseExternalMcp({ LLM_AGENT_EXECUTOR_MCP: 'docs' }),
+    () => [],
+    connect,
+  );
+  const controller = new AbortController();
+  const reason = new Error('caller stopped');
+  const ready = external.clients('executor', { signal: controller.signal });
+  controller.abort(reason);
+  try {
+    await expect(ready).rejects.toBe(reason);
+    expect(external.catalogue()).toEqual([]);
+  } finally {
+    finish(adapter);
+  }
+  const clients = await external.clients('executor');
+  expect(connect).toHaveBeenCalledTimes(1);
+  expect(clients).toHaveLength(1);
+  expect(await clients[0].listTools()).toEqual(await adapter.listTools());
 });

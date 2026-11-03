@@ -263,12 +263,12 @@ test('a role resolver observes skills source and record writes without rebuildin
     parseTrustDefaults(undefined),
   ).forProfile({});
   const render = async () =>
-    formatTrustTag('global:skills/guide', await live.skill('guide'));
-  expect(await render()).toBe('[source: global:skills/guide; trust 3]');
+    formatTrustTag('system:skills/guide', await live.skill('guide'));
+  expect(await render()).toBe('[source: system:skills/guide; trust 4.8]');
   await store.setSource('skills', 3, 'admin');
-  expect(await render()).toBe('[source: global:skills/guide; trust 3]');
+  expect(await render()).toBe('[source: system:skills/guide; trust 3]');
   await store.setRecord('skills', 'guide', 1, 'admin');
-  expect(await render()).toBe('[source: global:skills/guide; trust 1]');
+  expect(await render()).toBe('[source: system:skills/guide; trust 1]');
 });
 test('coordinator and plan author recall legacy planner memory with session trust', async () => {
   const memoryRow: RagResult = {

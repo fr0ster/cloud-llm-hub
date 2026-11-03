@@ -74,7 +74,7 @@ test('same-name skills of both kinds load without a startup failure', async () =
   expect(result.value).toHaveLength(1);
   expect(await result.value[0].getContent()).toEqual({
     ok: true,
-    value: '[source: global:skills/dup; trust 3]\ndup body',
+    value: '[source: system:skills/dup; trust 4.8]\ndup body',
   });
 });
 

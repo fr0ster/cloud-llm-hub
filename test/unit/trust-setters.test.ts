@@ -387,7 +387,7 @@ test('REST and MCP address same-name skills by id and model reads use the overri
     const read = await pool.informationalSkills().getSkill('info-id');
     if (!read.ok) throw read.error;
     expect(await read.value?.getContent()).toMatchObject({
-      value: `[source: global:skills/info-id; trust ${transport === 'rest' ? 2 : 1}]\nbody`,
+      value: `[source: system:skills/info-id; trust ${transport === 'rest' ? 2 : 1}]\nbody`,
     });
   }
   expect(await store.getRecordHistory('skills', 'base-id')).toEqual([]);

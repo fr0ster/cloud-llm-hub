@@ -1709,13 +1709,17 @@ export function getHandlerExporterConfig() {
 /** Static, destination-free tool list from HandlerExporter (same config as buildEmbeddedMcpAdapter). */
 let embeddedToolNames: ReadonlySet<string> | undefined;
 let externalDocs: ExternalMcp | undefined;
-function docsMcp(): ExternalMcp {
+export function docsMcp(): ExternalMcp {
   externalDocs ??= new ExternalMcp(
     getAgentConfig().externalMcp ?? {
       roles: { planner: [], executor: [], checker: [], analyst: [] },
       trust: {},
     },
     () => [...getToolExpositionMap().keys(), ...ragToolNames],
+    undefined,
+    undefined,
+    undefined,
+    () => providers?.embedding?.retrieval,
   );
   return externalDocs;
 }
@@ -2841,6 +2845,7 @@ async function configureDestinationAgentBuilder(
     skipRetrieval?: boolean;
     systemPrompt?: string;
     role?: string;
+    signal?: AbortSignal;
   },
 ): Promise<SmartAgentBuilder> {
   const { mainLlm: mainLlmPromise, classifierLlm: classifierLlmPromise } =
@@ -2897,19 +2902,25 @@ async function configureDestinationAgentBuilder(
     .withMcpClients([
       mcpAdapter instanceof RecordingMcpClient
         ? mcpAdapter.includeClients(
-            await docsMcp().clients(opts?.role ?? 'executor'),
+            await docsMcp().clients(opts?.role ?? 'executor', opts),
           )
         : withToolResultCap(
             compositeMcpClient([
-              ...(await docsMcp().clients(opts?.role ?? 'executor')),
+              ...(await docsMcp().clients(opts?.role ?? 'executor', opts)),
               new DialogueRagMcpClient(mcpAdapter),
             ]),
             config.agent.toolResultMaxChars,
           ),
     ]);
 
-  // Tools RAG store for MCP tool selection (auto-vectorized)
-  if (!opts?.skipRetrieval) builder.setToolsRag(withDialogueRagTools(toolsRag));
+  // Docs candidates are role-scoped reads, merged after SAP exposition filtering.
+  // Their runtime index never writes into the prebuilt corpus.
+  if (!opts?.skipRetrieval)
+    builder.setToolsRag(
+      withDialogueRagTools(
+        docsMcp().withToolsRag(toolsRag, opts?.role ?? 'executor'),
+      ),
+    );
 
   // Recall of earlier turns. The pipeline already queries `history` on every
   // request; until now nothing wrote to it, so it answered nothing every time.
@@ -2988,6 +2999,7 @@ export async function buildPlannerAgent(
   config: AgentConfig,
   systemPrompt: string,
   authorClient?: IMcpClient,
+  options?: CallOptions,
 ): Promise<SmartAgent> {
   if (!authorClient && config.llm.coordinatorModel) {
     config = {
@@ -3008,6 +3020,25 @@ export async function buildPlannerAgent(
   const roleResolver = resolverFor(getCollectionRegistry());
   const skillsPool = buildSkillsPool({ resolver: () => roleResolver });
   const system = await appendBaseSkills(systemPrompt, skillsPool);
+  const plannerClient =
+    authorClient ?? new DialogueRagMcpClient(coordinatorToolsClient());
+  // Hard planners retain every SAP/control tool; only docs use semantic selection.
+  const plannerTools: IRag = {
+    query: async (_query, _k, options) => {
+      const listed = await plannerClient.listTools(options);
+      if (!listed.ok) return listed;
+      return {
+        ok: true,
+        value: listed.value.map((tool) => ({
+          text: `Tool: ${tool.name}`,
+          metadata: { id: `tool:${tool.name}`, name: tool.name },
+          score: 1,
+        })),
+      };
+    },
+    getById: async () => ({ ok: true, value: null }),
+    healthCheck: async () => ({ ok: true, value: undefined }),
+  };
   const builder = new SmartAgentBuilder({
     // Authors are built per call; validation would send an unattributed completion.
     skipModelValidation:
@@ -3016,6 +3047,7 @@ export async function buildPlannerAgent(
       timeZone: config.timeZone,
       maxIterations: config.agent.maxIterations,
       classificationEnabled: false,
+      ragQueryK: config.agent.ragQueryK,
     },
     prompts: {
       system,
@@ -3026,14 +3058,15 @@ export async function buildPlannerAgent(
     .withMcpClients([
       new RecordingMcpClient(
         compositeMcpClient([
-          ...(await docsMcp().clients('planner')),
-          authorClient ?? new DialogueRagMcpClient(coordinatorToolsClient()),
+          ...(await docsMcp().clients('planner', options)),
+          plannerClient,
         ]),
         undefined,
         config.agent.toolResultMaxChars,
         false,
       ),
     ])
+    .setToolsRag(docsMcp().withToolsRag(plannerTools, 'planner'))
     .withClassification(false)
     .withMode('hard');
   if (config.agent.maxToolCalls !== undefined)
@@ -3142,8 +3175,8 @@ function destinationProfileRunner(
   return new AgentProfileRunner({
     acceptsPolicyName: (name) => docsMcp().acceptsPolicyName(name),
     trustResolver: getTrustResolver,
-    prepareTools: async (role) => {
-      await docsMcp().clients(role);
+    prepareTools: async (role, options) => {
+      await docsMcp().clients(role, options);
     },
     plannerKnowledgeTools: () =>
       docsMcp()
@@ -3182,7 +3215,7 @@ function destinationProfileRunner(
             model: profile.model ?? getAgentConfig().llm.model,
           },
         },
-        { systemPrompt, role: profile.name },
+        { systemPrompt, role: profile.name, signal: options?.signal },
       );
       options?.signal?.throwIfAborted();
       const handle = await builder.build();
@@ -3259,6 +3292,7 @@ function destinationProfileRunner(
         },
         systemPrompt,
         filtered,
+        options,
       );
       releasePlannerAgent(agent);
       return agent;
@@ -3270,6 +3304,8 @@ function destinationProfileRunner(
           ? { ...config, llm: { ...config.llm, coordinatorModel: model } }
           : config,
         systemPrompt,
+        undefined,
+        options,
       );
       const release = (): void => {
         releasePlannerAgent(planner);
@@ -3570,6 +3606,7 @@ export async function buildExecutorWorker(
             },
           },
           {
+            signal: callOptions.signal,
             systemPrompt: [
               resolved.workerBase ?? '',
               resolved.profile.systemPrompt,

@@ -106,7 +106,8 @@ describe('buildSkillsPool', () => {
       expect(result.value?.meta.id).toBe('plugin-skills/activate');
       expect(await result.value?.getContent()).toEqual({
         ok: true,
-        value: '[source: global:skills/plugin-skills/activate; trust 3]\nbody',
+        value:
+          '[source: system:skills/plugin-skills/activate; trust 4.8]\nbody',
       });
       const selection = await pool
         .informationalSkills()
@@ -199,7 +200,7 @@ describe('buildSkillsPool', () => {
     const content = await r.value[1].getContent();
     if (!content.ok) throw new Error('getContent failed');
     expect(content.value).toBe(
-      `[source: global:skills/preset/dup; trust 3]\npreset body`,
+      `[source: system:skills/preset/dup; trust 4.8]\npreset body`,
     );
   });
 });

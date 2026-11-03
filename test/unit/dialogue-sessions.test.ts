@@ -137,6 +137,11 @@ jest.mock('../../srv/agent-config', () => ({
   }),
 }));
 jest.mock('../../srv/agent-manager', () => ({
+  docsMcp: () => ({
+    describeWorkers: (
+      workers: import('@mcp-abap-adt/llm-agent').WorkerProfileSummary[],
+    ) => workers,
+  }),
   getSystemToolTrust: () => () => undefined,
   isEmbeddedSystemTool: () => false,
   getTrustResolver: () =>

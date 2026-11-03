@@ -113,7 +113,7 @@ describe('CompositeSkillManager', () => {
     const content = await r.value[1].getContent();
     if (!content.ok) throw new Error('getContent failed');
     expect(content.value).toBe(
-      '[source: global:skills/preset-id; trust 3]\npreset body',
+      '[source: system:skills/preset-id; trust 4.8]\npreset body',
     );
   });
 
@@ -186,7 +186,7 @@ test('plugin identities, trust overrides and cached base bodies survive reorderi
   if (!alpha.ok) throw alpha.error;
   expect(alpha.value?.name).toBe('alpha');
   expect(await alpha.value?.getContent()).toMatchObject({
-    value: '[source: global:skills/plugin/alpha; trust 2]\nalpha',
+    value: '[source: system:skills/plugin/alpha; trust 2]\nalpha',
   });
   const beta = await pool.getSkill('plugin/beta');
   if (!beta.ok) throw beta.error;
@@ -300,11 +300,11 @@ test('same-name skills without locations remain usable but ambiguous with source
       expect(bodies).toEqual([
         {
           ok: true,
-          value: '[source: global:skills/plugin/Same; trust 2]\nsecond',
+          value: '[source: system:skills/plugin/Same; trust 2]\nsecond',
         },
         {
           ok: true,
-          value: '[source: global:skills/plugin/Same; trust 2]\nfirst',
+          value: '[source: system:skills/plugin/Same; trust 2]\nfirst',
         },
       ]);
     }
@@ -367,18 +367,18 @@ test.each(['explicit', 'fallback'] as const)(
         score: 1,
         metadata: { id: `skill:${String(s.meta.id)}` },
       }));
-      for (const [index, trust] of [3, 2, 3].entries()) {
+      for (const [index, trust] of [4.8, 2, 3].entries()) {
         if (index > 0) await store.setSource('skills', trust, 'alice');
         expect(
           await Promise.all(result.value.map((s) => s.getContent())),
         ).toEqual([
           {
             ok: true,
-            value: `[source: global:skills/plugin/shared; trust ${trust}]\nfirst body`,
+            value: `[source: system:skills/plugin/shared; trust ${trust}]\nfirst body`,
           },
           {
             ok: true,
-            value: `[source: global:skills/plugin/shared; trust ${trust}]\nsecond body`,
+            value: `[source: system:skills/plugin/shared; trust ${trust}]\nsecond body`,
           },
         ]);
         const descriptions = await trustedSkillResults(rows, resolver, pool);

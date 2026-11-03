@@ -32,7 +32,7 @@ test('same-name base and informational skills load and startup succeeds', async 
     expect(result.value).toHaveLength(1);
     expect(await result.value[0].getContent()).toEqual({
       ok: true,
-      value: `[source: global:skills/${path.basename(dirs[1])}/duplicate; trust 3]\nbody`,
+      value: `[source: system:skills/${path.basename(dirs[1])}/duplicate; trust 4.8]\nbody`,
     });
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -61,7 +61,7 @@ test('one filesystem source preserves different ids with the same name and kind'
     ]);
     expect(await info.value[0].getContent()).toEqual({
       ok: true,
-      value: `[source: global:skills/${path.basename(dir)}/info; trust 3]\ninfo`,
+      value: `[source: system:skills/${path.basename(dir)}/info; trust 4.8]\ninfo`,
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });

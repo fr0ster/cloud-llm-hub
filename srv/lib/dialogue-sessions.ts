@@ -23,6 +23,7 @@ import type { Request } from 'express';
 import { getAgentConfig } from '../agent-config';
 import {
   createAgentProfileSource,
+  docsMcp,
   getSmartAgent,
   runWithRequestConnection,
 } from '../agent-manager';
@@ -975,7 +976,7 @@ async function open(
           return [
             ...context,
             environment(),
-            `[worker profiles] ${JSON.stringify(workers.value)}`,
+            `[worker profiles] ${JSON.stringify(docsMcp().describeWorkers(workers.value))}`,
           ];
         },
       }),

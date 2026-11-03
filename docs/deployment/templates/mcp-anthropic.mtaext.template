@@ -97,6 +97,8 @@ resources:
 #   LLM_AGENT_CHECKER_MCP: ""
 #   LLM_AGENT_ANALYST_MCP: "DOCS_MCP"
 #   LLM_AGENT_MCP_TRUST: "DOCS_MCP=4.2"
+#   LLM_AGENT_MCP_SELECTION: "DOCS_MCP=auto"
+#   LLM_AGENT_MCP_DIRECT_MAX: "12"
 # resources:
 #   - name: cloud-llm-hub-destination
 #     parameters:

@@ -308,12 +308,13 @@ test('planner author receives registered docs as knowledge tools under its paren
     expect(profileToolAllowed('CreateTable')).toBe(false);
     return f.host.buildPlanner('author');
   };
-  const result = await f.runner.preparePlanAuthor({
-    systemPrompt: 'author',
-    mode: 'create',
-  });
+  const options = { signal: new AbortController().signal };
+  const result = await f.runner.preparePlanAuthor(
+    { systemPrompt: 'author', mode: 'create' },
+    options,
+  );
   expect(result.ok).toBe(true);
-  expect(f.host.prepareTools).toHaveBeenCalledWith('planner');
+  expect(f.host.prepareTools).toHaveBeenCalledWith('planner', options);
   f.host.buildPlanAuthor = async () => {
     expect(profileToolAllowed('docs_search')).toBe(false);
     return f.host.buildPlanner('author');

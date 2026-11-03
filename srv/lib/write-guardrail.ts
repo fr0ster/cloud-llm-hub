@@ -32,7 +32,7 @@ const CLAIM_PATTERNS: RegExp[] = [
   /\bI(?:(?:'|’)ve|\s+(?:have|successfully|just|now))*\s+(?:created|updated|deleted|activated)\b/i,
   // Heading/status line "Created domain X", "✅ Created …" at a line start —
   // excludes "Created by/on/:" metadata and mid-sentence "created" prose.
-  /(?:^|\n)\s*(?:[✅✔✓*\-•]\s*)?(?:created|updated|deleted|activated)\b(?!\s*:|\s+(?:by|on|in|at))/im,
+  /(?:^|\n)\s*(?:[✅✔✓*\-•]\s*)?(?:created|updated|deleted|activated)\b(?!\s*:|\s+(?:by|on|in|at|before)\b)/im,
   // RU/UK participles that are PREDICATIVE by form and cannot modify a noun:
   // Russian short forms ("создан", "создана") and impersonal neuters
   // ("створено", "удалено"). Attributive Russian would be "созданный", which is
