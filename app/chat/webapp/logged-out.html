@@ -47,6 +47,11 @@
         <button class="btn" type="button" onclick="signIn()">SIGN IN</button>
     </div>
     <script>
+        const signedOutReason = sessionStorage.getItem('clh.signedOutReason');
+        if (signedOutReason === 'SESSION_LIMIT') {
+            document.querySelector('h1').textContent = 'Session limit reached';
+            document.querySelector('p').textContent = 'No more sessions can be opened for you right now. Close sessions you no longer need in your other tabs or clients, then sign in again.';
+        }
         // Defence-in-depth: clear any local/session storage residue.
         try { localStorage.clear(); } catch {}
         try { sessionStorage.clear(); } catch {}
