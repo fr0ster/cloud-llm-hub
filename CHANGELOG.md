@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.5.0] - 2026-11-05
+
+### Added
+
+- Dialogue task results travel as session RAG records referenced by id, created once per task (atomic within one hub process; independent processes can race) (llm-agent 30.34.0, llm-agent-libs 30.32.2). Each session stores every finished task's full result in its `task-results` collection; the coordinator sees bounded task notices instead of result text, dependent tasks and checks receive record references, and delivery returns the full record.
+- Optional `LLM_AGENT_EMBEDDING_DIMENSION` for Qdrant: the vector dimension used to create task-results collections without an embedder call.
+
+### Changed
+
+- The coordinator profile decides from task notices, hands results on through dependencies and never copies results into briefs; workers finish reports with `submit_report`.
+- `rag_read` pages fit the serialized tool-result cap, so long results read completely page by page; with a cap too small for any page the previous truncation applies.
+
+### Security
+
+- `task-results` collections are written only by the session store: every MCP, REST, enable, trust and upload mutation is refused for all roles; the name is reserved; other sessions and users cannot list or read them.
+
 ## [10.4.13] - 2026-11-04
 
 ### Fixed
