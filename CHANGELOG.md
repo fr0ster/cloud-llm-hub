@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.4.13] - 2026-11-04
+
+### Fixed
+
+- Checker text verdicts are read conservatively: the whole output when it is a verdict, or a trailing verdict only when the text before it has no verdict marker, braces or escapes. Conflicting, malformed or duplicate-key verdicts, FAIL in earlier prose and escaped JSON no longer yield a false pass; such outputs are unusable and retried.
+
 ## [10.4.12] - 2026-11-04
 
 ### Fixed
