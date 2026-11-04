@@ -32,6 +32,22 @@ export function recordedCheckerVerdict(
   return undefined;
 }
 
+export function checkerVerdictText(output: string): string {
+  const text = output.trim();
+  if (/^PASS$/i.test(text) || parseCheckerVerdict(text)) return text;
+  const parts = text.split(/(\r?\n[\t ]*\r?\n)/);
+  for (let index = parts.length - 1; index >= 0; index -= 2) {
+    const suffix = parts.slice(index).join('').trim();
+    if (/^PASS$/i.test(suffix) || parseCheckerVerdict(suffix)) return suffix;
+  }
+  return (
+    parts
+      .filter((part) => part.trim())
+      .pop()
+      ?.trim() ?? ''
+  );
+}
+
 export function checkerVerdictInput(
   output: string,
   records: ToolCallRecord[],
@@ -44,10 +60,11 @@ export function needsCheckerVerdictRetry(
   output: string,
   records: ToolCallRecord[],
 ): boolean {
+  const text = checkerVerdictText(output);
   return (
     !recordedCheckerVerdict(records) &&
-    !parseCheckerVerdict(output) &&
-    !/^PASS$/i.test(output.trim())
+    !parseCheckerVerdict(text) &&
+    !/^PASS$/i.test(text)
   );
 }
 const normalize = (text: string): string => text.replace(/\s+/g, ' ').trim();
@@ -106,6 +123,7 @@ export function bindCheckerVerdict(
   output: string,
   inputs: CheckerInputs,
 ): string {
+  output = checkerVerdictText(output);
   const parsed = parseCheckerVerdict(output);
   if (/^PASS$/i.test(output.trim())) return output;
   if (!parsed) {
