@@ -275,10 +275,39 @@ it.each(['coordinator', 'planner-create', 'planner-revise'])(
       expect(prompt).toContain(
         'Choose the worker for each step from the delegate_task profiles',
       );
-      expect(prompt).toContain('redo work only for failure or a concrete gap');
+      expect(prompt).toContain('Redo work only for failure or a concrete gap');
       expect(prompt).toContain(
         'sequence shared objects, locks, transports and dependent results',
       );
     }
   },
 );
+
+it('ships notice-driven coordination and report reference hand-off', () => {
+  const read = (name: string) =>
+    readFileSync(path.join('srv/agent-profiles', `${name}.md`), 'utf8');
+  const coordinator = read('coordinator');
+  for (const text of [
+    'Delegate every plan step to an agent via delegate_task; never execute steps yourself.',
+    'When no specialised profile fits, start the default executor profile with a brief and a model.',
+    'Decide the next action from the plan and task notices (summary, verdict, size, record reference).',
+    'Do not read stored results to pass them on, compile reports or copy results into briefs.',
+    'declare the dependency (its reference is attached automatically)',
+    'for an agent without dependencies, name the task whose result to use',
+    'Delegate searches, document reading/analysis and compilation; read records only for short lookups.',
+    'Judge results by the task notice; read the stored record only for a concrete gap the notice cannot decide.',
+    'get_task returns the task notice and activity',
+    'Deliver an answering task result with deliver({ task_id, note? })',
+  ])
+    expect(coordinator).toContain(text);
+  expect(coordinator).not.toContain(
+    'Judge results against get_task done criteria',
+  );
+  expect(coordinator).not.toContain('inspect its status/results');
+  const worker = read('_worker-base');
+  expect(worker).toContain(
+    'Report workers finish with submit_report({ summary ≤ 600 characters, result? }); the summary lets the coordinator decide the next step without reading the result; dependency results arrive as record references, read with rag_read by id or found with collection_records.',
+  );
+  expect(worker).toContain('available tools — say so');
+  expect(worker).not.toContain('available tools ?');
+});
