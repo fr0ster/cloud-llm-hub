@@ -1,6 +1,6 @@
 _schema-version: 3.3.0
 ID: cloud-llm-hub
-version: 10.4.11
+version: 10.4.12
 description: "A simple CAP project."
 parameters:
   enable-parallel-deployments: true

@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.4.12] - 2026-11-04
+
+### Fixed
+
+- Worker task results keep every accepted assistant text of the run, so a report written alongside a tool call is no longer lost (llm-agent 30.32.1, llm-agent-libs 30.31.1).
+- Checker text verdicts written after progress text are read from the final output segment; multi-line and fenced JSON verdicts stay whole.
+- The WebUI signs the user out with an explanation when opening a session hits the session limit (429 `SESSION_LIMIT`), instead of staying usable with an inline error.
+
 ## [10.4.11] - 2026-11-04
 
 ### Changed
