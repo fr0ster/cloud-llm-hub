@@ -5,6 +5,8 @@ import {
   bindCheckerVerdict as bind,
   type CheckerInputs,
   checkerInputs,
+  checkerVerdictText,
+  needsCheckerVerdictRetry,
 } from '../../srv/lib/checker-verdict';
 
 const context = {
@@ -28,6 +30,53 @@ const fail = (quote = 'The object is active.', evidence = 'inactive') =>
       { quote, evidence, reason: 'Task t1 evidence contradicts active status' },
     ],
   });
+
+test.each([
+  'PASS',
+  '{"verdict":"pass","count":2,"note":"ok"}',
+  '```json\n{"verdict":"pass"}\n```',
+  fail(),
+])('progress text then verdict binds without retry: %s', (verdict) => {
+  const output = `Checking evidence…\n\nReading the record.\n\n ${verdict} \n\n`;
+  expect(checkerVerdictText(output)).toBe(verdict);
+  expect(needsCheckerVerdictRetry(output, [])).toBe(false);
+  expect(bind(output, context)).toBe(verdict);
+});
+
+test.each([
+  [fail('Invented claim'), 'quote_absent'],
+  [fail(undefined, 'fabricated evidence'), 'evidence_absent'],
+  [fail(undefined, 'none provided'), undefined],
+])('progress text preserves fail claim checks: %s', (verdict, reason) => {
+  const output = `Checking evidence…\n\n${verdict}`;
+  expect(needsCheckerVerdictRetry(output, [])).toBe(false);
+  expect(bind(output, context)).toBe(
+    reason ? `unusable verdict: ${reason}` : verdict,
+  );
+});
+
+test('progress text then garbage remains unusable and needs retry', () => {
+  const output = 'PASS\n\nChecking evidence…\n\ngarbage';
+  expect(checkerVerdictText(output)).toBe('garbage');
+  expect(needsCheckerVerdictRetry(output, [])).toBe(true);
+  expect(bind(output, context)).toBe('unusable verdict: invalid_envelope');
+});
+
+test.each([
+  'PASS',
+  '{\n"verdict": "pass",\n\n"note": "checked"\n}',
+  '```json\n{\n"verdict": "pass",\n\n"note": "checked"\n}\n```',
+])('whole valid verdict is preserved before splitting: %s', (verdict) => {
+  const output = ` \n${verdict}\n `;
+  expect(checkerVerdictText(output)).toBe(verdict);
+  expect(needsCheckerVerdictRetry(output, [])).toBe(false);
+  expect(bind(output, context)).toBe(verdict);
+});
+
+test('blank line extraction supports CRLF and whitespace-only lines', () => {
+  expect(checkerVerdictText('Reading.\r\n \t\r\n\r\n pass \r\n')).toBe('pass');
+  expect(checkerVerdictText(' \n\n ')).toBe('');
+});
 
 test('fail binds exact quote and evidence with normalized whitespace', () => {
   const output = fail('The  object\nis active.');
