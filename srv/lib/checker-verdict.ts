@@ -35,9 +35,13 @@ export function recordedCheckerVerdict(
 export function checkerVerdictText(output: string): string {
   const text = output.trim();
   if (/^PASS$/i.test(text) || parseCheckerVerdict(text)) return text;
+  const parts = text.split(/(\r?\n[\t ]*\r?\n)/);
+  for (let index = parts.length - 1; index >= 0; index -= 2) {
+    const suffix = parts.slice(index).join('').trim();
+    if (/^PASS$/i.test(suffix) || parseCheckerVerdict(suffix)) return suffix;
+  }
   return (
-    text
-      .split(/\r?\n[\t ]*\r?\n/)
+    parts
       .filter((part) => part.trim())
       .pop()
       ?.trim() ?? ''

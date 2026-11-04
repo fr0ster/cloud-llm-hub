@@ -44,6 +44,19 @@ test.each([
 });
 
 test.each([
+  '{\n"verdict": "pass",\n\n"note": "checked"\n}',
+  '```json\n{\n"verdict": "pass",\n\n"note": "checked"\n}\n```',
+])('progress text preserves verdict with inner blank lines: %s', (verdict) => {
+  for (const newline of ['\n', '\r\n']) {
+    const expected = verdict.replace(/\n/g, newline);
+    const output = `Checking evidence…${newline}${newline}${expected}`;
+    expect(checkerVerdictText(output)).toBe(expected);
+    expect(needsCheckerVerdictRetry(output, [])).toBe(false);
+    expect(bind(output, context)).toBe(expected);
+  }
+});
+
+test.each([
   [fail('Invented claim'), 'quote_absent'],
   [fail(undefined, 'fabricated evidence'), 'evidence_absent'],
   [fail(undefined, 'none provided'), undefined],
