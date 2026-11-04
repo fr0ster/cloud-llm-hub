@@ -218,6 +218,13 @@ it('ships separate coordinator and stateless planner prompts', () => {
     const author = read(name);
     expect(author).toContain('JSON');
     expect(author).toContain('waiting_user');
+    expect(author).toContain('"result"?:"report"|"verdict"');
+    expect(author).toContain(
+      'result: "verdict" and dependsOn identifying the checked steps',
+    );
+    expect(author).not.toMatch(
+      /worker|profile|executor|UUID|paged|record_set_enabled|live owned long session/i,
+    );
     expect(author).not.toMatch(
       /\b(?:Get[A-Z]\w*|Create[A-Z]\w*|Update[A-Z]\w*|Delete[A-Z]\w*|record_add|record_update|delegate_task|plan_update)\b/,
     );
@@ -255,9 +262,9 @@ it.each(['coordinator', 'planner-create', 'planner-revise'])(
         'Add a later search or read wave only for a gap found in the results.',
       );
       expect(prompt).toContain(
-        'paged collection_records and rag_read using actual IDs',
+        'every expected record exists in the requested target and scope',
       );
-      expect(prompt).toContain('reversible retirement by disabling records');
+      expect(prompt).toContain('otherwise retirement must be reversible');
       expect(prompt).toContain(
         'split only for parallel work, size limits or a result that needs its own check',
       );
@@ -265,7 +272,9 @@ it.each(['coordinator', 'planner-create', 'planner-revise'])(
       expect(prompt).toContain(
         'State outcomes, not ABAP implementation details.',
       );
-      expect(prompt).toContain('Use exact discovered profiles');
+      expect(prompt).toContain(
+        'Choose the worker for each step from the delegate_task profiles',
+      );
       expect(prompt).toContain('redo work only for failure or a concrete gap');
       expect(prompt).toContain(
         'sequence shared objects, locks, transports and dependent results',

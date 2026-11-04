@@ -407,14 +407,16 @@ test('dialogue tool-loop offers hub storage to executor and only readback to che
   );
 });
 
-test('planner authors define checkable results and paged enumeration', () => {
+test('planner authors define checkable results and bounded batches', () => {
   expect(authorTexts).toHaveLength(2);
   for (const prompt of authorTexts) {
     expect(prompt).toContain(
-      'Each step states a result one worker run can deliver and its done criterion',
+      'Each step states a result one run can deliver and its done criterion',
     );
-    expect(prompt).toContain('page by page (for example 20 at a time)');
-    expect(prompt).toContain('then per-item or batch steps');
+    expect(prompt).toContain("Keep each step within one run's budget");
+    expect(prompt).toContain(
+      'per-item or batch results within maxItemsPerStep',
+    );
   }
 });
 
