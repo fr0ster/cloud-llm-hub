@@ -14,9 +14,11 @@ jest.mock('../../srv/lib/session-lifecycle', () => ({
 
 import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import {
+  InMemoryRag,
   symmetricEmbedder,
   type TaskResultEntry,
 } from '@mcp-abap-adt/llm-agent';
+import { z } from 'zod';
 import { executeRagTool } from '../../srv/agent-mcp-rag';
 import { resolveRouteId, sessionCollectionId } from '../../srv/collection-ids';
 import { loopReads, ReadDedup } from '../../srv/lib/read-dedup';
@@ -275,70 +277,92 @@ test('abort interrupts an in-flight wait without a timeout', async () => {
   release();
 });
 
-test('PG persists unembedded full results and restores refs independently of the embedder fingerprint', async () => {
-  const { createPgClient, PgVectorRagProvider } = await import(
-    '@mcp-abap-adt/pg-vector-rag'
-  );
-  const { startPglite } = await import('./helpers/pglite');
-  const { createCollectionPersistence } = await import(
-    '../../srv/lib/collection-persistence'
-  );
-  const database = await startPglite({ dimension: 1536 });
-  const client = await createPgClient({
-    connectionString: database.url,
-    credential: database.credential,
-    collectionName: 'hub-collections',
-  });
-  try {
-    const embed = jest.fn(async () => {
-      throw new Error('Embedding must not be called');
+test.each([768, 3072])(
+  'PG persists unembedded full results at dimension %i and restores refs independently of the embedder fingerprint',
+  async (dimension) => {
+    const { createPgClient, PgVectorRagProvider } = await import(
+      '@mcp-abap-adt/pg-vector-rag'
+    );
+    const { startPglite } = await import('./helpers/pglite');
+    const { createCollectionPersistence } = await import(
+      '../../srv/lib/collection-persistence'
+    );
+    const database = await startPglite({ dimension });
+    const client = await createPgClient({
+      connectionString: database.url,
+      credential: database.credential,
+      collectionName: 'hub-collections',
     });
-    const embedder = symmetricEmbedder({ embed });
-    const provider = new PgVectorRagProvider({
-      name: 'hub-collections',
-      embedder,
-      layout: 'shared',
-      connection: {
-        collectionName: 'hub-collections',
-        schema: database.schema,
+    try {
+      const embed = jest.fn(async () => {
+        throw new Error('Embedding must not be called');
+      });
+      const embedder = symmetricEmbedder({ embed });
+      const provider = new PgVectorRagProvider({
+        name: 'hub-collections',
+        defaultDimension: dimension,
+        embedder,
         layout: 'shared',
-      },
-      clientFactory: () => client,
-    });
-    const registry = new CollectionRegistry({
-      defaultBackend: 'pg-vector',
-      persistence: createCollectionPersistence(provider, 'before'),
-    });
-    const output = 'Stored result'.repeat(6000);
-    const written = await createTaskResultStore(registry, scope).put({
-      ...entry,
-      output,
-    });
-    if (!written.ok) throw new Error(written.error.message);
-    const restored = new CollectionRegistry({
-      defaultBackend: 'pg-vector',
-      persistence: createCollectionPersistence(provider, 'after'),
-    });
-    const store = createTaskResultStore(restored, scope);
-    expect(await store.read(written.value)).toEqual({
-      ok: true,
-      value: output,
-    });
-    expect(await store.put({ ...entry, output })).toEqual(written);
-    expect(await store.put({ ...entry, output: 'changed' })).toMatchObject({
-      ok: false,
-      error: { code: 'exists' },
-    });
-    expect(await restored.getCollection(physical)).toMatchObject({
-      collectionKind: 'task-results',
-    });
-    expect(await restored.getRagStores([physical])).toEqual({});
-    expect(embed).not.toHaveBeenCalled();
-  } finally {
-    await client.end();
-    await database.stop();
-  }
-});
+        connection: {
+          collectionName: 'hub-collections',
+          schema: database.schema,
+          layout: 'shared',
+        },
+        clientFactory: () => client,
+      });
+      expect(
+        await provider.createCollection('task_results_mismatch', {
+          scope: 'session',
+          sessionId: scope.sessionKey,
+          dimension: dimension + 1,
+        }),
+      ).toMatchObject({
+        ok: false,
+        error: {
+          message: expect.stringContaining(
+            'does not match configured dimension',
+          ),
+        },
+      });
+      const registry = new CollectionRegistry({
+        defaultBackend: 'pg-vector',
+        persistence: createCollectionPersistence(provider, 'before', {
+          vectorDimension: async () => dimension,
+        }),
+      });
+      const output = 'Stored result'.repeat(6000);
+      const written = await createTaskResultStore(registry, scope).put({
+        ...entry,
+        output,
+      });
+      if (!written.ok) throw new Error(written.error.message);
+      const restored = new CollectionRegistry({
+        defaultBackend: 'pg-vector',
+        persistence: createCollectionPersistence(provider, 'after', {
+          vectorDimension: async () => dimension,
+        }),
+      });
+      const store = createTaskResultStore(restored, scope);
+      expect(await store.read(written.value)).toEqual({
+        ok: true,
+        value: output,
+      });
+      expect(await store.put({ ...entry, output })).toEqual(written);
+      expect(await store.put({ ...entry, output: 'changed' })).toMatchObject({
+        ok: false,
+        error: { code: 'exists' },
+      });
+      expect(await restored.getCollection(physical)).toMatchObject({
+        collectionKind: 'task-results',
+      });
+      expect(await restored.getRagStores([physical])).toEqual({});
+      expect(embed).not.toHaveBeenCalled();
+    } finally {
+      await client.end();
+      await database.stop();
+    }
+  },
+);
 
 test.each([0, 60000, 4096])(
   'escaped result pages survive worker cap %i and dedup',
@@ -405,5 +429,357 @@ test.each([0, 60000, 4096])(
       expect(combined).toBe(output);
       expect(pages).toBeGreaterThan(2);
     });
+  },
+);
+
+test.each([
+  'configured',
+  'existing',
+  'probe',
+  'inconsistent',
+  'failed-probe',
+  'retry-lookup',
+  'retry-probe',
+] as const)('Qdrant production dimension resolver: %s', async (mode) => {
+  const dimension = 768;
+  const { createCollectionProvider, providerVectorDimension } = await import(
+    '../../srv/lib/rag-provider-factory'
+  );
+  const { embedderFingerprint } = await import('../../srv/lib/providers');
+  const { fingerprintHash } = await import('../../srv/lib/tool-corpus');
+  const embedderConfig = { kind: 'openai' as const, model: 'test-embedding' };
+  const fp = fingerprintHash(embedderFingerprint(embedderConfig));
+  const { createCollectionPersistence } = await import(
+    '../../srv/lib/collection-persistence'
+  );
+  const embed = jest.fn(async (_text: string) => {
+    if (
+      mode !== 'probe' &&
+      mode !== 'retry-lookup' &&
+      !(mode === 'retry-probe' && embed.mock.calls.length > 1)
+    )
+      throw new Error('Embedding unavailable');
+    return { vector: Array<number>(dimension).fill(0) };
+  });
+  const points = z.object({
+    points: z.array(
+      z.object({
+        vector: z.array(z.number()),
+        payload: z.record(z.string(), z.json()),
+      }),
+    ),
+  });
+  let catalogPoints: z.infer<typeof points>['points'] = [];
+  let documentPoints: z.infer<typeof points>['points'] = [];
+  const sizes: number[] = [];
+  const vectors: number[][] = [];
+  let listCalls = 0;
+  const fetchMock = jest
+    .spyOn(globalThis, 'fetch')
+    .mockImplementation(async (input, init) => {
+      const path = String(input);
+      const catalog = path.includes('/collections/test-collections-catalog');
+      if (path.endsWith('/collections')) {
+        listCalls++;
+        if (mode === 'retry-lookup' && listCalls === 1)
+          return Response.json({}, { status: 503 });
+        return Response.json({
+          result: {
+            collections:
+              mode === 'existing' || mode === 'inconsistent'
+                ? [
+                    { name: 'knowledge' },
+                    ...(mode === 'inconsistent' ? [{ name: 'other' }] : []),
+                  ]
+                : [],
+          },
+        });
+      }
+      if (
+        path.endsWith('/collections/knowledge') ||
+        path.endsWith('/collections/other')
+      )
+        return Response.json({
+          result: {
+            config: {
+              params: {
+                vectors: { size: path.endsWith('/other') ? 3072 : dimension },
+              },
+            },
+          },
+        });
+      if (init?.method === 'PUT') {
+        if (typeof init.body !== 'string') throw new Error('Missing JSON body');
+        if (path.includes('/points')) {
+          const body = points.parse(JSON.parse(init.body));
+          if (catalog) catalogPoints = body.points;
+          else {
+            documentPoints = body.points;
+            vectors.push(...body.points.map((point) => point.vector));
+          }
+        } else {
+          const body = z
+            .object({ vectors: z.object({ size: z.number() }) })
+            .parse(JSON.parse(init.body));
+          if (!catalog) sizes.push(body.vectors.size);
+        }
+        return Response.json({ result: { status: 'completed' } });
+      }
+      if (path.endsWith('/points/scroll'))
+        return Response.json({
+          result: {
+            points:
+              mode === 'existing' || mode === 'inconsistent'
+                ? [
+                    'knowledge',
+                    ...(mode === 'inconsistent' ? ['other'] : []),
+                  ].map((name) => ({
+                    payload: {
+                      store_name: name,
+                      collection_name: name,
+                      scope: 'global',
+                      attributes_json: JSON.stringify({
+                        writtenBy: 'cloud-llm-hub',
+                        embedder: fp,
+                      }),
+                    },
+                  }))
+                : [],
+            next_page_offset: null,
+          },
+        });
+      if (!catalog && path.includes('/points/'))
+        return Response.json({ result: null }, { status: 404 });
+      if (path.endsWith('/points'))
+        return Response.json({
+          result: catalog ? catalogPoints : documentPoints,
+        });
+      return Response.json({ result: {} }, { status: catalog ? 200 : 404 });
+    });
+  try {
+    const provider = createCollectionProvider(
+      {
+        embedder: embedderConfig,
+        backends: {
+          tools: 'in-memory',
+          session: 'qdrant',
+          persistent: 'qdrant',
+        },
+        qdrant: { url: 'https://qdrant.example', prefix: 'test' },
+        ...(mode === 'configured' ? { embeddingDimension: dimension } : {}),
+      },
+      { retrieval: symmetricEmbedder({ embed }) },
+    );
+    if (!provider) throw new Error('Missing provider');
+    const registry = new CollectionRegistry({
+      defaultBackend: 'qdrant',
+      persistence: createCollectionPersistence(provider, 'fp', {
+        vectorDimension: providerVectorDimension(provider),
+      }),
+    });
+    const store = createTaskResultStore(registry, scope);
+    if (mode === 'retry-lookup' || mode === 'retry-probe') {
+      expect(await store.put(entry)).toMatchObject({ ok: false });
+    }
+    const written = await store.put(entry);
+    if (mode === 'retry-lookup' || mode === 'retry-probe')
+      expect(listCalls).toBe(2);
+    if (mode === 'inconsistent' || mode === 'failed-probe') {
+      expect(written).toMatchObject({
+        ok: false,
+        error: {
+          code: 'unavailable',
+          message: expect.stringContaining(
+            'Qdrant storage cannot resolve vector dimension',
+          ),
+        },
+      });
+      expect(sizes).toEqual([]);
+      return;
+    }
+    if (!written.ok) throw new Error(written.error.message);
+    expect(sizes).toEqual([dimension]);
+    expect(vectors).toEqual([Array<number>(dimension).fill(0)]);
+    catalogPoints = [];
+    const second = await createTaskResultStore(registry, {
+      ...scope,
+      sessionKey: 'second-session',
+    }).put(entry);
+    if (!second.ok) throw new Error(second.error.message);
+    expect(sizes).toEqual([dimension, dimension]);
+    expect(embed).toHaveBeenCalledTimes(
+      mode === 'retry-probe'
+        ? 2
+        : mode === 'probe' || mode === 'retry-lookup'
+          ? 1
+          : 0,
+    );
+    if (mode === 'probe')
+      expect(embed.mock.calls[0]?.[0]).toBe('dimension probe');
+  } finally {
+    fetchMock.mockRestore();
+  }
+});
+
+test.each([undefined, 0, -1, 1.5, NaN, Infinity])(
+  'task-results creation fails before calling the provider for dimension %s',
+  async (dimension) => {
+    const { QdrantRagProvider } = await import('@mcp-abap-adt/qdrant-rag');
+    const { createCollectionPersistence } = await import(
+      '../../srv/lib/collection-persistence'
+    );
+    const embed = jest.fn(async () => {
+      throw new Error('Embedding must not be called');
+    });
+    const provider = new QdrantRagProvider({
+      name: 'qdrant',
+      url: 'https://qdrant.example',
+      embedder: symmetricEmbedder({ embed }),
+    });
+    jest.spyOn(provider, 'describeCollections').mockResolvedValue({
+      ok: true,
+      value: { records: [], rejected: [] },
+    });
+    const create = jest.spyOn(provider, 'createCollection');
+    const registry = new CollectionRegistry({
+      defaultBackend: 'qdrant',
+      persistence: createCollectionPersistence(provider, 'fp', {
+        ...(dimension === undefined
+          ? {}
+          : { vectorDimension: async () => dimension }),
+      }),
+    });
+    const written = await createTaskResultStore(registry, scope).put(entry);
+    expect(written).toMatchObject({
+      ok: false,
+      error: {
+        code: 'unavailable',
+        message: expect.stringContaining('cannot report its vector dimension'),
+      },
+    });
+    expect(create).not.toHaveBeenCalled();
+    expect(embed).not.toHaveBeenCalled();
+  },
+);
+
+test.each([768, 3072])(
+  'HANA provider accepts configured dimension %i and rejects a mismatch',
+  async (dimension) => {
+    const { HanaVectorRagProvider } = await import(
+      '@mcp-abap-adt/hana-vector-rag'
+    );
+    const { staticLogin } = await import('@mcp-abap-adt/llm-agent');
+    const embed = jest.fn(async () => {
+      throw new Error('Embedding must not be called');
+    });
+    const exec = jest.fn(async () => ({ rowCount: 1 }));
+    const query = jest.fn(async () => []);
+    const provider = new HanaVectorRagProvider({
+      name: 'hana',
+      defaultDimension: dimension,
+      embedder: symmetricEmbedder({ embed }),
+      connection: {
+        collectionName: 'hub',
+        credential: staticLogin('user', 'password'),
+      },
+      clientFactory: () => ({ exec, query, close: async () => {} }),
+    });
+    try {
+      expect(
+        await provider.createCollection('task_results', {
+          scope: 'session',
+          sessionId: scope.sessionKey,
+          dimension,
+        }),
+      ).toMatchObject({ ok: true });
+      exec.mockClear();
+      query.mockClear();
+      expect(
+        await provider.createCollection('task_results_mismatch', {
+          scope: 'session',
+          sessionId: scope.sessionKey,
+          dimension: dimension + 1,
+        }),
+      ).toMatchObject({
+        ok: false,
+        error: {
+          message: expect.stringContaining(
+            'does not match configured dimension',
+          ),
+        },
+      });
+      expect(exec).not.toHaveBeenCalled();
+      expect(query).not.toHaveBeenCalled();
+      expect(embed).not.toHaveBeenCalled();
+    } finally {
+      provider.close();
+    }
+  },
+);
+
+test.each([768, 3072])(
+  'HANA SQL accepts an unembedded task result at dimension %i',
+  async (dimension) => {
+    const { HanaVectorRag } = await import('@mcp-abap-adt/hana-vector-rag');
+    const { staticLogin } = await import('@mcp-abap-adt/llm-agent');
+    const { addPersistentDocument } = await import(
+      '../../srv/lib/collection-persistence'
+    );
+    const embed = jest.fn(async () => {
+      throw new Error('Embedding must not be called');
+    });
+    const exec = jest.fn(async (sql: string) => {
+      const match = sql.match(/TO_REAL_VECTOR\('\[([^\]]*)\]'\)/);
+      if (!match) throw new Error('Missing vector literal');
+      expect(match[1].split(',').map(Number)).toEqual(
+        Array<number>(dimension).fill(0),
+      );
+      return { rowCount: 1 };
+    });
+    const rag = new HanaVectorRag(
+      {
+        collectionName: 'task_results',
+        credential: staticLogin('user', 'password'),
+        dimension,
+        autoCreateSchema: false,
+        embedder: symmetricEmbedder({ embed }),
+      },
+      { exec, query: async () => [], close: async () => {} },
+    );
+    const stored = {
+      meta: {
+        id: physical,
+        logicalId: 'task-results',
+        displayName: 'Task results',
+        description: '',
+        scope: 'session' as const,
+        owner: scope.userId,
+        sessionId: scope.sessionKey,
+        collectionKind: 'task-results' as const,
+        createdAt: new Date().toISOString(),
+        documentCount: 0,
+        sourceCount: 0,
+      },
+      documents: new Map(),
+      vectorDimension: async () => dimension,
+      rag: {
+        getById: rag.getById.bind(rag),
+        writer: rag.writer.bind(rag),
+        upsert: async () => {
+          throw new Error('Unexpected embedding write');
+        },
+        deleteById: async () => ({ ok: true as const, value: false }),
+      },
+    };
+    expect(
+      await addPersistentDocument(stored, {
+        id: entry.id,
+        text: entry.output,
+        metadata: {},
+      }),
+    ).toMatchObject({ id: entry.id, text: entry.output });
+    expect(stored.meta.documentCount).toBe(1);
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(embed).not.toHaveBeenCalled();
   },
 );

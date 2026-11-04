@@ -212,3 +212,18 @@ describe('parseDestinationConfig', () => {
     expect(() => parseDestinationConfig(env)).toThrow(msg);
   });
 });
+
+test.each(['0', '-1', '1.5', 'abc', '9007199254740992'])(
+  'rejects invalid optional embedding dimension %s',
+  (value) => {
+    expect(() =>
+      parseRagConfig({ LLM_AGENT_EMBEDDING_DIMENSION: value }, llmSap),
+    ).toThrow('LLM_AGENT_EMBEDDING_DIMENSION');
+  },
+);
+test('reads optional embedding dimension without requiring an embedding model', () => {
+  expect(
+    parseRagConfig({ LLM_AGENT_EMBEDDING_DIMENSION: '768' }, llmSap)
+      .embeddingDimension,
+  ).toBe(768);
+});

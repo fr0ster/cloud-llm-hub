@@ -211,6 +211,7 @@ export interface RagDocument {
 export type EnabledDocument = ReturnType<typeof documentView>;
 
 interface StoredCollection {
+  vectorDimension?: (options?: CallOptions) => Promise<number>;
   usageTextBytes?: number;
   meta: CollectionMeta;
   /** The store name its backend was created with; see RagBackendFactory. */
@@ -822,6 +823,10 @@ export class CollectionRegistry {
       const stored: StoredCollection = {
         meta,
         store: persistence.storeName(meta.id),
+        vectorDimension: persistence.vectorDimension?.bind(
+          persistence,
+          meta.id,
+        ),
         persistent: true,
         documents,
         rag: new RecencyBoostedRag(c.rag ?? unavailableRag(c.error ?? '')),
@@ -1179,6 +1184,7 @@ export class CollectionRegistry {
     this.collections.set(meta.id, {
       meta,
       store: persistence.storeName(meta.id),
+      vectorDimension: persistence.vectorDimension?.bind(persistence, meta.id),
       persistent: true,
       documents: new Map(),
       rag: new RecencyBoostedRag(handles.rag),

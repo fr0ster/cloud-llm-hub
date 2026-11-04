@@ -2,6 +2,7 @@ import type { RagConfig } from '../../srv/agent-config';
 import type { Embedding } from '../../srv/lib/providers';
 import {
   createCollectionProvider,
+  providerVectorDimension,
   type RagCtors,
 } from '../../srv/lib/rag-provider-factory';
 import { createRagStoreFactory } from '../../srv/lib/rag-store-factory';
@@ -143,6 +144,95 @@ describe('createCollectionProvider', () => {
       embedder: retrieval,
       catalogCollection: 'pfx-collections-catalog',
     });
+  });
+});
+
+describe('Qdrant collection dimensions', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('shares a pending lookup and caches its successful result', async () => {
+    let release!: (response: Response) => void;
+    let started!: () => void;
+    const lookupStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const pending = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    let listCalls = 0;
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (String(input).endsWith('/collections')) {
+        listCalls++;
+        started();
+        return pending;
+      }
+      return Response.json({}, { status: 404 });
+    });
+    const embedDocument = jest.fn().mockResolvedValue({ vector: [0, 0, 0] });
+    const { ctors } = fakes();
+    const describeCollections = jest.fn().mockResolvedValue({
+      ok: true,
+      value: { records: [] },
+    });
+    const provider = createCollectionProvider(
+      cfg('qdrant', { qdrant: { url: 'http://q:6333', prefix: 'test' } }),
+      { retrieval: { embedDocument } } as unknown as Embedding,
+      env,
+      {
+        ...ctors,
+        QdrantRagProvider: class {
+          describeCollections = describeCollections;
+        },
+      } as unknown as RagCtors,
+    )!;
+    const dimension = providerVectorDimension(provider);
+    const first = dimension('first');
+    await lookupStarted;
+    const second = dimension('second');
+    // Allow the second target's 404 response to reach the shared lookup.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(listCalls).toBe(1);
+    release(Response.json({ result: { collections: [] } }));
+    expect(await Promise.all([first, second])).toEqual([3, 3]);
+    expect(await dimension('third')).toBe(3);
+    expect(listCalls).toBe(1);
+    expect(embedDocument).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses each existing collection size after caching the configured size for new collections', async () => {
+    const sizes = new Map<string, number>([['restored-task-results', 1536]]);
+    const embedDocument = jest.fn();
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const name = String(input).split('/').pop()!;
+      const size = sizes.get(name);
+      return size === undefined
+        ? Response.json({}, { status: 404 })
+        : Response.json({
+            result: { config: { params: { vectors: { size } } } },
+          });
+    });
+    const { ctors } = fakes();
+    const provider = createCollectionProvider(
+      cfg('qdrant', {
+        qdrant: { url: 'http://q:6333', prefix: 'test' },
+        embeddingDimension: 768,
+      }),
+      { retrieval: { embedDocument } } as unknown as Embedding,
+      env,
+      ctors,
+    )!;
+    const dimension = providerVectorDimension(provider);
+    expect(
+      await Promise.all([
+        dimension('new-task-results'),
+        dimension('concurrent-new-task-results'),
+      ]),
+    ).toEqual([768, 768]);
+    sizes.set('new-task-results', 768);
+    expect(await dimension('restored-task-results')).toBe(1536);
+    expect(await dimension('new-task-results')).toBe(768);
+    expect(await dimension('another-new-task-results')).toBe(768);
+    expect(embedDocument).not.toHaveBeenCalled();
   });
 });
 

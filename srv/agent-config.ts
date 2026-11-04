@@ -85,6 +85,7 @@ export interface PgRagConfig {
   schema?: string;
 }
 export interface RagConfig {
+  embeddingDimension?: number;
   embedder: EmbedderConfig | null;
   backends: Record<RagStoreClass, RagBackendKind>;
   qdrant?: QdrantConfig;
@@ -345,6 +346,12 @@ export function parseRagConfig(
     resourceGroup?: string;
   },
 ): RagConfig {
+  const embeddingDimension = readPositiveIntFrom(
+    env,
+    'LLM_AGENT_EMBEDDING_DIMENSION',
+  );
+  const dimensionConfig =
+    embeddingDimension === undefined ? {} : { embeddingDimension };
   const ragType = set(env, 'LLM_AGENT_RAG_TYPE');
   const legacy: RagBackendKind =
     !ragType || ragType === 'in-memory' ? 'in-memory' : 'vector';
@@ -378,7 +385,7 @@ export function parseRagConfig(
         'LLM_AGENT_EMBEDDER is set, but every RAG class is in-memory, so nothing would use it',
       );
     }
-    return { embedder: null, backends };
+    return { embedder: null, backends, ...dimensionConfig };
   }
   if (kindRaw !== undefined && !EMBEDDERS.includes(kindRaw as EmbedderKind)) {
     throw new BuildValidationError(
@@ -419,7 +426,7 @@ export function parseRagConfig(
     if (embedder[k] === undefined) delete embedder[k];
   }
 
-  const rag: RagConfig = { embedder, backends };
+  const rag: RagConfig = { embedder, backends, ...dimensionConfig };
   if (Object.values(backends).includes('qdrant')) {
     const url = set(env, 'LLM_AGENT_QDRANT_URL');
     if (!url)

@@ -239,7 +239,12 @@ export interface RestoreStatus {
   error?: string;
 }
 
+/** Dimensions are resolved without embedding stored document text. */
 export interface CollectionPersistence {
+  vectorDimension?(
+    collectionId: string,
+    options?: CallOptions,
+  ): Promise<number>;
   create(
     meta: CollectionMeta,
     enabled: boolean,
@@ -462,6 +467,7 @@ export function documentPayload(
 
 /** The part of a registry entry the document mutations below touch. */
 export interface PersistentEntry {
+  vectorDimension?: (options?: CallOptions) => Promise<number>;
   usageTextBytes?: number;
   meta: CollectionMeta;
   documents: Map<string, RagDocument>;
@@ -620,10 +626,7 @@ export async function addPersistentDocument(
   }
 }
 
-/** Providers require a vector column. A fixed placeholder bypasses embedding entirely.
- * These collections are never exposed as search stores. HANA/PG use the deployed
- * 1536-dimensional shared schema.
- */
+/** Write a non-searchable placeholder sized for the physical collection. */
 async function writeUnembeddedDocument(
   entry: PersistentEntry,
   text: string,
@@ -635,10 +638,13 @@ async function writeUnembeddedDocument(
     throw new Error('Collection backend cannot store unembedded task results');
   const { id, ...rest } = metadata;
   if (typeof id !== 'string') throw new Error('Missing document id');
+  const dimension = await entry.vectorDimension?.(options);
+  if (!dimension || !Number.isSafeInteger(dimension) || dimension < 1)
+    throw new Error('Collection backend cannot report its vector dimension');
   const written = await writer.upsertPrecomputedRaw(
     id,
     text,
-    Array<number>(1536).fill(0),
+    Array<number>(dimension).fill(0),
     rest,
     options,
   );
@@ -743,7 +749,14 @@ async function guarded<T>(
 export function createCollectionPersistence(
   provider: IRagProvider & Partial<IRagCatalogUpdater>,
   embedderFp: string,
-  opts: { storePrefix?: string } = {},
+  opts: {
+    storePrefix?: string;
+    /** Physical store dimension, from backend configuration or collection info. */
+    vectorDimension?: (
+      storeName: string,
+      options?: CallOptions,
+    ) => Promise<number>;
+  } = {},
 ): CollectionPersistence {
   const prefix = opts.storePrefix;
   const storeName = (collectionId: string) =>
@@ -775,10 +788,29 @@ export function createCollectionPersistence(
       });
     });
   return {
+    vectorDimension: (id, options) => {
+      if (!opts.vectorDimension)
+        throw new Error(
+          'Collection backend cannot report its vector dimension',
+        );
+      return opts.vectorDimension(storeName(id), options);
+    },
     storeName,
     create: (meta, enabled) =>
-      guarded(() =>
-        provider.createCollection(storeName(meta.id), {
+      guarded(async () => {
+        const dimension =
+          meta.collectionKind === 'task-results'
+            ? await opts.vectorDimension?.(storeName(meta.id))
+            : undefined;
+        if (
+          meta.collectionKind === 'task-results' &&
+          (!dimension || !Number.isSafeInteger(dimension) || dimension < 1)
+        )
+          throw new Error(
+            'Collection backend cannot report its vector dimension',
+          );
+        return provider.createCollection(storeName(meta.id), {
+          ...(dimension === undefined ? {} : { dimension }),
           ...catalogOwner(meta),
           collectionName: meta.id,
           attributes: encodeAttributes(
@@ -786,8 +818,8 @@ export function createCollectionPersistence(
             enabled,
             embedderFp,
           ) as RagJsonValue,
-        }),
-      ),
+        });
+      }),
     remove: (meta) =>
       guarded(async () => {
         if (!provider.deleteCollection)

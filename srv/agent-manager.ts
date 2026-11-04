@@ -898,6 +898,7 @@ import {
   createCollectionProvider,
   isPersistentKind,
   PROVIDER_DEFAULT_DIMENSION,
+  providerVectorDimension,
 } from './lib/rag-provider-factory';
 import {
   appendBaseSkills,
@@ -1313,6 +1314,7 @@ export function getCollectionRegistry(): CollectionRegistry {
               collections,
               fingerprintHash(e.fingerprint),
               {
+                vectorDimension: providerVectorDimension(collections),
                 storePrefix: storePrefixFor(
                   persistentKind,
                   getAgentConfig().rag.qdrant?.prefix,
