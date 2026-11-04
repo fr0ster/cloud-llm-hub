@@ -124,6 +124,7 @@ export { destinationRequiresCredentials } from './lib/destination-authentication
 
 import {
   DialogueRagMcpClient,
+  dialogueResultToolSelection,
   withDialogueRagTools,
 } from './lib/dialogue-rag-tools';
 import { type ExpositionLevel, resolveExposition } from './lib/exposition';
@@ -2978,6 +2979,7 @@ async function configureDestinationAgentBuilder(
     // Classifier caused tool selection to be skipped for "chat" queries.
     // Without classifier, RAG query + tool selection always runs.
     .withLlmCallStrategy(new FallbackLlmCallStrategy())
+    .withToolSelectionStrategy(dialogueResultToolSelection)
     .withToolReselection(true)
     // No tool-result cache. The one this used to install was keyed by tool name
     // and arguments alone and shared by every caller of the destination, so a

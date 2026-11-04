@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type {
   CallOptions,
   ITaskResultStore,
@@ -11,6 +12,35 @@ import {
   sessionCollectionTtlMs,
 } from '../rag-collections';
 import { RagWriteError } from './rag-write-error';
+
+// Only the store can mint capabilities; guards must match the entire operation.
+type StoreCapability = {
+  collectionId: string;
+} & ({ operation: 'create' } | { operation: 'add' | 'read'; recordId: string });
+const storeWrites = new AsyncLocalStorage<StoreCapability>();
+export function isTaskResultStoreWrite(
+  collectionId: string | undefined,
+  operation: 'create' | 'add' | 'read' | undefined,
+  recordId?: string,
+): boolean {
+  const capability = storeWrites.getStore();
+  return (
+    capability !== undefined &&
+    capability.collectionId === collectionId &&
+    capability.operation === operation &&
+    (capability.operation === 'create' || capability.recordId === recordId)
+  );
+}
+
+/** Foreign usage hooks, including derived recorders, never inherit a capability. */
+function unprivilegedUsage(usage: CallOptions['usage']): CallOptions['usage'] {
+  if (!usage) return undefined;
+  return {
+    record: (input) => storeWrites.exit(() => usage.record(input)),
+    with: (context) =>
+      storeWrites.exit(() => unprivilegedUsage(usage.with(context))!),
+  };
+}
 
 /** Cancellation bounds only the caller's wait; an in-flight backend write may finish. */
 async function cancellable<T>(
@@ -75,7 +105,9 @@ export function createTaskResultStore(
     options?: CallOptions,
   ): Promise<Result<T, TaskResultStoreError>> {
     try {
-      const value = await cancellable(operation, options?.signal);
+      const value = await storeWrites.exit(() =>
+        cancellable(operation, options?.signal),
+      );
       return { ok: true, value };
     } catch (error) {
       return {
@@ -94,51 +126,66 @@ export function createTaskResultStore(
   return {
     put: (entry, options) =>
       run(async () => {
-        const registry = getRegistry();
+        const registry = storeWrites.exit(getRegistry);
+        const usage = unprivilegedUsage(options?.usage);
+        const task = { ...entry };
+        const readBack = () =>
+          storeWrites.run(
+            { collectionId, operation: 'read', recordId: task.id },
+            () => registry.getDocument(collectionId, task.id),
+          );
         await checkScope(registry);
         options?.signal?.throwIfAborted();
-        await registry.getOrCreateCollection({
-          id: collectionId,
-          logicalId,
-          displayName: logicalId,
-          description: 'Immutable session task results, read by id.',
-          collectionKind: 'task-results',
-          scope: 'session',
-          owner: scope.userId,
-          sessionId: scope.sessionKey,
-          expiresAt: Date.now() + sessionCollectionTtlMs(),
-        });
+        await storeWrites.run({ collectionId, operation: 'create' }, () =>
+          registry.getOrCreateCollection({
+            id: collectionId,
+            logicalId,
+            displayName: logicalId,
+            description: 'Immutable session task results, read by id.',
+            collectionKind: 'task-results',
+            scope: 'session',
+            owner: scope.userId,
+            sessionId: scope.sessionKey,
+            expiresAt: Date.now() + sessionCollectionTtlMs(),
+          }),
+        );
         await checkScope(registry);
         options?.signal?.throwIfAborted();
         // Create-once is atomic per process. Backends upsert, so independent
         // processes can race; this is acceptable for a single-instance deployment.
         try {
-          await registry.addDocument(
-            collectionId,
-            {
-              id: entry.id,
-              text: entry.output,
-              metadata: {
-                kind: 'task-result',
-                taskId: entry.id,
-                ...(entry.stepId === undefined ? {} : { stepId: entry.stepId }),
-                worker: entry.worker,
-                goal: entry.goal,
-                result: entry.result,
-                outcome: entry.outcome,
-                summary: entry.summary,
-                chars: entry.output.length,
-                ...(entry.verdict === undefined
-                  ? {}
-                  : { verdict: entry.verdict }),
-              },
-            },
-            undefined,
-            {
-              createOnly: true,
-              signal: options?.signal,
-              usage: options?.usage,
-            },
+          await storeWrites.run(
+            { collectionId, operation: 'add', recordId: task.id },
+            () =>
+              registry.addDocument(
+                collectionId,
+                {
+                  id: task.id,
+                  text: task.output,
+                  metadata: {
+                    kind: 'task-result',
+                    taskId: task.id,
+                    ...(task.stepId === undefined
+                      ? {}
+                      : { stepId: task.stepId }),
+                    worker: task.worker,
+                    goal: task.goal,
+                    result: task.result,
+                    outcome: task.outcome,
+                    summary: task.summary,
+                    chars: task.output.length,
+                    ...(task.verdict === undefined
+                      ? {}
+                      : { verdict: task.verdict }),
+                  },
+                },
+                undefined,
+                {
+                  createOnly: true,
+                  signal: options?.signal,
+                  usage,
+                },
+              ),
           );
         } catch (error) {
           if (
@@ -146,14 +193,14 @@ export function createTaskResultStore(
             error.code !== 'RECORD_EXISTS'
           )
             throw error;
-          const existing = await registry.getDocument(collectionId, entry.id);
-          if (!existing || existing.text !== entry.output) throw error;
-          return ref(entry.id, existing.text);
+          const existing = await readBack();
+          if (!existing || existing.text !== task.output) throw error;
+          return ref(task.id, existing.text);
         }
-        const stored = await registry.getDocument(collectionId, entry.id);
-        if (!stored || stored.text !== entry.output)
+        const stored = await readBack();
+        if (!stored || stored.text !== task.output)
           throw new Error('Task result is not readable');
-        return ref(entry.id, stored.text);
+        return ref(task.id, stored.text);
       }, options),
     read: (reference, options) =>
       run(async () => {

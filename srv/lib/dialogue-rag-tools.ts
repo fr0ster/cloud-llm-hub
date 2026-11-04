@@ -2,11 +2,13 @@ import type {
   CallOptions,
   IMcpClient,
   IRag,
+  IToolSelectionStrategy,
   McpError,
   McpTool,
   McpToolResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { DEFAULT_TOOL_SELECTION } from '@mcp-abap-adt/llm-agent-libs';
 import { executeRagTool } from '../agent-mcp-rag';
 import type { CollectionRegistry } from '../rag-collections';
 import {
@@ -33,6 +35,23 @@ import {
 import { usageRuntime } from './usage/runtime';
 
 export { runWithDialogueRagTools } from './dialogue-rag-scope';
+
+/** References must remain readable even when relevance selection drops them. */
+export const dialogueResultToolSelection: IToolSelectionStrategy = {
+  name: 'dialogue-result-readers',
+  select(results) {
+    const selected = DEFAULT_TOOL_SELECTION.select(results);
+    if (!isDialogueRagWorker()) return selected;
+    return [
+      ...selected,
+      ...['rag_read', 'collection_records'].map((name) => ({
+        text: `Tool: ${name}`,
+        metadata: { id: `tool:${name}`, name },
+        score: 1,
+      })),
+    ];
+  },
+};
 
 const removedNames = new Set([
   'rag_list',

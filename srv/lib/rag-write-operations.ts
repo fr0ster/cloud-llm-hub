@@ -14,6 +14,7 @@ import {
 import { isReadOnlyTools } from '../request-session';
 import { collectionAccessError } from './collection-access';
 import { CollectionBackendError } from './collection-persistence';
+import { assertCollectionWrite } from './collection-write-scope';
 
 import { RagWriteError } from './rag-write-error';
 import { buildSkillsPool } from './skills-pool';
@@ -99,6 +100,7 @@ export async function setRagTrust(
       access.status,
       access.message,
     );
+  if (meta.collectionKind === 'task-results') assertCollectionWrite(meta);
   const refusal = trustWriteError({
     admin: identity.admin,
     value: input.trust,
@@ -226,6 +228,12 @@ export async function createAgentKnowledgeCollection(
       error instanceof Error ? error.message : String(error),
     );
   }
+  if (logicalId === 'task-results')
+    throw new RagWriteError(
+      'TOOL_FORBIDDEN',
+      403,
+      'Reserved name: task-results is reserved for the session store',
+    );
   const id =
     scope === 'session'
       ? sessionCollectionId(

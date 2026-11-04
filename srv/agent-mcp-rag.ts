@@ -7,7 +7,12 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import cds from '@sap/cds';
 import type { Request } from 'express';
 import { z } from 'zod';
-import { resolveRouteId } from './collection-ids';
+import {
+  normalizeLogicalId,
+  resolveRouteId,
+  sessionCollectionId,
+  userCollectionId,
+} from './collection-ids';
 import { collectionAccessError } from './lib/collection-access';
 import { restoredDocument } from './lib/collection-persistence';
 import {
@@ -283,16 +288,22 @@ async function executeRagMcpToolImpl(
     if (!userId || userId === 'anonymous')
       return fail('UNAUTHENTICATED', 401, 'Authenticated user required');
   }
+  // Only reference readers may cross a denied profile boundary to resolve a target.
   if (
-    !context.permissions.allows(name) ||
-    (context.readOnly &&
-      ragToolEffect(name) !== 'read' &&
-      !(
-        ragToolEffect(name) === 'knowledge' && context.dialogueRole === 'worker'
-      ))
+    !context.permissions.allows(name) &&
+    !(
+      context.dialogueRole === 'worker' &&
+      (name === 'rag_read' || name === 'collection_records')
+    )
   )
     return fail('TOOL_FORBIDDEN', 403, `TOOL_FORBIDDEN: ${name}`);
+  const readOnlyForbidden =
+    context.readOnly &&
+    ragToolEffect(name) !== 'read' &&
+    !(ragToolEffect(name) === 'knowledge' && context.dialogueRole === 'worker');
   const parsed = ragMcpSchemas[name].safeParse(input);
+  if (!parsed.success && readOnlyForbidden)
+    return fail('TOOL_FORBIDDEN', 403, `TOOL_FORBIDDEN: ${name}`);
   if (!parsed.success)
     return fail(
       (name === 'collection_set_trust' || name === 'record_set_trust') &&
@@ -303,71 +314,125 @@ async function executeRagMcpToolImpl(
       parsed.error.message,
     );
   const args: ValidatedArgs = parsed.data;
-  if (name === 'rag_persist' && context.dialogueRole !== 'coordinator')
-    return fail(
-      'TOOL_FORBIDDEN',
-      403,
-      'Persistence requires dialogue coordinator',
-    );
-  if (context.dialogueRole === 'worker' && ragToolEffect(name) !== 'read') {
-    if (name === 'collection_create') {
-      if (args.scope !== 'session')
-        return fail(
-          'TOOL_FORBIDDEN',
-          403,
-          'Workers create session collections only',
-        );
-    } else if (
-      name === 'record_add' ||
-      name === 'record_update' ||
-      name === 'record_set_enabled'
-    ) {
-      const registry = context.registry ?? ragHost().getCollectionRegistry();
-      const id = await resolveRouteId(
-        registry,
-        args.collection ?? '',
-        userId,
-        context.sessionKey,
-        false,
-      );
-      const meta = id ? await registry.getCollection(id) : null;
-      if (
-        meta?.scope !== 'session' ||
-        meta.owner !== userId ||
-        meta.sessionId !== context.sessionKey
-      )
-        return fail(
-          'TOOL_FORBIDDEN',
-          403,
-          'Workers write only their own session collections',
-        );
-    } else return fail('TOOL_FORBIDDEN', 403, 'Worker mutation unavailable');
-  }
-  if (
-    name === 'record_set_enabled' &&
-    Boolean(args.id) === Boolean(args.source)
-  )
-    return ragTextResult('Provide exactly one of id or source', true);
-  if (
-    context.internal &&
-    args.session !== undefined &&
-    args.session !== context.sessionKey
-  )
-    return fail(
-      'INVALID_ARGUMENT',
-      400,
-      'Session must match the enclosing conversation',
-    );
-  const key = context.internal
-    ? context.sessionKey
-    : (args.session ?? context.sessionKey);
-  if (!key)
-    return fail(
-      'SESSION_REQUIRED',
-      400,
-      'SESSION_REQUIRED: call session_open first',
-    );
   try {
+    const registry = context.registry ?? ragHost().getCollectionRegistry();
+    let createLogicalId: string | undefined;
+    if (name === 'collection_create') {
+      try {
+        createLogicalId = normalizeLogicalId(args.name ?? '');
+      } catch (error) {
+        return fail(
+          'INVALID_ARGUMENT',
+          400,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+    if (createLogicalId === 'task-results')
+      return fail(
+        'TOOL_FORBIDDEN',
+        403,
+        'Reserved name: task-results is reserved for the session store',
+      );
+    const target =
+      args.collection ?? (name === 'collection_create' ? args.name : undefined);
+    const targetSession = context.internal
+      ? context.sessionKey
+      : (args.session ?? context.sessionKey);
+    const targetId =
+      name === 'collection_create'
+        ? args.scope === 'session'
+          ? sessionCollectionId(createLogicalId!, userId, targetSession ?? '')
+          : userCollectionId(createLogicalId!, userId)
+        : target
+          ? await resolveRouteId(registry, target, userId, targetSession, false)
+          : undefined;
+    // Trust mutations can resolve exact physical ids with admin privileges.
+    // Inspect that target too, even when ordinary routing hides its owner/session.
+    const targetMeta = targetId
+      ? await registry.getCollection(targetId)
+      : target && ragToolEffect(name) !== 'read' && name !== 'rag_persist'
+        ? await registry.getCollection(target)
+        : null;
+    const ownTaskResults =
+      targetMeta?.collectionKind === 'task-results' &&
+      targetMeta.scope === 'session' &&
+      targetMeta.owner === userId &&
+      targetMeta.sessionId === context.sessionKey;
+    if (
+      targetMeta?.collectionKind === 'task-results' &&
+      ragToolEffect(name) !== 'read' &&
+      name !== 'rag_persist'
+    )
+      return fail(
+        'TOOL_FORBIDDEN',
+        403,
+        'TOOL_FORBIDDEN: task results are written by the session store only',
+      );
+    const referenceRead =
+      context.dialogueRole === 'worker' &&
+      ownTaskResults &&
+      (name === 'rag_read' || name === 'collection_records');
+    if (
+      (!context.permissions.allows(name) && !referenceRead) ||
+      readOnlyForbidden
+    )
+      return fail('TOOL_FORBIDDEN', 403, `TOOL_FORBIDDEN: ${name}`);
+    if (name === 'rag_persist' && context.dialogueRole !== 'coordinator')
+      return fail(
+        'TOOL_FORBIDDEN',
+        403,
+        'Persistence requires dialogue coordinator',
+      );
+    if (context.dialogueRole === 'worker' && ragToolEffect(name) !== 'read') {
+      if (name === 'collection_create') {
+        if (args.scope !== 'session')
+          return fail(
+            'TOOL_FORBIDDEN',
+            403,
+            'Workers create session collections only',
+          );
+      } else if (
+        name === 'record_add' ||
+        name === 'record_update' ||
+        name === 'record_set_enabled'
+      ) {
+        if (
+          targetMeta?.scope !== 'session' ||
+          targetMeta.owner !== userId ||
+          targetMeta.sessionId !== context.sessionKey
+        )
+          return fail(
+            'TOOL_FORBIDDEN',
+            403,
+            'Workers write only their own session collections',
+          );
+      } else return fail('TOOL_FORBIDDEN', 403, 'Worker mutation unavailable');
+    }
+    if (
+      name === 'record_set_enabled' &&
+      Boolean(args.id) === Boolean(args.source)
+    )
+      return ragTextResult('Provide exactly one of id or source', true);
+    if (
+      (context.internal || context.dialogueRole !== undefined) &&
+      args.session !== undefined &&
+      args.session !== context.sessionKey
+    )
+      return fail(
+        'INVALID_ARGUMENT',
+        400,
+        'Session must match the enclosing conversation',
+      );
+    const key = context.internal
+      ? context.sessionKey
+      : (args.session ?? context.sessionKey);
+    if (!key)
+      return fail(
+        'SESSION_REQUIRED',
+        400,
+        'SESSION_REQUIRED: call session_open first',
+      );
     if (
       context.internal &&
       context.statelessRead &&

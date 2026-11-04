@@ -1124,7 +1124,7 @@ export class CollectionRegistry {
   async createCollection(
     meta: Omit<CollectionMeta, 'createdAt' | 'documentCount' | 'sourceCount'>,
   ): Promise<CollectionMeta> {
-    assertCollectionWrite(meta);
+    assertCollectionWrite(meta, 'create');
     // A persistent one may already be in the catalog: restore first.
     if (this.persistence && !meta.preset) await this.whenReady();
     if (this.collections.has(meta.id)) {
@@ -1937,13 +1937,17 @@ export class CollectionRegistry {
       seed?: boolean;
     },
   ): Promise<RagDocument> {
-    if (options?.createOnly && (await this.hasDocument(collectionId, doc.id)))
-      throw new RagWriteError('RECORD_EXISTS', 409, 'Document already exists');
     if (this.persistence) await this.settled(collectionId, !options?.seed);
     const stored = this.collections.get(collectionId);
     if (!stored) throw new Error(`Collection "${collectionId}" not found`);
     this.refuseDegraded(stored, 'add document', 'write');
-    assertCollectionWrite(stored.meta);
+    assertCollectionWrite(
+      stored.meta,
+      options?.createOnly ? 'add' : undefined,
+      doc.id,
+    );
+    if (options?.createOnly && (await this.hasDocument(collectionId, doc.id)))
+      throw new RagWriteError('RECORD_EXISTS', 409, 'Document already exists');
     if (stored.persistent) refuseWhileDeleting(stored, 'add document');
     if (stored.meta.collectionKind !== 'agents') {
       // A replacement must preserve live trust, including externally cleared

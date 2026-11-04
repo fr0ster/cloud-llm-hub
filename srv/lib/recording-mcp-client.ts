@@ -16,7 +16,10 @@ import {
   profileToolAllowed,
 } from '../request-session';
 import { compositeMcpClient } from './composite-mcp-client';
-import { allowsReadOnlyEffect } from './dialogue-rag-scope';
+import {
+  allowsReadOnlyEffect,
+  isDialogueResultReader,
+} from './dialogue-rag-scope';
 import { isOutageError } from './mcp-outage';
 import { isRagTool, ragToolEffect } from './rag-tool-catalogue';
 import { parseToolOutcome, type RecordedToolCall } from './reviewer-core';
@@ -142,7 +145,7 @@ export class RecordingMcpClient implements IMcpClient {
     if (!result.ok) return result;
     const value = result.value.filter(
       (tool) =>
-        profileToolAllowed(tool.name) &&
+        (profileToolAllowed(tool.name) || isDialogueResultReader(tool.name)) &&
         (!isReadOnlyTools() || this.isReadOnly(tool)),
     );
     return value.length === result.value.length ? result : { ok: true, value };
@@ -195,7 +198,7 @@ export class RecordingMcpClient implements IMcpClient {
     const requestId = options?.trace?.traceId;
     if (requestId && this.retainRecords && isWriteTool(name))
       this.offeredWrites.add(requestId);
-    if (!profileToolAllowed(name))
+    if (!profileToolAllowed(name) && !isDialogueResultReader(name))
       return {
         ok: true,
         value: { isError: true, content: `TOOL_FORBIDDEN: ${name}` },
