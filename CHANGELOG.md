@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.4.11] - 2026-11-04
+
+### Changed
+
+- Coordinator reaches the requested result with the fewest actions and chooses the worker for each step by its result kind.
+- Planner profiles state step results (report or verdict) only, without naming workers, profiles or tools (llm-agent-libs 30.31.0).
+
 ## [10.4.10] - 2026-11-04
 
 ### Fixed
