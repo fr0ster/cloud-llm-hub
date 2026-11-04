@@ -37,6 +37,37 @@ const state: DialogueState = {
   savedAt: 1,
 };
 beforeEach(() => initializeDialogueStore(loadSessionConfig({})));
+it.each<NonNullable<DialogueState['tasks'][number]['checkerVerdict']>>([
+  { verdict: 'pass' },
+  { verdict: 'fail', count: 2, note: 'Claims lack supporting evidence' },
+  { unusable: true },
+])(
+  'round-trips task result references, summaries and checker verdict %j',
+  async (checkerVerdict) => {
+    const store = new MemoryDialogueStore();
+    const snapshot: DialogueState = {
+      ...state,
+      tasks: [
+        {
+          id: 't1',
+          worker: 'checker',
+          goal: 'Verify report',
+          state: 'done',
+          createdAt: 1,
+          resultRef: { collection: 'task-results', record: 't1', chars: 1200 },
+          summary: 'Report verification completed',
+          checkerVerdict,
+        },
+      ],
+    };
+    await store.save('alice', 'task-results', snapshot);
+    const restored = await store.load('alice', 'task-results');
+    expect(restored).toEqual(snapshot);
+    if (!restored) throw new Error('missing restored state');
+    await store.save('alice', 'task-results', restored);
+    expect(await store.load('alice', 'task-results')).toEqual(snapshot);
+  },
+);
 it('round-trips planner projection metadata, resolved failures and cache usage', async () => {
   const store = new MemoryDialogueStore();
   const usage = {

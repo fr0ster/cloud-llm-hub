@@ -360,6 +360,18 @@ const taskRecord = z.object({
   toolCalls: num.optional(),
   maxToolCalls: num.optional(),
   output: str.optional(),
+  resultRef: z.object({ collection: str, record: str, chars: num }).optional(),
+  summary: str.optional(),
+  checkerVerdict: z
+    .union([
+      z.object({
+        verdict: z.enum(['pass', 'fail']),
+        count: num.optional(),
+        note: str.optional(),
+      }),
+      z.object({ unusable: z.literal(true) }),
+    ])
+    .optional(),
   error: str.optional(),
   createdAt: num,
   startedAt: num.optional(),
