@@ -482,6 +482,15 @@
                     body: JSON.stringify({ destination: connectedDestination || undefined })
                 });
                 const data = await response.json();
+                if (response.status === 429 && data.error?.code === 'SESSION_LIMIT') {
+                    hubSignedOut = true;
+                    releaseSession();
+                    lockInput('signed-out');
+                    try { localStorage.clear(); sessionStorage.clear(); } catch {}
+                    sessionStorage.setItem('clh.signedOutReason', 'SESSION_LIMIT');
+                    window.location.replace('/logout');
+                    throw new Error(data.error.message || 'Session limit reached');
+                }
                 if (!response.ok) throw new Error(data.error?.message || 'HTTP ' + response.status);
                 sessionKey = data.session;
                 if (data.agentsCollectionId) localStorage.setItem('clh.agentsCollectionId', data.agentsCollectionId);
@@ -1028,7 +1037,7 @@
                     );
                 } catch (e) { /* non-fatal: unsupported browser/context */ }
             }
-            try { await ensureSession(); } catch (error) { return fail(error.message); }
+            try { await ensureSession(); } catch (error) { if (!hubSignedOut) fail(error.message); return; }
             loginGateDone = true;
             hideLoginGate();
             unlockInput('login-gate');
@@ -2012,7 +2021,7 @@
                     await ensureSession();
                 }
             }
-            catch (error) { showSessionNotice(error.message); return; }
+            catch (error) { if (!hubSignedOut) showSessionNotice(error.message); return; }
             Object.keys(fileArtifacts).forEach(k => delete fileArtifacts[k]);
             conversationHistory = [];
             chatWindow.innerHTML = '';
