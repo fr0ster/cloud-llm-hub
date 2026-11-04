@@ -14,7 +14,7 @@ import { MemoryDialogueStore } from '../../srv/lib/dialogue-store';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { profileToolAllowed } from '../../srv/request-session';
 
-test('dialogue discovers arbitrary names, resolves planner variants and executes a legacy checker plan', async () => {
+test('dialogue discovers arbitrary names, resolves planner variants and executes a results-only plan', async () => {
   const registry = new CollectionRegistry();
   await registry.seedAgentConfiguration('agents', 'coordinator');
   await registry.addDocument('agents', {
@@ -90,14 +90,14 @@ test('dialogue discovers arbitrary names, resolves planner variants and executes
           steps: [
             {
               id: 'research',
-              worker: 'research_42',
+              result: 'report',
               goal: 'Read evidence',
               state: 'pending',
             },
-            // Persisted legacy plans omit result; checker retains verdict behavior.
+            // Plans state result kinds; delegate_task picks the profile.
             {
               id: 'verify',
-              worker: 'checker',
+              result: 'verdict',
               goal: 'Check evidence',
               dependsOn: ['research'],
               state: 'pending',
