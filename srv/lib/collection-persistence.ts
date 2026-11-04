@@ -178,9 +178,11 @@ export function decodeRecord(
     ...(attrs.agentsCopyPending === true ? { agentsCopyPending: true } : {}),
     ...(attrs.collectionKind === 'agents'
       ? { collectionKind: 'agents' as const }
-      : attrs.collectionKind === 'knowledge'
-        ? { collectionKind: 'knowledge' as const }
-        : {}),
+      : attrs.collectionKind === 'task-results'
+        ? { collectionKind: 'task-results' as const }
+        : attrs.collectionKind === 'knowledge'
+          ? { collectionKind: 'knowledge' as const }
+          : {}),
     owner: userId,
     ...(sessionId ? { sessionId } : {}),
     ...(expiresAt !== undefined ? { expiresAt } : {}),
@@ -463,7 +465,7 @@ export interface PersistentEntry {
   usageTextBytes?: number;
   meta: CollectionMeta;
   documents: Map<string, RagDocument>;
-  rag: IRagEditor & Pick<IRag, 'getById'>;
+  rag: IRagEditor & Pick<IRag, 'getById' | 'writer'>;
   /** Set while the collection's deletion is out. */
   deleting?: boolean;
 }
@@ -593,7 +595,9 @@ export async function addPersistentDocument(
     const createdAt = new Date().toISOString();
     const p = payload(entry, doc.id, doc.metadata, createdAt, namespace);
     await settledRecordWrite(entry, doc.id, 'add document', () =>
-      entry.rag.upsert(doc.text, p, options),
+      entry.meta.collectionKind === 'task-results'
+        ? writeUnembeddedDocument(entry, doc.text, p, options)
+        : entry.rag.upsert(doc.text, p, options),
     );
     const persisted: RagDocument = {
       id: doc.id,
@@ -614,6 +618,31 @@ export async function addPersistentDocument(
       entry.usageTextBytes = undefined;
     }
   }
+}
+
+/** Providers require a vector column. A fixed placeholder bypasses embedding entirely.
+ * These collections are never exposed as search stores. HANA/PG use the deployed
+ * 1536-dimensional shared schema.
+ */
+async function writeUnembeddedDocument(
+  entry: PersistentEntry,
+  text: string,
+  metadata: ReturnType<typeof payload>,
+  options?: CallOptions,
+): Promise<Result<{ id: string }, RagError>> {
+  const writer = entry.rag.writer?.();
+  if (!writer?.upsertPrecomputedRaw)
+    throw new Error('Collection backend cannot store unembedded task results');
+  const { id, ...rest } = metadata;
+  if (typeof id !== 'string') throw new Error('Missing document id');
+  const written = await writer.upsertPrecomputedRaw(
+    id,
+    text,
+    Array<number>(1536).fill(0),
+    rest,
+    options,
+  );
+  return written.ok ? { ok: true, value: { id } } : written;
 }
 
 /** Re-upsert with the new text/metadata; memory changes only on success. */
@@ -981,7 +1010,10 @@ async function restoreOne(
     rag,
     documents: [...documents.values(), ...duplicates],
   };
-  if (decoded.embedderFp !== embedderFp) {
+  if (
+    meta.collectionKind !== 'task-results' &&
+    decoded.embedderFp !== embedderFp
+  ) {
     restored.status = 'incompatible';
     restored.error = `collection "${meta.id}" is incompatible: it was indexed with embedder "${decoded.embedderFp ?? 'unknown'}", the current embedder is "${embedderFp}"`;
   }

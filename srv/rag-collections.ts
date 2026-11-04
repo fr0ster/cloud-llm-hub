@@ -176,7 +176,7 @@ export interface CollectionMeta {
   displayName: string;
   description: string;
   scope: 'global' | 'user' | 'session';
-  collectionKind?: 'knowledge' | 'agents';
+  collectionKind?: 'knowledge' | 'agents' | 'task-results';
   agentsCopyPending?: boolean;
   /** Marks a preset collection — enabled defaults to false until the user opts in. */
   preset?: boolean;
@@ -1800,7 +1800,9 @@ export class CollectionRegistry {
         ? (await this.readAgentCollection(collectionId))?.documents.find(
             (record) => record.id === docId,
           )
-        : stored.documents.get(docId);
+        : stored.persistent && stored.meta.collectionKind === 'task-results'
+          ? await readPersistentDocument(stored, docId)
+          : stored.documents.get(docId);
     return doc ? this.viewDocument(doc, stored.meta) : null;
   }
 
@@ -1925,6 +1927,7 @@ export class CollectionRegistry {
        * contract so a 4xx response means nothing was created.
        */
       persistOnFail?: boolean;
+      signal?: AbortSignal;
       usage?: CallOptions['usage'];
       /**
        * Preset seeding (ensurePresets): writes to what is held now, without
@@ -1961,6 +1964,7 @@ export class CollectionRegistry {
         },
       };
     }
+    options?.signal?.throwIfAborted();
     if (stored.meta.collectionKind === 'agents')
       validateAgentProfileRecord(doc);
     // Backend first, memory only on success; see addPersistentDocument.
@@ -1977,15 +1981,18 @@ export class CollectionRegistry {
 
     // Upsert into RAG store. IRagEditor.upsert returns Result<T, RagError>;
     // a backend rejection comes back as { ok: false }, NOT a thrown error.
-    const result = await stored.rag.upsert(
-      doc.text,
-      {
-        id: `doc:${collectionId}:${doc.id}`,
-        namespace: namespace ?? stored.meta.owner,
-        ...doc.metadata,
-      },
-      options,
-    );
+    const result =
+      stored.meta.collectionKind === 'task-results'
+        ? { ok: true as const, value: { id: doc.id } }
+        : await stored.rag.upsert(
+            doc.text,
+            {
+              id: `doc:${collectionId}:${doc.id}`,
+              namespace: namespace ?? stored.meta.owner,
+              ...doc.metadata,
+            },
+            options,
+          );
 
     if (!result.ok && !options?.persistOnFail) {
       // Single-document API contract: failure leaves nothing behind, so a
@@ -2356,7 +2363,11 @@ export class CollectionRegistry {
     await this.settled(collectionId);
     const stored = this.collections.get(collectionId);
     if (!stored) return null;
-    if (stored.meta.collectionKind === 'agents') return null;
+    if (
+      stored.meta.collectionKind === 'agents' ||
+      stored.meta.collectionKind === 'task-results'
+    )
+      return null;
     this.refuseDegraded(stored, 'search', 'search');
     return stored.rag;
   }
@@ -2373,7 +2384,7 @@ export class CollectionRegistry {
     for (const id of collectionIds) {
       await this.settled(id);
       const stored = this.collections.get(id);
-      if (!stored) continue;
+      if (!stored || stored.meta.collectionKind === 'task-results') continue;
       try {
         this.refuseDegraded(stored, 'search', 'search');
       } catch (err) {
@@ -2395,7 +2406,7 @@ export class CollectionRegistry {
     for (const id of collectionIds) {
       await this.settled(id);
       const stored = this.collections.get(id);
-      if (!stored) continue;
+      if (!stored || stored.meta.collectionKind === 'task-results') continue;
       this.refuseDegraded(stored, 'search', 'search');
       if (stored.meta.collectionKind !== 'agents') stores[id] = stored.rag;
     }

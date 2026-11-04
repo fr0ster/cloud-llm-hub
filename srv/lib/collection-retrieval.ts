@@ -80,6 +80,7 @@ export function collectionRetrieval(agent: object) {
             .filter(
               (c) =>
                 c.collectionKind !== 'agents' &&
+                c.collectionKind !== 'task-results' &&
                 (c.scope !== 'session' || c.sessionId === sessionId),
             )
             .map((c) => c.id);
@@ -161,6 +162,7 @@ export function collectionRetrieval(agent: object) {
         if (
           meta &&
           meta.collectionKind !== 'agents' &&
+          meta.collectionKind !== 'task-results' &&
           (uploads || collectionEnabled(registry, userId, sessionId, meta))
         )
           enabledIds.push(id);

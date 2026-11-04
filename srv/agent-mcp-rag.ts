@@ -641,6 +641,9 @@ async function runRagTool(
         doc.text,
         start,
         args.limit,
+        (page) =>
+          respond({ ...page, attributes: recordAttributes(doc, input) })
+            .content,
       );
       return respond(
         'alreadyRead' in page
@@ -715,6 +718,7 @@ async function runRagTool(
         .filter(
           (c) =>
             c.collectionKind !== 'agents' &&
+            c.collectionKind !== 'task-results' &&
             (c.scope !== 'session' || c.sessionId === sid),
         )
         .map((c) => c.id);
@@ -747,6 +751,7 @@ async function runRagTool(
         if (
           !meta ||
           meta.collectionKind === 'agents' ||
+          meta.collectionKind === 'task-results' ||
           !collectionEnabled(registry, userId, sid, meta)
         )
           continue;
@@ -887,7 +892,15 @@ async function runRagTool(
       return respond({ id: doc.id, attributes, reason: visibility.reason });
     const start = args.offset ?? 0;
 
-    const page = readLoopPage(traceId, id, doc.id, doc.text, start, args.limit);
+    const page = readLoopPage(
+      traceId,
+      id,
+      doc.id,
+      doc.text,
+      start,
+      args.limit,
+      (page) => respond({ ...page, attributes }).content,
+    );
     return respond('alreadyRead' in page ? page : { ...page, attributes });
   }
   const page = await readRagDocuments(registry, id, {
@@ -907,7 +920,17 @@ async function runRagTool(
         ),
         ...(visibility.visible
           ? {
-              title: doc.text.split(/\r?\n/, 1)[0].slice(0, 120),
+              ...(meta.collectionKind === 'task-results'
+                ? {
+                    taskId: doc.metadata.taskId,
+                    stepId: doc.metadata.stepId,
+                    worker: doc.metadata.worker,
+                    goal: doc.metadata.goal,
+                    summary: doc.metadata.summary,
+                    chars: doc.metadata.chars,
+                    outcome: doc.metadata.outcome,
+                  }
+                : { title: doc.text.split(/\r?\n/, 1)[0].slice(0, 120) }),
               ...(typeof doc.metadata.source === 'string'
                 ? { source: doc.metadata.source }
                 : {}),

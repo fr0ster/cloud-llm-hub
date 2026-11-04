@@ -29,6 +29,7 @@ import { getAgentConfig } from '../agent-config';
 import {
   createAgentProfileSource,
   docsMcp,
+  getCollectionRegistry,
   getSmartAgent,
   runWithRequestConnection,
 } from '../agent-manager';
@@ -102,6 +103,7 @@ import {
 } from './session-llms';
 import { evaluateGated } from './step-reviewer';
 import { cachedSystemIdentity } from './system-identity-cache';
+import { createTaskResultStore } from './task-result-store';
 import { type TaskView, taskView } from './task-view';
 import { resolverFor, type TrustResolver } from './trust-resolver';
 import { usageRuntime } from './usage/runtime';
@@ -1129,6 +1131,10 @@ async function open(
     );
     let coordinatorToolResolver = await coordinatorResolver();
     session = await DialogueSession.open({
+      resultStore: createTaskResultStore(() => getCollectionRegistry(), {
+        userId,
+        sessionKey: key,
+      }),
       toolTrust: (name) =>
         destinationHandle.toolTrustFor?.(coordinatorToolResolver)(name),
       profileSource: source,

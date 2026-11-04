@@ -1,6 +1,19 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { IMcpClient, McpToolResult } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { parseToolResultMaxChars } from '../agent-config';
+
+export const toolResultBudget = new AsyncLocalStorage<number>();
+
+export function withinToolResultBudget<T>(
+  maxChars: number,
+  operation: () => T,
+): T {
+  const outer = toolResultBudget.getStore() ?? 0;
+  const effective =
+    outer && maxChars ? Math.min(outer, maxChars) : outer || maxChars;
+  return toolResultBudget.run(effective, operation);
+}
 
 export interface ToolResultTruncation {
   truncated: true;
@@ -58,7 +71,9 @@ export function withToolResultCap(
       return result;
     },
     async callTool(name, args, options) {
-      const result = await inner.callTool(name, args, options);
+      const result = await withinToolResultBudget(maxChars, () =>
+        inner.callTool(name, args, options),
+      );
       if (!result.ok) return result;
       const capped = capToolResult(
         result.value,
