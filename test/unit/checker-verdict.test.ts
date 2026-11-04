@@ -70,9 +70,55 @@ test.each([
 
 test('progress text then garbage remains unusable and needs retry', () => {
   const output = 'PASS\n\nChecking evidence…\n\ngarbage';
-  expect(checkerVerdictText(output)).toBe('garbage');
+  expect(checkerVerdictText(output)).toBe('');
   expect(needsCheckerVerdictRetry(output, [])).toBe(true);
   expect(bind(output, context)).toBe('unusable verdict: invalid_envelope');
+});
+
+test.each([
+  '{"verdict":"fail"}\n\n{"verdict":"pass"}',
+  '{"verdict":"pass"}\n\nFAIL',
+  '{"verdict":"fail","note":12}\n\n{"verdict":"pass"}',
+  '{"verdict":"fail",}\n\n{"verdict":"pass"}',
+  '{"verdict":"fail","verdict":"pass"}',
+  'The final verdict is FAIL because …\n\nPASS',
+  '{"ver\\u0064ict":"f\\u0061il"}\n\nPASS',
+  'Earlier PASS result\n\nPASS',
+  'Earlier failure: FAIL\n\nPASS',
+  'Earlier verdict pending\n\nPASS',
+  'ｖｅｒｄｉｃｔ pending\n\nPASS',
+  'ＦＡＩＬ\n\nPASS',
+  '｛pending｝\n\nPASS',
+  '＼pending\n\nPASS',
+  'A closing brace }\n\nPASS',
+  '```json\n{"verdict":"fail","verdict":"pass"}\n```',
+  '{"verdict":"fail","ver\\u0064ict":"pass"}',
+  '{"verdict":"pass","count":1,"count":2}',
+  '{"verdict":"pass","note":"first","note":"second"}',
+  '{"verdict":"pass","claims":[],"claims":[]}',
+  'Reading.\n\n{"verdict":"fail","verdict":"pass"}',
+])('ambiguous verdict requires retry and remains unusable: %s', (output) => {
+  expect(needsCheckerVerdictRetry(output, [])).toBe(true);
+  expect(bind(output, context)).toBe('unusable verdict: invalid_envelope');
+});
+
+test('whole verdict accepts nested claims and evidence without scanning their keys', () => {
+  const output = JSON.stringify({
+    verdict: 'fail',
+    claims: [
+      {
+        quote: 'The object is active.',
+        evidence: 'inactive',
+        reason: 'The evidence contradicts the claim.',
+        verdict: 'pass',
+        nested: { verdict: 'fail', claims: [] },
+      },
+    ],
+    note: 'Braces {}, escaped quote ", and verdict text are allowed here.',
+  });
+  expect(checkerVerdictText(output)).toBe(output);
+  expect(needsCheckerVerdictRetry(output, [])).toBe(false);
+  expect(bind(output, context)).toBe(output);
 });
 
 test.each([

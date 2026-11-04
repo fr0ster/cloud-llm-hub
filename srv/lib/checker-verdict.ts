@@ -32,20 +32,50 @@ export function recordedCheckerVerdict(
   return undefined;
 }
 
+/** Inspect raw keys before JSON.parse can discard duplicate envelope fields. */
+function hasDuplicateVerdictKeys(output: string): boolean {
+  const json = output
+    .trim()
+    .replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, '$1');
+  const seen = new Set<string>();
+  let depth = 0;
+  for (let index = 0; index < json.length; index++) {
+    const character = json[index];
+    if (character === '"') {
+      const start = index;
+      for (index++; index < json.length; index++) {
+        if (json[index] === '\\') index++;
+        else if (json[index] === '"') break;
+      }
+      if (depth !== 1 || !/^\s*:/.test(json.slice(index + 1))) continue;
+      const key: string = JSON.parse(json.slice(start, index + 1));
+      if (!['verdict', 'count', 'note', 'claims'].includes(key)) continue;
+      if (seen.has(key)) return true;
+      seen.add(key);
+    } else if (character === '{' || character === '[') depth++;
+    else if (character === '}' || character === ']') depth--;
+  }
+  return false;
+}
+
+function isCheckerVerdictText(text: string): boolean {
+  return (
+    /^PASS$/i.test(text) ||
+    (!!parseCheckerVerdict(text) && !hasDuplicateVerdictKeys(text))
+  );
+}
+
 export function checkerVerdictText(output: string): string {
   const text = output.trim();
-  if (/^PASS$/i.test(text) || parseCheckerVerdict(text)) return text;
+  if (isCheckerVerdictText(text)) return text;
   const parts = text.split(/(\r?\n[\t ]*\r?\n)/);
   for (let index = parts.length - 1; index >= 0; index -= 2) {
     const suffix = parts.slice(index).join('').trim();
-    if (/^PASS$/i.test(suffix) || parseCheckerVerdict(suffix)) return suffix;
+    if (!isCheckerVerdictText(suffix)) continue;
+    const prefix = parts.slice(0, index).join('').normalize('NFKC');
+    return /[{}\\]|verdict|\b(?:PASS|FAIL)\b/i.test(prefix) ? '' : suffix;
   }
-  return (
-    parts
-      .filter((part) => part.trim())
-      .pop()
-      ?.trim() ?? ''
-  );
+  return '';
 }
 
 export function checkerVerdictInput(
