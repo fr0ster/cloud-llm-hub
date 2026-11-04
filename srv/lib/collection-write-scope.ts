@@ -1,5 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { collectionAccessError } from './collection-access';
+import { RagWriteError } from './rag-write-error';
+import { isTaskResultStoreWrite } from './task-result-store';
 
 type WriteScope =
   | { origin: 'tool' }
@@ -18,11 +20,25 @@ export function withCollectionRestScope<T>(
   return writes.run({ origin: 'rest', userId, admin }, operation);
 }
 
-export function assertCollectionWrite(meta: {
-  collectionKind?: string;
-  scope?: string;
-  owner?: string;
-}): void {
+export function assertCollectionWrite(
+  meta: {
+    id?: string;
+    collectionKind?: string;
+    scope?: string;
+    owner?: string;
+  },
+  operation?: 'create' | 'add',
+  recordId?: string,
+): void {
+  if (
+    meta.collectionKind === 'task-results' &&
+    !isTaskResultStoreWrite(meta.id, operation, recordId)
+  )
+    throw new RagWriteError(
+      'TOOL_FORBIDDEN',
+      403,
+      'Task results are written by the session store only',
+    );
   if (meta.collectionKind !== 'agents') return;
   const scope = writes.getStore();
   if (scope?.origin === 'tool')

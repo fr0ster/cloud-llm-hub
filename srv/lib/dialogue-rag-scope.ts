@@ -10,6 +10,14 @@ export function isDialogueRagWorker(): boolean {
   return dialogueScope.getStore() === true;
 }
 
+/** Offer reference readers; the canonical RAG gate still checks the target. */
+export function isDialogueResultReader(name: string): boolean {
+  return (
+    isDialogueRagWorker() &&
+    (name === 'rag_read' || name === 'collection_records')
+  );
+}
+
 export function allowsReadOnlyEffect(
   effect: 'read' | 'knowledge' | 'write',
 ): boolean {

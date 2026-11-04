@@ -115,6 +115,9 @@ const mockQuery = jest.fn(
   },
 );
 let mockEmbedder: ReturnType<typeof agentQueryEmbedder> | undefined;
+const mockTaskResults = new (jest.requireActual<
+  typeof import('../../srv/rag-collections')
+>('../../srv/rag-collections').CollectionRegistry)();
 jest.mock('../../srv/lib/logging-config', (): object => ({
   applyLoggingConfig(): void {},
 }));
@@ -279,6 +282,9 @@ jest.mock('../../srv/agent-manager', (): object => ({
   runWithRequestConnection: <T>(_connection: object, fn: () => T): T => fn(),
   getQueryEmbedder: (): IQueryEmbedder | undefined => mockEmbedder,
   getCollectionRegistry: (): {
+    getOrCreateCollection: import('../../srv/rag-collections').CollectionRegistry['getOrCreateCollection'];
+    addDocument: import('../../srv/rag-collections').CollectionRegistry['addDocument'];
+    getDocument: import('../../srv/rag-collections').CollectionRegistry['getDocument'];
     getCollection: import('../../srv/rag-collections').CollectionRegistry['getCollection'];
     getEnabled: import('../../srv/rag-collections').CollectionRegistry['getEnabled'];
     listCollections: import('../../srv/rag-collections').CollectionRegistry['listCollections'];
@@ -293,17 +299,24 @@ jest.mock('../../srv/agent-manager', (): object => ({
       >;
     }>;
   } => ({
-    getCollection: async (id) => ({
-      id,
-      logicalId: id,
-      displayName: id,
-      description: '',
-      scope: 'user',
-      owner: 'alice',
-      createdAt: new Date(0).toISOString(),
-      documentCount: 1,
-      sourceCount: 1,
-    }),
+    getOrCreateCollection:
+      mockTaskResults.getOrCreateCollection.bind(mockTaskResults),
+    addDocument: mockTaskResults.addDocument.bind(mockTaskResults),
+    getDocument: mockTaskResults.getDocument.bind(mockTaskResults),
+    getCollection: async (id) =>
+      id.startsWith('task-results__s_')
+        ? mockTaskResults.getCollection(id)
+        : {
+            id,
+            logicalId: id,
+            displayName: id,
+            description: '',
+            scope: 'user',
+            owner: 'alice',
+            createdAt: new Date(0).toISOString(),
+            documentCount: 1,
+            sourceCount: 1,
+          },
     getEnabled: () => true,
     listCollections: async () => [],
     ready: Promise.resolve(),

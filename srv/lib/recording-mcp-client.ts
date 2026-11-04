@@ -16,7 +16,10 @@ import {
   profileToolAllowed,
 } from '../request-session';
 import { compositeMcpClient } from './composite-mcp-client';
-import { allowsReadOnlyEffect } from './dialogue-rag-scope';
+import {
+  allowsReadOnlyEffect,
+  isDialogueResultReader,
+} from './dialogue-rag-scope';
 import { isOutageError } from './mcp-outage';
 import { isRagTool, ragToolEffect } from './rag-tool-catalogue';
 import { parseToolOutcome, type RecordedToolCall } from './reviewer-core';
@@ -24,7 +27,7 @@ import {
   isReadOnlyTool,
   type ToolEffectAnnotations,
 } from './tool-authorization';
-import { capToolResult } from './tool-result-cap';
+import { capToolResult, withinToolResultBudget } from './tool-result-cap';
 import { reportWorkerActivity } from './worker-activity';
 import { isWriteTool } from './write-guardrail';
 
@@ -142,7 +145,7 @@ export class RecordingMcpClient implements IMcpClient {
     if (!result.ok) return result;
     const value = result.value.filter(
       (tool) =>
-        profileToolAllowed(tool.name) &&
+        (profileToolAllowed(tool.name) || isDialogueResultReader(tool.name)) &&
         (!isReadOnlyTools() || this.isReadOnly(tool)),
     );
     return value.length === result.value.length ? result : { ok: true, value };
@@ -195,7 +198,7 @@ export class RecordingMcpClient implements IMcpClient {
     const requestId = options?.trace?.traceId;
     if (requestId && this.retainRecords && isWriteTool(name))
       this.offeredWrites.add(requestId);
-    if (!profileToolAllowed(name))
+    if (!profileToolAllowed(name) && !isDialogueResultReader(name))
       return {
         ok: true,
         value: { isError: true, content: `TOOL_FORBIDDEN: ${name}` },
@@ -245,7 +248,9 @@ export class RecordingMcpClient implements IMcpClient {
     if (traceId && this.retainRecords) this.deltaFor(traceId).push(record);
 
     reportWorkerActivity(`tool ${name}`);
-    let res = await this.inner.callTool(name, args, options);
+    let res = await withinToolResultBudget(this.maxChars, () =>
+      this.inner.callTool(name, args, options),
+    );
     if (res.ok) {
       const { ok, status, error } = parseToolOutcome({
         call: record.call,

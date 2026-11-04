@@ -41,7 +41,7 @@ const registry = {
       scope: string;
       owner: string;
       sessionId?: string;
-      collectionKind?: 'agents' | 'knowledge';
+      collectionKind?: 'agents' | 'knowledge' | 'task-results';
     }> => ({
       id: 'physical',
       logicalId: 'selected',
@@ -350,4 +350,31 @@ it('explicit agents selections never reach knowledge stores or degraded checks',
   expect(registry.getRagStore).not.toHaveBeenCalled();
   expect(registry.getRagStores).not.toHaveBeenCalled();
   expect(registry.degradedOf).not.toHaveBeenCalled();
+});
+
+it('explicit task-results selection never enters automatic retrieval or context assembly', async () => {
+  registry.getCollection.mockResolvedValueOnce({
+    id: 'physical',
+    logicalId: 'task-results',
+    displayName: 'Task results',
+    scope: 'session',
+    owner: 'alice',
+    sessionId: 'session',
+    collectionKind: 'task-results',
+  });
+  const messages: Message[] = [{ role: 'user', content: 'Read previous work' }];
+  const original = {};
+  const agent = { deps: { ragStores: original } };
+  const result = await collectionRetrieval(agent).retrieve(
+    req('task-results'),
+    messages,
+    'alice',
+    'session',
+    cds.log('task-results-test'),
+  );
+  expect(result).toEqual({ messages });
+  expect(agent.deps.ragStores).toBe(original);
+  expect(registry.getRagStores).not.toHaveBeenCalled();
+  expect(registry.getRagStore).not.toHaveBeenCalled();
+  expect(query).not.toHaveBeenCalled();
 });

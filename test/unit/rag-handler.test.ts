@@ -5,6 +5,8 @@ import {
   validateRagText,
   validateRagWriteSize,
 } from '../../srv/lib/rag-write-operations';
+import { createTaskResultStore } from '../../srv/lib/task-result-store';
+import { liveSession } from './helpers/canonical-rag';
 
 /**
  * Unit tests for rag-handler Task 6 behaviour:
@@ -217,6 +219,96 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
     registerRagRoutes(router, registry);
     routes = r;
     asAnonymous();
+  });
+
+  test('REST reserves the task-results name for user collections', async () => {
+    asUser('alice');
+    const res = makeRes();
+    await findRoute(routes, 'POST', '/rag/collections')!.handler(
+      makeReq({ body: { id: 'task-results', scope: 'user' } }),
+      res.res,
+    );
+    expect(res._status).toBe(403);
+    expect(JSON.stringify(res._body)).toMatch(/Reserved name/);
+    expect(
+      await registry.getCollection(userCollectionId('task-results', 'alice')),
+    ).toBeNull();
+  });
+
+  test.each([
+    ['PUT', '/documents/:did', '/documents/task-1', { text: 'tampered' }],
+    ['DELETE', '/documents/:did', '/documents/task-1', {}],
+    ['DELETE', '', '/', {}],
+    ['PATCH', '/enabled', '/enabled', { enabled: false }],
+    [
+      'PATCH',
+      '/documents/:did/enabled',
+      '/documents/task-1/enabled',
+      { enabled: false },
+    ],
+    ['PUT', '', '/', { trust: 0.5 }],
+    [
+      'PATCH',
+      '/documents/:did/trust',
+      '/documents/task-1/trust',
+      { trust: 0.5 },
+    ],
+    ['POST', '/documents', '/documents', { id: 'injected', text: 'tampered' }],
+    ['POST', '/upload', '/upload', {}],
+  ])('task results refuse REST %s %s', async (method, suffix, path, body) => {
+    const userId = 'alice';
+    const sessionKey = 'rest-task-results';
+    asUser(userId);
+    liveSession(userId, sessionKey);
+    const store = createTaskResultStore(registry, { userId, sessionKey });
+    const entry = {
+      id: 'task-1',
+      worker: 'executor',
+      goal: 'Report',
+      result: 'report',
+      outcome: 'done',
+      summary: 'Complete',
+      output: 'Original',
+    } as const;
+    expect((await store.put(entry)).ok).toBe(true);
+    const id = sessionCollectionId('task-results', userId, sessionKey);
+    const before = await registry.getDocument(id, entry.id);
+    const meta = await registry.getCollection(id);
+    const req = makeReq({
+      method: method as string,
+      path: path as string,
+      params: { id, did: entry.id },
+      body: body as Record<string, unknown>,
+      headers: { cookie: `clh_session=${sessionKey}` },
+    });
+    // Trust routes are registered before the collection middleware.
+    const isTrust = Object.hasOwn(body as object, 'trust');
+    const response = isTrust
+      ? makeRes()
+      : await runWithMiddleware(
+          routes,
+          method as string,
+          `/rag/collections/:id${suffix}`,
+          req,
+        );
+    if (isTrust)
+      await findRoute(
+        routes,
+        method as string,
+        `/rag/collections/:id${suffix}`,
+      )!.handler(req, response.res);
+    expect(response._status).toBe(403);
+    expect(JSON.stringify(response._body)).toMatch(/session store only/);
+    expect(await registry.getDocument(id, entry.id)).toEqual(before);
+    expect(await registry.getCollection(id)).toEqual(meta);
+    expect(await registry.getDocument(id, 'injected')).toBeNull();
+    expect((await store.put({ ...entry, id: 'task-2' })).ok).toBe(true);
+    await expect(registry.deleteCollection(id)).rejects.toThrow(
+      /session store only/,
+    );
+    await expect(
+      registry.addDocument(id, { id: 'injected', text: 'bad', metadata: {} }),
+    ).rejects.toThrow(/session store only/);
   });
 
   test('close waits for toggle persistence and refuses toggles while closing and after deletion', async () => {

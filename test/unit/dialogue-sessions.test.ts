@@ -106,6 +106,7 @@ import {
   runWithSessionId,
 } from '../../srv/request-session';
 
+let mockTaskResultRegistry = new CollectionRegistry();
 const mockRun = jest.fn<Promise<ISubAgentResult>, [ISubAgentInput]>();
 const mockRelease = jest.fn();
 const mockDrain = jest.fn(async () => {});
@@ -157,6 +158,7 @@ jest.mock('../../srv/agent-config', () => ({
   }),
 }));
 jest.mock('../../srv/agent-manager', () => ({
+  getCollectionRegistry: () => mockTaskResultRegistry,
   docsMcp: () => ({
     describeWorkers: (
       workers: import('@mcp-abap-adt/llm-agent').WorkerProfileSummary[],
@@ -393,6 +395,7 @@ async function ready(user = 'alice') {
   return { h, connection };
 }
 beforeEach(() => {
+  mockTaskResultRegistry = new CollectionRegistry();
   jest.clearAllMocks();
   mockWriteCapability.mockReset().mockReturnValue(false);
   mockPlannerTurns.length = 0;
@@ -3460,3 +3463,30 @@ test.each([
     }
   },
 );
+
+test('hub dialogue sessions receive a session-scoped task result store', async () => {
+  const open = jest.spyOn(DialogueSession, 'open');
+  try {
+    await dialogueFor('alice', 'key', 'TEST');
+    const options = open.mock.calls[0]?.[0];
+    expect(options?.resultStore).toBeDefined();
+    const store = options?.resultStore;
+    if (!store) throw new Error('Hub did not configure a task result store');
+    const written = await store.put({
+      id: 'wiring-test',
+      worker: 'executor',
+      goal: 'Verify store wiring',
+      result: 'report',
+      outcome: 'done',
+      summary: 'Stored',
+      output: 'Wired result',
+    });
+    if (!written.ok) throw new Error(written.error.message);
+    expect(await store.read(written.value)).toEqual({
+      ok: true,
+      value: 'Wired result',
+    });
+  } finally {
+    open.mockRestore();
+  }
+});

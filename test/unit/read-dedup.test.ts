@@ -1,8 +1,9 @@
-import { ReadDedup, readPage } from '../../srv/lib/read-dedup';
+import { loopReads, ReadDedup, readPage } from '../../srv/lib/read-dedup';
 import {
   createToolLoopWindow,
   digestRound,
 } from '../../srv/lib/tool-loop-window';
+import { withinToolResultBudget } from '../../srv/lib/tool-result-cap';
 
 test('pointers expire from the original round and reads are trace scoped', () => {
   const reads = new ReadDedup(2);
@@ -185,4 +186,76 @@ test('tool loop window defaults and validation', () => {
     expect(() => toolLoopWindow({ LLM_AGENT_TOOL_LOOP_WINDOW: value })).toThrow(
       'positive safe integer',
     );
+});
+
+test('a budget too small for a page does not mark the content as read', () => {
+  const reads = new ReadDedup(8);
+  const serialize = (page: ReturnType<typeof readPage>) => [
+    { type: 'text', text: JSON.stringify(page) },
+  ];
+  loopReads.run(reads, () => {
+    const read = () =>
+      readLoopPage('trace', 'docs', 'r', 'body', 0, undefined, serialize);
+    expect(withinToolResultBudget(1, read)).toMatchObject({ text: 'body' });
+    expect(withinToolResultBudget(1, read)).toMatchObject({ text: 'body' });
+    expect(withinToolResultBudget(4096, read)).toMatchObject({ text: 'body' });
+    expect(withinToolResultBudget(4096, read)).toMatchObject({
+      alreadyRead: true,
+    });
+  });
+});
+
+test('a fitting requested page is serialized once', () => {
+  const serialize = jest.fn((page: ReturnType<typeof readPage>) => [
+    { type: 'text', text: JSON.stringify(page) },
+  ]);
+  const page = withinToolResultBudget(60000, () =>
+    readLoopPage(
+      'trace',
+      'docs',
+      'r',
+      'x'.repeat(40000),
+      0,
+      undefined,
+      serialize,
+    ),
+  );
+  expect(page).toEqual(readPage('r', 'x'.repeat(40000)));
+  expect(serialize).toHaveBeenCalledTimes(1);
+});
+
+test('oversize escaped pages fit the cap and preserve continuation and unread content', () => {
+  const text = '\\"\n'.repeat(11000);
+  const cap = 60000;
+  const serialize = (page: ReturnType<typeof readPage>) => [
+    { type: 'text', text: JSON.stringify(page) },
+  ];
+  const reads = new ReadDedup(8);
+  loopReads.run(reads, () => {
+    const read = (offset = 0) =>
+      withinToolResultBudget(cap, () =>
+        readLoopPage('trace', 'docs', 'r', text, offset, undefined, serialize),
+      );
+    let offset = 0;
+    let delivered = '';
+    while (offset < text.length) {
+      const page = read(offset);
+      expect(page).toMatchObject({ offset, total: text.length });
+      expect('alreadyRead' in page).toBe(false);
+      if (!('text' in page)) throw new Error('Expected an unread page');
+      expect(JSON.stringify(serialize(page)).length).toBeLessThanOrEqual(cap);
+      delivered += page.text;
+      if (page.next !== undefined) {
+        expect(page.next).toBe(offset + page.text.length);
+        expect(
+          JSON.stringify(
+            serialize(readPage('r', text, offset, page.text.length + 1)),
+          ).length,
+        ).toBeGreaterThan(cap);
+      }
+      expect(read(offset)).toMatchObject({ alreadyRead: true });
+      offset = page.next ?? text.length;
+    }
+    expect(delivered).toBe(text);
+  });
 });

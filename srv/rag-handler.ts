@@ -32,7 +32,10 @@ import {
   collectionEnabled,
   updateSessionCollection,
 } from './lib/collection-toggle';
-import { withCollectionRestScope } from './lib/collection-write-scope';
+import {
+  assertCollectionWrite,
+  withCollectionRestScope,
+} from './lib/collection-write-scope';
 import { leaseSession } from './lib/gatekeeper';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import {
@@ -453,6 +456,18 @@ export function registerRagRoutes(
     try {
       const { id, displayName, description, scope, backend, copyFrom } =
         req.body;
+      if (
+        typeof id === 'string' &&
+        !id.includes('__') &&
+        normalizeLogicalId(id) === 'task-results'
+      ) {
+        error(
+          res,
+          403,
+          'Reserved name: task-results is reserved for the session store',
+        );
+        return;
+      }
       if (copyFrom !== undefined) {
         const parsedCopy = agentCopyInput.safeParse(req.body);
         if (
@@ -732,6 +747,19 @@ export function registerRagRoutes(
       if (!meta) {
         error(res, 404, 'Collection not found');
         return;
+      }
+      if (
+        meta.collectionKind === 'task-results' &&
+        req.method !== 'GET' &&
+        !req.path.endsWith('/query')
+      ) {
+        try {
+          assertCollectionWrite(meta);
+        } catch (err) {
+          const failed = ragWriteFailure(err as Error, 500);
+          error(res, failed.status, failed.message);
+          return;
+        }
       }
       const isQuery = req.path.endsWith('/query');
       const mode: 'read' | 'write' =

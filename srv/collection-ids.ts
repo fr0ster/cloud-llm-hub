@@ -67,7 +67,7 @@ type LookedUp = {
   owner?: string;
   scope?: 'global' | 'user' | 'session';
   sessionId?: string;
-  collectionKind?: 'knowledge' | 'agents';
+  collectionKind?: 'knowledge' | 'agents' | 'task-results';
 } | null;
 
 /**

@@ -221,7 +221,6 @@ test('get_task projects embedded traces once without modifying board evidence', 
       () =>
         client.callTool('get_task', {
           task_id: 't1',
-          view: 'full',
           include_trace: true,
         }),
     );
@@ -552,7 +551,6 @@ test('DialogueSession forwards coordinator trust to its internal get_task client
     for (let i = 0; i < 2; i++) {
       const result = await session.callTool('get_task', {
         task_id: 't1',
-        view: 'full',
         include_trace: true,
       });
       expect(

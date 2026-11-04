@@ -1,6 +1,9 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 
+import { parseToolResultMaxChars } from '../agent-config';
+import { toolResultBudget } from './tool-result-cap';
+
 export const DEFAULT_READ_LIMIT = 32000;
 
 export function readPage(
@@ -73,8 +76,31 @@ export function readLoopPage(
   id: string,
   text: string,
   offset?: number,
-  limit?: number,
+  limit = DEFAULT_READ_LIMIT,
+  serialize?: (page: ReturnType<typeof readPage>) => string | object,
 ) {
+  // Measure the complete MCP content, including attributes and both JSON layers,
+  // before dedup records delivery. A cap too small for progress must not consume a page.
+  const cap = toolResultBudget.getStore() ?? parseToolResultMaxChars();
+  if (cap && serialize) {
+    const fits = (size: number) =>
+      JSON.stringify(serialize(readPage(id, text, offset, size))).length <= cap;
+    let low = 0;
+    let high = Math.min(limit, Math.max(0, text.length - (offset ?? 0)));
+    if (fits(high)) {
+      low = high;
+    } else {
+      while (low < high) {
+        const mid = Math.ceil((low + high) / 2);
+        if (fits(mid)) low = mid;
+        else high = mid - 1;
+      }
+      if (!fits(low)) return readPage(id, text, offset, limit);
+    }
+    if (low === 0 && (offset ?? 0) < text.length)
+      return readPage(id, text, offset, limit);
+    limit = low;
+  }
   const reads = loopReads.getStore();
   return trace && reads
     ? reads.read(trace, collection, id, text, offset, limit)

@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { isReadOnlyTools, profileToolAllowed } from '../request-session';
-import { allowsReadOnlyEffect } from './dialogue-rag-scope';
+import {
+  allowsReadOnlyEffect,
+  isDialogueResultReader,
+} from './dialogue-rag-scope';
 import { collectionTrustArgs, recordTrustArgs } from './trust-guard';
 
 const session = z
@@ -176,7 +179,7 @@ export function eligibleRagTools(coordinator = false): RagMcpTool[] {
   return ragToolNames.filter(
     (name) =>
       (name !== 'rag_persist' || coordinator) &&
-      profileToolAllowed(name) &&
+      (profileToolAllowed(name) || isDialogueResultReader(name)) &&
       (!isReadOnlyTools() || allowsReadOnlyEffect(ragToolEffect(name))),
   );
 }
