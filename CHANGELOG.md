@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.5.1] - 2026-11-05
+
+### Security
+
+- Runtime dependencies refreshed within their ranges: node-forge 1.4.3, follow-redirects 1.16.2, fast-uri 3.1.9, ip-address 10.7.6 (`npm audit --omit=dev` reports none).
+- Test tooling overrides glob 14 and minimatch 11 (GHSA-g3hv-75wg-m249, GHSA-3g3m-2fjr-6pw4); jest 30.5.2 still requests the older majors. ts-jest 29.4.15.
+
 ## [10.5.0] - 2026-11-05
 
 ### Added
