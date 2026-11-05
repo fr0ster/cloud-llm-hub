@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- The coordinator profile tells workers to store results in session collections and persists them with `rag_persist` (source session collection, user target) instead of briefing workers to write user collections; it never pastes verdict JSON into replies.
+- Tool descriptions: `rag_persist` names its source session collection and target; `collection_create`, `record_add` and `record_update` state that dialogue workers write only session collections.
+
 ## [10.5.3] - 2026-11-05
 
 ### Fixed
