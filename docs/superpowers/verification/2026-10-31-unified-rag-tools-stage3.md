@@ -1,6 +1,6 @@
 # Unified RAG tools: stage 3 migration report
 
-No commit or version bump. Shipped seeds remain missing-only; administrators must migrate existing profile/preset text explicitly. Stored allow/deny policies are checked during profile listing/resolution and before worker construction, with an actionable error. No stored text or record IDs are rewritten.
+No commit or version bump. At that stage, shipped seeds were missing-only. Startup now replaces changed built-in profiles from release seeds; custom profiles and presets still require explicit migration. Stored allow/deny policies are checked during profile listing/resolution and before worker construction, with an actionable error. No stored text or record IDs are rewritten.
 
 ## Restore mechanism
 

@@ -95,22 +95,21 @@ Startup in proposed `srv/lib/agent-profile-seeds.ts`:
 2. Await registry/backend restoration; ensure the exact global collection exists
    with the expected global scope and agents kind. A conflicting collection
    identity is a startup error.
-3. At startup list existing ids of the global agents collection and upsert only
-   absent seed records. Memory starts empty and receives all seeds.
-4. Existing records are never overwritten from disk on purpose, including edited
-   or disabled records. A rare race may rewrite a record with its valid seed
-   content, which is acceptable. Never write half a record: each record is one
-   upsert, whose atomicity is the DB provider's responsibility. Backend failure
-   fails startup; partial seeding is safe to retry by listing ids again.
-5. Validate existing configuration records and selected prompt presence before
-   readiness; malformed records fail clearly, without repair. Disabled records
-   stay disabled and are handled by the source policy at runtime.
+3. At startup read and validate the global agents collection, then upsert missing
+   or changed built-in records. Compare text exactly and validated metadata as
+   canonical JSON. Identical records are not rewritten.
+4. Release seeds replace edited or disabled built-in records when they differ.
+   Custom non-seed records, including a configured custom planner, are untouched.
+   Each write uses the normal store upsert to invalidate caches. Backend failure
+   fails startup; partial seeding is safe to retry.
+5. Validate the final stored set and required prompt presence before readiness.
+   Log each updated built-in id without text and one synchronization summary.
 
 Canonical ids are unique across all kinds. REST creates return conflict for an
 existing id; updates replace that record explicitly. Legacy/imported duplicate
 canonical keys or mismatched ids are invalid configuration, never latest-wins.
 No seed fallback is used after startup. Deleting a seeded record leaves it absent
-until restart, when absence permits seeding again; disable it for lasting removal.
+until restart, when seeding restores it; release seeds also restore changed enabled flags.
 
 Starter records:
 
@@ -309,7 +308,7 @@ collection, including its caller's own copy or an admin caller's global one.
 Reject all MCP/tool writes in `srv/rag-tool-dispatcher.ts` and
 `srv/agent-mcp-rag.ts`, including copy creation, enable/delete/bulk and indirect
 paths. Copy creation and user edits are REST-only; no MCP mutation tool is added.
-Startup seeding uses a narrowly scoped internal global create-only authority.
+Startup seeding uses the normal store upsert under internal global authority.
 
 ### Session selection
 
@@ -377,7 +376,7 @@ Host tests under `test/unit/` (proposed `agent-profile-source.test.ts`,
 `agent-profile-seeds.test.ts`, `agent-profile-runner.test.ts`,
 `agent-profile-tools.test.ts`, plus existing dialogue-store/route fixtures):
 
-- Memory seeding, persistent missing-only insertion, disabled/edited records
+- Memory and persistent seeding, replacement of changed built-ins, unchanged custom records
   surviving restart, invalid frontmatter, duplicate keys/names, id conflicts,
   concurrent service startup and backend failure. A race may rewrite valid seed content; each record uses one upsert.
 - Copy current global records and enabled flags; independent identities, no later
@@ -422,8 +421,9 @@ then adds seeds, fresh source, guarded runner and dialogue integration together.
 Before enabling traffic, seed/validate the selected backend and verify default
 executor/checker compatibility. Smoke test adding a profile without code, editing
 its prompt/tools and the planner body, and disabling it: changes appear on the
-next call/start and disabled workers never run. Persistent seed updates do not
-change existing records; administrators must explicitly update them.
+next call and disabled workers never run. On restart, release seeds replace
+changed built-in records, including edited prompts/tools and enabled flags;
+custom profiles and user copies remain untouched.
 
 ## Future work (not in this change)
 
