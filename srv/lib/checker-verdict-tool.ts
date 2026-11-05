@@ -8,9 +8,15 @@ import {
 import { z } from 'zod';
 import { verdictSchema, verdictToolSchema } from './checker-verdict-schema';
 
-const scope = new AsyncLocalStorage<boolean>();
-export function runWithVerdictTools<T>(enabled: boolean, run: () => T): T {
+const scope = new AsyncLocalStorage<boolean | undefined>();
+export function runWithVerdictTools<T>(
+  enabled: boolean | undefined,
+  run: () => T,
+): T {
   return scope.run(enabled, run);
+}
+export function currentVerdictTools(): boolean | undefined {
+  return scope.getStore();
 }
 export function verdictToolsEnabled(): boolean {
   return scope.getStore() === true;
