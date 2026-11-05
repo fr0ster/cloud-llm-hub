@@ -362,6 +362,8 @@ test.each([768, 3072])(
       await database.stop();
     }
   },
+  // PGlite startup with a 3072-dimension table exceeds the 5 s default on CI.
+  120_000,
 );
 
 test.each([0, 60000, 4096])(
