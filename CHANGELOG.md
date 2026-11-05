@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- Parallel tool calls of workers with an extra MCP server (e.g. the analyst with docs MCP) were refused after the first call ("checker tools are read-only") because concurrent tool discovery returned empty catalogues.
+
 ## [10.5.1] - 2026-11-05
 
 ### Security

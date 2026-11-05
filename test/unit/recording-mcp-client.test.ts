@@ -1,4 +1,5 @@
 import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
+import { runWithVerdictTools } from '../../srv/lib/checker-verdict-tool';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { runWithReadOnlyTools } from '../../srv/request-session';
 
@@ -9,6 +10,40 @@ function fakeInner(): IMcpClient {
     healthCheck: jest.fn(),
   };
 }
+
+test.each([false, true])(
+  'parallel read-only GetInclude calls all execute with verdict tools %s',
+  async (verdict) => {
+    const inner = fakeInner();
+    jest.mocked(inner.listTools).mockResolvedValue({
+      ok: true,
+      value: [{ name: 'GetInclude', description: '', inputSchema: {} }],
+    });
+    const executed = { ok: true as const, value: { content: 'executed' } };
+    jest.mocked(inner.callTool).mockResolvedValue(executed);
+    const docs: IMcpClient = {
+      listTools: async () => ({
+        ok: true,
+        value: [{ name: 'docs_search', description: '', inputSchema: {} }],
+      }),
+      callTool: jest.fn(),
+    };
+    const client = new RecordingMcpClient(
+      inner,
+      undefined,
+      1000,
+    ).includeClients([docs]);
+    const results = await runWithVerdictTools(verdict, () =>
+      runWithReadOnlyTools(() =>
+        Promise.all(
+          Array.from({ length: 4 }, () => client.callTool('GetInclude', {})),
+        ),
+      ),
+    );
+    expect(inner.callTool).toHaveBeenCalledTimes(4);
+    expect(results).toEqual(Array.from({ length: 4 }, () => executed));
+  },
+);
 
 describe('RecordingMcpClient', () => {
   test('callTool delegates to inner and returns its ok result unchanged', async () => {

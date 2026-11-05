@@ -17,6 +17,78 @@ function part(name: string, cacheable = true): IMcpClient {
   };
 }
 
+test('concurrent discovery returns full catalogues with the first owner winning', async () => {
+  const docs = part('shared');
+  const sap = part('GetTable');
+  const listSap = sap.listTools;
+  sap.listTools = async () => {
+    const result = await listSap();
+    if (!result.ok) return result;
+    return {
+      ok: true,
+      value: [
+        ...result.value,
+        { name: 'shared', description: 'duplicate', inputSchema: {} },
+      ],
+    };
+  };
+  const client = compositeMcpClient([docs, sap]);
+  const results = await Promise.all(
+    Array.from({ length: 4 }, () => client.listTools()),
+  );
+  for (const result of results) {
+    expect(result).toEqual({
+      ok: true,
+      value: [
+        {
+          name: 'shared',
+          description: 'shared',
+          inputSchema: { type: 'object' },
+        },
+        {
+          name: 'GetTable',
+          description: 'GetTable',
+          inputSchema: { type: 'object' },
+        },
+      ],
+    });
+  }
+  await client.callTool('shared', {});
+  expect(docs.callTool).toHaveBeenCalledTimes(1);
+  expect(sap.callTool).not.toHaveBeenCalled();
+});
+
+test('routes a secondary tool using published owners while discovery is in flight', async () => {
+  const docs = part('docs_search');
+  const sap = part('GetTable');
+  const catalogue = await docs.listTools();
+  let release = () => {};
+  const pending = new Promise<Awaited<ReturnType<IMcpClient['listTools']>>>(
+    (resolve) => {
+      release = () => resolve(catalogue);
+    },
+  );
+  docs.listTools = jest
+    .fn<
+      ReturnType<IMcpClient['listTools']>,
+      Parameters<IMcpClient['listTools']>
+    >()
+    .mockResolvedValueOnce(catalogue)
+    .mockReturnValueOnce(pending)
+    .mockResolvedValue({ ok: true, value: [] });
+  const client = compositeMcpClient([docs, sap]);
+  await client.listTools();
+  const refresh = client.listTools();
+  try {
+    await client.callTool('docs_search', {});
+    expect(docs.callTool).toHaveBeenCalledTimes(1);
+    expect(sap.callTool).not.toHaveBeenCalled();
+  } finally {
+    release();
+    await refresh;
+  }
+});
+
 test.each(['planner', 'controller'])(
   '%s caps docs and preserves cache policy',
   async (role) => {

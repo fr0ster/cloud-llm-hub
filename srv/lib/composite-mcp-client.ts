@@ -5,7 +5,7 @@ import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
  * caching. The last part is the primary client and receives unlisted names.
  */
 export function compositeMcpClient(parts: IMcpClient[]): IMcpClient {
-  const owners = new Map<string, IMcpClient>();
+  let owners = new Map<string, IMcpClient>();
   const client: IMcpClient = {
     cacheable: parts.every((part) => part.cacheable !== false),
     async listTools(options) {
@@ -13,16 +13,17 @@ export function compositeMcpClient(parts: IMcpClient[]): IMcpClient {
         ok: true,
         value: [],
       };
-      owners.clear();
+      const local = new Map<string, IMcpClient>();
       for (const part of parts) {
         const result = await part.listTools(options);
         if (!result.ok) return result;
         for (const tool of result.value) {
-          if (owners.has(tool.name)) continue;
-          owners.set(tool.name, part);
+          if (local.has(tool.name)) continue;
+          local.set(tool.name, part);
           tools.value.push(tool);
         }
       }
+      owners = local;
       return tools;
     },
     async callTool(name, args, options) {
