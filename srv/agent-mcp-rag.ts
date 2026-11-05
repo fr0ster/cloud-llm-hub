@@ -301,6 +301,8 @@ async function executeRagMcpToolImpl(
     )
   )
     return fail('TOOL_FORBIDDEN', 403, `TOOL_FORBIDDEN: ${name}`);
+  if (!dialogueRagToolAllowed(name, context.dialogueRole))
+    return fail('TOOL_FORBIDDEN', 403, `TOOL_FORBIDDEN: ${name}`);
   const readOnlyForbidden =
     context.readOnly &&
     ragToolEffect(name) !== 'read' &&
@@ -351,12 +353,15 @@ async function executeRagMcpToolImpl(
         const registry = context.registry ?? ragHost().getCollectionRegistry();
         const collection =
           typeof target === 'string' ? target : target.collection;
-        // Exact physical ids are inspected even if routing would hide them.
+        // Only reveal reserved metadata for the caller's own session.
         const exact = await registry.getCollection(collection);
         const reserved =
           collection === 'task-results'
             ? true
-            : exact?.collectionKind === 'task-results';
+            : exact?.collectionKind === 'task-results' &&
+              exact.scope === 'session' &&
+              exact.owner === userId &&
+              exact.sessionId === context.sessionKey;
         if (reserved)
           return fail(
             'TOOL_FORBIDDEN',
@@ -366,8 +371,6 @@ async function executeRagMcpToolImpl(
       }
     }
   }
-  if (!dialogueRagToolAllowed(name, context.dialogueRole))
-    return fail('TOOL_FORBIDDEN', 403, `TOOL_FORBIDDEN: ${name}`);
   // Existing worker callers may explicitly request session creation. Keep that
   // compatible without advertising scope or accepting a different write scope.
   const schema =
@@ -494,6 +497,12 @@ async function executeRagMcpToolImpl(
       targetMeta.sessionId === context.sessionKey;
     if (
       targetMeta?.collectionKind === 'task-results' &&
+      !ownTaskResults &&
+      (name === 'collection_set_trust' || name === 'record_set_trust')
+    )
+      return fail('NOT_FOUND', 404, 'Collection not found');
+    if (
+      ownTaskResults &&
       ragToolEffect(name) !== 'read' &&
       name !== 'rag_persist'
     )

@@ -19,6 +19,7 @@ import {
   runWithDialogueRagTools,
 } from '../../srv/lib/dialogue-rag-tools';
 import {
+  dialogueRagToolAllowed,
   type RagMcpTool,
   ragToolEffect,
   ragToolNames,
@@ -120,7 +121,9 @@ for (const dialogueRole of ['worker', 'coordinator', undefined] as const) {
             error: { code: 'TOOL_FORBIDDEN' },
           });
           expect(result.content[0].text).toContain(
-            'task results are written by the session store only',
+            dialogueRagToolAllowed(name, dialogueRole)
+              ? 'task results are written by the session store only'
+              : `TOOL_FORBIDDEN: ${name}`,
           );
         }
         expect((await registry.getDocument(physical, entry.id))?.text).toBe(
@@ -203,14 +206,34 @@ for (const dialogueRole of ['worker', 'coordinator'] as const) {
     `${dialogueRole} task-results isolation: $userId/$sessionKey`,
     async (other) => {
       liveSession(other.userId, other.sessionKey);
-      for (const collection of ['task-results', physical]) {
+      const collections =
+        dialogueRole === 'coordinator'
+          ? ['task-results']
+          : ['task-results', physical];
+      for (const collection of collections) {
         for (const name of ['rag_read', 'collection_records'] as const) {
           const result = await call(
             name,
-            { collection, ...(name === 'rag_read' ? { id: entry.id } : {}) },
+            {
+              collection:
+                dialogueRole === 'coordinator'
+                  ? { scope: 'session', collection }
+                  : collection,
+              ...(name === 'rag_read' ? { id: entry.id } : {}),
+            },
             { ...other, dialogueRole, admin: true },
           );
           expect(result.isError).toBe(true);
+          if (dialogueRole === 'coordinator') {
+            expect(result.structuredContent).toMatchObject({
+              error: {
+                code: 'COLLECTION_NOT_FOUND',
+                message: `Collection session/${collection} not found. Candidates: (none)`,
+              },
+            });
+          } else {
+            expect(result.content[0].text).toBe('Collection not found');
+          }
           expect(JSON.stringify(result)).not.toContain(entry.output);
         }
       }
@@ -224,6 +247,43 @@ for (const dialogueRole of ['worker', 'coordinator'] as const) {
     },
   );
 }
+
+test.each(['worker', 'coordinator'] as const)(
+  '%s writes cannot distinguish foreign task-results from a missing physical id',
+  async (dialogueRole) => {
+    for (const other of [
+      { userId: 'alice', sessionKey: 'another-session' },
+      { userId: 'bob', sessionKey: scope.sessionKey },
+    ]) {
+      liveSession(other.userId, other.sessionKey);
+      const write = (collection: string) =>
+        call(
+          'record_add',
+          {
+            collection:
+              dialogueRole === 'coordinator'
+                ? { scope: 'session', collection }
+                : collection,
+            record: 'new',
+            text: 'Changed',
+          },
+          { ...other, dialogueRole },
+        );
+      const result = await write(physical);
+      const missing = await write(
+        sessionCollectionId('task-results', 'missing', 'missing'),
+      );
+      expect(result.isError).toBe(true);
+      expect(result).toEqual(missing);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code:
+            dialogueRole === 'worker' ? 'INVALID_ARGUMENT' : 'TOOL_FORBIDDEN',
+        },
+      });
+    }
+  },
+);
 
 test('rag_persist copies task results as information with provenance and leaves the store intact', async () => {
   const result = await call(
@@ -330,7 +390,14 @@ for (const dialogueRole of ['worker', 'coordinator'] as const) {
           name,
           {
             session: scope.sessionKey,
-            ...(name !== 'collections_list' ? { collection: physical } : {}),
+            ...(name !== 'collections_list'
+              ? {
+                  collection:
+                    dialogueRole === 'coordinator'
+                      ? { scope: 'session', collection: 'task-results' }
+                      : physical,
+                }
+              : {}),
             ...(name === 'rag_read' ? { id: entry.id } : {}),
           },
           { ...other, dialogueRole, internal },
@@ -356,13 +423,16 @@ test.each(mutations)(
         { collection: physical, ...args },
         { ...other, admin: true },
       );
-      expect(result.isError).toBe(true);
-      expect(result.structuredContent).toMatchObject({
-        error: { code: 'TOOL_FORBIDDEN' },
-      });
-      expect(result.content[0].text).toContain(
-        'task results are written by the session store only',
+      const missing = await call(
+        name,
+        {
+          collection: sessionCollectionId('task-results', 'missing', 'missing'),
+          ...args,
+        },
+        { ...other, admin: true },
       );
+      expect(result.isError).toBe(true);
+      expect(result).toEqual(missing);
     }
   },
 );
