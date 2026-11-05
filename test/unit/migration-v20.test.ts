@@ -1,9 +1,9 @@
-﻿import {
-  HandlerExporter,
-  HighLevelHandlersGroup,
-} from '@mcp-abap-adt/lib/handlers';
+﻿import { HandlerExporter, isArgsOnly } from '@mcp-abap-adt/lib/handlers';
+import { createConnection } from '../../srv/connections/connectionFactory';
+import { boundHandlerExporter } from '../../srv/lib/bound-handler-exporter';
 import { resolveExposition } from '../../srv/lib/exposition';
 import { outageFromToolResult } from '../../srv/lib/mcp-outage';
+import { rawHandlerRegistry } from '../../srv/lib/raw-handler-registry';
 import { isReadOnlyTool } from '../../srv/lib/tool-authorization';
 import { buildToolExpositionMap } from '../../srv/lib/tool-exposition-map';
 import { isWriteTool } from '../../srv/lib/write-guardrail';
@@ -15,7 +15,6 @@ it('reader receives GetClass with part and developer receives one copy', () => {
   for (const includeHighLevel of [false, true]) {
     const entries = new HandlerExporter({
       includeHighLevel,
-      includeDebug: false,
     }).getHandlerEntries();
     const reads = entries.filter((e) => e.toolDefinition.name === 'GetClass');
     expect(reads).toHaveLength(1);
@@ -56,22 +55,24 @@ it('classifies the automatically composed background-run readers', () => {
 it.each(['tunnel_timeout', 'no_scc_registration'])(
   'v20 ADT failure rendering preserves [%s]',
   async (status) => {
-    const context = {
-      connection: {
-        getBaseUrl: async () => 'http://sap',
-        makeAdtRequest: async () => {
-          throw new Error(`network failed [${status}]`);
-        },
-      } as never,
+    const connection = createConnection({
+      sapConfig: { url: 'http://sap', authType: 'basic' },
+      systemType: 'onprem',
+    });
+    connection.getBaseUrl = async () => 'http://sap';
+    Object.assign(connection, { isConnected: () => true });
+    connection.makeAdtRequest = async () => {
+      throw new Error(`network failed [${status}]`);
     };
-    const group = new HighLevelHandlersGroup(context);
-    const entry = group
-      .getHandlers()
+    const context = { connection };
+    const entry = boundHandlerExporter(context, { systemType: 'onprem' })
+      .getHandlerEntries()
       .find((e) => e.toolDefinition.name === 'GetClass');
     if (!entry) throw new Error('GetClass missing');
-    const result = await (
-      entry.handler as unknown as (args: unknown) => Promise<unknown>
-    )({ class_name: 'ZCL_X' });
+    const args = { class_name: 'ZCL_X' };
+    const result = await (isArgsOnly(entry.handler)
+      ? entry.handler(args)
+      : entry.handler(context, args));
     expect(JSON.stringify(result)).toContain('connection');
     expect(outageFromToolResult(result, 'SAP')?.status).toBe(status);
   },
@@ -106,18 +107,26 @@ it('a listed long read opens and closes a fresh session, leaving the main connec
   const mainRequest = jest.fn();
   const connect = jest.fn(async () => {});
   const disconnect = jest.fn(async () => {});
-  const freshConnection = jest.fn(async () => ({
-    connect,
-    disconnect,
-    setSessionType() {},
-    getSessionId: () => null,
-    getBaseUrl: async () => 'http://sap',
-    makeAdtRequest: async () => {
+  const connection = createConnection({
+    sapConfig: { url: 'http://sap', authType: 'basic' },
+    systemType: 'onprem',
+  });
+  connection.makeAdtRequest = mainRequest;
+  const freshConnection = jest.fn(async () => {
+    const fresh = createConnection({
+      sapConfig: { url: 'http://sap', authType: 'basic' },
+      systemType: 'onprem',
+    });
+    fresh.connect = connect;
+    fresh.makeAdtRequest = async () => {
       throw new Error('offline [tunnel_timeout]');
-    },
-  }));
+    };
+    return Object.assign(fresh, { disconnect, isConnected: () => true });
+  });
   const server = new EmbeddableMcpServer({
-    connection: { makeAdtRequest: mainRequest } as never,
+    connection,
+    systemType: 'onprem',
+    handlersRegistry: rawHandlerRegistry(['readonly'], 'onprem'),
     freshConnection,
     exposition: ['readonly'],
     transportCloseEndsSession: false,

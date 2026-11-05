@@ -69,7 +69,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { HandlerContext } from '@mcp-abap-adt/lib/handlers';
-import { HandlerExporter } from '@mcp-abap-adt/lib/handlers';
+import { HandlerExporter, isArgsOnly } from '@mcp-abap-adt/lib/handlers';
 import { setSystemContext } from '@mcp-abap-adt/lib/utils';
 import {
   type AdaptiveStep,
@@ -117,7 +117,9 @@ import {
   type RagBackendKind,
 } from './agent-config';
 import { runOutsideAdmission, trackCall } from './lib/admission-scope';
+import { boundHandlerExporter } from './lib/bound-handler-exporter';
 import { destinationRequiresCredentials } from './lib/destination-authentication';
+import { connectionSystemType } from './lib/system-identity-cache';
 import { createToolLoopWindow } from './lib/tool-loop-window';
 
 export { destinationRequiresCredentials } from './lib/destination-authentication';
@@ -1699,7 +1701,6 @@ export function getHandlerExporterConfig() {
     systemContextRules: requestSystemContextRules,
     includeReadOnly: true,
     includeHighLevel: true,
-    includeDebug: false,
     includeSystem: true,
     includeSearch: true,
     logger: loggerAdapter,
@@ -2656,13 +2657,10 @@ export async function buildEmbeddedMcpAdapter(
     // Each call owns its groups for its entire lifetime, including resolver awaits.
     // Long reads use the request connection and trackCall; no server timeout or
     // fresh-session orchestration is applied on the agent transport.
-    const callExporter = new HandlerExporter(getHandlerExporterConfig());
-    const groups = (
-      callExporter as unknown as {
-        handlerGroups: Array<{ context: HandlerContext }>;
-      }
-    ).handlerGroups;
-    for (const group of groups) group.context = effectiveContext;
+    const callExporter = boundHandlerExporter(effectiveContext, {
+      ...getHandlerExporterConfig(),
+      systemType: connectionSystemType(effectiveContext.connection),
+    });
     handler = callExporter
       .getHandlerEntries()
       .find((e) => e.toolDefinition.name === name)?.handler;
@@ -2673,10 +2671,9 @@ export async function buildEmbeddedMcpAdapter(
       // - length === 1: (args) => ... (closure-based, uses group.context)
       // Match BaseMcpServer.registerHandlers() logic (line 283-301)
       reportWorkerActivity(`tool ${name}`);
-      const toolCall =
-        handler.length >= 2
-          ? handler(effectiveContext, args)
-          : (handler as unknown as (a: typeof args) => unknown)(args);
+      const toolCall = isArgsOnly(handler)
+        ? handler(args)
+        : handler(effectiveContext, args);
 
       // Registered before it is awaited. An ADT call is asynchronous in
       // substance: the slot, and the ADT session, must outlive it even when

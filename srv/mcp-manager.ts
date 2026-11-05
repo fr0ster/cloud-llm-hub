@@ -34,6 +34,7 @@ import { logErrorSafely } from './lib/errorUtils';
 import { describeCaller } from './lib/exposition';
 import { maskLoginForLog } from './lib/log-mask';
 import { loggerAdapter } from './lib/logger';
+import { rawHandlerRegistry } from './lib/raw-handler-registry';
 import { safeStop } from './lib/request-connection';
 import {
   requestSystemContextResolver,
@@ -415,6 +416,7 @@ export async function createMCPServerForRequest(
         logger: loggerAdapter,
         exposition,
         systemType,
+        handlersRegistry: rawHandlerRegistry(exposition, systemType),
         systemContextResolver: requestSystemContextResolver,
         systemContextRules: requestSystemContextRules,
         // A transport belongs to one HTTP request; the hub owns session teardown.

@@ -173,6 +173,11 @@ it('raw readers cannot list or call execution and write tools', async () => {
       'RuntimeCreateProfilerTraceParameters',
       'DiscardBackgroundRun',
       'CreateClass',
+      'CreateInclude',
+      'UpdateInclude',
+      'UpdateIncludeMetadata',
+      'DeleteInclude',
+      'ActivateInclude',
     ]) {
       let body = '';
       await bound.handle(

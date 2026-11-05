@@ -160,6 +160,10 @@ export function isCloudSystemIdentity(connection: IAbapConnection): boolean {
   return sessions.get(connection)?.systemType === 'cloud';
 }
 
+export function connectionSystemType(connection: IAbapConnection): SystemType {
+  return sessions.get(connection)?.systemType ?? 'onprem';
+}
+
 /** Uses the already connected session. Transient failures remain retryable. */
 export async function resolveSystemIdentity(
   connection: IAbapConnection,
