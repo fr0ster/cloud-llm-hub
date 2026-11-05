@@ -303,6 +303,7 @@ const request = z.preprocess(
       .optional(),
     lastTurnOk: z.boolean().optional(),
     resolvedFailures: ids.optional(),
+    deliveredTaskIds: ids.optional(),
     // Request transcripts permit 150k per part plus a truncation marker.
     // The overall byte guard bounds restored open transcripts.
     transcript: z

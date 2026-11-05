@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- llm-agent 30.34.1 / llm-agent-libs 30.32.3: a status-only `plan_update` keeps the structured plan instead of failing with "plan must be a string", and a task is delivered at most once per request (repeated `deliver` no longer duplicates output; a failed turn does not mark it delivered). Dialogue state restore keeps `deliveredTaskIds`.
+
 ## [10.6.0] - 2026-11-05
 
 ### Changed
