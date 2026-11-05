@@ -15,6 +15,7 @@ import {
   BackgroundRunHandlersGroup,
   HighLevelHandlersGroup,
   ReadOnlyHandlersGroup,
+  RuntimeRunHandlersGroup,
   SearchHandlersGroup,
   SystemHandlersGroup,
 } from '@mcp-abap-adt/lib/handlers';
@@ -65,6 +66,7 @@ export function buildToolExpositionMap(
     { name: 'high', group: new HighLevelHandlersGroup(ctx) },
     { name: 'search', group: new SearchHandlersGroup(ctx) },
     { name: 'system', group: new SystemHandlersGroup(ctx) },
+    { name: 'high', group: new RuntimeRunHandlersGroup(ctx) },
     { name: 'readonly', group: new BackgroundRunHandlersGroup(ctx) },
   ];
 

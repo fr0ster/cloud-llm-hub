@@ -45,7 +45,6 @@ async function main() {
   const exporter = new HandlerExporter({
     includeReadOnly: true,
     includeHighLevel: true,
-    includeDebug: false,
     includeSystem: true,
     includeSearch: true,
   });

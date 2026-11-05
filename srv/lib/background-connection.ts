@@ -67,9 +67,8 @@ export async function buildConnectionForDestination(
       );
   }
   // The declared kind, by the one rule (`lib/system-type.ts`): an unknown
-  // value is refused before any connection is built. Logged like the other
-  // channels; lib 16's HandlerExporter takes no per-destination kind, so the
-  // embedded handlers run it as on-premise.
+  // value is refused before any connection is built. Bind the same kind to
+  // the session so each embedded handler call uses the destination's variant.
   const systemType = resolveSystemType(req.headers, resolved.systemType);
   cds.log('agent-mcp').info('execute_step connection', {
     destination,

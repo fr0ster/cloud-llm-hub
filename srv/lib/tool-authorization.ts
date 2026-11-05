@@ -126,6 +126,11 @@ export function isReadOnlyTool(
       'SortAndCompressTransportTask',
       'MoveTransportObjects',
       'DiscardBackgroundRun',
+      'CreateInclude',
+      'UpdateInclude',
+      'UpdateIncludeMetadata',
+      'DeleteInclude',
+      'ActivateInclude',
     ].includes(name)
   )
     return false;

@@ -103,6 +103,7 @@ it('round-trips planner projection metadata, resolved failures and cache usage',
         openedAt: 3,
         text: 'current',
         resolvedFailures: ['failed-current'],
+        deliveredTaskIds: ['t1'],
         transcript: [
           { role: 'user', content: 'current' },
           {
