@@ -389,11 +389,25 @@ test('dialogue tool-loop offers hub storage to executor and only readback to che
     else expect(offered).not.toContain('submit_verdict');
     expect(offered).toEqual(
       name === 'executor'
-        ? ragToolNames.filter((tool) => tool !== 'rag_persist').sort()
+        ? [
+            'collection_create',
+            'collection_records',
+            'collections_list',
+            'rag_read',
+            'rag_search',
+            'record_add',
+            'record_set_enabled',
+            'record_update',
+          ].sort()
         : [
             ...ragToolNames.filter(
               (tool) =>
-                tool !== 'rag_persist' && ragToolEffect(tool) !== 'write',
+                ![
+                  'rag_persist',
+                  'collection_delete',
+                  'collection_set_enabled',
+                  'record_delete',
+                ].includes(tool) && ragToolEffect(tool) !== 'write',
             ),
             'submit_verdict',
           ].sort(),

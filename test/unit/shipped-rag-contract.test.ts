@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
 import { z } from 'zod';
-import { ragMcpSchemas, ragToolNames } from '../../srv/lib/rag-tool-catalogue';
+import { ragSchema, ragToolNames } from '../../srv/lib/rag-tool-catalogue';
 
 function markdownFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -74,7 +74,7 @@ function propertyKey(name: ts.PropertyName): string | undefined {
   return undefined;
 }
 
-function validatePrompt(text: string): void {
+function validatePrompt(text: string, role?: 'worker' | 'coordinator'): void {
   const references = new Set<string>();
   for (const code of text.matchAll(/`([^`\n]+)`/g)) {
     for (const identifier of code[1].matchAll(
@@ -103,7 +103,7 @@ function validatePrompt(text: string): void {
       continue;
     const argument = statement.expression.arguments[0];
     if (!argument || !ts.isObjectLiteralExpression(argument)) continue;
-    const schema = ragMcpSchemas[tool];
+    const schema = ragSchema(tool, role);
     const values: Record<string, unknown> = {};
     const symbolicKeys = new Set<string>();
     for (const property of argument.properties) {
@@ -135,7 +135,7 @@ function validatePrompt(text: string): void {
     } else if (value !== null && typeof value === 'object') {
       const name = value.name ?? value.tool;
       if (typeof name === 'string' && ragLooking.test(name)) {
-        ragMcpSchemas[canonical(name)].parse(value.arguments ?? value.input);
+        ragSchema(canonical(name), role).parse(value.arguments ?? value.input);
       }
       Object.values(value).forEach(validateJson);
     }
@@ -150,7 +150,14 @@ it.each(['srv/agent-profiles', 'srv/presets', 'docs/tutorials'])(
   (directory: string) => {
     for (const file of markdownFiles(directory)) {
       try {
-        validatePrompt(readFileSync(file, 'utf8'));
+        validatePrompt(
+          readFileSync(file, 'utf8'),
+          directory === 'srv/agent-profiles'
+            ? path.basename(file) === 'coordinator.md'
+              ? 'coordinator'
+              : 'worker'
+            : undefined,
+        );
       } catch (error) {
         throw new Error(
           `${file}: ${error instanceof Error ? error.message : String(error)}`,

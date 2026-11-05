@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- Dialogue RAG tools now split by role: workers write only their session; coordinators use explicit collection scopes and session-to-user persistence. External tool contracts remain unchanged.
+- Dialogue tool contract version is now 3. This breaks in-flight dialogue tasks only: older unfinished tasks are interrupted and unfinished plan steps blocked for replanning; completed results are retained.
+
 ## [10.5.5] - 2026-11-05
 
 ### Changed

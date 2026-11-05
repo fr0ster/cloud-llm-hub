@@ -848,7 +848,7 @@ it('persists the tool contract marker without changing completed evidence', asyn
   expect(migrated.conversation).toEqual(state.conversation);
 });
 
-test('v1 migration preserves plan and tasks and translates historical planning calls', () => {
+test('v1 migration interrupts unfinished work and translates historical planning calls', () => {
   const legacy = {
     ...state,
     toolContractVersion: 1,
@@ -893,9 +893,9 @@ test('v1 migration preserves plan and tasks and translates historical planning c
     },
   };
   const migrated = migrateDialogueToolContract(legacy);
-  expect(migrated.toolContractVersion).toBe(2);
-  expect(migrated.plan).toEqual(legacy.plan);
-  expect(migrated.tasks).toEqual(legacy.tasks);
+  expect(migrated.toolContractVersion).toBe(DIALOGUE_TOOL_CONTRACT_VERSION);
+  expect(migrated.plan).toMatchObject({ steps: [{ state: 'blocked' }] });
+  expect(migrated.tasks).toMatchObject([{ state: 'interrupted' }]);
   expect(
     migrated.conversation[0].tool_calls?.map((call) => call.function.name),
   ).toEqual(['plan_get', 'plan_update']);
@@ -918,3 +918,28 @@ it.each([undefined, 'chosen-model'])(
     expect((await store.load('alice', 'models'))?.tasks).toEqual([task]);
   },
 );
+
+it.each([1, 2])('interrupts unfinished contract version %s', (version) => {
+  const migrated = migrateDialogueToolContract({
+    ...state,
+    toolContractVersion: version,
+    tasks: [
+      {
+        id: 'old',
+        worker: 'executor',
+        goal: 'write',
+        state: 'running',
+        createdAt: 1,
+      },
+    ],
+    plan: {
+      version: 1,
+      status: 'active',
+      steps: [{ id: 's', goal: 'write', state: 'running', taskIds: ['old'] }],
+    },
+  });
+  expect(migrated.tasks[0].state).toBe('interrupted');
+  expect(
+    typeof migrated.plan === 'object' && migrated.plan.steps[0].state,
+  ).toBe('blocked');
+});

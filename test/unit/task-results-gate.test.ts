@@ -228,7 +228,11 @@ for (const dialogueRole of ['worker', 'coordinator'] as const) {
 test('rag_persist copies task results as information with provenance and leaves the store intact', async () => {
   const result = await call(
     'rag_persist',
-    { collection: 'task-results', records: [entry.id], name: 'saved-results' },
+    {
+      from: { scope: 'session', collection: 'task-results' },
+      to: { scope: 'user', collection: 'saved-results' },
+      records: [entry.id],
+    },
     { dialogueRole: 'coordinator' },
   );
   expect(result.isError).not.toBe(true);
@@ -287,18 +291,25 @@ test('rag_persist refuses instruction collections', async () => {
 test('rag_persist names cannot address the skills instruction pool', async () => {
   const result = await call(
     'rag_persist',
-    { collection: 'task-results', records: [entry.id], name: '@skills' },
+    {
+      from: { scope: 'session', collection: 'task-results' },
+      to: { scope: 'user', collection: '@skills' },
+      records: [entry.id],
+    },
     { dialogueRole: 'coordinator' },
   );
-  expect(result.isError).not.toBe(true);
-  const id = userCollectionId('skills', scope.userId);
-  const meta = await registry.getCollection(id);
-  const doc = await registry.getDocument(id, entry.id);
-  if (!meta || !doc) throw new Error('Missing informational copy');
-  expect(resolverFor(registry).inputFor(doc, meta)).toMatchObject({
-    class: 'user',
-  });
+  // An explicit user address cannot name the skills instruction pool.
+  expect(result.isError).toBe(true);
+  expect(JSON.stringify(result.content)).toMatch(
+    /skills|instruction|forbidden|invalid/i,
+  );
   expect(await registry.getDocument('@skills', entry.id)).toBeNull();
+  expect(
+    await registry.getDocument(
+      userCollectionId('skills', scope.userId),
+      entry.id,
+    ),
+  ).toBeNull();
 });
 
 for (const dialogueRole of ['worker', 'coordinator'] as const) {

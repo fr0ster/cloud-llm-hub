@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { isReadOnlyTools, profileToolAllowed } from '../request-session';
 import {
   allowsReadOnlyEffect,
+  isDialogueRagWorker,
   isDialogueResultReader,
 } from './dialogue-rag-scope';
 import { collectionTrustArgs, recordTrustArgs } from './trust-guard';
@@ -100,6 +101,121 @@ export const ragMcpSchemas = {
     enabled,
   }),
 };
+export const collectionAddress = z
+  .object({
+    scope: z.enum(['session', 'user', 'global']),
+    collection: z
+      .string()
+      .regex(/^(?!.*__)(?:[a-z0-9][a-z0-9_-]*|@skills)$/)
+      .describe('Exact logical collection name, never a physical id'),
+  })
+  .strict();
+export type CollectionAddress = z.infer<typeof collectionAddress>;
+const logicalName = z.string().regex(/^(?!.*__)[a-z0-9][a-z0-9_-]*$/);
+const sessionName = logicalName.describe(
+  'Logical collection name in this session only',
+);
+export const workerRagSchemas = {
+  ...ragMcpSchemas,
+  collection_create: z.object({ name: sessionName }).strict(),
+  record_add: ragMcpSchemas.record_add
+    .omit({ session: true })
+    .extend({ collection: sessionName }),
+  record_update: ragMcpSchemas.record_update
+    .omit({ session: true })
+    .extend({ collection: sessionName }),
+  record_set_enabled: ragMcpSchemas.record_set_enabled
+    .omit({ session: true })
+    .extend({ collection: sessionName })
+    .strict(),
+};
+export const coordinatorRagSchemas = {
+  ...ragMcpSchemas,
+  rag_read: ragMcpSchemas.rag_read
+    .omit({ session: true })
+    .extend({ collection: collectionAddress })
+    .strict(),
+  collection_records: ragMcpSchemas.collection_records
+    .omit({ session: true })
+    .extend({ collection: collectionAddress })
+    .strict(),
+  rag_search: ragMcpSchemas.rag_search
+    .omit({ session: true })
+    .extend({ collections: z.array(collectionAddress).optional() })
+    .strict(),
+  collections_list: z.object({}).strict(),
+  rag_persist: z
+    .object({
+      from: collectionAddress.extend({
+        scope: z.literal('session'),
+        collection: sessionName,
+      }),
+      to: collectionAddress.extend({
+        scope: z.literal('user'),
+        collection: logicalName.describe(
+          'Logical collection name belonging to the caller',
+        ),
+      }),
+      records: z.array(z.string().min(1)).optional(),
+    })
+    .strict(),
+};
+export function ragSchema(name: RagMcpTool, role?: 'worker' | 'coordinator') {
+  return role === 'worker'
+    ? workerRagSchemas[name]
+    : role === 'coordinator'
+      ? coordinatorRagSchemas[name]
+      : ragMcpSchemas[name];
+}
+export function dialogueRagToolAllowed(
+  name: RagMcpTool,
+  role?: 'worker' | 'coordinator',
+) {
+  if (role === 'coordinator')
+    return ragToolEffect(name) === 'read' || name === 'rag_persist';
+  if (role === 'worker')
+    return (
+      ragToolEffect(name) === 'read' ||
+      [
+        'collection_create',
+        'record_add',
+        'record_update',
+        'record_set_enabled',
+      ].includes(name)
+    );
+  return name !== 'rag_persist';
+}
+export function ragDescription(
+  name: RagMcpTool,
+  role?: 'worker' | 'coordinator',
+) {
+  if (role === 'coordinator')
+    return name === 'rag_persist'
+      ? 'Copy from an explicit session address to an explicit user address, creating the target. Omitted records selects all enabled records; idempotent by record id.'
+      : ragDescriptions[name] +
+          ' Use explicit scope and logical collection names; global includes @skills and is read-only. No scope fallback.';
+  if (role === 'worker') {
+    const descriptions: Partial<Record<RagMcpTool, string>> = {
+      collection_create:
+        'Create a collection idempotently with a logical name in your own session.',
+      record_add:
+        'Add one unchunked text record to an existing collection of your own session. Optional record is an exact id; existing ids fail with RECORD_EXISTS. source is attribution only, no URL fetch. Maximum UTF-8 JSON arguments: 10 MiB.',
+      record_update:
+        'Replace full record text in an existing collection of your own session; retain omitted title/source. No URL fetch. Maximum UTF-8 JSON arguments: 10 MiB.',
+      record_set_enabled:
+        'Enable or disable a record by id or all chunks of a source upload in your own session. Requires write permission.',
+    };
+    const description =
+      descriptions[name] ??
+      ragDescriptions[name] +
+        ' Read results label collections session/name, user/name or global/name; bare read names retain session-first resolution.';
+    return (
+      description +
+      ' Results stay in the session; the coordinator decides where to keep them.'
+    );
+  }
+  return ragDescriptions[name];
+}
 export type RagMcpTool = keyof typeof ragMcpSchemas;
 export const ragToolNames: RagMcpTool[] = [
   'rag_persist',
@@ -183,18 +299,30 @@ export function ragToolEffect(name: RagMcpTool) {
 export function eligibleRagTools(coordinator = false): RagMcpTool[] {
   return ragToolNames.filter(
     (name) =>
-      (name !== 'rag_persist' || coordinator) &&
+      dialogueRagToolAllowed(
+        name,
+        coordinator
+          ? 'coordinator'
+          : isDialogueRagWorker()
+            ? 'worker'
+            : undefined,
+      ) &&
       (profileToolAllowed(name) || isDialogueResultReader(name)) &&
       (!isReadOnlyTools() || allowsReadOnlyEffect(ragToolEffect(name))),
   );
 }
 export function buildRagToolSchemas(coordinator = false) {
+  const role = coordinator
+    ? 'coordinator'
+    : isDialogueRagWorker()
+      ? 'worker'
+      : undefined;
   return eligibleRagTools(coordinator).map((name) => ({
     type: 'function' as const,
     function: {
       name,
-      description: ragDescriptions[name],
-      parameters: z.toJSONSchema(ragMcpSchemas[name], { io: 'input' }),
+      description: ragDescription(name, role),
+      parameters: z.toJSONSchema(ragSchema(name, role), { io: 'input' }),
     },
   }));
 }

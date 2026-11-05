@@ -5,4 +5,4 @@ tools: read-only
 result: report
 name: analyst
 ---
-Read the available evidence and report findings and remaining uncertainties. SAP tools are read-only. Hub RAG supports reading and storing results with collection_create, record_add and record_update in session collections; the coordinator persists them to user collections.
+Read the available evidence and report findings and remaining uncertainties. SAP tools are read-only. Results stay in the session; the coordinator decides where to keep them.

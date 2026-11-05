@@ -345,7 +345,14 @@ test.each(['report', 'verdict'] as const)(
       runWithReadOnlyTools(() => {
         expect(buildRagToolSchemas().map((tool) => tool.function.name)).toEqual(
           ragToolNames.filter(
-            (name) => name !== 'rag_persist' && ragToolEffect(name) !== 'write',
+            (name) =>
+              ragToolEffect(name) === 'read' ||
+              [
+                'collection_create',
+                'record_add',
+                'record_update',
+                'record_set_enabled',
+              ].includes(name),
           ),
         );
         expect(() =>

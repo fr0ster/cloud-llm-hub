@@ -16,7 +16,13 @@ import {
   withDialogueRagTools,
 } from '../../srv/lib/dialogue-rag-tools';
 import { longSessions } from '../../srv/lib/long-session';
-import { ragToolEffect, ragToolNames } from '../../srv/lib/rag-tool-catalogue';
+import {
+  buildRagToolSchemas,
+  ragDescriptions,
+  ragMcpSchemas,
+  ragToolEffect,
+  ragToolNames,
+} from '../../srv/lib/rag-tool-catalogue';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import {
@@ -73,7 +79,14 @@ test('checker gets reads and knowledge; allow/deny and cached adapters reject fo
               .map((tool) => tool.name),
         ).toEqual(
           ragToolNames.filter(
-            (name) => name !== 'rag_persist' && ragToolEffect(name) !== 'write',
+            (name) =>
+              ragToolEffect(name) === 'read' ||
+              [
+                'collection_create',
+                'record_add',
+                'record_update',
+                'record_set_enabled',
+              ].includes(name),
           ),
         );
         expect(
@@ -348,6 +361,10 @@ test('coordinator exposes only RAG reads and refuses all nine mutations; worker 
   expect(inner.callTool).not.toHaveBeenCalled();
 });
 
+import {
+  sessionCollectionId,
+  userCollectionId,
+} from '../../srv/collection-ids';
 import { persistRagRecords } from '../../srv/lib/rag-write-operations';
 
 test('dialogue workers write session collections only; plain user calls retain user writes', async () => {
@@ -381,7 +398,6 @@ test('dialogue workers write session collections only; plain user calls retain u
       expect(
         await client.callTool('collection_create', {
           name: 'scratch',
-          scope: 'session',
         }),
       ).toMatchObject({ value: { structuredContent: { created: true } } });
       expect(
@@ -469,8 +485,8 @@ test('persistence creates target, copies verbatim, upserts ids and isolates sour
     const coordinator = new LocalRagMcpClient(inner, () => registry, true);
     expect(
       await coordinator.callTool('rag_persist', {
-        collection: source,
-        name: 'saved',
+        from: { scope: 'session', collection: 'scratch' },
+        to: { scope: 'user', collection: 'saved' },
         records: ['r'],
       }),
     ).toMatchObject({ value: { content: expect.stringContaining('saved') } });
@@ -557,7 +573,6 @@ test.each([
             expect(
               await client.callTool('collection_create', {
                 name: 'scratch',
-                scope: 'session',
               }),
             ).toMatchObject({
               value: { structuredContent: { created: true } },
@@ -599,3 +614,292 @@ test.each([
     });
   },
 );
+
+test('worker schemas omit scope and forbidden mutations; external schemas retain scope', async () => {
+  expect(
+    localRagTools().find((t) => t.name === 'collection_create')?.inputSchema,
+  ).toHaveProperty('properties.scope');
+  runWithDialogueRagTools(() => {
+    const tools = localRagTools();
+    expect(
+      tools.find((t) => t.name === 'collection_create')?.inputSchema,
+    ).not.toHaveProperty('properties.scope');
+    expect(tools.map((t) => t.name)).not.toContain('collection_delete');
+    expect(tools.map((t) => t.name)).not.toContain('record_set_trust');
+  });
+});
+
+test('explicit coordinator addresses do not shadow, persistence accepts equal names, and missing scopes list only owned candidates', async () => {
+  const { registry, client, inner } = setup();
+  const coordinator = new LocalRagMcpClient(inner, () => registry, true);
+  await inSession(async () => {
+    for (const scope of ['user', 'session']) {
+      expect(
+        await client.callTool('collection_create', { name: 'shared', scope }),
+      ).toMatchObject({ value: { structuredContent: { created: true } } });
+      const id =
+        scope === 'user'
+          ? userCollectionId('shared', 'alice')
+          : sessionCollectionId(
+              'shared',
+              'alice',
+              liveSession('alice', 'dialogue-1'),
+            );
+      await client.callTool('record_add', {
+        collection: id,
+        record: 'r',
+        text: scope,
+      });
+    }
+    for (const scope of ['user', 'session']) {
+      const result = await coordinator.callTool('rag_read', {
+        collection: { scope, collection: 'shared' },
+        id: 'r',
+      });
+      expect(result).toMatchObject({
+        value: { content: expect.stringContaining(`"text":"${scope}"`) },
+      });
+    }
+    expect(
+      await coordinator.callTool('rag_persist', {
+        from: { scope: 'session', collection: 'shared' },
+        to: { scope: 'user', collection: 'shared' },
+      }),
+    ).toMatchObject({ value: { content: expect.stringContaining('shared') } });
+    expect(
+      await registry.getDocument(userCollectionId('shared', 'alice'), 'r'),
+    ).toMatchObject({ text: 'session' });
+    for (const scope of ['session', 'user']) {
+      const result = await coordinator.callTool('rag_read', {
+        collection: { scope, collection: 'missing' },
+        id: 'r',
+      });
+      expect(result).toMatchObject({
+        value: {
+          isError: true,
+          content: expect.stringContaining(`${scope}/missing`),
+        },
+      });
+      expect(result).toMatchObject({
+        value: { content: expect.stringContaining(`${scope}/shared`) },
+      });
+    }
+    const listed = await coordinator.callTool('collections_list', {});
+    expect(listed).toMatchObject({
+      value: {
+        content: expect.stringContaining(
+          '"collection":"shared","records":1,"enabled":true',
+        ),
+      },
+    });
+    expect(listed.ok && listed.value.content).not.toContain('__');
+  });
+});
+
+test('worker writes never fall back to user collections and read results label their scopes', async () => {
+  const { registry, client } = setup();
+  await inSession(async () => {
+    await client.callTool('collection_create', {
+      name: 'shared',
+      scope: 'user',
+    });
+    await client.callTool('record_add', {
+      collection: 'shared',
+      record: 'r',
+      text: 'user',
+    });
+    await runWithDialogueRagTools(async () => {
+      expect(
+        await client.callTool('record_add', {
+          collection: 'shared',
+          record: 'r',
+          text: 'worker',
+        }),
+      ).toMatchObject({
+        value: {
+          isError: true,
+          content: expect.stringContaining('session/shared'),
+        },
+      });
+      await client.callTool('collection_create', { name: 'shared' });
+      expect(
+        await client.callTool('record_add', {
+          collection: 'shared',
+          record: 'r',
+          text: 'worker',
+        }),
+      ).toMatchObject({ value: { structuredContent: { created: true } } });
+      expect(
+        await client.callTool('rag_read', { collection: 'shared', id: 'r' }),
+      ).toMatchObject({
+        value: {
+          content: expect.stringContaining('"collection":"session/shared"'),
+        },
+      });
+    });
+    expect(
+      await registry.getDocument(userCollectionId('shared', 'alice'), 'r'),
+    ).toMatchObject({ text: 'user' });
+  });
+});
+
+test('dialogue addresses cannot reach another user or session, even with physical ids', async () => {
+  const { registry, client, inner } = setup();
+  const coordinator = new LocalRagMcpClient(inner, () => registry, true);
+  await runWithSessionId(
+    liveSession('bob', 'other'),
+    async () => {
+      await client.callTool('collection_create', {
+        name: 'foreign',
+        scope: 'user',
+      });
+    },
+    [],
+    'bob',
+  );
+  await runWithSessionId(
+    liveSession('alice', 'other'),
+    async () => {
+      await client.callTool('collection_create', {
+        name: 'foreign',
+        scope: 'session',
+      });
+    },
+    [],
+    'alice',
+  );
+  await inSession(async () => {
+    for (const scope of ['user', 'session']) {
+      const result = await coordinator.callTool('collection_records', {
+        collection: { scope, collection: 'foreign' },
+      });
+      expect(result).toMatchObject({
+        value: {
+          isError: true,
+          content: expect.stringContaining('Candidates: (none)'),
+        },
+      });
+    }
+    for (const collection of [
+      userCollectionId('foreign', 'bob'),
+      sessionCollectionId('foreign', 'alice', liveSession('alice', 'other')),
+    ]) {
+      expect(
+        await coordinator.callTool('rag_read', {
+          collection: { scope: 'user', collection },
+          id: 'r',
+        }),
+      ).toMatchObject({ value: { isError: true } });
+      await runWithDialogueRagTools(async () => {
+        expect(
+          await client.callTool('record_add', {
+            collection,
+            text: 'forbidden',
+          }),
+        ).toMatchObject({ value: { isError: true } });
+      });
+    }
+  });
+});
+
+test('coordinator reads global knowledge without private shadowing', async () => {
+  const { registry, client, inner } = setup();
+  const coordinator = new LocalRagMcpClient(inner, () => registry, true);
+  await registry.createCollection({
+    id: 'shared',
+    logicalId: 'shared',
+    displayName: 'Global',
+    description: '',
+    scope: 'global',
+  });
+  await registry.addDocument('shared', {
+    id: 'r',
+    text: 'global',
+    metadata: {},
+  });
+  await inSession(async () => {
+    await client.callTool('collection_create', {
+      name: 'shared',
+      scope: 'session',
+    });
+    await client.callTool('record_add', {
+      collection: 'shared',
+      record: 'r',
+      text: 'session',
+    });
+    expect(
+      await coordinator.callTool('rag_read', {
+        collection: { scope: 'global', collection: 'shared' },
+        id: 'r',
+      }),
+    ).toMatchObject({
+      value: { content: expect.stringContaining('"text":"global"') },
+    });
+    for (const scope of ['global', 'session']) {
+      expect(
+        await coordinator.callTool('rag_search', {
+          query: scope,
+          collections: [{ scope, collection: 'shared' }],
+        }),
+      ).toMatchObject({
+        value: {
+          content: expect.stringContaining(`"collection":"${scope}/shared"`),
+        },
+      });
+    }
+    expect(
+      await coordinator.callTool('rag_search', {
+        query: 'knowledge',
+        collections: [{ scope: 'global', collection: '@skills' }],
+      }),
+    ).not.toMatchObject({ value: { isError: true } });
+    expect(
+      await coordinator.callTool('collection_records', {
+        collection: { scope: 'global', collection: '@skills' },
+      }),
+    ).toMatchObject({
+      value: { content: expect.stringContaining('global/@skills') },
+    });
+  });
+});
+
+test('external schemas and descriptions remain canonical after role-specific discovery', () => {
+  runWithDialogueRagTools(() => {
+    for (const tool of localRagTools()) {
+      if (
+        [
+          'collection_create',
+          'record_add',
+          'record_update',
+          'record_set_enabled',
+        ].includes(tool.name)
+      ) {
+        expect(tool.inputSchema).not.toHaveProperty('properties.scope');
+        expect(tool.inputSchema).not.toHaveProperty('properties.session');
+        expect(tool.inputSchema).toHaveProperty('additionalProperties', false);
+      }
+    }
+    expect(localRagTools().map((tool) => tool.name)).toEqual([
+      'collection_create',
+      'record_add',
+      'record_update',
+      'rag_search',
+      'rag_read',
+      'collections_list',
+      'collection_records',
+      'record_set_enabled',
+    ]);
+  });
+  expect(buildRagToolSchemas()).toEqual(
+    ragToolNames
+      .filter((name) => name !== 'rag_persist')
+      .map((name) => ({
+        type: 'function',
+        function: {
+          name,
+          description: ragDescriptions[name],
+          parameters: z.toJSONSchema(ragMcpSchemas[name], { io: 'input' }),
+        },
+      })),
+  );
+});
