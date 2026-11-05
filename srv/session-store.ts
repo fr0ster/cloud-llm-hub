@@ -62,7 +62,12 @@ export function sweepSessionHistory(now: number = Date.now()): void {
     }
   }
 }
-setInterval(() => sweepSessionHistory(), SESSION_CLEANUP_INTERVAL_MS).unref();
+setInterval(
+  guardedTask('Session history sweep', cds.log('session-store'), () =>
+    sweepSessionHistory(),
+  ),
+  SESSION_CLEANUP_INTERVAL_MS,
+).unref();
 
 /** Get session history for a specific user. Returns empty array if none. */
 export function getSessionHistory(

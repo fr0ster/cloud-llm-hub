@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file. The format 
 ### Fixed
 
 - Coordinator turns triggered by worker events (stall notices) or queued behind them ran with the worker's tool permissions, hiding delegate_task/stop_task.
+- A failing session-history sweep no longer throws from its timer (an uncaught exception that stops the process); it is logged and retried on the next pass.
 
 ## [10.5.2] - 2026-11-05
 
