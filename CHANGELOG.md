@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- Coordinator turns triggered by worker events (stall notices) or queued behind them ran with the worker's tool permissions, hiding delegate_task/stop_task.
+
 ## [10.5.2] - 2026-11-05
 
 ### Fixed

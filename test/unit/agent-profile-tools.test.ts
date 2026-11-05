@@ -12,7 +12,11 @@ import {
   guardProfileWorker,
   type RegisteredProfileTool,
 } from '../../srv/lib/agent-profile-tools';
-import { submitVerdictTool } from '../../srv/lib/checker-verdict-tool';
+import {
+  runWithVerdictTools,
+  submitVerdictTool,
+  verdictToolsEnabled,
+} from '../../srv/lib/checker-verdict-tool';
 import { runWithDialogueRagTools } from '../../srv/lib/dialogue-rag-tools';
 import { ExternalMcp, parseExternalMcp } from '../../srv/lib/external-mcp';
 import {
@@ -25,10 +29,13 @@ import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { assertToolAllowed } from '../../srv/lib/tool-authorization';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import {
+  captureToolScope,
+  isReadOnlyTools,
   profileToolAllowed,
   runWithProfileTools,
   runWithReadOnlyTools,
   runWithRequiredProfileTools,
+  runWithToolScope,
 } from '../../srv/request-session';
 import { callRag } from './helpers/canonical-rag';
 
@@ -40,6 +47,34 @@ const catalogue: RegisteredProfileTool[] = [
   { name: 'record_add', effect: 'knowledge' },
 ];
 const grants = new Set(catalogue.map((tool) => tool.name));
+test('runWithToolScope replaces ambient worker stores and preserves the captured ceiling', () => {
+  const coordinator = runWithProfileTools(
+    new AgentToolPermissions(['delegate_task']),
+    captureToolScope,
+  );
+  runWithVerdictTools(true, () =>
+    runWithRequiredProfileTools(() =>
+      runWithReadOnlyTools(() =>
+        runWithProfileTools(new AgentToolPermissions(['GetTable']), () => {
+          expect(profileToolAllowed('delegate_task')).toBe(false);
+          runWithToolScope(coordinator, () => {
+            expect(profileToolAllowed('delegate_task')).toBe(true);
+            expect(profileToolAllowed('stop_task')).toBe(false);
+            expect(isReadOnlyTools()).toBe(false);
+            expect(verdictToolsEnabled()).toBe(false);
+          });
+          expect(isReadOnlyTools()).toBe(true);
+          expect(verdictToolsEnabled()).toBe(true);
+          expect(profileToolAllowed('delegate_task')).toBe(false);
+        }),
+      ),
+    ),
+  );
+  const required = runWithRequiredProfileTools(captureToolScope);
+  runWithToolScope(required, () =>
+    expect(profileToolAllowed('delegate_task')).toBe(false),
+  );
+});
 test('ceilings, caller grants, deny and inherited permissions intersect', () => {
   const verdict = effectiveProfileTools({
     catalogue,

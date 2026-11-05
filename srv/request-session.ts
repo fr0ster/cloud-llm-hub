@@ -4,6 +4,10 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Message } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import type { AgentToolPermissions } from './lib/agent-profile-tools';
+import {
+  currentVerdictTools,
+  runWithVerdictTools,
+} from './lib/checker-verdict-tool';
 import { runWithReviewSignals } from './lib/review-scope';
 import type { ToolQueryAnalysis } from './lib/tool-query-analyzer';
 
@@ -88,9 +92,9 @@ export function getRequestUserId(): string | undefined {
   const userId = als.getStore()?.userId;
   return userId && userId !== 'anonymous' ? userId : undefined;
 }
-const readOnlyTools = new AsyncLocalStorage<boolean>();
+const readOnlyTools = new AsyncLocalStorage<boolean | undefined>();
 const profileTools = new AsyncLocalStorage<
-  Pick<AgentToolPermissions, 'allows'>
+  Pick<AgentToolPermissions, 'allows'> | undefined
 >();
 /** Nested scopes can only narrow the parent's permissions. */
 export function runWithProfileTools<T>(
@@ -130,7 +134,35 @@ export function isReadOnlyTools(): boolean {
 }
 
 /** Worker entry points mark scope as required; a lost policy fails closed. */
-const requiredProfileTools = new AsyncLocalStorage<boolean>();
+const requiredProfileTools = new AsyncLocalStorage<boolean | undefined>();
+export interface ToolScope {
+  readonly profileTools: Pick<AgentToolPermissions, 'allows'> | undefined;
+  readonly requiredProfileTools: boolean | undefined;
+  readonly readOnlyTools: boolean | undefined;
+  readonly verdictTools: boolean | undefined;
+}
+
+/** Capture only at a trusted entry point, before starting workers. */
+export function captureToolScope(): ToolScope {
+  return Object.freeze({
+    profileTools: profileTools.getStore(),
+    requiredProfileTools: requiredProfileTools.getStore(),
+    readOnlyTools: readOnlyTools.getStore(),
+    verdictTools: currentVerdictTools(),
+  });
+}
+
+/** Restore the captured ceiling across an untrusted asynchronous boundary. */
+export function runWithToolScope<T>(scope: ToolScope, fn: () => T): T {
+  if (!scope) throw new Error('Coordinator tool scope missing');
+  return profileTools.run(scope.profileTools, () =>
+    requiredProfileTools.run(scope.requiredProfileTools, () =>
+      readOnlyTools.run(scope.readOnlyTools, () =>
+        runWithVerdictTools(scope.verdictTools, fn),
+      ),
+    ),
+  );
+}
 export function runWithRequiredProfileTools<T>(fn: () => T): T {
   return requiredProfileTools.run(true, fn);
 }

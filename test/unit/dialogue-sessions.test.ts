@@ -1,4 +1,4 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
+import { AsyncLocalStorage, AsyncResource } from 'node:async_hooks';
 import {
   InMemoryRag,
   symmetricEmbedder,
@@ -11,7 +11,12 @@ import {
 } from '@mcp-abap-adt/llm-usage';
 import express from 'express';
 import { executeRagTool } from '../../srv/agent-mcp-rag';
+import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
 import { chatStream, streamDialogue } from '../../srv/lib/chat-stream';
+import {
+  runWithVerdictTools,
+  verdictToolsEnabled,
+} from '../../srv/lib/checker-verdict-tool';
 import { dialogueChat } from '../../srv/lib/dialogue-chat';
 import { followDialogue } from '../../srv/lib/dialogue-follow';
 import { clientTurnId, turnSource } from '../../srv/lib/dialogue-turn-source';
@@ -99,11 +104,16 @@ import {
 } from '../../srv/lib/dialogue-store';
 import { evaluateGated } from '../../srv/lib/step-reviewer';
 import {
+  captureToolScope,
   getRagCallerIdentity,
   getRequestHistory,
   getRequestSessionId,
   getRequestUserId,
+  runWithProfileTools,
+  runWithReadOnlyTools,
+  runWithRequiredProfileTools,
   runWithSessionId,
+  runWithToolScope,
 } from '../../srv/request-session';
 
 let mockTaskResultRegistry = new CollectionRegistry();
@@ -122,6 +132,7 @@ const mockEnvironments: string[] = [];
 let mockGoal = 'read';
 let mockWorkerTrust: { target: number } | undefined;
 let mockPlannerHook: ((text: string) => Promise<void>) | undefined;
+let mockPlannerPreparationHook: (() => void) | undefined;
 let mockCaptureLlm: (() => Promise<ILlm>) | undefined;
 let mockIsolationHistory: SessionHistoryRag | undefined;
 let mockFinalAnswer: string | undefined;
@@ -201,6 +212,7 @@ jest.mock('../../srv/agent-manager', () => ({
     }),
   }),
   buildPlannerAgent: jest.fn(async () => {
+    mockPlannerPreparationHook?.();
     if (mockCaptureLlm) {
       const builder = new SmartAgentBuilder({
         skipModelValidation: true,
@@ -402,6 +414,7 @@ beforeEach(() => {
   mockEnvironments.length = 0;
   mockGoal = 'read';
   mockPlannerHook = undefined;
+  mockPlannerPreparationHook = undefined;
   mockCaptureLlm = undefined;
   mockIsolationHistory = undefined;
   mockFinalAnswer = undefined;
@@ -3147,6 +3160,136 @@ test('failed worker spend reaches message usage once when the planner recovers',
   await h.session.send('finish');
   expect(recorded()).toHaveLength(1);
 });
+
+test.each([false, true])(
+  'stall-triggered coordinator turns and queued user turns do not inherit worker tool scopes (verdict: %s)',
+  async (verdict) => {
+    const innerCall = jest.fn(async () => ({
+      ok: true as const,
+      value: { content: 'called' },
+    }));
+    const recorder = new RecordingMcpClient({
+      listTools: async () => ({
+        ok: true,
+        value: ['delegate_task', 'stop_task', 'caller_denied'].map((name) => ({
+          name,
+          description: name,
+          inputSchema: { type: 'object' as const },
+        })),
+      }),
+      callTool: innerCall,
+    });
+    const { h } = await runWithToolScope(
+      {
+        ...captureToolScope(),
+        profileTools: { allows: (name) => name !== 'caller_denied' },
+      },
+      () => ready(),
+    );
+    let stall: (() => void) | undefined;
+    const originalTimer = global.setTimeout;
+    const timer = jest
+      .spyOn(global, 'setTimeout')
+      .mockImplementation((callback, delay, ...args) => {
+        if (delay === 300_000)
+          stall = AsyncResource.bind(() => callback(...args));
+        return originalTimer(callback, delay, ...args);
+      });
+    let finishWorker!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      finishWorker = resolve;
+    });
+    let workerChecked = false;
+    mockRun.mockImplementation(() =>
+      runWithVerdictTools(verdict, () =>
+        runWithRequiredProfileTools(() =>
+          runWithReadOnlyTools(() =>
+            runWithProfileTools(
+              new AgentToolPermissions(['Read']),
+              async () => {
+                expect(await recorder.listTools()).toEqual({
+                  ok: true,
+                  value: [],
+                });
+                expect(
+                  await recorder.callTool('delegate_task', {}),
+                ).toMatchObject({ value: { isError: true } });
+                reportWorkerActivity('tool Read');
+                workerChecked = true;
+                await blocked;
+                expect(verdictToolsEnabled()).toBe(verdict);
+                expect(await recorder.callTool('stop_task', {})).toMatchObject({
+                  value: { isError: true },
+                });
+                return { output: 'done' };
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+    let eventStarted = false;
+    let releaseEvent!: () => void;
+    const eventBlocked = new Promise<void>((resolve) => {
+      releaseEvent = resolve;
+    });
+    const checked: string[] = [];
+    let preparations = 0;
+    mockPlannerPreparationHook = () => {
+      const scope = captureToolScope();
+      expect(scope.readOnlyTools).toBeUndefined();
+      expect(scope.requiredProfileTools).toBeUndefined();
+      expect(scope.verdictTools).toBeUndefined();
+      expect(scope.profileTools?.allows('delegate_task')).toBe(true);
+      expect(scope.profileTools?.allows('caller_denied')).toBe(false);
+      preparations++;
+    };
+    mockPlannerHook = async (text) => {
+      if (text.includes('start') && !text.startsWith('[task events]')) return;
+      expect(getRequestSessionId()).toBe('key');
+      expect(getRequestUserId()).toBe('alice');
+      expect(verdictToolsEnabled()).toBe(false);
+      expect(await recorder.listTools()).toMatchObject({
+        value: [{ name: 'delegate_task' }, { name: 'stop_task' }],
+      });
+      for (const name of ['delegate_task', 'stop_task'])
+        expect(await recorder.callTool(name, {})).toMatchObject({
+          value: { content: 'called' },
+        });
+      expect(await recorder.callTool('caller_denied', {})).toMatchObject({
+        value: { isError: true },
+      });
+      checked.push(text);
+      if (text.startsWith('[task events]')) {
+        eventStarted = true;
+        await eventBlocked;
+      } else mockPlan = { status: 'done' };
+    };
+    try {
+      await h.session.send('start');
+      await until(() => workerChecked && !!stall);
+      if (!stall) throw new Error('Missing worker stall timer');
+      stall();
+      await until(() => eventStarted);
+      const queued = h.session.send('queued');
+      await runWithProfileTools(new AgentToolPermissions([]), () =>
+        ready('bob'),
+      );
+      releaseEvent();
+      await queued;
+      expect(checked.some((text) => text.startsWith('[task events]'))).toBe(
+        true,
+      );
+      expect(checked.some((text) => text.includes('queued'))).toBe(true);
+      expect(innerCall).toHaveBeenCalledTimes(4);
+      expect(preparations).toBeGreaterThanOrEqual(3);
+    } finally {
+      releaseEvent?.();
+      finishWorker?.();
+      timer.mockRestore();
+    }
+  },
+);
 
 test('worker scope emits content-free activity and background turns identify completed tasks', async () => {
   const { h } = await ready();

@@ -34,11 +34,13 @@ import {
   runWithRequestConnection,
 } from '../agent-manager';
 import {
+  captureToolScope,
   getRagCallerIdentity,
   getRequestUserId,
   type RagCallerIdentity,
   runWithSessionId,
   runWithToolGateBypass,
+  runWithToolScope,
 } from '../request-session';
 import {
   BriefPlanAuthor,
@@ -351,6 +353,7 @@ async function open(
   model: string | undefined,
   llms: SessionLlms,
 ): Promise<LiveHandle> {
+  const coordinatorToolScope = captureToolScope();
   const turnCallers = new WeakMap<object, TurnCaller>();
   const config = getAgentConfig();
   const destinationHandle = await getSmartAgent(undefined, destination);
@@ -948,166 +951,173 @@ async function open(
     planner: ISmartAgent,
     input: Message[],
     options: AgentCallOptions,
-  ) => {
-    // Reset the library's legacy malformed-verdict failure before decisions.
-    const current = session?.snapshot();
-    const resetSteps = current && unusableCheckerPlanSteps(current);
-    if (resetSteps) {
-      const reset = await new PlannerToolsClient().callTool('plan_update', {
-        steps: resetSteps,
-      });
-      if (!reset.ok || reset.value.isError)
-        throw new Error('Unable to reset unusable checker verdict');
-      input = input.map((message, index) =>
-        index === input.length - 1
-          ? {
-              ...message,
-              content: `${message.content}\nChecker verdict correction: unusable verdicts are undecided, not failures. Their check steps are pending. Decide whether to rerun, revise or skip with a reason.`,
-            }
-          : message,
-      );
-    }
-    const caller = (options.trace && turnCallers.get(options.trace)) ??
-      eventCaller ?? {
-        userId,
-        // Restored tasks and timer events have no authenticated originating turn.
-        identity: { admin: false, channel: 'openai' as const },
+  ) =>
+    runWithToolScope(coordinatorToolScope, async () => {
+      // Reset the library's legacy malformed-verdict failure before decisions.
+      const current = session?.snapshot();
+      const resetSteps = current && unusableCheckerPlanSteps(current);
+      if (resetSteps) {
+        const reset = await new PlannerToolsClient().callTool('plan_update', {
+          steps: resetSteps,
+        });
+        if (!reset.ok || reset.value.isError)
+          throw new Error('Unable to reset unusable checker verdict');
+        input = input.map((message, index) =>
+          index === input.length - 1
+            ? {
+                ...message,
+                content: `${message.content}\nChecker verdict correction: unusable verdicts are undecided, not failures. Their check steps are pending. Decide whether to rerun, revise or skip with a reason.`,
+              }
+            : message,
+        );
+      }
+      const caller = (options.trace && turnCallers.get(options.trace)) ??
+        eventCaller ?? {
+          userId,
+          // Restored tasks and timer events have no authenticated originating turn.
+          identity: { admin: false, channel: 'openai' as const },
+        };
+      const reply = options.trace && replies.get(options.trace);
+      turnReply = undefined;
+      turnReplyUsage = options.trace
+        ? replyUsage.get(options.trace)
+        : undefined;
+      let spent: TokenUsage | undefined;
+      let contentStreamed = false;
+      const turn: PlannerTurn = {
+        traceId: options.trace?.traceId,
+        workerTraces: new Set<string>(),
+        workerRecords: [],
+        active: true,
+        reviewing: false,
       };
-    const reply = options.trace && replies.get(options.trace);
-    turnReply = undefined;
-    turnReplyUsage = options.trace ? replyUsage.get(options.trace) : undefined;
-    let spent: TokenUsage | undefined;
-    let contentStreamed = false;
-    const turn: PlannerTurn = {
-      traceId: options.trace?.traceId,
-      workerTraces: new Set<string>(),
-      workerRecords: [],
-      active: true,
-      reviewing: false,
-    };
-    // Set when content is reviewed; empty/failed turns settle at the generation
-    // current when they end, so their own capability does not leak forward.
-    let reviewedGeneration: number | undefined;
-    try {
-      let result = await observeLlmSpend(
-        () =>
-          runWithContextCapture({ component: 'planner', sessionKey: key }, () =>
-            runWithSessionId(
-              key,
+      // Set when content is reviewed; empty/failed turns settle at the generation
+      // current when they end, so their own capability does not leak forward.
+      let reviewedGeneration: number | undefined;
+      try {
+        let result = await observeLlmSpend(
+          () =>
+            runWithContextCapture(
+              { component: 'planner', sessionKey: key },
               () =>
-                recMcp.withSession(userId, key, () =>
-                  plannerTrace.run(turn, () =>
-                    decoratePlanner(planner).process(input, {
-                      ...options,
-                      onPartial(chunk) {
-                        if (chunk.kind === 'content' && chunk.delta)
-                          contentStreamed = true;
-                        options.onPartial?.(chunk);
-                      },
-                    }),
-                  ),
+                runWithSessionId(
+                  key,
+                  () =>
+                    recMcp.withSession(userId, key, () =>
+                      plannerTrace.run(turn, () =>
+                        decoratePlanner(planner).process(input, {
+                          ...options,
+                          onPartial(chunk) {
+                            if (chunk.kind === 'content' && chunk.delta)
+                              contentStreamed = true;
+                            options.onPartial?.(chunk);
+                          },
+                        }),
+                      ),
+                    ),
+                  undefined,
+                  caller.userId,
+                  caller.identity,
                 ),
-              undefined,
-              caller.userId,
-              caller.identity,
             ),
-          ),
-        (usage) => {
-          spent = addTokenUsage(spent, usage);
-          turnPlannerSpend = addTokenUsage(turnPlannerSpend, usage);
-        },
-      );
-      if (result.ok && result.value.content) {
-        turn.reviewing = true;
-        reviewedGeneration = recMcp.writeGeneration(userId, key);
-        const writeToolOffered =
-          pendingWorkerWriteCapability ||
-          recMcp.hadWriteCapability(turn.traceId) ||
-          recMcp.hadSessionWriteCapability(userId, key) ||
-          [...turn.workerTraces].some((id) => recMcp.hadWriteCapability(id));
-        const records = [
-          ...pendingWorkerRecords.splice(0),
-          ...recMcp.getToolRecords(turn.traceId),
-          ...turn.workerRecords,
-          ...[...turn.workerTraces].flatMap((id) => recMcp.getToolRecords(id)),
-        ];
-        pendingWorkerWriteCapability = false;
-        if (writeToolOffered || records.length) {
-          const verdict = await evaluateGated({
-            content: result.value.content,
-            records,
-            writeToolOffered,
-          });
-          if (!verdict.ok) {
-            const notice = `\n\n${renderNotice(verdict)}`;
-            options.onPartial?.({
-              kind: 'content',
-              delta: (contentStreamed ? '' : result.value.content) + notice,
+          (usage) => {
+            spent = addTokenUsage(spent, usage);
+            turnPlannerSpend = addTokenUsage(turnPlannerSpend, usage);
+          },
+        );
+        if (result.ok && result.value.content) {
+          turn.reviewing = true;
+          reviewedGeneration = recMcp.writeGeneration(userId, key);
+          const writeToolOffered =
+            pendingWorkerWriteCapability ||
+            recMcp.hadWriteCapability(turn.traceId) ||
+            recMcp.hadSessionWriteCapability(userId, key) ||
+            [...turn.workerTraces].some((id) => recMcp.hadWriteCapability(id));
+          const records = [
+            ...pendingWorkerRecords.splice(0),
+            ...recMcp.getToolRecords(turn.traceId),
+            ...turn.workerRecords,
+            ...[...turn.workerTraces].flatMap((id) =>
+              recMcp.getToolRecords(id),
+            ),
+          ];
+          pendingWorkerWriteCapability = false;
+          if (writeToolOffered || records.length) {
+            const verdict = await evaluateGated({
+              content: result.value.content,
+              records,
+              writeToolOffered,
             });
-            result = {
-              ...result,
-              value: {
-                ...result.value,
-                content: result.value.content + notice,
-              },
-            };
+            if (!verdict.ok) {
+              const notice = `\n\n${renderNotice(verdict)}`;
+              options.onPartial?.({
+                kind: 'content',
+                delta: (contentStreamed ? '' : result.value.content) + notice,
+              });
+              result = {
+                ...result,
+                value: {
+                  ...result.value,
+                  content: result.value.content + notice,
+                },
+              };
+            }
           }
         }
-      }
-      // The library appends this successful result before its final save.
-      if (result.ok) {
-        turnReply = reply;
-        const trace = options.trace;
-        const usage =
-          reply && trace
-            ? addTokenUsage(replyUsage.get(trace), result.value.usage)
-            : undefined;
-        if (trace && usage) replyUsage.set(trace, usage);
-        turnReplyUsage = usage;
-      }
-      if (!result.ok) {
-        turnReplyUsage = addTokenUsage(turnReplyUsage, spent);
-        // Only a model failure is replaced by its content-free cause.
-        turnFailureCause = isLlmFailure(result.error)
-          ? llmFailure(result.error)
-          : undefined;
-      }
-      return result;
-    } catch (error) {
-      turnReplyUsage = addTokenUsage(turnReplyUsage, spent);
-      if (!isLlmFailure(error)) {
-        turnFailureCause = undefined;
-        throw error;
-      }
-      turnFailureCause = llmFailure(error);
-      throw new Error(turnFailureCause);
-    } finally {
-      // Preserve evidence arriving during review, or during an empty/failed turn.
-      if (runningWorkers === 0) {
-        recMcp.markReviewed(
-          userId,
-          key,
-          reviewedGeneration ?? recMcp.writeGeneration(userId, key),
-        );
-        // An empty or failed turn never reviews, so evidence buffered before it
-        // is settled here. Evidence arriving during a review stays pending.
-        if (reviewedGeneration === undefined) {
-          pendingWorkerRecords.length = 0;
-          pendingWorkerWriteCapability = false;
+        // The library appends this successful result before its final save.
+        if (result.ok) {
+          turnReply = reply;
+          const trace = options.trace;
+          const usage =
+            reply && trace
+              ? addTokenUsage(replyUsage.get(trace), result.value.usage)
+              : undefined;
+          if (trace && usage) replyUsage.set(trace, usage);
+          turnReplyUsage = usage;
         }
+        if (!result.ok) {
+          turnReplyUsage = addTokenUsage(turnReplyUsage, spent);
+          // Only a model failure is replaced by its content-free cause.
+          turnFailureCause = isLlmFailure(result.error)
+            ? llmFailure(result.error)
+            : undefined;
+        }
+        return result;
+      } catch (error) {
+        turnReplyUsage = addTokenUsage(turnReplyUsage, spent);
+        if (!isLlmFailure(error)) {
+          turnFailureCause = undefined;
+          throw error;
+        }
+        turnFailureCause = llmFailure(error);
+        throw new Error(turnFailureCause);
+      } finally {
+        // Preserve evidence arriving during review, or during an empty/failed turn.
+        if (runningWorkers === 0) {
+          recMcp.markReviewed(
+            userId,
+            key,
+            reviewedGeneration ?? recMcp.writeGeneration(userId, key),
+          );
+          // An empty or failed turn never reviews, so evidence buffered before it
+          // is settled here. Evidence arriving during a review stays pending.
+          if (reviewedGeneration === undefined) {
+            pendingWorkerRecords.length = 0;
+            pendingWorkerWriteCapability = false;
+          }
+        }
+        turn.active = false;
+        turn.workerTraces.clear();
+        turn.workerRecords.length = 0;
+        const traceId = options.trace?.traceId;
+        if (
+          recMcp.hadWriteCapability(traceId) ||
+          recMcp.getToolRecords(traceId).length
+        )
+          recMcp.dropRequest(traceId);
+        for (const task of session?.snapshot().tasks ?? []) emitTask(task);
       }
-      turn.active = false;
-      turn.workerTraces.clear();
-      turn.workerRecords.length = 0;
-      const traceId = options.trace?.traceId;
-      if (
-        recMcp.hadWriteCapability(traceId) ||
-        recMcp.getToolRecords(traceId).length
-      )
-        recMcp.dropRequest(traceId);
-      for (const task of session?.snapshot().tasks ?? []) emitTask(task);
-    }
-  };
+    });
   const source = createAgentProfileSource(
     userId,
     () =>
@@ -1187,36 +1197,37 @@ async function open(
             ? { ok: true, value: wrapWorker(result.value, input.profile) }
             : result;
         },
-        preparePlanner: async (input, options) => {
-          coordinatorToolResolver = trustResolver.forProfile(input);
-          const result = await withCoordinatorRun(
-            async (run) =>
-              (await dialogueFor(userId, key, destination)).runStep(run),
-            () =>
-              withCoordinatorModel(selectedModel, () =>
-                observeProfilePreparation(options?.signal, () =>
-                  profileRunner.preparePlanner(input, options),
+        preparePlanner: async (input, options) =>
+          runWithToolScope(coordinatorToolScope, async () => {
+            coordinatorToolResolver = trustResolver.forProfile(input);
+            const result = await withCoordinatorRun(
+              async (run) =>
+                (await dialogueFor(userId, key, destination)).runStep(run),
+              () =>
+                withCoordinatorModel(selectedModel, () =>
+                  observeProfilePreparation(options?.signal, () =>
+                    profileRunner.preparePlanner(input, options),
+                  ),
                 ),
-              ),
-          );
-          if (!result.ok) {
-            if (/timeout|timed out|deadline/i.test(result.error.message))
-              log().warn('Agent profile/preparation deadline observed');
-            return result;
-          }
-          const prepared = result.value;
-          return {
-            ok: true,
-            value: new Proxy(prepared, {
-              get(target, property, receiver) {
-                if (property === 'process')
-                  return (input: Message[], options: AgentCallOptions) =>
-                    processPlanner(prepared, input, options);
-                return Reflect.get(target, property, receiver);
-              },
-            }),
-          };
-        },
+            );
+            if (!result.ok) {
+              if (/timeout|timed out|deadline/i.test(result.error.message))
+                log().warn('Agent profile/preparation deadline observed');
+              return result;
+            }
+            const prepared = result.value;
+            return {
+              ok: true,
+              value: new Proxy(prepared, {
+                get(target, property, receiver) {
+                  if (property === 'process')
+                    return (input: Message[], options: AgentCallOptions) =>
+                      processPlanner(prepared, input, options);
+                  return Reflect.get(target, property, receiver);
+                },
+              }),
+            };
+          }),
       },
       logger: {
         warn(message) {
