@@ -56,7 +56,14 @@ export function rawHandlerRegistry(
   for (const group of registry.getHandlerGroups()) {
     const entries = group.getHandlers().map((entry) => {
       const schema: Record<string, object> = entry.toolDefinition.inputSchema;
-      if (!Object.hasOwn(schema, 'timeout')) return entry;
+      // lib 23 exposes no long-read metadata. Its schemas are either raw
+      // Zod shapes or JSON Schemas with the arguments under properties.
+      const hasTimeout =
+        Object.hasOwn(schema, 'timeout') ||
+        (schema.properties !== null &&
+          typeof schema.properties === 'object' &&
+          Object.hasOwn(schema.properties, 'timeout'));
+      if (!hasTimeout) return entry;
       return {
         ...entry,
         handler: async (
