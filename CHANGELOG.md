@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.5.4] - 2026-11-05
+
 ### Changed
 
 - The coordinator profile tells workers to store results in session collections and persists them with `rag_persist` (source session collection, user target) instead of briefing workers to write user collections; it never pastes verdict JSON into replies.
