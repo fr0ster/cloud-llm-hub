@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.6.1] - 2026-11-05
+
 ### Changed
 
 - Upgrade @mcp-abap-adt/lib to 23.1.0 (dedicated include tools: CreateInclude, UpdateInclude, UpdateIncludeMetadata, DeleteInclude, ActivateInclude and read-only GetMainPrograms) and @mcp-abap-adt/adt-clients to 42.1.0. Preserve executor write access and reader/checker restrictions.
