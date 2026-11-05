@@ -117,24 +117,29 @@ export const ragToolNames: RagMcpTool[] = [
   'collection_records',
   'record_set_enabled',
 ];
+const workerScope =
+  ' Dialogue workers write only session collections; the coordinator persists them to user collections.';
 const writeConditions =
   ' Eligible user/session knowledge collections; existing global mutations require MCP_Admin where REST resolves them; agents collections are excluded. Requires a live caller-owned session (argument or x-clh-session). Maximum UTF-8 JSON arguments: 10 MiB.';
 export const ragDescriptions: Record<RagMcpTool, string> = {
   rag_persist:
-    'Copy session records verbatim into a user collection, creating it if missing. Coordinator only; idempotent by record id. Omitted records selects all enabled records.',
+    'Copy records verbatim from a collection of this session into a user collection, creating it if missing. collection: the source session collection where a worker stored the records (see collections_list); name: the target user collection. Coordinator only; idempotent by record id. Omitted records selects all enabled records.',
   collection_set_trust:
     'Set global informational source trust (0 to 5, one decimal). MCP_Admin required; @skills addresses informational skills.',
   record_set_trust:
     'Set global informational record trust; null clears the override. MCP_Admin required; @skills records are skill ids (front-matter id, else directory, else <source>/<name>).',
   collection_create:
     'Create a user/session knowledge collection idempotently.' +
+    workerScope +
     writeConditions,
   collection_delete: `Delete a collection.${writeConditions}`,
   record_add:
     'Add one unchunked text record, optionally with an exact caller-chosen record id (existing ids fail with RECORD_EXISTS); source is attribution only, no URL fetch.' +
+    workerScope +
     writeConditions,
   record_update:
     'Update one record: replace the full text, retaining omitted title/source; source is attribution only, no URL fetch.' +
+    workerScope +
     writeConditions,
   record_delete: `Delete one record by exact document id.${writeConditions}`,
   rag_search:
