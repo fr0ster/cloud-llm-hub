@@ -52,7 +52,7 @@ export const profileFrontmatter = z.discriminatedUnion('kind', [
       trust,
     })
     .strict(),
-  // Existing records are preserved by missing-only seeding.
+  // Legacy custom planner records remain supported and are not release seeds.
   z
     .object({ kind: z.literal('planner'), name: plannerName, enabled, trust })
     .strict(),

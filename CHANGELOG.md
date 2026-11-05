@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- Built-in agent profiles shipped with a release replace their stored copies on startup when they differ; custom profiles are untouched. No manual agents update is needed after a deploy.
+
 ## [10.5.4] - 2026-11-05
 
 ### Changed

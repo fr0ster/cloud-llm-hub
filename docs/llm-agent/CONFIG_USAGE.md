@@ -235,9 +235,9 @@ Running dialogue work holds the session against inactivity expiry; releasing the
 
 Unset or blank budget fields remain undefined so the library applies its defaults. Values must otherwise be positive safe integers written as decimal digits; malformed values reject startup. Budgets apply to adaptive execution; elapsed time is checked between steps, not as a timeout on planning or an in-flight worker call. These settings apply to the chat path; `execute_step` retains its existing behavior. Run records keep only the latest run per authenticated user and session, with each step output limited to 4000 characters. With a HANA or PG session store they use the dedicated `h_runs` hub store; otherwise they stay in memory, bounded by `LLM_AGENT_MAX_SESSIONS`. Run-record load/save requires a matching trusted request session and authenticated user; requests without either keep no run record. Both Anthropic paths forward the trusted session. Closing, forgetting or expiring a session deletes its owner-scoped run record, including plain-session history expiry. Records also expire after `LLM_AGENT_SESSION_TTL_MS` from their save time; memory saves sweep expired records. Persistent h_runs records are swept at startup and every minute by the session cleanup timer, including records left by previous processes. Sweeps run in the background with failure logging and leave malformed rows intact with a warning.
 
-Checker context includes a bounded, redacted `[tools used by task ?]` block for the checked task. Successful calls provide evidence of execution; claimed system changes without matching successful calls fail unless independently verified. Unavailable or omitted evidence does not prove that no tools ran. Traces persist with dialogue tasks; older tasks without traces remain valid. Checker profile seeds are missing-only, so an admin must update existing `agents` collections to apply the new evidence rule.
+Checker context includes a bounded, redacted `[tools used by task ?]` block for the checked task. Successful calls provide evidence of execution; claimed system changes without matching successful calls fail unless independently verified. Unavailable or omitted evidence does not prove that no tools ran. Traces persist with dialogue tasks; older tasks without traces remain valid. Startup applies changed built-in checker profiles to the global `agents` collection automatically.
 
-Planning and revision route every check targeting a worker other than self to the checker; work steps keep their assigned worker. Checker workers verify SAP state: request-local enforcement filters out SAP/system write tools and rejects attempted system writes before the MCP adapter, even for developers. All dialogue workers, including read-only analyst and verdict checker profiles, can read hub RAG and store results using collection_create, record_add and record_update in user/session collections. Explicit allow/deny policies, caller grants and parent ceilings still apply. Trust setters and global mutations remain system writes. The coordinator retains RAG read tools only. Existing stored profile text is not overwritten by seeds; code supplies the capability in planner worker descriptions and enforces permissions independently of that text. Effect checks are independent of exposition-based role permissions. MCP read-only/destructive annotations take precedence, then read/check name prefixes and the installed RunUnitTest/RunATC family are allowed. The installed RuntimeGetDumpById, RuntimeGetProfilerTraceData, RuntimeGetGatewayErrorLog, RuntimeListFeeds, RuntimeListProfilerTraceFiles and RuntimeListSystemMessages evidence readers are also allowed; runtime execution remains blocked. Executor steps retain their normal permissions. No new setting is required.
+Planning and revision route every check targeting a worker other than self to the checker; work steps keep their assigned worker. Checker workers verify SAP state: request-local enforcement filters out SAP/system write tools and rejects attempted system writes before the MCP adapter, even for developers. All dialogue workers, including read-only analyst and verdict checker profiles, can read hub RAG and store results using collection_create, record_add and record_update in user/session collections. Explicit allow/deny policies, caller grants and parent ceilings still apply. Trust setters and global mutations remain system writes. The coordinator retains RAG read tools only. Startup replaces changed built-in profile text from release seeds; code also supplies the capability in planner worker descriptions and enforces permissions independently of that text. Effect checks are independent of exposition-based role permissions. MCP read-only/destructive annotations take precedence, then read/check name prefixes and the installed RunUnitTest/RunATC family are allowed. The installed RuntimeGetDumpById, RuntimeGetProfilerTraceData, RuntimeGetGatewayErrorLog, RuntimeListFeeds, RuntimeListProfilerTraceFiles and RuntimeListSystemMessages evidence readers are also allowed; runtime execution remains blocked. Executor steps retain their normal permissions. No new setting is required.
 
 ### Tool gate
 
@@ -305,20 +305,18 @@ Each agent receives the request time in its context. The hub captures HTTP/MCP a
 Set `LLM_AGENT_TIME_ZONE` to an IANA time zone such as `Asia/Tbilisi`. Unset or blank uses the library default `UTC`. Invalid values reject startup. This deployment setting applies to all SmartAgent configurations and dialogue sessions; clients cannot override it.
 
 Agent profile seeds ship in `srv/agent-profiles/*.md`. Startup validates the entire
-seed set and preserves existing records, including disabled records. Memory
-collections support create-only seeding. Persistent startup currently refuses a
-missing seed because the installed backend writer has no atomic create-if-absent
-operation; it never substitutes an unsafe upsert. Persistent seeding needs that
-backend capability before rollout. Agents collections are configuration and are
+seed set before writing missing or changed built-in records through the normal
+store upsert. Text is compared exactly and validated metadata as canonical JSON;
+identical records are not rewritten. Custom records, including a non-seed
+`LLM_AGENT_PLANNER_RECORD`, are untouched. Agents collections are configuration and are
 excluded from knowledge search. Sessions can select an agents collection through the REST or agent MCP session APIs.
 The required prompt records include `coordinator` (`kind: coordinator`),
 `planner-create` and `planner-revise` (`kind: planner-author`), alongside the worker
 records. `LLM_AGENT_PLANNER_RECORD` retains its environment-variable name but now
 selects the coordinator record (default `coordinator`); the two author record names
-are fixed. The former `planner` record is no longer required. Operators must carry
-edited conversation/orchestration rules into `coordinator` and planning rules into
-both author records; missing-only seeding does not transfer those edits. Apply the
-same migration to user copies of agents collections.
+are fixed. The former `planner` record is no longer required. Release updates to built-in records apply automatically on startup, including
+replacing local edits or disabled flags when they differ from the seeds. User
+copies of agents collections remain independent and require explicit updates.
 
 The main model remains the only required model; coordinator, planner and classifier
 overrides are optional.

@@ -1,5 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
+import cds from '@sap/cds';
 import { JSON_SCHEMA, load } from 'js-yaml';
 import type { RagDocument } from '../rag-collections';
 import {
@@ -65,15 +66,35 @@ export async function loadAgentProfileSeeds(
   );
   return parseAgentProfileSeeds(files);
 }
+type MetadataValue =
+  | string
+  | number
+  | boolean
+  | undefined
+  | MetadataValue[]
+  | { [key: string]: MetadataValue };
+
+function canonicalMetadata(value: MetadataValue): MetadataValue {
+  if (Array.isArray(value)) return value.map(canonicalMetadata);
+  if (typeof value !== 'object' || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, field]) => [key, canonicalMetadata(field)]),
+  );
+}
+
 export async function seedAgentProfiles(
   store: AgentProfileSeedStore,
   seeds: readonly AgentProfileRecord[],
   plannerRecord: string,
 ): Promise<void> {
-  // Validate everything before any mutation, even when stored records win.
+  // Validate all seeds before mutation; release seeds replace changed built-ins.
   const names = new Set<string>();
-  for (const seed of seeds) {
-    validateAgentProfileRecord({ ...seed, createdAt: '' });
+  const validatedSeeds = seeds.map((seed) =>
+    validateAgentProfileRecord({ ...seed, createdAt: '' }),
+  );
+  for (const seed of validatedSeeds) {
     if (names.has(seed.id)) throw new Error('Duplicate agent seed name');
     names.add(seed.id);
   }
@@ -103,9 +124,26 @@ export async function seedAgentProfiles(
       !existing.some((record) => record.id === required)
     )
       throw new Error(`Missing required agent seed: ${required}`);
-  for (const seed of seeds) {
-    if (!existing.some((document) => document.id === seed.id))
+  const records = new Map(
+    existing.map((document) => {
+      const record = validateAgentProfileRecord(document);
+      return [record.id, record];
+    }),
+  );
+  const log = cds.log('agent-profiles');
+  let updated = 0;
+  for (const seed of validatedSeeds) {
+    const record = records.get(seed.id);
+    if (
+      !record ||
+      record.text !== seed.text ||
+      JSON.stringify(canonicalMetadata(record.metadata)) !==
+        JSON.stringify(canonicalMetadata(seed.metadata))
+    ) {
       validateAgentProfileRecord(await store.upsert(seed));
+      updated++;
+      log.info('Built-in agent profile updated', { id: seed.id });
+    }
   }
   const stored = await store.read();
   validate(stored);
@@ -120,4 +158,8 @@ export async function seedAgentProfiles(
   ])
     if (!stored.some((record) => record.id === required))
       throw new Error(`Missing required agent record: ${required}`);
+  log.info('Built-in agent profiles synchronized', {
+    updated,
+    unchanged: validatedSeeds.length - updated,
+  });
 }

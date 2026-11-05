@@ -85,30 +85,74 @@ test('empty body is preserved and duplicate filenames rejected', () => {
   expect(parseAgentProfileSeeds([file])[0]?.text).toBe('');
   expect(() => parseAgentProfileSeeds([file, file])).toThrow('duplicate name');
 });
-test('missing-only insertion preserves edits and disabled records across concurrent startups', async () => {
+test.each(['text', 'description', 'tools'])(
+  'startup replaces built-in records with changed %s',
+  async (field: string) => {
+    const seeds = await loadAgentProfileSeeds();
+    const f = store();
+    for (const seed of seeds)
+      f.documents.set(seed.id, { ...seed, createdAt: '' });
+    const executor = seeds.find((record) => record.id === 'executor');
+    if (!executor || executor.metadata.kind !== 'profile')
+      throw new Error('Missing fixture');
+    f.documents.set(executor.id, {
+      ...executor,
+      text: field === 'text' ? 'edited' : executor.text,
+      metadata: {
+        ...executor.metadata,
+        ...(field === 'description' ? { description: 'edited' } : {}),
+        ...(field === 'tools' ? { tools: 'read-only' as const } : {}),
+      },
+      createdAt: '',
+    });
+    await seedAgentProfiles(f.adapter, seeds, 'coordinator');
+    expect(f.upsert).toHaveBeenCalledTimes(1);
+    expect(f.upsert).toHaveBeenCalledWith(executor);
+    expect(f.documents.get(executor.id)).toEqual({
+      ...executor,
+      createdAt: '',
+    });
+  },
+);
+
+test('identical records with reordered metadata are not rewritten', async () => {
   const seeds = await loadAgentProfileSeeds();
   const f = store();
-  const executor = seeds.find((record) => record.id === 'executor');
-  if (!executor) throw new Error('Missing fixture');
-  f.documents.set('executor', {
-    ...executor,
-    text: 'edited',
-    metadata: { ...executor.metadata, enabled: false },
-    createdAt: '',
-  });
-  await Promise.all([
-    seedAgentProfiles(f.adapter, seeds, 'coordinator'),
-    seedAgentProfiles(f.adapter, seeds, 'coordinator'),
-  ]);
-  expect(f.documents.size).toBe(7);
-  expect(f.documents.get('executor')).toMatchObject({
-    text: 'edited',
-    metadata: { enabled: false },
-  });
-  f.upsert.mockClear();
+  for (const seed of seeds)
+    f.documents.set(seed.id, {
+      ...seed,
+      metadata: Object.fromEntries(Object.entries(seed.metadata).reverse()),
+      createdAt: 'stored timestamp',
+    });
   await seedAgentProfiles(f.adapter, seeds, 'coordinator');
   expect(f.upsert).not.toHaveBeenCalled();
 });
+
+test('missing seeds are inserted and custom planner records are untouched', async () => {
+  const seeds = await loadAgentProfileSeeds();
+  const f = store();
+  const custom = {
+    id: 'coordinator-custom',
+    text: 'custom instructions',
+    metadata: {
+      kind: 'coordinator',
+      name: 'coordinator-custom',
+      canonicalKey: 'coordinator-custom',
+      enabled: false,
+    },
+    createdAt: '',
+  };
+  f.documents.set(custom.id, custom);
+  await seedAgentProfiles(f.adapter, seeds, custom.id);
+  expect(f.upsert).toHaveBeenCalledTimes(seeds.length);
+  for (const seed of seeds) expect(f.upsert).toHaveBeenCalledWith(seed);
+  expect(f.documents.get(custom.id)).toBe(custom);
+  expect(f.documents.size).toBe(seeds.length + 1);
+  f.upsert.mockClear();
+  await seedAgentProfiles(f.adapter, seeds, custom.id);
+  expect(f.upsert).not.toHaveBeenCalled();
+});
+
 test('invalid seeds and existing records fail without seed writes; backend failure propagates', async () => {
   const seeds = await loadAgentProfileSeeds();
   const f = store();
@@ -152,7 +196,7 @@ test('memory registry seeds global agents once and excludes configuration from s
   await registry.updateDocument('agents', 'executor', { text: 'edited' });
   await registry.seedAgentConfiguration('agents', 'coordinator');
   expect(await registry.getDocument('agents', 'executor')).toMatchObject({
-    text: 'edited',
+    text: record.text,
   });
 });
 

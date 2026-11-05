@@ -2041,7 +2041,7 @@ test('partial agent updates preserve authoritative edits and toggle records crea
   ).toMatchObject({ text: 'new body', enabled: false });
 });
 
-test('persistent agent startup upserts only missing complete records and preserves edited disabled records', async () => {
+test('persistent agent startup restores missing and replaces edited built-in records, then writes nothing', async () => {
   await reg.seedAgentConfiguration('agents', 'coordinator');
   expect((await reg.readAgentCollection('agents'))?.documents).toHaveLength(7);
   await reg.updateDocument('agents', 'executor', {
@@ -2053,7 +2053,7 @@ test('persistent agent startup upserts only missing complete records and preserv
   await restarted.restore();
   const add = jest.spyOn(restarted, 'addDocument');
   await restarted.seedAgentConfiguration('agents', 'coordinator');
-  expect(add).toHaveBeenCalledTimes(1);
+  expect(add).toHaveBeenCalledTimes(2);
   expect(add).toHaveBeenCalledWith(
     'agents',
     expect.objectContaining({
@@ -2069,7 +2069,12 @@ test('persistent agent startup upserts only missing complete records and preserv
     (await restarted.readAgentCollection('agents'))?.documents.find(
       (record) => record.id === 'executor',
     ),
-  ).toMatchObject({ text: 'edited executor', metadata: { enabled: false } });
+  ).not.toMatchObject({ text: 'edited executor' });
+  expect(
+    (await restarted.readAgentCollection('agents'))?.documents.find(
+      (record) => record.id === 'executor',
+    )?.metadata.enabled,
+  ).not.toBe(false);
   add.mockClear();
   await restarted.seedAgentConfiguration('agents', 'coordinator');
   expect(add).not.toHaveBeenCalled();

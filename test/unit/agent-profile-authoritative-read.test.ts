@@ -399,21 +399,27 @@ test.each([
       await registry.updateCollection('agents', { displayName: 'New' });
     else await registry.setEnabled('alice', 'agents', false);
     expect(stored.documents.get('other')).toBe(other);
+    // Seeding replaces the fixture's non-release analyst text with the seed.
     const writesAnalyst = [
       'replace',
       'partial',
       'enable',
       'delete',
       'bulk',
+      'seed',
     ].includes(operation);
     expect(stored.documents.has('analyst')).toBe(!writesAnalyst);
     expect(stored.documents.has('new')).toBe(false);
     const current = await registry.getDocument('agents', 'analyst');
     if (operation === 'delete') expect(current).toBeNull();
     else {
-      expect(current?.text).toBe(
-        ['replace', 'partial', 'bulk'].includes(operation) ? 'new' : 'original',
-      );
+      if (operation === 'seed') expect(current?.text).not.toBe('original');
+      else
+        expect(current?.text).toBe(
+          ['replace', 'partial', 'bulk'].includes(operation)
+            ? 'new'
+            : 'original',
+        );
       if (operation === 'enable') expect(current?.enabled).toBe(false);
     }
   },
