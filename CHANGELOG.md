@@ -4,12 +4,16 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.6.1] - 2026-11-05
+
 ### Changed
 
 - Upgrade @mcp-abap-adt/lib to 23.1.0 (dedicated include tools: CreateInclude, UpdateInclude, UpdateIncludeMetadata, DeleteInclude, ActivateInclude and read-only GetMainPrograms) and @mcp-abap-adt/adt-clients to 42.1.0. Preserve executor write access and reader/checker restrictions.
 
 ### Fixed
 
+- Long-read SAP tools whose schema declares `timeout` under `properties` (GetIncludesList, GetPackageTree, SearchObject, ATC results and others, 17 handlers) now receive the SAP system type on their extra connection; with lib 23 they were refused ("the SAP system type is not stated … nothing was sent to the system").
+- Tool embeddings regenerated for the lib 23.1.0 catalogue (233 tools); with the vector tools backend the stale bundle would have failed the tool corpus load at startup.
 - llm-agent 30.34.1 / llm-agent-libs 30.32.3: a status-only `plan_update` keeps the structured plan instead of failing with "plan must be a string", and a task is delivered at most once per request (repeated `deliver` no longer duplicates output; a failed turn does not mark it delivered). Dialogue state restore keeps `deliveredTaskIds`.
 
 ## [10.6.0] - 2026-11-05
