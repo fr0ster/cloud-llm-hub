@@ -1,4 +1,5 @@
 import {
+  InMemoryRag,
   type IUsageRecorder,
   QueryEmbedding,
   TextOnlyEmbedding,
@@ -66,10 +67,13 @@ export type { RagMcpTool } from './lib/rag-tool-catalogue';
 export { ragMcpSchemas } from './lib/rag-tool-catalogue';
 
 import {
+  type CollectionAddress,
+  dialogueRagToolAllowed,
   eligibleRagTools,
   type RagMcpTool,
   ragDescriptions,
   ragMcpSchemas,
+  ragSchema,
   ragToolEffect,
 } from './lib/rag-tool-catalogue';
 
@@ -297,11 +301,85 @@ async function executeRagMcpToolImpl(
     )
   )
     return fail('TOOL_FORBIDDEN', 403, `TOOL_FORBIDDEN: ${name}`);
+  if (!dialogueRagToolAllowed(name, context.dialogueRole))
+    return fail('TOOL_FORBIDDEN', 403, `TOOL_FORBIDDEN: ${name}`);
   const readOnlyForbidden =
     context.readOnly &&
     ragToolEffect(name) !== 'read' &&
     !(ragToolEffect(name) === 'knowledge' && context.dialogueRole === 'worker');
-  const parsed = ragMcpSchemas[name].safeParse(input);
+  // Inspect mutation targets independently of role argument schemas. A refusal
+  // must not suggest that retrying with different arguments grants permission.
+  if (ragToolEffect(name) !== 'read' && name !== 'rag_persist') {
+    const targetInput = z
+      .object({
+        collection: z
+          .union([
+            z.string(),
+            z.object({ collection: z.string(), scope: z.string() }),
+          ])
+          .optional(),
+        name: z.string().optional(),
+        scope: z.string().optional(),
+      })
+      .safeParse(input);
+    if (targetInput.success) {
+      const raw = targetInput.data;
+      if (name === 'collection_create' && raw.name) {
+        let logical: string | undefined;
+        try {
+          logical = normalizeLogicalId(raw.name);
+        } catch {
+          // Invalid names are handled by the argument validation below.
+        }
+        if (logical === 'task-results')
+          return fail(
+            'TOOL_FORBIDDEN',
+            403,
+            'Reserved name: task-results is reserved for the session store',
+          );
+        if (
+          context.dialogueRole === 'worker' &&
+          raw.scope &&
+          raw.scope !== 'session'
+        )
+          return fail(
+            'TOOL_FORBIDDEN',
+            403,
+            'Workers create session collections only',
+          );
+      }
+      const target = raw.collection;
+      if (target) {
+        const registry = context.registry ?? ragHost().getCollectionRegistry();
+        const collection =
+          typeof target === 'string' ? target : target.collection;
+        // Only reveal reserved metadata for the caller's own session.
+        const exact = await registry.getCollection(collection);
+        const reserved =
+          collection === 'task-results'
+            ? true
+            : exact?.collectionKind === 'task-results' &&
+              exact.scope === 'session' &&
+              exact.owner === userId &&
+              exact.sessionId === context.sessionKey;
+        if (reserved)
+          return fail(
+            'TOOL_FORBIDDEN',
+            403,
+            'TOOL_FORBIDDEN: task results are written by the session store only',
+          );
+      }
+    }
+  }
+  // Existing worker callers may explicitly request session creation. Keep that
+  // compatible without advertising scope or accepting a different write scope.
+  const schema =
+    context.dialogueRole === 'worker' && name === 'collection_create'
+      ? ragSchema('collection_create', 'worker').extend({
+          scope: z.literal('session').optional(),
+        })
+      : ragSchema(name, context.dialogueRole);
+  const parsed = schema.safeParse(input);
   if (!parsed.success && readOnlyForbidden)
     return fail('TOOL_FORBIDDEN', 403, `TOOL_FORBIDDEN: ${name}`);
   if (!parsed.success)
@@ -313,9 +391,67 @@ async function executeRagMcpToolImpl(
       400,
       parsed.error.message,
     );
-  const args: ValidatedArgs = parsed.data;
   try {
     const registry = context.registry ?? ragHost().getCollectionRegistry();
+    const resolveAddress = async (address: CollectionAddress) => {
+      if (address.scope === 'global' && address.collection === '@skills')
+        return '@skills';
+      const global =
+        address.scope === 'global'
+          ? await registry.getCollection(address.collection)
+          : null;
+      if (
+        global?.scope === 'global' &&
+        (global.logicalId ?? global.id) === address.collection
+      )
+        return global.id;
+      const candidates = (await registry.listCollections(userId)).filter(
+        (c) =>
+          c.scope === address.scope &&
+          (c.scope === 'global' || c.owner === userId) &&
+          (c.scope !== 'session' || c.sessionId === context.sessionKey),
+      );
+      const found = candidates.find(
+        (c) => (c.logicalId ?? c.id) === address.collection,
+      );
+      if (!found)
+        throw new RagWriteError(
+          'COLLECTION_NOT_FOUND',
+          404,
+          `Collection ${address.scope}/${address.collection} not found. Candidates: ${candidates.map((c) => `${c.scope}/${c.logicalId ?? c.id}`).join(', ') || '(none)'}`,
+        );
+      return found.id;
+    };
+    const data: Omit<ValidatedArgs, 'collection' | 'collections'> & {
+      collection?: string | CollectionAddress;
+      collections?: (string | CollectionAddress)[];
+      from?: CollectionAddress;
+      to?: CollectionAddress;
+    } = parsed.data;
+    const { collection, collections, from, to, ...rest } = data;
+    const args: ValidatedArgs = { ...rest };
+    if (typeof collection === 'string') args.collection = collection;
+    if (collections) {
+      args.collections = await Promise.all(
+        collections.map((entry) =>
+          typeof entry === 'string' ? entry : resolveAddress(entry),
+        ),
+      );
+    }
+    if (typeof collection === 'object')
+      args.collection = await resolveAddress(collection);
+    if (from && to) {
+      args.collection = await resolveAddress(from);
+      args.name = to.collection;
+    }
+    if (context.dialogueRole === 'worker' && ragToolEffect(name) !== 'read') {
+      if (name === 'collection_create') args.scope = 'session';
+      else if (args.collection)
+        args.collection = await resolveAddress({
+          scope: 'session',
+          collection: args.collection,
+        });
+    }
     let createLogicalId: string | undefined;
     if (name === 'collection_create') {
       try {
@@ -361,6 +497,12 @@ async function executeRagMcpToolImpl(
       targetMeta.sessionId === context.sessionKey;
     if (
       targetMeta?.collectionKind === 'task-results' &&
+      !ownTaskResults &&
+      (name === 'collection_set_trust' || name === 'record_set_trust')
+    )
+      return fail('NOT_FOUND', 404, 'Collection not found');
+    if (
+      ownTaskResults &&
       ragToolEffect(name) !== 'read' &&
       name !== 'rag_persist'
     )
@@ -448,6 +590,7 @@ async function executeRagMcpToolImpl(
         traceId,
         context.registry,
         true,
+        context.dialogueRole,
       );
     const s = context.internal
       ? longSessionsIfReady()?.get(userId, key)
@@ -483,6 +626,8 @@ async function executeRagMcpToolImpl(
             context.admin,
             traceId,
             context.registry,
+            false,
+            context.dialogueRole,
           );
         return await runWithSessionId(
           key,
@@ -514,6 +659,8 @@ async function executeRagMcpToolImpl(
         error.refused === 'SESSION_STORE_UNAVAILABLE')
     )
       return fail(error.refused, 503, error.refused);
+    if (error instanceof RagWriteError && context.dialogueRole)
+      return fail(error.code, error.status, error.message);
     if (isWriteTool(name)) {
       const failure = ragWriteFailure(
         error instanceof Error ? error : new Error(String(error)),
@@ -545,6 +692,7 @@ async function runRagTool(
   traceId?: string,
   suppliedRegistry?: CollectionRegistry,
   hideAgents = false,
+  role?: 'worker' | 'coordinator',
 ): Promise<Result> {
   const registry = suppliedRegistry ?? ragHost().getCollectionRegistry();
   if (name === 'rag_persist') {
@@ -555,7 +703,13 @@ async function runRagTool(
       args.records,
       { userId, sessionId: sid, admin: false },
     );
-    return ragTextResult(JSON.stringify(target));
+    return ragTextResult(
+      JSON.stringify(
+        role === 'coordinator'
+          ? { ...target, scope: 'user', collection: args.name }
+          : target,
+      ),
+    );
   }
   if (isWriteTool(name)) {
     const identity = { userId, sessionId: sid, admin };
@@ -660,9 +814,27 @@ async function runRagTool(
       updated: true,
     });
   }
-  const respond = (value: object) => ragTextResult(JSON.stringify(value));
+  const label = async (id: string) => {
+    if (id === '@skills') return 'global/@skills';
+    const meta = await registry.getCollection(id);
+    return meta ? `${meta.scope}/${meta.logicalId ?? meta.id}` : id;
+  };
+  const respond = (value: object) =>
+    ragTextResult(
+      JSON.stringify(
+        role && args.collection === '@skills'
+          ? { collection: 'global/@skills', ...value }
+          : value,
+      ),
+    );
   const resolve = async (entry: string) => {
-    const id = await resolveRouteId(registry, entry, userId, sid, false);
+    if (role === 'coordinator' && entry === '@skills') return entry;
+    const exact =
+      role === 'coordinator' ? await registry.getCollection(entry) : null;
+    const id =
+      exact?.scope === 'global'
+        ? entry
+        : await resolveRouteId(registry, entry, userId, sid, false);
     if (!id) throw new Error('Collection not found');
     const meta = await registry.getCollection(id);
     if (!meta) throw new Error('Collection not found');
@@ -746,34 +918,46 @@ async function runRagTool(
             (!hideAgents || c.collectionKind !== 'agents') &&
             (c.scope !== 'session' || c.sessionId === sid),
         )
-        .map((c) => ({
-          id: c.id,
-          name: c.displayName,
-          scope: c.scope,
-          collectionKind: c.collectionKind,
-          enabled: collectionEnabled(registry, userId, sid, c),
-          defaultEnabled: collectionDefault(registry, userId, c),
-          documents: c.documentCount,
-          ...(() => {
-            const view = collectionView(
-              c,
-              resolverFor(registry).inputFor(
-                { id: '', text: '', createdAt: '', metadata: {} },
-                c,
-              ),
-            );
-            return view.trusted
-              ? {
-                  trusted: true,
-                  trust: view.trust,
-                  trustClass: view.trustClass,
-                  ...(view.trustOverride !== undefined
-                    ? { trustOverride: view.trustOverride }
-                    : {}),
-                }
-              : { trusted: false };
-          })(),
-        })),
+        .map((c) =>
+          role === 'coordinator'
+            ? {
+                scope: c.scope,
+                collection: c.logicalId ?? c.id,
+                records: c.documentCount,
+                enabled: collectionEnabled(registry, userId, sid, c),
+              }
+            : {
+                id: c.id,
+                ...(role
+                  ? { collection: `${c.scope}/${c.logicalId ?? c.id}` }
+                  : {}),
+                name: c.displayName,
+                scope: c.scope,
+                collectionKind: c.collectionKind,
+                enabled: collectionEnabled(registry, userId, sid, c),
+                defaultEnabled: collectionDefault(registry, userId, c),
+                documents: c.documentCount,
+                ...(() => {
+                  const view = collectionView(
+                    c,
+                    resolverFor(registry).inputFor(
+                      { id: '', text: '', createdAt: '', metadata: {} },
+                      c,
+                    ),
+                  );
+                  return view.trusted
+                    ? {
+                        trusted: true,
+                        trust: view.trust,
+                        trustClass: view.trustClass,
+                        ...(view.trustOverride !== undefined
+                          ? { trustOverride: view.trustOverride }
+                          : {}),
+                      }
+                    : { trusted: false };
+                })(),
+              },
+        ),
     });
   }
   if (name === 'rag_search') {
@@ -812,6 +996,41 @@ async function runRagTool(
     const unavailable: { collection: string; error: string }[] = [];
     for (const id of ids) {
       try {
+        if (role === 'coordinator' && id === '@skills') {
+          const documents = await informationalSkillDocuments(
+            resolverFor(registry),
+          );
+          const store = new InMemoryRag();
+          for (const doc of documents) {
+            const saved = await store.upsert(doc.text, { id: doc.id });
+            if (!saved.ok) throw saved.error;
+          }
+          const result = await store.query(
+            new TextOnlyEmbedding(args.query ?? ''),
+            args.k ?? 8,
+          );
+          if (!result.ok) throw result.error;
+          for (const hit of result.value) {
+            const doc = documents.find((doc) => doc.id === hit.metadata.id);
+            if (!doc) continue;
+            hits.push({
+              collection: 'global/@skills',
+              id: doc.id,
+              text: doc.text,
+              score: hit.score,
+              title: doc.text.split(/\r?\n/, 1)[0].slice(0, 120),
+              ...recordAttributes(
+                doc,
+                await resolverFor(registry).inputForSkill(
+                  doc.id,
+                  false,
+                  doc.metadata.kind === 'correction' ? 'correction' : 'system',
+                ),
+              ),
+            });
+          }
+          continue;
+        }
         const meta = await registry.getCollection(id);
         if (
           !meta ||
@@ -838,7 +1057,7 @@ async function runRagTool(
           const doc = await registry.getDocument(id, record.id);
           if (doc && recordPolicy(doc.metadata, true).visible)
             collectionHits.push({
-              collection: id,
+              collection: role ? await label(id) : id,
               id: doc.id,
               title: doc.text.split(/\r?\n/, 1)[0].slice(0, 120),
               text: doc.text,
@@ -857,7 +1076,7 @@ async function runRagTool(
         hits.push(...collectionHits);
       } catch (error) {
         const note = {
-          collection: id,
+          collection: role ? await label(id) : id,
           error: (error instanceof Error ? error.message : String(error)).slice(
             0,
             500,
@@ -954,7 +1173,12 @@ async function runRagTool(
       resolverFor(registry).inputFor(doc, meta),
     );
     if (!visibility.visible)
-      return respond({ id: doc.id, attributes, reason: visibility.reason });
+      return respond({
+        ...(role ? { collection: await label(id) } : {}),
+        id: doc.id,
+        attributes,
+        reason: visibility.reason,
+      });
     const start = args.offset ?? 0;
 
     const page = readLoopPage(
@@ -966,7 +1190,10 @@ async function runRagTool(
       args.limit,
       (page) => respond({ ...page, attributes }).content,
     );
-    return respond('alreadyRead' in page ? page : { ...page, attributes });
+    return respond({
+      ...(role ? { collection: await label(id) } : {}),
+      ...('alreadyRead' in page ? page : { ...page, attributes }),
+    });
   }
   const page = await readRagDocuments(registry, id, {
     offset: args.offset,
@@ -974,6 +1201,7 @@ async function runRagTool(
   });
   if (!page) throw new Error('Collection not found');
   return respond({
+    ...(role ? { collection: await label(id) } : {}),
     total: page.total,
     records: page.documents.map((doc) => {
       const visibility = recordPolicy(doc.metadata, active);

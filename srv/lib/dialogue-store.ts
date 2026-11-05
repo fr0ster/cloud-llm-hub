@@ -39,9 +39,9 @@ export type HubDialogueState = DialogueState & {
   agentsCollectionId?: string;
 };
 
-export const DIALOGUE_TOOL_CONTRACT_VERSION = 2;
+export const DIALOGUE_TOOL_CONTRACT_VERSION = 3;
 
-/** v1 only renames planning calls; pre-canonical contracts require replanning. */
+/** Older tool contracts require replanning without replaying writes. */
 export function migrateDialogueToolContract(
   state: HubDialogueState,
 ): HubDialogueState {
@@ -58,10 +58,6 @@ export function migrateDialogueToolContract(
       if (call.function.name === 'update_plan')
         call.function.name = 'plan_update';
     }
-  }
-  if (state.toolContractVersion === 1) {
-    migrated.toolContractVersion = DIALOGUE_TOOL_CONTRACT_VERSION;
-    return migrated;
   }
   const note =
     'Tool catalogue changed; replan with canonical RAG tools and existing record IDs. Verify unsettled writes before retrying; never replay completed writes.';
