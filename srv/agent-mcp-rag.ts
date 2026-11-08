@@ -430,6 +430,21 @@ async function executeRagMcpToolImpl(
         ),
       };
   }
+  if (name === 'rag_persist') {
+    for (const field of ['from', 'to'] as const) {
+      const value =
+        field === 'from'
+          ? 'from' in input
+            ? input.from
+            : undefined
+          : 'to' in input
+            ? input.to
+            : undefined;
+      if (typeof value !== 'string') continue;
+      const address = parseCollectionLabel(value);
+      if (address) schemaInput = { ...schemaInput, [field]: address };
+    }
+  }
   const parsed = schema.safeParse(schemaInput);
   if (!parsed.success && readOnlyForbidden)
     return fail('TOOL_FORBIDDEN', 403, `TOOL_FORBIDDEN: ${name}`);
@@ -444,7 +459,12 @@ async function executeRagMcpToolImpl(
     );
   try {
     const registry = context.registry ?? ragHost().getCollectionRegistry();
+    const resolvedCollections = new Set<string>();
     const resolveAddress = async (address: CollectionAddress) => {
+      const resolved = (id: string) => {
+        resolvedCollections.add(id);
+        return id;
+      };
       if (
         context.dialogueRole === 'worker' &&
         ragToolEffect(name) !== 'read' &&
@@ -456,7 +476,7 @@ async function executeRagMcpToolImpl(
           'Workers write session collections only',
         );
       if (address.scope === 'global' && address.collection === '@skills')
-        return '@skills';
+        return resolved('@skills');
       const global =
         address.scope === 'global'
           ? await registry.getCollection(address.collection)
@@ -465,7 +485,7 @@ async function executeRagMcpToolImpl(
         global?.scope === 'global' &&
         (global.logicalId ?? global.id) === address.collection
       )
-        return global.id;
+        return resolved(global.id);
       const candidates = (await registry.listCollections(userId)).filter(
         (c) =>
           c.scope === address.scope &&
@@ -481,7 +501,7 @@ async function executeRagMcpToolImpl(
           404,
           `Collection ${address.scope}/${address.collection} not found. Candidates: ${candidates.map((c) => `${c.scope}/${c.logicalId ?? c.id}`).join(', ') || '(none)'}`,
         );
-      return found.id;
+      return resolved(found.id);
     };
     const data: Omit<ValidatedArgs, 'collection' | 'collections'> & {
       collection?: string | CollectionAddress;
@@ -654,6 +674,7 @@ async function executeRagMcpToolImpl(
         context.registry,
         true,
         context.dialogueRole,
+        resolvedCollections,
       );
     const s = context.internal
       ? longSessionsIfReady()?.get(userId, key)
@@ -691,6 +712,7 @@ async function executeRagMcpToolImpl(
             context.registry,
             false,
             context.dialogueRole,
+            resolvedCollections,
           );
         return await runWithSessionId(
           key,
@@ -756,6 +778,7 @@ async function runRagTool(
   suppliedRegistry?: CollectionRegistry,
   hideAgents = false,
   role?: 'worker' | 'coordinator',
+  resolvedCollections: ReadonlySet<string> = new Set(),
 ): Promise<Result> {
   const registry = suppliedRegistry ?? ragHost().getCollectionRegistry();
   if (name === 'rag_persist') {
@@ -895,7 +918,7 @@ async function runRagTool(
     const exact =
       role === 'coordinator' ? await registry.getCollection(entry) : null;
     const id =
-      exact?.scope === 'global'
+      resolvedCollections.has(entry) || exact?.scope === 'global'
         ? entry
         : await resolveRouteId(registry, entry, userId, sid, false);
     if (!id) throw new Error('Collection not found');

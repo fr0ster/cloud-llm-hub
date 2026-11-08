@@ -306,6 +306,126 @@ test('unknown label scopes retain literal collection lookup and missing addresse
   );
 });
 
+test.each(['worker', 'coordinator'] as const)(
+  '%s reads explicit scopes despite same-named collections',
+  async (dialogueRole) => {
+    const context: RagExecutionContext = {
+      userId: 'alice',
+      admin: false,
+      sessionKey: sid,
+      internal: false,
+      trustedAdmission: true,
+      permissions: { allows: () => true },
+      readOnly: false,
+      channel: 'mcp-agent',
+      registry,
+      dialogueRole,
+    };
+    for (const scope of ['global', 'user', 'session'] as const) {
+      const id =
+        scope === 'global'
+          ? 'shared'
+          : scope === 'user'
+            ? userCollectionId('shared', 'alice')
+            : sessionCollectionId('shared', 'alice', sid);
+      await registry.createCollection({
+        id,
+        logicalId: 'shared',
+        scope,
+        ...(scope !== 'global' ? { owner: 'alice' } : {}),
+        ...(scope === 'session' ? { sessionId: sid } : {}),
+        displayName: 'shared',
+        description: '',
+      });
+      await registry.addDocument(id, {
+        id: 'visible',
+        text: `${scope} record`,
+        metadata: {},
+      });
+    }
+    for (const scope of ['global', 'user', 'session']) {
+      for (const separator of ['/', ':']) {
+        const label = `${scope}${separator}shared`;
+        const read = await executeRagTool(context, 'rag_read', {
+          collection: label,
+          id: 'visible',
+        });
+        expect(read.isError).toBeUndefined();
+        expect(JSON.parse(read.content[0].text)).toMatchObject({
+          text: `${scope} record`,
+        });
+        const search = await executeRagTool(context, 'rag_search', {
+          collections: [label],
+          query: 'record',
+        });
+        expect(search.isError).toBeUndefined();
+        expect(JSON.parse(search.content[0].text)).toMatchObject({
+          hits: [{ collection: `${scope}/shared`, text: `${scope} record` }],
+        });
+      }
+    }
+  },
+);
+
+test.each(['/', ':'])('persists string labels using %s', async (separator) => {
+  const context: RagExecutionContext = {
+    userId: 'alice',
+    admin: false,
+    sessionKey: sid,
+    internal: false,
+    trustedAdmission: true,
+    permissions: { allows: () => true },
+    readOnly: false,
+    channel: 'mcp-agent',
+    registry,
+    dialogueRole: 'coordinator',
+  };
+  const source = sessionCollectionId('scratch', 'alice', sid);
+  await registry.createCollection({
+    id: source,
+    logicalId: 'scratch',
+    scope: 'session',
+    owner: 'alice',
+    sessionId: sid,
+    displayName: 'scratch',
+    description: '',
+  });
+  await registry.addDocument(source, {
+    id: 'copied',
+    text: 'verbatim record',
+    metadata: {},
+  });
+  const args = {
+    from: `session${separator}scratch`,
+    to: `user${separator}saved`,
+  };
+  expect(
+    (await executeRagTool(context, 'rag_persist', args)).isError,
+  ).toBeUndefined();
+  expect(
+    await registry.getDocument(userCollectionId('saved', 'alice'), 'copied'),
+  ).toMatchObject({ text: 'verbatim record' });
+  for (const invalid of [
+    { ...args, to: 'global/saved' },
+    { ...args, from: 'user/scratch' },
+    { ...args, from: 'scratch' },
+    { ...args, to: 'saved' },
+  ]) {
+    expect(await executeRagTool(context, 'rag_persist', invalid)).toMatchObject(
+      {
+        isError: true,
+      },
+    );
+  }
+  expect(
+    await executeRagTool(
+      { ...context, dialogueRole: 'worker' },
+      'rag_persist',
+      args,
+    ),
+  ).toMatchObject({ isError: true });
+});
+
 test('session labels resolve own collections and preserve worker task-results guards', async () => {
   const context: RagExecutionContext = {
     userId: 'alice',
