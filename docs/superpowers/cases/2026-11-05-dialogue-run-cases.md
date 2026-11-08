@@ -116,3 +116,64 @@ Normalised cost (Opus = 1, Sonnet = 0.6, output ×5), worker runs grouped by bri
 | `check-tech-spec` loop | – | ~4 min | – | – | P1: the step lost its verdict kind; `deliver` refused while the check was pending |
 
 Planner author: 6 calls, 39k input. That is small.
+
+## P8. Full ALV run on 10.6.1 (30d966cc, 2026-11-07, 2 h 28 min)
+
+The same four-phase transport ALV process as d69658cf, driven by a script
+through the session API (`/v1/session`, `/v1/chat/completions`) on E19,
+collection `mte-transport-alv-1108`, prefix `ZMTH27_`.
+
+| Phase | Time | Outcome |
+|---|---|---|
+| 1 business requirements | 706 s | done, 4 tasks |
+| 2 tech spec | 2 372 s | `waiting_user` with an empty question; `verify-tech-spec` stayed pending |
+| 3 design | 885 s | done |
+| 4 code | – | `ZMTH27_MY_TRANSPORTS` (619 lines, `$TMP`) active, checks 19/19; plan stayed `active` |
+
+Tokens per model:
+
+| Model | Calls | Input | Output | d69658cf input / output |
+|---|---|---|---|---|
+| Opus 4.6 | 326 | 5 260k | 133k | 1 211k / 31k |
+| Sonnet 4.5 | 331 | 15 770k | 485k | 3 786k / 103k |
+| gpt-4.1-mini | – | 66k | 16k | 13k / 5k |
+
+The coordinator made 270 Opus calls (average input 15.8k); 53 of them
+(1.14M input) came straight after a tool error. The planner author made 51
+Opus calls (1.0M input).
+
+Confirmed fixed live: phase 1 no longer fails 26 tasks; no include created
+as PROG/P; no `plan must be a string`; built-in profiles synced on deploy.
+Not exercised: `CreateInclude` (the planner made one 619-line program).
+
+### Defects
+
+1. **Collection labels used as names (regression from 10.6.0 role split).**
+   Read tools print collections as `scope/name`; agents passed the label back
+   as `collection` and got `Collection not found` more than 60 times
+   (executor `rag_read` ×20, `collection_records` ×13, checker ×11, planner
+   author ×10, worker `record_add` ×8). Forms seen: `user/x`, `user:x`,
+   `session/x`, `session:x`, `session/task-results`.
+2. **`system_type_required` on batch-envelope reads (lib 23.1.0).**
+   `ListTransports` (×2). The lib's batch item view carries no system kind;
+   the same path serves `GetWhereUsed`, `GetIncludesList`, `DescribeByList`,
+   `GetEnhancements`, `GetStructuresList`, `GetAbapSystemSymbols` and
+   `RuntimeListFeeds`.
+3. **Gate without a question.** The plan stopped in `waiting_user` with
+   "Waiting for user approval to proceed with the plan revision" and no
+   question to the user.
+4. **A replaced failed step blocks the plan.** `s4` stayed `failed` after
+   `s4b`–`s4d` replaced it; the plan never reached `done`, and task t28 stayed
+   `running`.
+5. **Plan churn, as before.** 30 "Skipping or narrowing requires user
+   consent" refusals, 7 dependency-change and 5 invalid-dependency errors,
+   one `MODEL_NOT_ALLOWED` (`opus`), one `deliver` note over 1000 characters.
+6. **Oversized code steps.** "Create the complete program with all
+   functionality", then three rewrite cycles of 500+ lines each.
+7. **Missing SAP credentials look like an outage.** In the first attempt the
+   script sent no `x-sap-*` headers; all 27 tasks failed with "SAP connection
+   failed" and the coordinator retried instead of asking for credentials.
+
+Defects 1 and 2 are fixed in the hub (10.6.2). Defects 3, 4 and 6 belong to
+the process-phases spec (`superseded`, gates with an exact question, content
+units). Defect 5 is P1 again.
