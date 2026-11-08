@@ -5,6 +5,7 @@ import {
   HandlerExporter,
   type HandlerExporterOptions,
 } from '@mcp-abap-adt/lib/handlers';
+import { handlerBatchAvailability } from './handler-batch-availability';
 
 export function boundHandlerExporter(
   context: HandlerContext,
@@ -17,7 +18,9 @@ export function boundHandlerExporter(
   for (const group of registry.getHandlerGroups()) {
     if (!(group instanceof BaseHandlerGroup))
       throw new Error('HandlerExporter returned an unsupported handler group');
-    Object.assign(group.currentContext(), context);
+    Object.assign(group.currentContext(), context, {
+      batchAvailability: handlerBatchAvailability,
+    });
   }
   return exporter;
 }

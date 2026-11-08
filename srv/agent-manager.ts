@@ -119,6 +119,7 @@ import {
 import { runOutsideAdmission, trackCall } from './lib/admission-scope';
 import { boundHandlerExporter } from './lib/bound-handler-exporter';
 import { destinationRequiresCredentials } from './lib/destination-authentication';
+import { handlerBatchAvailability } from './lib/handler-batch-availability';
 import { connectionSystemType } from './lib/system-identity-cache';
 import { createToolLoopWindow } from './lib/tool-loop-window';
 
@@ -846,7 +847,11 @@ export function setRequestConnection(
   dumpScope?: DumpScope,
   exposition?: ExpositionLevel[],
 ): void {
-  const context: HandlerContext = { connection, logger: loggerAdapter };
+  const context: HandlerContext = {
+    connection,
+    logger: loggerAdapter,
+    batchAvailability: handlerBatchAvailability,
+  };
   connectionALS.enterWith({ connection, context, dumpScope, exposition });
 }
 
@@ -866,7 +871,11 @@ export function runWithRequestConnection<T>(
   dumpScope?: DumpScope,
   exposition?: ExpositionLevel[],
 ): Promise<T> {
-  const context: HandlerContext = { connection, logger: loggerAdapter };
+  const context: HandlerContext = {
+    connection,
+    logger: loggerAdapter,
+    batchAvailability: handlerBatchAvailability,
+  };
   return connectionALS.run({ connection, context, dumpScope, exposition }, fn);
 }
 

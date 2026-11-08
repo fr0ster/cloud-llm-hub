@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- Dialogue RAG tools accept the collection labels they print (`user/name`, `user:name`, `session/name`, `global/name`) as an explicit scope; agents copying a label back no longer get "Collection not found". Workers still write only their own session.
+- Batch-envelope reads of @mcp-abap-adt/lib 23.1.0 (ListTransports, GetWhereUsed, GetIncludesList, DescribeByList, GetEnhancements, GetStructuresList, GetAbapSystemSymbols, RuntimeListFeeds) were refused `system_type_required`; the hub now runs them one request at a time on the connection that carries the system type.
+
 ## [10.6.1] - 2026-11-05
 
 ### Changed
