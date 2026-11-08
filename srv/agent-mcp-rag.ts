@@ -68,6 +68,7 @@ export { ragMcpSchemas } from './lib/rag-tool-catalogue';
 
 import {
   type CollectionAddress,
+  collectionAddress,
   dialogueRagToolAllowed,
   eligibleRagTools,
   type RagMcpTool,
@@ -268,6 +269,16 @@ async function externalSession(userId: string, key: string) {
   return lifecycle.resolveSession(userId, key);
 }
 
+function parseCollectionLabel(value: string): CollectionAddress | undefined {
+  const match = /^(global|user|session)[/:]([^/:]+)$/.exec(value);
+  if (!match) return undefined;
+  const scope = match[1];
+  const collection = match[2];
+  if (scope !== 'global' && scope !== 'user' && scope !== 'session')
+    return undefined;
+  return { scope, collection };
+}
+
 /** Validates even direct calls, before acquiring the session queue and lease. */
 async function executeRagMcpToolImpl(
   context: RagExecutionContext,
@@ -348,7 +359,10 @@ async function executeRagMcpToolImpl(
             'Workers create session collections only',
           );
       }
-      const target = raw.collection;
+      const target =
+        typeof raw.collection === 'string'
+          ? (parseCollectionLabel(raw.collection) ?? raw.collection)
+          : raw.collection;
       if (target) {
         const registry = context.registry ?? ragHost().getCollectionRegistry();
         const collection =
@@ -379,7 +393,44 @@ async function executeRagMcpToolImpl(
           scope: z.literal('session').optional(),
         })
       : ragSchema(name, context.dialogueRole);
-  const parsed = schema.safeParse(input);
+  let schemaInput = input;
+  if ('collection' in input && typeof input.collection === 'string') {
+    const address = parseCollectionLabel(input.collection);
+    if (
+      address &&
+      context.dialogueRole === 'coordinator' &&
+      (name === 'rag_read' || name === 'collection_records')
+    )
+      schemaInput = { ...input, collection: address };
+    if (
+      address &&
+      context.dialogueRole === 'worker' &&
+      ragToolEffect(name) !== 'read'
+    ) {
+      if (address.scope !== 'session')
+        return fail(
+          'TOOL_FORBIDDEN',
+          403,
+          'Workers write session collections only',
+        );
+      schemaInput = { ...input, collection: address.collection };
+    }
+  }
+  if (context.dialogueRole === 'coordinator' && 'collections' in input) {
+    const labels = z
+      .array(z.union([z.string(), collectionAddress]))
+      .safeParse(input.collections);
+    if (labels.success)
+      schemaInput = {
+        ...schemaInput,
+        collections: labels.data.map((value) =>
+          typeof value === 'string'
+            ? (parseCollectionLabel(value) ?? value)
+            : value,
+        ),
+      };
+  }
+  const parsed = schema.safeParse(schemaInput);
   if (!parsed.success && readOnlyForbidden)
     return fail('TOOL_FORBIDDEN', 403, `TOOL_FORBIDDEN: ${name}`);
   if (!parsed.success)
@@ -394,6 +445,16 @@ async function executeRagMcpToolImpl(
   try {
     const registry = context.registry ?? ragHost().getCollectionRegistry();
     const resolveAddress = async (address: CollectionAddress) => {
+      if (
+        context.dialogueRole === 'worker' &&
+        ragToolEffect(name) !== 'read' &&
+        address.scope !== 'session'
+      )
+        throw new RagWriteError(
+          'TOOL_FORBIDDEN',
+          403,
+          'Workers write session collections only',
+        );
       if (address.scope === 'global' && address.collection === '@skills')
         return '@skills';
       const global =
@@ -430,13 +491,20 @@ async function executeRagMcpToolImpl(
     } = parsed.data;
     const { collection, collections, from, to, ...rest } = data;
     const args: ValidatedArgs = { ...rest };
-    if (typeof collection === 'string') args.collection = collection;
+    const resolveCollection = async (
+      value: string | CollectionAddress,
+    ): Promise<string> => {
+      if (typeof value !== 'string') return resolveAddress(value);
+      const address = parseCollectionLabel(value);
+      if (address) return resolveAddress(address);
+      if (context.dialogueRole === 'worker' && ragToolEffect(name) !== 'read')
+        return resolveAddress({ scope: 'session', collection: value });
+      return value;
+    };
+    if (typeof collection === 'string')
+      args.collection = await resolveCollection(collection);
     if (collections) {
-      args.collections = await Promise.all(
-        collections.map((entry) =>
-          typeof entry === 'string' ? entry : resolveAddress(entry),
-        ),
-      );
+      args.collections = await Promise.all(collections.map(resolveCollection));
     }
     if (typeof collection === 'object')
       args.collection = await resolveAddress(collection);
@@ -446,11 +514,6 @@ async function executeRagMcpToolImpl(
     }
     if (context.dialogueRole === 'worker' && ragToolEffect(name) !== 'read') {
       if (name === 'collection_create') args.scope = 'session';
-      else if (args.collection)
-        args.collection = await resolveAddress({
-          scope: 'session',
-          collection: args.collection,
-        });
     }
     let createLogicalId: string | undefined;
     if (name === 'collection_create') {

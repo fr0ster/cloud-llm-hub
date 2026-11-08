@@ -13,6 +13,7 @@ import {
 } from '@mcp-abap-adt/lib/handlers';
 import { boundHandlerExporter } from './bound-handler-exporter';
 import type { ExpositionLevel } from './exposition';
+import { handlerBatchAvailability } from './handler-batch-availability';
 import type { SystemType } from './system-type';
 
 type ToolArgument =
@@ -30,6 +31,7 @@ export function rawHandlerRegistry(
   systemType: SystemType,
 ) {
   const context = noConnectionContext();
+  context.batchAvailability = handlerBatchAvailability;
   const high = exposition.includes('high')
     ? [new HighLevelHandlersGroup(context)]
     : [];

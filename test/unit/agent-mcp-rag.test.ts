@@ -4,7 +4,12 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import express from 'express';
-import { ragMcpSchemas, registerRagMcpTools } from '../../srv/agent-mcp-rag';
+import {
+  executeRagTool,
+  type RagExecutionContext,
+  ragMcpSchemas,
+  registerRagMcpTools,
+} from '../../srv/agent-mcp-rag';
 import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
 import {
   LocalRagMcpClient,
@@ -85,6 +90,7 @@ import {
   setLongSessionsForTest,
 } from '../../srv/lib/long-session';
 import { resolveSession } from '../../srv/lib/session-lifecycle';
+import { createTaskResultStore } from '../../srv/lib/task-result-store';
 import {
   CollectionRegistry,
   CollectionSearchRag,
@@ -270,6 +276,130 @@ afterEach(() => {
 
 test.each(names)('%s happy path', async (name) => {
   expect((await call(name)).isError).toBeUndefined();
+});
+
+test.each(['user/notes', 'user:notes'])(
+  'reads collection label %s',
+  async (collection) => {
+    expect(
+      (await call('rag_read', { collection, id: 'visible' })).isError,
+    ).toBeUndefined();
+    expect(
+      (await call('collection_records', { collection })).isError,
+    ).toBeUndefined();
+    expect(
+      (await call('rag_search', { collections: [collection] })).isError,
+    ).toBeUndefined();
+  },
+);
+
+test('unknown label scopes retain literal collection lookup and missing addresses list candidates', async () => {
+  expect(await call('collection_records', { collection: 'foo/notes' })).toEqual(
+    await call('collection_records', { collection: 'foo:notes' }),
+  );
+  const missing = await call('collection_records', {
+    collection: 'user/missing',
+  });
+  expect(missing.isError).toBe(true);
+  expect(missing.content[0].text).toContain(
+    'Candidates: user/notes, user/second',
+  );
+});
+
+test('session labels resolve own collections and preserve worker task-results guards', async () => {
+  const context: RagExecutionContext = {
+    userId: 'alice',
+    admin: false,
+    sessionKey: sid,
+    internal: false,
+    trustedAdmission: true,
+    permissions: { allows: () => true },
+    readOnly: false,
+    channel: 'mcp-agent',
+    registry,
+    dialogueRole: 'worker',
+  };
+  for (const logicalId of ['scratch', 'task-results']) {
+    const id = sessionCollectionId(logicalId, 'alice', sid);
+    if (logicalId === 'task-results') {
+      const stored = await createTaskResultStore(registry, {
+        userId: 'alice',
+        sessionKey: sid,
+      }).put({
+        id: 'visible',
+        worker: 'worker',
+        goal: 'Read',
+        result: 'report',
+        outcome: 'done',
+        summary: 'Complete',
+        output: 'session record',
+      });
+      if (!stored.ok) throw new Error(stored.error.message);
+    } else {
+      await registry.createCollection({
+        id,
+        logicalId,
+        scope: 'session',
+        owner: 'alice',
+        sessionId: sid,
+        displayName: logicalId,
+        description: '',
+      });
+      await registry.addDocument(id, {
+        id: 'visible',
+        text: 'session record',
+        metadata: {},
+      });
+    }
+    expect(
+      (
+        await executeRagTool(
+          {
+            ...context,
+            permissions: { allows: () => logicalId !== 'task-results' },
+          },
+          'rag_read',
+          {
+            collection: `session/${logicalId}`,
+            id: 'visible',
+          },
+        )
+      ).isError,
+    ).toBeUndefined();
+    expect(
+      (
+        await executeRagTool(
+          {
+            ...context,
+            permissions: { allows: () => logicalId !== 'task-results' },
+          },
+          'collection_records',
+          {
+            collection: `session/${logicalId}`,
+          },
+        )
+      ).isError,
+    ).toBeUndefined();
+  }
+  for (const collection of [
+    'session/task-results',
+    'session:task-results',
+    'user/notes',
+  ]) {
+    expect(
+      (
+        await executeRagTool(context, 'record_add', {
+          collection,
+          text: 'forbidden',
+        })
+      ).isError,
+    ).toBe(true);
+  }
+  const added = await executeRagTool(context, 'record_add', {
+    collection: 'session/scratch',
+    text: 'allowed',
+  });
+  expect(added).not.toMatchObject({ isError: true });
 });
 test.each(names)('%s refuses a closed session', async (name) => {
   await longSessions().close('alice', sid, 'explicit');
