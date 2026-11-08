@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.6.2] - 2026-11-08
+
 ### Fixed
 
 - Dialogue RAG tools accept the collection labels they print (`user/name`, `user:name`, `session/name`, `global/name`) as an explicit scope; agents copying a label back no longer get "Collection not found". Workers still write only their own session.
