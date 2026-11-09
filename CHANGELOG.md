@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.8.0] - 2026-11-09
+
 ### Added
 
 - `LLM_AGENT_TEMPERATURE=off` omits temperature for all agent, worker and classifier LLM calls; the LLM window reports `off` with source `config`. Unset keeps the default of `0.7`, and invalid values fail startup.
