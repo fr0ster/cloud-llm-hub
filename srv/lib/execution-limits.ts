@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Result } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
+import { configuredExecutionLimits } from './deploy-role-config';
 import type { RoleSettingsError } from './role-model-settings';
 import { sessionSlot } from './session-slot';
 
@@ -92,12 +93,15 @@ export function currentLimit(
   role: RunRole,
   name: keyof RunLimits,
 ): Limit | undefined {
-  return scope.getStore()?.[role]?.[name];
+  return (
+    scope.getStore()?.[role]?.[name] ??
+    configuredExecutionLimits()[role]?.[name]
+  );
 }
 export function currentSessionLimit(
   name: 'toolResultMaxChars' | 'historyTokenBudget',
 ): Limit | undefined {
-  return scope.getStore()?.[name];
+  return scope.getStore()?.[name] ?? configuredExecutionLimits()[name];
 }
 
 /** Infinity is the numeric consumer's unbounded form, not a finite substitute. */
@@ -131,44 +135,53 @@ export function sessionToolResultMaxChars(fallback: number): number {
 export function effectiveExecutionLimits(
   userId: string,
   key: string,
-): Record<string, { value: Limit; source: 'user' | 'env' | 'default' }> {
+): Record<
+  string,
+  { value: Limit; source: 'user' | 'env' | 'config' | 'default' }
+> {
   const settings = getExecutionLimits(userId, key);
+  const config = configuredExecutionLimits();
   const result: ReturnType<typeof effectiveExecutionLimits> = {};
   const add = (
     name: string,
     value: Limit | undefined,
-    env: string | undefined,
+    configured: Limit | undefined,
     fallback: Limit,
   ) => {
     result[name] =
       value !== undefined
         ? { value, source: 'user' }
-        : env?.trim()
-          ? { value: Number(env), source: 'env' }
+        : configured !== undefined
+          ? { value: configured, source: 'config' }
           : { value: fallback, source: 'default' };
   };
   for (const role of ['coordinator', 'executor', 'checker'] as const) {
     add(
       `${role}.maxIterations`,
       settings[role]?.maxIterations,
-      process.env.LLM_AGENT_MAX_ITERATIONS,
+      config[role]?.maxIterations,
       10,
     );
     add(
       `${role}.maxToolCalls`,
       settings[role]?.maxToolCalls,
-      process.env.LLM_AGENT_MAX_TOOL_CALLS,
+      config[role]?.maxToolCalls,
       30,
     );
   }
   add(
     'toolResultMaxChars',
     settings.toolResultMaxChars,
-    process.env.LLM_AGENT_TOOL_RESULT_MAX_CHARS,
+    config.toolResultMaxChars,
     60000,
   );
   if (result.toolResultMaxChars.value === 0)
     result.toolResultMaxChars.value = 'off';
-  add('historyTokenBudget', settings.historyTokenBudget, undefined, 8000);
+  add(
+    'historyTokenBudget',
+    settings.historyTokenBudget,
+    config.historyTokenBudget,
+    8000,
+  );
   return result;
 }

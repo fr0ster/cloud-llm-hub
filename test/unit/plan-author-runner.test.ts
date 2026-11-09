@@ -35,6 +35,7 @@ jest.mock('../../srv/lib/llm-factory', () => ({
   makeHubLlm: jest.fn(),
 }));
 const config: AgentConfig = {
+  limits: {},
   trust: {
     defaults: {
       global: 3,

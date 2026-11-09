@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { configuredRoleModel } from './deploy-role-config';
 import { type ExecutionLimits, withExecutionLimits } from './execution-limits';
 import {
   getRoleModels,
@@ -39,7 +40,12 @@ export function withRoleModels<T>(
 }
 
 export function currentRoleModel(role: RoleName): string | undefined {
-  return settingsScope.getStore()?.[role]?.model;
+  return (
+    settingsScope.getStore()?.[role]?.model ??
+    (role === 'executor' || role === 'checker'
+      ? configuredRoleModel(role)
+      : undefined)
+  );
 }
 
 export function roleOfProfile(profile: {
@@ -48,7 +54,13 @@ export function roleOfProfile(profile: {
   return profile.result === 'verdict' ? 'checker' : 'executor';
 }
 
-type ModelSource = 'user' | 'request' | 'env' | 'deploy' | 'coordinator';
+type ModelSource =
+  | 'config'
+  | 'user'
+  | 'request'
+  | 'env'
+  | 'deploy'
+  | 'coordinator';
 interface EffectiveModel {
   model: string | null;
   source: ModelSource;
@@ -71,6 +83,12 @@ export function effectiveRoleModels(
     const model = settings[role]?.model;
     return model === undefined ? fallback : { model, source: 'user' };
   };
+  const workerDefault = (role: 'executor' | 'checker'): EffectiveModel => {
+    const model = configuredRoleModel(role);
+    return model
+      ? { model, source: 'config' }
+      : { model: null, source: 'coordinator' };
+  };
   return {
     coordinator: resolve(
       'coordinator',
@@ -86,7 +104,7 @@ export function effectiveRoleModels(
         ? { model: process.env.LLM_AGENT_PLANNER_MODEL, source: 'env' }
         : deploy,
     ),
-    executor: resolve('executor', { model: null, source: 'coordinator' }),
-    checker: resolve('checker', { model: null, source: 'coordinator' }),
+    executor: resolve('executor', workerDefault('executor')),
+    checker: resolve('checker', workerDefault('checker')),
   };
 }

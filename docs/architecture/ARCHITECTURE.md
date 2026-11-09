@@ -1557,3 +1557,29 @@ trust overrides preceding the active profile's docs map and deployment defaults.
 Raw MCP results stay raw; the tool loop adds source/trust envelopes for the model.
 
 Dialogue check steps are decisions. The plan author includes explicit check steps where verification is needed. Each turn the coordinator weighs the plan and new user input: run a planned check, skip it with a reason, or add an unplanned check. Changed user input or new evidence can require `plan_revise`. Checker failures require JSON `claims: [{quote, evidence, reason}]`: exact checked-result quotes and evidence excerpts (or `none provided`). Whitespace-normalized quotes must occur in checked results; excerpts must occur in evidence received by the checker. Invalid failures become `unusable verdict: <reason>`, stay undecided, and are logged with reason codes and counts only. PASS and JSON pass/count/note compatibility remains. No tools executed alone is never grounds for fail.
+
+### Deploy defaults for session roles and limits
+
+All variables below are optional. Session settings override configuration per
+value; unset configuration preserves the existing behavior. Configured
+`LLM_AGENT_EXECUTOR_MODEL` and `LLM_AGENT_CHECKER_MODEL` override the
+coordinator's `delegate_task` model for every session. They must belong to the
+`LLM_AGENT_MODELS` allowlist (which also includes the main and planner models).
+An invalid configured worker model fails startup naming the variable.
+
+| Variable | Default / behavior |
+|---|---|
+| `LLM_AGENT_EXECUTOR_MODEL` | Coordinator chooses the executor model when unset |
+| `LLM_AGENT_CHECKER_MODEL` | Coordinator chooses the checker model when unset |
+| `LLM_AGENT_<ROLE>_MAX_ITERATIONS` | Falls back to `LLM_AGENT_MAX_ITERATIONS`, then 10 |
+| `LLM_AGENT_<ROLE>_MAX_TOOL_CALLS` | Falls back to `LLM_AGENT_MAX_TOOL_CALLS`, then the library default of 30 |
+| `LLM_AGENT_TOOL_RESULT_MAX_CHARS` | 60000; legacy `0` also disables the limit |
+| `LLM_AGENT_HISTORY_TOKEN_BUDGET` | 8000 |
+
+`<ROLE>` is `COORDINATOR`, `EXECUTOR`, or `CHECKER`. Every limit listed here,
+including `LLM_AGENT_MAX_ITERATIONS` and `LLM_AGENT_MAX_TOOL_CALLS`, accepts
+`off` to remove the hub limit. Otherwise values must be positive safe integers
+written as decimal digits (with the legacy zero exception for tool results).
+Blank values count as unset. Invalid limits fail startup naming the variable.
+Effective worker model and limit values supplied by configuration report
+`source: 'config'`; session settings report `source: 'user'`.

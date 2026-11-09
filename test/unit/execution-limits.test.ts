@@ -158,13 +158,13 @@ test('limits are isolated per session and cleared on session close', async () =>
   await closeDialogue('u1', 'k1', 'shutdown', false);
   expect(getExecutionLimits('u1', 'k1')).toEqual({});
 });
-test('an absent field keeps the env value; effectiveExecutionLimits reports source env', () => {
+test('an absent field keeps the configured value; effectiveExecutionLimits reports source config', () => {
   const saved = process.env.LLM_AGENT_MAX_ITERATIONS;
   process.env.LLM_AGENT_MAX_ITERATIONS = '17';
   try {
     expect(
       effectiveExecutionLimits('u', 'k')['executor.maxIterations'],
-    ).toEqual({ value: 17, source: 'env' });
+    ).toEqual({ value: 17, source: 'config' });
   } finally {
     if (saved === undefined) delete process.env.LLM_AGENT_MAX_ITERATIONS;
     else process.env.LLM_AGENT_MAX_ITERATIONS = saved;
