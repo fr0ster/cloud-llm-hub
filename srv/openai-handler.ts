@@ -7,6 +7,7 @@ import {
 } from './lib/client-tool-trust';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
+import { getExecutionLimits } from './lib/execution-limits';
 import { failureMessage, observeLlmSpend } from './lib/llm-failure';
 import { capabilitiesFor } from './lib/model-capabilities';
 import { ignoredModelHeader, parseModelAllowlist } from './lib/model-policy';
@@ -15,8 +16,9 @@ import { requestStart } from './lib/request-start';
 import {
   applyRoleModelHeaders,
   chatRequestModel,
-  sessionCoordinator,
 } from './lib/role-model-headers';
+import { getRoleModels } from './lib/role-model-settings';
+import { currentRoleModel, withRoleModels } from './lib/role-models-scope';
 import { runWithRequestLlms } from './lib/session-llms';
 import { summarizeToolResult } from './lib/tool-result-summary';
 import {
@@ -320,6 +322,20 @@ async function handleChatCompletionsMeasured(
     )
   )
     return;
+  const userId = cds.context?.user?.id ?? 'anonymous';
+  const session = (req as LongSessionRequest).longSession;
+  const own = session?.userId === userId ? session : undefined;
+  return withRoleModels(
+    own ? getRoleModels(userId, own.key) : {},
+    () => handleChatCompletionsScoped(req, res),
+    own ? getExecutionLimits(userId, own.key) : {},
+  );
+}
+
+async function handleChatCompletionsScoped(
+  req: Request,
+  res: Response,
+): Promise<void> {
   // Block requests until the providers are built and the agent is available
   if (!isProvidersReady() || !isAgentReady()) {
     const aiCoreAvailable = isAiCoreConfigured();
@@ -682,9 +698,7 @@ async function serveChatCompletions(
     typeof body.model === 'string' ? body.model : undefined,
     cds.context?.user?.is('MCP_Admin') === true,
   );
-  const requestedModel =
-    sessionCoordinator(req, authenticatedCaller.userId) ??
-    modelResolution.model;
+  const requestedModel = modelResolution.model;
   const requestedDestination = req.headers['x-sap-destination'] as
     | string
     | undefined;
@@ -857,7 +871,10 @@ async function serveChatCompletions(
     // Use destAfter (header OR session/default) — the same destination the
     // connection was established for. requestedDestination alone is undefined
     // for session-scoped chats, which would fall to the configured default.
-    handle = await getSmartAgent(requestedModel, destAfter);
+    handle = await getSmartAgent(
+      currentRoleModel('coordinator') ?? requestedModel,
+      destAfter,
+    );
   } catch (err) {
     await releaseRequestConnection(requestConnection, s);
     const message = err instanceof Error ? err.message : String(err);

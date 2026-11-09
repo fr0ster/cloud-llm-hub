@@ -23,6 +23,7 @@ import { runWithVerdictTools } from './checker-verdict-tool';
 import { parseModelAllowlist, resolveAgentModel } from './model-policy';
 import { withCompactRagSearch } from './rag-search-context';
 import { recordReviewProfile } from './review-scope';
+import { RoleModelNotAllowedError } from './role-models-scope';
 import { runWithTrustResolver, type TrustResolver } from './trust-resolver';
 
 export interface AgentProfileRunnerHost {
@@ -163,10 +164,13 @@ export class AgentProfileRunner implements IAgentProfileRunner {
           },
         },
       };
-    } catch {
+    } catch (error) {
       return {
         ok: false,
-        error: { code: 'unavailable', message: 'Agent worker unavailable' },
+        error:
+          error instanceof RoleModelNotAllowedError
+            ? { code: 'MODEL_NOT_ALLOWED', message: error.message }
+            : { code: 'unavailable', message: 'Agent worker unavailable' },
       };
     }
   }
@@ -227,10 +231,13 @@ export class AgentProfileRunner implements IAgentProfileRunner {
             scope(() => agent.process(message, callOptions)),
         },
       };
-    } catch {
+    } catch (error) {
       return {
         ok: false,
-        error: { code: 'unavailable', message: 'Plan author unavailable' },
+        error:
+          error instanceof RoleModelNotAllowedError
+            ? { code: 'MODEL_NOT_ALLOWED', message: error.message }
+            : { code: 'unavailable', message: 'Plan author unavailable' },
       };
     }
   }
@@ -252,10 +259,13 @@ export class AgentProfileRunner implements IAgentProfileRunner {
       );
       options?.signal?.throwIfAborted();
       return { ok: true, value: planner };
-    } catch {
+    } catch (error) {
       return {
         ok: false,
-        error: { code: 'unavailable', message: 'Agent planner unavailable' },
+        error:
+          error instanceof RoleModelNotAllowedError
+            ? { code: 'MODEL_NOT_ALLOWED', message: error.message }
+            : { code: 'unavailable', message: 'Agent planner unavailable' },
       };
     }
   }

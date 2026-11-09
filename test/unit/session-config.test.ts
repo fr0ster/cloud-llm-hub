@@ -128,7 +128,7 @@ describe('deploy configuration parity', () => {
       await withRoleModels({}, async () =>
         expect(currentRoleModel('executor') ?? 'delegate').toBe('worker'),
       );
-      expect(effectiveRoleModels('user', key).executor).toEqual({
+      expect(effectiveRoleModels('user', key).executor).toMatchObject({
         model: 'worker',
         source: 'config',
       });
@@ -204,7 +204,7 @@ describe('deploy configuration parity', () => {
     await withRoleModels({ checker: { model: 'session' } }, async () =>
       expect(currentRoleModel('checker')).toBe('session'),
     );
-    expect(effectiveRoleModels('user', 'key').checker).toEqual({
+    expect(effectiveRoleModels('user', 'key').checker).toMatchObject({
       model: 'worker',
       source: 'config',
     });

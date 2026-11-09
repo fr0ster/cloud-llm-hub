@@ -567,12 +567,20 @@ import {
 } from '../../srv/lib/role-model-settings';
 import { currentRoleModel } from '../../srv/lib/role-models-scope';
 
+let previousAllowlist: string | undefined;
+beforeEach(() => {
+  previousAllowlist = process.env.LLM_AGENT_MODELS;
+});
+
 afterEach(() => {
+  if (previousAllowlist === undefined) delete process.env.LLM_AGENT_MODELS;
+  else process.env.LLM_AGENT_MODELS = previousAllowlist;
   clearRoleModels('alice', 'owned');
   clearExecutionLimits('alice', 'owned');
 });
 
 test('plan_create runs the plan author on the session planner model', async () => {
+  process.env.LLM_AGENT_MODELS = 'planner-session';
   setRoleModels('alice', 'owned', { planner: { model: 'planner-session' } });
   const create = jest.spyOn(mockSession, 'callTool');
   jest.mocked(mockCreate).mockImplementationOnce(async () => {
@@ -587,6 +595,7 @@ test('plan_create runs the plan author on the session planner model', async () =
 });
 
 test('plan_revise runs the plan author on the session planner model', async () => {
+  process.env.LLM_AGENT_MODELS = 'planner-session';
   await call('plan_create', { session: 'owned', goal: 'Read' });
   setRoleModels('alice', 'owned', { planner: { model: 'planner-session' } });
   jest.mocked(mockRevise).mockImplementationOnce(async (input) => {
@@ -600,6 +609,7 @@ test('plan_revise runs the plan author on the session planner model', async () =
 });
 
 test('delegate_task to the checker profile runs on the session checker model', async () => {
+  process.env.LLM_AGENT_MODELS = 'checker-session';
   await mockSession.close();
   const runner = new AgentProfileRunner({
     catalogue: () => [],

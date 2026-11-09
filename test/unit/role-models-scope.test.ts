@@ -9,6 +9,16 @@ import {
   withRoleModels,
 } from '../../srv/lib/role-models-scope';
 
+let previousAllowlist: string | undefined;
+beforeEach(() => {
+  previousAllowlist = process.env.LLM_AGENT_MODELS;
+  process.env.LLM_AGENT_MODELS = 'A,B';
+});
+afterEach(() => {
+  if (previousAllowlist === undefined) delete process.env.LLM_AGENT_MODELS;
+  else process.env.LLM_AGENT_MODELS = previousAllowlist;
+});
+
 test('role scopes isolate concurrent sessions and restore nested settings', async () => {
   await Promise.all(
     ['A', 'B'].map((model) =>
@@ -34,18 +44,18 @@ test('effectiveRoleModels reports source per role', () => {
   process.env.LLM_AGENT_COORDINATOR_MODEL = 'coordinator';
   setRoleModels('scope-user', 'key', { executor: { model: 'user' } });
   try {
-    expect(effectiveRoleModels('scope-user', 'key')).toEqual({
+    expect(effectiveRoleModels('scope-user', 'key')).toMatchObject({
       coordinator: { model: 'coordinator', source: 'env' },
       planner: { model: 'planner', source: 'env' },
       executor: { model: 'user', source: 'user' },
       checker: { model: null, source: 'coordinator' },
     });
-    expect(effectiveRoleModels('other', 'key').executor).toEqual({
+    expect(effectiveRoleModels('other', 'key').executor).toMatchObject({
       model: null,
       source: 'coordinator',
     });
     delete process.env.LLM_AGENT_PLANNER_MODEL;
-    expect(effectiveRoleModels('scope-user', 'key').planner).toEqual({
+    expect(effectiveRoleModels('scope-user', 'key').planner).toMatchObject({
       model: 'deploy',
       source: 'deploy',
     });
@@ -54,3 +64,16 @@ test('effectiveRoleModels reports source per role', () => {
     clearRoleModels('scope-user', 'key');
   }
 });
+
+test.each(['coordinator', 'planner', 'executor', 'checker'] as const)(
+  '%s rejects a stored model removed from the current allowlist',
+  async (role) => {
+    await withRoleModels({ [role]: { model: 'A' } }, async () => {
+      expect(currentRoleModel(role)).toBe('A');
+      process.env.LLM_AGENT_MODELS = 'B';
+      expect(() => currentRoleModel(role)).toThrow(
+        `${role}.model: MODEL_NOT_ALLOWED`,
+      );
+    });
+  },
+);

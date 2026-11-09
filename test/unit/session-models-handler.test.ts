@@ -147,3 +147,42 @@ it('PUT without a session never stores under an empty key', async () => {
   );
   expect(getRoleModels('alice', '')).toEqual({});
 });
+
+it('GET exposes the parameters actually sent for every role with their sources', async () => {
+  const saved = { ...process.env };
+  try {
+    delete process.env.LLM_AGENT_TEMPERATURE;
+    delete process.env.SAP_CORE_AI_TEMPERATURE;
+    delete process.env.LLM_AGENT_MAX_TOKENS;
+    delete process.env.SAP_CORE_AI_MAX_TOKENS;
+    const params = {
+      temperature: { value: 0.7, source: 'default' },
+      maxOutputTokens: { value: 2000, source: 'default' },
+    };
+    expect(await (await call()).json()).toMatchObject({
+      effective: Object.fromEntries(
+        ['coordinator', 'planner', 'executor', 'checker'].map((role) => [
+          role,
+          { params },
+        ]),
+      ),
+    });
+    process.env.LLM_AGENT_TEMPERATURE = '0.2';
+    process.env.LLM_AGENT_MAX_TOKENS = '4096';
+    expect(await (await call()).json()).toMatchObject({
+      effective: Object.fromEntries(
+        ['coordinator', 'planner', 'executor', 'checker'].map((role) => [
+          role,
+          {
+            params: {
+              temperature: { value: 0.2, source: 'config' },
+              maxOutputTokens: { value: 4096, source: 'config' },
+            },
+          },
+        ]),
+      ),
+    });
+  } finally {
+    process.env = saved;
+  }
+});

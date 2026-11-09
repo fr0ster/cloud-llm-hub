@@ -882,6 +882,7 @@ test('models and limits are validated together and applied all-or-nothing', asyn
 });
 
 test('execute_step runs on the session executor model', async () => {
+  process.env.LLM_AGENT_MODELS = 'test-model';
   const session = await opened();
   setRoleModels('alice', session, { executor: { model: 'test-model' } });
   harness.process = async () => {

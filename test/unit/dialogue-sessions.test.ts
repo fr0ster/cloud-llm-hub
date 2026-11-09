@@ -3664,12 +3664,12 @@ test('the coordinator runs on the user coordinator model over the request model'
       expect(coordinatorModel()).toBe('user-coordinator');
     const { h } = await ready();
     await h.session.send('go');
-    expect(effectiveRoleModels('alice', 'key').coordinator).toEqual({
+    expect(effectiveRoleModels('alice', 'key').coordinator).toMatchObject({
       model: 'user-coordinator',
       source: 'user',
     });
     clearRoleModels('alice', 'key');
-    expect(effectiveRoleModels('alice', 'key').coordinator).toEqual({
+    expect(effectiveRoleModels('alice', 'key').coordinator).toMatchObject({
       model: 'request',
       source: 'request',
     });
@@ -3771,6 +3771,8 @@ test('session entry points replace an inherited role scope with the caller own s
   const { currentRoleModel, withRoleModels } = await import(
     '../../srv/lib/role-models-scope'
   );
+  const previous = process.env.LLM_AGENT_MODELS;
+  process.env.LLM_AGENT_MODELS = 'alice-only,other-session';
   setRoleModels('alice', 'key', { executor: { model: 'alice-only' } });
   setRoleModels('alice', 'other-key', { executor: { model: 'other-session' } });
   try {
@@ -3791,6 +3793,8 @@ test('session entry points replace an inherited role scope with the caller own s
   } finally {
     clearRoleModels('alice', 'key');
     clearRoleModels('alice', 'other-key');
+    if (previous === undefined) delete process.env.LLM_AGENT_MODELS;
+    else process.env.LLM_AGENT_MODELS = previous;
   }
 });
 

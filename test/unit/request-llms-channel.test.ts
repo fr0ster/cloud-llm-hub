@@ -74,13 +74,19 @@ function open(userId: string): LongSession {
   if ('refused' in session) throw new Error(session.refused);
   return session;
 }
-function call(handler: typeof handleChatCompletions, session?: LongSession) {
+function call(
+  handler: typeof handleChatCompletions,
+  session?: LongSession,
+  stream = false,
+  headers: Record<string, string> = {},
+) {
   const request: Request = Object.create(express.request);
   const response: Response = Object.create(express.response);
   Object.defineProperties(
     request,
     Object.getOwnPropertyDescriptors(
       fakeReq({
+        stream,
         model: 'm',
         max_tokens: 100,
         messages: [{ role: 'user', content: 'hi' }],
@@ -88,6 +94,7 @@ function call(handler: typeof handleChatCompletions, session?: LongSession) {
     ),
   );
   Object.assign(request, { longSession: session });
+  Object.assign(request.headers, headers);
   Object.defineProperties(
     response,
     Object.getOwnPropertyDescriptors(fakeRes()),
@@ -213,4 +220,71 @@ for (const [channel, handler] of channels) {
     for (const owner of owners)
       await expect(owner.get('unused', jest.fn())).rejects.toThrow('closed');
   });
+}
+
+for (const [channel, handler] of channels) {
+  it.each([false, true])(
+    `${channel} scopes models and limits through the whole LLM-only call (stream=%s)`,
+    async (stream) => {
+      const { currentRoleModel } = await import(
+        '../../srv/lib/role-models-scope'
+      );
+      const { currentLimit, currentSessionLimit } = await import(
+        '../../srv/lib/execution-limits'
+      );
+      const { clearRoleModels } = await import(
+        '../../srv/lib/role-model-settings'
+      );
+      const { clearExecutionLimits } = await import(
+        '../../srv/lib/execution-limits'
+      );
+      process.env.LLM_AGENT_MODELS = 'm';
+      const session = open('alice');
+      const seen: object[] = [];
+      const observe = async () => {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        seen.push({
+          model: currentRoleModel('executor'),
+          iterations: currentLimit('coordinator', 'maxIterations'),
+          calls: currentLimit('coordinator', 'maxToolCalls'),
+          history: currentSessionLimit('historyTokenBudget'),
+        });
+      };
+      harness.process = async () => {
+        await observe();
+        return { ok: true, value: { content: 'done' } };
+      };
+      harness.stream = async function* () {
+        await observe();
+        yield { ok: true, value: { content: 'done', finishReason: 'stop' } };
+      };
+      try {
+        await call(handler, session, stream, {
+          'x-clh-model-executor': 'm',
+          'x-clh-limits': JSON.stringify({
+            coordinator: { maxIterations: 3, maxToolCalls: 'off' },
+            historyTokenBudget: 'off',
+          }),
+        });
+        await call(handler, session, stream);
+        const next = registry.open('alice', { key: 'other' });
+        if ('refused' in next) throw new Error(next.refused);
+        await call(handler, next, stream);
+        expect(seen).toEqual([
+          { model: 'm', iterations: 3, calls: 'off', history: 'off' },
+          { model: 'm', iterations: 3, calls: 'off', history: 'off' },
+          {
+            model: undefined,
+            iterations: undefined,
+            calls: undefined,
+            history: undefined,
+          },
+        ]);
+      } finally {
+        clearRoleModels('alice', session.key);
+        clearExecutionLimits('alice', session.key);
+        delete process.env.LLM_AGENT_MODELS;
+      }
+    },
+  );
 }

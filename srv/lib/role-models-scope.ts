@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { configuredRoleModel } from './deploy-role-config';
 import { type ExecutionLimits, withExecutionLimits } from './execution-limits';
+import { parseModelAllowlist } from './model-policy';
 import {
   getRoleModels,
   type RoleModelSettings,
@@ -39,9 +40,21 @@ export function withRoleModels<T>(
   return limits === undefined ? run() : withExecutionLimits(limits, run);
 }
 
+export class RoleModelNotAllowedError extends Error {
+  constructor(role: RoleName, model: string) {
+    super(
+      `${role}.model: MODEL_NOT_ALLOWED: model "${model}" is outside the current allowlist`,
+    );
+    this.name = 'RoleModelNotAllowedError';
+  }
+}
+
 export function currentRoleModel(role: RoleName): string | undefined {
+  const model = settingsScope.getStore()?.[role]?.model;
+  if (model !== undefined && !parseModelAllowlist().has(model))
+    throw new RoleModelNotAllowedError(role, model);
   return (
-    settingsScope.getStore()?.[role]?.model ??
+    model ??
     (role === 'executor' || role === 'checker'
       ? configuredRoleModel(role)
       : undefined)
@@ -62,6 +75,7 @@ type ModelSource =
   | 'deploy'
   | 'coordinator';
 interface EffectiveModel {
+  params?: Record<string, { value: number; source: 'config' | 'default' }>;
   model: string | null;
   source: ModelSource;
 }
@@ -89,7 +103,7 @@ export function effectiveRoleModels(
       ? { model, source: 'config' }
       : { model: null, source: 'coordinator' };
   };
-  return {
+  const result = {
     coordinator: resolve(
       'coordinator',
       request !== undefined
@@ -107,4 +121,21 @@ export function effectiveRoleModels(
     executor: resolve('executor', workerDefault('executor')),
     checker: resolve('checker', workerDefault('checker')),
   };
+  for (const effective of Object.values(result)) {
+    const temperature =
+      process.env.LLM_AGENT_TEMPERATURE || process.env.SAP_CORE_AI_TEMPERATURE;
+    const maxTokens =
+      process.env.LLM_AGENT_MAX_TOKENS || process.env.SAP_CORE_AI_MAX_TOKENS;
+    effective.params = {
+      temperature: {
+        value: Number.parseFloat(temperature || '0.7'),
+        source: temperature ? 'config' : 'default',
+      },
+      maxOutputTokens: {
+        value: Number.parseInt(maxTokens || '2000', 10),
+        source: maxTokens ? 'config' : 'default',
+      },
+    };
+  }
+  return result;
 }

@@ -2735,10 +2735,12 @@
 
         function renderLlmParams(role, model) {
             const target = document.getElementById(`llm-params-${role}`);
-            const params = model === llmSnapshot.effective[role]?.model ? (llmSnapshot.effective[role]?.params || {}) : {};
-            target.innerHTML = (llmSnapshot.capabilities[model]?.params || []).map(cap => {
+            const params = llmSnapshot.effective[role]?.params || {};
+            const capabilities = llmSnapshot.capabilities[model]?.params || [];
+            const fields = [...capabilities, ...Object.keys(params).filter(name => !capabilities.some(cap => cap.name === name)).map(name => ({ name }))];
+            target.innerHTML = fields.map(cap => {
                 const value = params[cap.name];
-                const display = value === undefined ? 'Not exposed by API (stage 1)' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+                const display = value === undefined ? 'Not sent by hub' : `${value.value} (source: ${value.source})`;
                 return `<label style="display:block;margin:8px 0">${escapeHtml(cap.name)} <input readonly value="${escapeHtml(display)}">${cap.canDisable ? `<label><input type="checkbox" disabled ${value === 'off' ? 'checked' : ''}> off</label>` : ''}</label>`;
             }).join('');
         }

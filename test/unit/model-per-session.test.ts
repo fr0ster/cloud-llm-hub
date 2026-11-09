@@ -465,3 +465,317 @@ test('shared destination executor applies scoped model and maxIterations without
     mockLoop = false;
   }
 });
+
+test.each(['/v1/chat/completions', '/v1/messages'])(
+  '%s clears a coordinator header without persisting it as the request model',
+  async (path) => {
+    const cds = (await import('@sap/cds')).default;
+    const manager = await import('../../srv/agent-manager');
+    const connections = await import('../../srv/lib/request-connection');
+    const { closeDialogue } = await import('../../srv/lib/dialogue-sessions');
+    const { getDialogueStoreBackend } = await import(
+      '../../srv/lib/dialogue-store'
+    );
+    const { LongSessionRegistry, setLongSessionsForTest } = await import(
+      '../../srv/lib/long-session'
+    );
+    const config = getAgentConfig();
+    const adapter = new McpClientAdapter(
+      new MCPClientWrapper({ transport: 'embedded' }),
+    );
+    jest.spyOn(adapter, 'listTools').mockResolvedValue({ ok: true, value: [] });
+    jest
+      .spyOn(adapter, 'healthCheck')
+      .mockResolvedValue({ ok: true, value: true });
+    const handle = await buildAgentForDestination(
+      adapter,
+      new ExpositionFilteringRag(new InMemoryRag()),
+      config,
+    );
+    const resolver = await import('../../srv/connections/destinationResolver');
+    const destination = jest
+      .spyOn(resolver, 'resolveDestinationSapConfig')
+      .mockResolvedValue({
+        destinationName: 'TEST',
+        sapConfig: { url: 'https://test.invalid', authType: 'basic' },
+        authenticationType: 'BasicAuthentication',
+      });
+    const smart = jest
+      .spyOn(manager, 'getSmartAgent')
+      .mockResolvedValue(handle);
+    const connection = jest
+      .spyOn(connections, 'establishRequestConnection')
+      .mockResolvedValue({ handled: false, credential: { kind: 'none' } });
+    let registry = new LongSessionRegistry(
+      { ttlMs: 60000, maxSessions: 10, maxPerUser: 5, queueLength: 2 },
+      { onClose: async () => {} },
+    );
+    const opened = registry.open('role-http', {
+      key: path,
+      destination: 'TEST',
+    });
+    if ('refused' in opened) throw new Error(opened.refused);
+    let session = opened;
+    setLongSessionsForTest(registry);
+    process.env.LLM_AGENT_CHAT_COORDINATOR = 'dialogue';
+    clearAgentConfig();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      const context = new cds.EventContext({ event: 'chat' });
+      context.user = new cds.User({
+        id: 'role-http',
+        attr: {},
+        roles: ['MCP_Admin', 'MCP_Reader'],
+      });
+      cds.context = context;
+      Object.assign(req, { longSession: session });
+      next();
+    });
+    app.post('/v1/chat/completions', handleChatCompletions);
+    app.post('/v1/messages', handleAnthropicMessages);
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('No port');
+    const chat = async (headers: Record<string, string>, model?: string) => {
+      const response = await fetch(`http://127.0.0.1:${address.port}${path}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-clh-session': path,
+          ...headers,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: 'Hello' }],
+        }),
+      });
+      const text = await response.text();
+      if (response.status !== 200)
+        throw new Error(`${path}: ${response.status}: ${text}`);
+      return text;
+    };
+    try {
+      expect(await chat({}, 'A')).toContain('A');
+      expect(await chat({ 'x-clh-model-coordinator': 'B' })).toContain('B');
+      expect(
+        (await getDialogueStoreBackend().load('role-http', path))
+          ?.coordinatorModel,
+      ).toBe('A');
+      expect(await chat({ 'x-clh-model-coordinator': 'auto' })).toContain('A');
+      expect(await chat({})).toContain('A');
+      await closeDialogue('role-http', path, 'shutdown', false);
+      await registry.closeAll('shutdown');
+      registry = new LongSessionRegistry(
+        { ttlMs: 60000, maxSessions: 10, maxPerUser: 5, queueLength: 2 },
+        { onClose: async () => {} },
+      );
+      const reopened = registry.open('role-http', {
+        key: path,
+        destination: 'TEST',
+      });
+      if ('refused' in reopened) throw new Error(reopened.refused);
+      session = reopened;
+      setLongSessionsForTest(registry);
+      expect(await chat({})).toContain('A');
+      expect(
+        (await getDialogueStoreBackend().load('role-http', path))
+          ?.coordinatorModel,
+      ).toBe('A');
+    } finally {
+      await closeDialogue('role-http', path, 'explicit');
+      await registry.closeAll('shutdown');
+      setLongSessionsForTest(undefined);
+      smart.mockRestore();
+      connection.mockRestore();
+      destination.mockRestore();
+      delete process.env.LLM_AGENT_CHAT_COORDINATOR;
+      clearAgentConfig();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+);
+
+test.each(['coordinator', 'planner'] as const)(
+  '%s visibly refuses a session model removed after a successful build',
+  async (role) => {
+    const { withRoleModels } = await import('../../srv/lib/role-models-scope');
+    const adapter = new McpClientAdapter(
+      new MCPClientWrapper({ transport: 'embedded' }),
+    );
+    jest.spyOn(adapter, 'listTools').mockResolvedValue({ ok: true, value: [] });
+    jest
+      .spyOn(adapter, 'healthCheck')
+      .mockResolvedValue({ ok: true, value: true });
+    const handle = await buildAgentForDestination(
+      adapter,
+      new ExpositionFilteringRag(new InMemoryRag()),
+      getAgentConfig(),
+    );
+    await withRoleModels({ [role]: { model: 'A' } }, async () => {
+      const input = { systemPrompt: 'Answer', mode: 'create' as const };
+      const prepare = () =>
+        role === 'planner'
+          ? handle.profileRunner.preparePlanAuthor(input)
+          : handle.profileRunner.preparePlanner(input);
+      expect((await prepare()).ok).toBe(true);
+      const previous = process.env.LLM_AGENT_MODELS;
+      process.env.LLM_AGENT_MODELS = 'B';
+      mockCalls.length = 0;
+      try {
+        expect(await prepare()).toMatchObject({
+          ok: false,
+          error: {
+            code: 'MODEL_NOT_ALLOWED',
+            message: expect.stringContaining(`${role}.model`),
+          },
+        });
+        expect(mockCalls).toEqual([]);
+      } finally {
+        process.env.LLM_AGENT_MODELS = previous;
+      }
+    });
+  },
+);
+
+test.each(
+  ['/v1/chat/completions', '/v1/messages'].flatMap((path) =>
+    [false, true].map((stream) => ({ path, stream })),
+  ),
+)(
+  'LLM-only HTTP builds use session limits and restore defaults ($path, stream=$stream)',
+  async ({ path, stream }) => {
+    const cds = (await import('@sap/cds')).default;
+    const { SmartAgentBuilder } = await import('@mcp-abap-adt/llm-agent-libs');
+    const { LongSessionRegistry, setLongSessionsForTest } = await import(
+      '../../srv/lib/long-session'
+    );
+    const { clearRoleModels } = await import(
+      '../../srv/lib/role-model-settings'
+    );
+    const { clearExecutionLimits } = await import(
+      '../../srv/lib/execution-limits'
+    );
+    const registry = new LongSessionRegistry(
+      { ttlMs: 60000, maxSessions: 10, maxPerUser: 5, queueLength: 2 },
+      { onClose: async () => {} },
+    );
+    setLongSessionsForTest(registry);
+    const first = registry.open('llm-http', { key: 'configured' });
+    const second = registry.open('llm-http', { key: 'default' });
+    if ('refused' in first || 'refused' in second)
+      throw new Error('Cannot open sessions');
+    const builds: { iterations: number; calls?: number; history: boolean }[] =
+      [];
+    const original = SmartAgentBuilder.prototype.build;
+    const build = jest
+      .spyOn(SmartAgentBuilder.prototype, 'build')
+      .mockImplementation(async function (
+        this: InstanceType<typeof SmartAgentBuilder>,
+      ) {
+        const handle = await original.call(this);
+        const config = handle.agent.getAgentConfig();
+        builds.push({
+          iterations: config.maxIterations,
+          calls: config.maxToolCalls,
+          history: handle.agent['deps'].sessionManager !== undefined,
+        });
+        return handle;
+      });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      const context = new cds.EventContext({ event: 'chat' });
+      context.user = new cds.User({
+        id: 'llm-http',
+        attr: {},
+        roles: ['MCP_Admin'],
+      });
+      cds.context = context;
+      Object.assign(req, {
+        longSession:
+          req.headers['x-clh-session'] === 'configured' ? first : second,
+      });
+      next();
+    });
+    app.post('/v1/chat/completions', handleChatCompletions);
+    app.post('/v1/messages', handleAnthropicMessages);
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('No port');
+    try {
+      for (const key of ['configured', 'configured', 'default']) {
+        builds.length = 0;
+        const response = await fetch(
+          `http://127.0.0.1:${address.port}${path}`,
+          {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'x-clh-session': key,
+              ...(key === 'configured'
+                ? {
+                    'x-clh-model-coordinator': 'A',
+                    'x-clh-limits': JSON.stringify({
+                      coordinator: { maxIterations: 3, maxToolCalls: 'off' },
+                      historyTokenBudget: 'off',
+                    }),
+                  }
+                : {}),
+            },
+            body: JSON.stringify({
+              model: 'A',
+              stream,
+              messages: [{ role: 'user', content: 'Hello' }],
+            }),
+          },
+        );
+        await response.text();
+        expect(response.status).toBe(200);
+        expect(builds.length).toBeGreaterThan(0);
+        for (const built of builds)
+          expect(built).toEqual(
+            key === 'configured'
+              ? { iterations: 3, calls: undefined, history: false }
+              : { iterations: 1, calls: 30, history: true },
+          );
+      }
+      const allowlist = process.env.LLM_AGENT_MODELS;
+      process.env.LLM_AGENT_MODELS = 'B';
+      builds.length = 0;
+      try {
+        const response = await fetch(
+          `http://127.0.0.1:${address.port}${path}`,
+          {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'x-clh-session': 'configured',
+            },
+            body: JSON.stringify({
+              stream,
+              messages: [{ role: 'user', content: 'Hello again' }],
+            }),
+          },
+        );
+        expect(await response.text()).toContain('coordinator.model');
+        expect(builds).toEqual([]);
+      } finally {
+        process.env.LLM_AGENT_MODELS = allowlist;
+      }
+    } finally {
+      build.mockRestore();
+      for (const key of ['configured', 'default']) {
+        clearRoleModels('llm-http', key);
+        clearExecutionLimits('llm-http', key);
+      }
+      await registry.closeAll('shutdown');
+      setLongSessionsForTest(undefined);
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+);

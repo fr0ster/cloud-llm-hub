@@ -8,6 +8,7 @@ import {
 } from './lib/client-tool-trust';
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
+import { getExecutionLimits } from './lib/execution-limits';
 import { failureMessage, observeLlmSpend } from './lib/llm-failure';
 import { ignoredModelHeader } from './lib/model-policy';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
@@ -15,8 +16,9 @@ import { requestStart } from './lib/request-start';
 import {
   applyRoleModelHeaders,
   chatRequestModel,
-  sessionCoordinator,
 } from './lib/role-model-headers';
+import { getRoleModels } from './lib/role-model-settings';
+import { currentRoleModel, withRoleModels } from './lib/role-models-scope';
 import { runWithRequestLlms } from './lib/session-llms';
 import {
   measureRequest,
@@ -158,6 +160,20 @@ async function handleAnthropicMessagesMeasured(
     )
   )
     return;
+  const userId = cds.context?.user?.id ?? 'anonymous';
+  const session = (req as LongSessionRequest).longSession;
+  const own = session?.userId === userId ? session : undefined;
+  return withRoleModels(
+    own ? getRoleModels(userId, own.key) : {},
+    () => handleAnthropicMessagesScoped(req, res),
+    own ? getExecutionLimits(userId, own.key) : {},
+  );
+}
+
+async function handleAnthropicMessagesScoped(
+  req: Request,
+  res: Response,
+): Promise<void> {
   // Block requests until the providers are built and the agent is available
   if (!isProvidersReady() || !isAgentReady()) {
     const aiCoreAvailable = isAiCoreConfigured();
@@ -544,7 +560,7 @@ async function serveMessages(
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
     handle = await getSmartAgent(
-      sessionCoordinator(req, userId) ?? resolvedModel.model,
+      currentRoleModel('coordinator') ?? resolvedModel.model,
       destination,
     );
   } catch (err) {
@@ -621,15 +637,7 @@ async function serveMessages(
 
   const chatAgent =
     useDialogue && s
-      ? dialogueChat(
-          req,
-          userId,
-          s,
-          destination,
-          res,
-          req,
-          sessionCoordinator(req, userId) ?? resolvedModel.model,
-        )
+      ? dialogueChat(req, userId, s, destination, res, req, resolvedModel.model)
       : handle.agent;
 
   const usage = usageRuntime()
