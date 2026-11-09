@@ -26,6 +26,7 @@ import {
   apiKeyCredential,
   getAiCoreAccess,
   hubLlmKey,
+  makeHubCatalogProvider,
   makeHubLlm,
   readAiCoreServiceKey,
   resetLlmCredentials,
@@ -85,6 +86,18 @@ describe('llm-factory', () => {
     );
     expect(llm.model).toBe('anthropic--claude-4.5-sonnet');
     await expect(getAiCoreAccess().credential.token()).rejects.toThrow(
+      /AICORE_SERVICE_KEY/,
+    );
+  });
+
+  it('builds a real catalog provider with the deploy model and lazy shared credentials', async () => {
+    const provider = makeHubCatalogProvider();
+    expect(provider.model).toBe(
+      process.env.LLM_AGENT_MODEL ||
+        process.env.SAP_CORE_AI_MODEL ||
+        'gpt-4o-mini',
+    );
+    await expect(provider.getModelCatalog()).rejects.toThrow(
       /AICORE_SERVICE_KEY/,
     );
   });

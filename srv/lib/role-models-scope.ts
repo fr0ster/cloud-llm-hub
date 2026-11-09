@@ -53,15 +53,30 @@ export class RoleModelNotAllowedError extends Error {
 }
 
 export function currentRoleModel(role: RoleName): string | undefined {
-  const model = settingsScope.getStore()?.[role]?.model;
-  if (model !== undefined && !parseModelAllowlist().has(model))
-    throw new RoleModelNotAllowedError(role, model);
-  return (
-    model ??
+  const model =
+    settingsScope.getStore()?.[role]?.model ??
     (role === 'executor' || role === 'checker'
       ? configuredRoleModel(role)
-      : undefined)
-  );
+      : undefined);
+  if (model !== undefined && !parseModelAllowlist().has(model))
+    throw new RoleModelNotAllowedError(role, model);
+  return model;
+}
+
+/** Dialogue model for an LLM call; a configured coordinator model must still be allowed. */
+export function allowedDialogueRoleModel(
+  role: 'coordinator' | 'planner',
+  options: Parameters<typeof resolveDialogueRoleModel>[1],
+): string {
+  const { model, source } = resolveDialogueRoleModel(role, options);
+  // The planner model and the main model are always in the allowlist.
+  if (
+    source === 'env' &&
+    model === options.coordinatorModel &&
+    !parseModelAllowlist().has(model)
+  )
+    throw new RoleModelNotAllowedError(role, model);
+  return model;
 }
 
 export function roleOfProfile(profile: {

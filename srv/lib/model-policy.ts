@@ -1,17 +1,35 @@
 import type { Result } from '@mcp-abap-adt/llm-agent';
 
+let catalogModels: readonly string[] = [];
+
+export function usesModelCatalog(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return (env.LLM_AGENT_MODELS ?? '')
+    .split(',')
+    .some((token) => token.trim() === 'catalog');
+}
+
+export function setModelCatalogSnapshot(models: readonly string[]): void {
+  catalogModels = [...models];
+}
+
 export function parseModelAllowlist(
   env: NodeJS.ProcessEnv = process.env,
 ): ReadonlySet<string> {
-  return new Set(
-    [
-      ...(env.LLM_AGENT_MODELS ?? '').split(','),
+  return new Set([
+    ...[
+      ...(env.LLM_AGENT_MODELS ?? '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter((value) => value !== 'catalog'),
       env.LLM_AGENT_MODEL ?? '',
       env.LLM_AGENT_PLANNER_MODEL ?? '',
     ]
       .map((value) => value.trim())
       .filter(Boolean),
-  );
+    ...(usesModelCatalog(env) ? catalogModels : []),
+  ]);
 }
 export function resolveRequestModel(
   requested: string | undefined,

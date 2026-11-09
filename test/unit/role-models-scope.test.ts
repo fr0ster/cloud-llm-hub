@@ -3,6 +3,7 @@ import {
   setRoleModels,
 } from '../../srv/lib/role-model-settings';
 import {
+  allowedDialogueRoleModel,
   clearRequestModel,
   currentRoleModel,
   effectiveRoleModels,
@@ -144,3 +145,19 @@ test.each([
     }
   },
 );
+
+test('a configured coordinator model outside the allowlist is refused, never used', () => {
+  expect(() =>
+    allowedDialogueRoleModel('coordinator', {
+      model: 'A',
+      coordinatorModel: 'X',
+    }),
+  ).toThrow('coordinator.model: MODEL_NOT_ALLOWED: model "X"');
+  expect(
+    allowedDialogueRoleModel('coordinator', {
+      model: 'A',
+      coordinatorModel: 'B',
+    }),
+  ).toBe('B');
+  expect(allowedDialogueRoleModel('planner', { model: 'A' })).toBe('A');
+});
