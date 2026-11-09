@@ -41,12 +41,12 @@ Today:
    Anthropic-compatible APIs, and the agent MCP.
 5. A run can be compared afterwards: the usage ledger shows, per LLM call, the
    model and the parameters in effect.
+6. Per session, the user can set or switch off the execution budgets and
+   limits, without a deploy and without `cf set-env`. The user's words: they
+   need to test this, and deploying every time is inconvenient.
 
 ## Non-goals
 
-- Agent execution budgets (step and tool-call limits that end a task with
-  "budget exhausted"). They are not model parameters. (My call: the user did
-  not ask for them in this window.)
 - Changing how the classifier works or making the embedder selectable.
 - Changing defaults for other sessions or for the deployment.
 - Cost coefficients per model.
@@ -245,6 +245,42 @@ with different settings never share a client.
 - The tool is listed with the other session tools on every agent MCP
   connection.
 
+### Execution limits
+
+The user can set or switch off the execution budgets and limits for one
+session, next to the models. They are not model parameters, so they are a
+separate section of the same settings:
+
+```
+ExecutionLimits = {
+  maxIterations?: number | 'off';      // LLM_AGENT_MAX_ITERATIONS, default 10
+  maxToolCalls?: number | 'off';       // LLM_AGENT_MAX_TOOL_CALLS
+  toolResultMaxChars?: number | 'off'; // LLM_AGENT_TOOL_RESULT_MAX_CHARS
+  historyTokenBudget?: number | 'off'; // SessionManager tokenBudget, 8000 today
+  planStepBudget?: number | 'off';     // llm-agent run and plan-step budgets
+}
+```
+
+- Per role where the limit is per run (`maxIterations`, `maxToolCalls`): the
+  coordinator, executor and checker each have their own value. Session-wide
+  for the others. (My call.)
+- `'off'` means no limit from the hub. A run then ends when the work ends,
+  when the user stops it (`stop_task`, closing the session), or at a real
+  external limit (the provider's context window). No timeout replaces the
+  limit.
+- An absent field keeps today's value (env or built-in default), shown as the
+  effective value.
+- The same validation, lifetime (until the session ends, the user changes it,
+  or a restart) and all-or-nothing rule as for models.
+- Channels:
+  - WebUI: a "Limits" section in the `LLM` window.
+  - Chat APIs: a sticky `x-clh-limits` header (JSON, merged field by field).
+  - Agent MCP: `limits` in `session_open` and `session_set_models`.
+- Limits the hub owns (`maxIterations`, `maxToolCalls`,
+  `toolResultMaxChars`, `historyTokenBudget`) come in stage 1. Limits owned
+  by llm-agent (run and plan-step budgets, `maxItemsPerStep`) come in
+  stage 2. Until then they are refused with a reason, not ignored.
+
 ### Usage ledger
 
 Each `llm.call` record gets the effective parameters (temperature, top-p,
@@ -288,6 +324,7 @@ stages.
    - Headers.
    - `session_open` `models` and `session_set_models`.
    - The model per role on all paths.
+   - The execution limits the hub owns, with "off".
    - The capability table.
    - Every channel accepts `params` already, but stage 1 refuses them with a
      reason ("parameters per role need llm-agent X"). They are never accepted
@@ -297,4 +334,5 @@ stages.
    - Reasoning settings.
    - `'off'` for max tokens (Anthropic provider included).
    - Ledger parameters.
+   - Run and plan-step budgets owned by llm-agent.
    - The hub then enables `params`.
