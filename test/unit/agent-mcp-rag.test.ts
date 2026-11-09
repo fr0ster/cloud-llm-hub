@@ -1732,7 +1732,7 @@ test.each(['all', 'checker', 'allow-deny'] as const)(
           const html = readFileSync(path, 'utf8');
           const start = html.indexOf('                const reqBody = {');
           const end = html.indexOf(
-            '                const selectedModel',
+            '                if (classifierSelect.value)',
             start,
           );
           const request = z

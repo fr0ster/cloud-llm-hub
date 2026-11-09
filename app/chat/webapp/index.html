@@ -52,12 +52,21 @@
         .status-waiting { color: #ffaa33; }
         .status-streaming { color: #00bfff; animation: blink 1s infinite; }
 
-        #llm-model-select, #dest-select, .aux-model-select {
+        #dest-select, .aux-model-select {
             background: #111; color: #00ff00; border: 1px solid #333; font-family: 'Courier New', Courier, monospace;
             font-size: 13px; padding: 2px 4px; border-radius: 3px; outline: none; cursor: pointer;
         }
-        #llm-model-select:focus, #dest-select:focus, .aux-model-select:focus { border-color: #00ff00; }
-        #llm-model-select:disabled, #dest-select:disabled, .aux-model-select:disabled { opacity: 0.4; cursor: not-allowed; }
+        #dest-select:focus, .aux-model-select:focus { border-color: #00ff00; }
+        #dest-select:disabled, .aux-model-select:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        #llm-modal input, #llm-modal select, #llm-modal button {
+            background:#1a1a1a; color:#00ff00; border:1px solid #333;
+            padding:4px 8px; border-radius:3px; font-family:'Courier New',monospace;
+            max-width:100%;
+        }
+        #llm-modal input:read-only { color:#aaa; }
+        #llm-modal :disabled { opacity:0.6; cursor:not-allowed; }
+        #llm-modal button { cursor:pointer; }
 
         pre code { display: block; background: #2d2d2d; padding: 12px; border-radius: 4px; overflow-x: auto; font-size: 13px; color: #e0e0e0; }
         code { background: #383838; padding: 2px 4px; border-radius: 3px; font-size: 13px; }
@@ -87,7 +96,6 @@
 <body>
     <div class="container">
         <div class="system-bar">
-            <span>LLM: <select id="llm-model-select" disabled><option value="">...</option></select></span>
             <span>MODE: <span id="agent-mode">...</span></span>
             <span>DEST: <span id="dest-info" title="Active SAP destination (chosen at login)">none</span><select id="dest-select" disabled style="display:none"><option value="">...</option></select><button id="dest-refresh" title="Refresh destinations" style="display:none" disabled>&#x21bb;</button><button id="dest-diag" onclick="runActiveProbeAndShow()" title="Test this destination under your SAP identity and client" style="margin-left:4px;padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00bfff;border:1px solid #003355;border-radius:3px;font-family:'Courier New',monospace">DIAG</button></span>
             <span>STATUS: <span id="status-text" class="status-connecting">CONNECTING...</span></span>
@@ -97,11 +105,20 @@
         <div class="system-bar">
             <span>CLASSIFIER: <select id="classifier-model-select" class="aux-model-select" disabled><option value="">...</option></select></span>
             <span>EMBEDDER: <span id="embedding-model">...</span></span>
-            <span>PLANNER: <span id="planner-model">...</span></span>
-            <span>RAG: <span id="rag-type">...</span> <button id="rag-manage-btn" onclick="openRagPanel()" title="Manage RAG Collections" style="margin-left:4px;padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00ff00;border:1px solid #333;border-radius:3px;font-family:'Courier New',monospace">MANAGE</button></span>
+            <span>RAG: <span id="rag-type">...</span> <button id="rag-manage-btn" onclick="openRagPanel()" title="Manage RAG Collections" style="margin-left:4px;padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00ff00;border:1px solid #333;border-radius:3px;font-family:'Courier New',monospace">MANAGE</button> <button id="llm-settings-btn" onclick="openLlmPanel()" style="margin-left:4px;padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00ff00;border:1px solid #333;border-radius:3px">LLM</button></span>
         </div>
 
         <!-- RAG Management Modal -->
+        <div id="llm-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:1000;overflow:auto">
+          <div style="max-width:900px;margin:30px auto;background:#111;border:1px solid #333;border-radius:6px;padding:20px;color:#e0e0e0;font-size:14px">
+            <div style="display:flex;justify-content:space-between;align-items:center"><h2>LLM settings</h2><button onclick="closeLlmPanel()">CLOSE</button></div>
+            <p id="llm-notice" role="status"></p>
+            <form id="llm-form" onsubmit="event.preventDefault();saveLlmSettings()">
+              <div id="llm-fields"></div>
+              <button id="llm-save" type="submit" hidden>SAVE</button>
+            </form>
+          </div>
+        </div>
         <div id="rag-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:1000;overflow:auto">
           <div style="max-width:900px;margin:30px auto;background:#111;border:1px solid #333;border-radius:6px;padding:20px;color:#e0e0e0;font-size:14px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px">
@@ -333,7 +350,6 @@
         const userInput = document.getElementById('user-input');
         const sendBtn = document.getElementById('send-btn');
         const statusText = document.getElementById('status-text');
-        const modelSelect = document.getElementById('llm-model-select');
         const destSelect = document.getElementById('dest-select');
         const destRefreshBtn = document.getElementById('dest-refresh');
         const classifierSelect = document.getElementById('classifier-model-select');
@@ -1699,7 +1715,6 @@
                     document.getElementById('agent-mode').innerText = meta.mode || '?';
                     document.getElementById('rag-type').innerText = meta.rag_type || '?';
                     document.getElementById('embedding-model').innerText = meta.embedding_model || '?';
-                    document.getElementById('planner-model').innerText = meta.planner_model || '?';
 
                     // Populate destination dropdown
                     const activeDest = data._active_destination || meta.mcp_destination || '';
@@ -1763,7 +1778,6 @@
 
         function populateModelSelects(data) {
             if (!data.data?.length) return;
-            populateAuxSelect(modelSelect, data.data, data._active_model);
             populateAuxSelect(classifierSelect, data.data, data._meta?.classifier_model);
         }
 
@@ -1791,8 +1805,6 @@
                     const resp = await hubFetch('/v1/models');
                     const data = await resp.json();
                     populateModelSelects(data);
-                    // The planner follows a hot-swapped main model unless it has its own.
-                    if (data._meta?.planner_model) document.getElementById('planner-model').innerText = data._meta.planner_model;
                     const destinations = data._destinations || [];
                     if (destinations.length > 0) {
                         renderDestinations(destinations, data._active_destination || '');
@@ -1811,7 +1823,7 @@
         }
 
         // destSelect is hidden (the login gate owns destination choice), so it is not a trigger.
-        for (const select of [modelSelect, classifierSelect, document.getElementById('gate-dest')]) {
+        for (const select of [classifierSelect, document.getElementById('gate-dest')]) {
             select.addEventListener('mousedown', refreshHubState);
             select.addEventListener('focus', refreshHubState);
             select.addEventListener('keydown', event => {
@@ -2051,7 +2063,7 @@
         }
 
         function getSelectedModel() {
-            return modelSelect.value || undefined;
+            return llmSnapshot?.effective?.coordinator?.model || undefined;
         }
 
         function getSelectedDestination() {
@@ -2191,8 +2203,6 @@
                         }
                     ]
                 };
-                const selectedModel = getSelectedModel();
-                if (selectedModel) reqBody.model = selectedModel;
                 if (classifierSelect.value) reqBody.classifier_model = classifierSelect.value;
                 // Send only current message — SmartAgent manages session history internally.
                 await ensureSession();
@@ -2689,6 +2699,126 @@
             // are created disabled (preset:true) so they don't auto-join chat context.
             try { await ragFetch('/v1/rag/presets/ensure', { method: 'POST' }); }
             catch { /* ignore — presets are opt-in convenience */ }
+        }
+
+        // Session settings are fetched each time; never share them through browser storage.
+        let llmSnapshot = null;
+        let llmLimitDraft = {};
+        let llmSessionKey = null;
+        const llmRoles = ['coordinator', 'planner', 'executor', 'checker'];
+
+        function closeLlmPanel() {
+            document.getElementById('llm-modal').style.display = 'none';
+        }
+
+        async function openLlmPanel() {
+            document.getElementById('llm-modal').style.display = 'block';
+            document.getElementById('llm-fields').replaceChildren();
+            document.getElementById('llm-save').hidden = true;
+            document.getElementById('llm-notice').textContent = 'Loading...';
+            llmSnapshot = null;
+            llmSessionKey = sessionKey;
+            try {
+                const response = await hubFetch('/v1/session/models', { headers: sessionHeaders() });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error?.reason || 'Could not load settings');
+                if (llmSessionKey !== sessionKey) throw new Error('Session changed. Reopen LLM settings.');
+                renderLlmSettings(data);
+            } catch (error) {
+                document.getElementById('llm-notice').textContent = error.message;
+            }
+        }
+
+        function llmError(field) {
+            return `<span data-llm-error="${escapeHtml(field)}" style="color:#ff5555" role="alert"></span>`;
+        }
+
+        function renderLlmParams(role, model) {
+            const target = document.getElementById(`llm-params-${role}`);
+            const params = model === llmSnapshot.effective[role]?.model ? (llmSnapshot.effective[role]?.params || {}) : {};
+            target.innerHTML = (llmSnapshot.capabilities[model]?.params || []).map(cap => {
+                const value = params[cap.name];
+                const display = value === undefined ? 'Not exposed by API (stage 1)' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+                return `<label style="display:block;margin:8px 0">${escapeHtml(cap.name)} <input readonly value="${escapeHtml(display)}">${cap.canDisable ? `<label><input type="checkbox" disabled ${value === 'off' ? 'checked' : ''}> off</label>` : ''}</label>`;
+            }).join('');
+        }
+
+        function renderLlmSettings(data) {
+            llmSnapshot = data;
+            llmLimitDraft = structuredClone(data.limits || {});
+            const disabled = data.canEdit ? '' : 'disabled';
+            document.getElementById('llm-notice').textContent = data.canEdit
+                ? 'Model parameters are read-only in stage 1.' : 'Changes require the MCP_Admin role. Model parameters are read-only in stage 1.';
+            document.getElementById('llm-save').hidden = !data.canEdit;
+            document.getElementById('llm-fields').innerHTML = llmRoles.map(role => {
+                const effective = data.effective[role];
+                const selected = data.settings[role]?.model || 'auto';
+                const models = [...new Set([...Object.keys(data.capabilities), ...(selected === 'auto' ? [] : [selected])])];
+                return `<fieldset style="border:1px solid #333;padding:12px;margin:12px 0"><legend>${role}</legend>
+                    <label>Model <select id="llm-role-${role}" ${disabled}><option value="auto">auto (${role === 'coordinator' ? 'deploy default' : 'coordinator chooses'})</option>${models.map(model => `<option value="${escapeHtml(model)}" ${model === selected ? 'selected' : ''}>${escapeHtml(model)}</option>`).join('')}</select></label>
+                    ${llmError(role)} ${llmError(role + '.model')}
+                    <p>Effective: ${escapeHtml(effective.model || 'coordinator chooses')} ? source: ${escapeHtml(effective.source)}</p>
+                    <div id="llm-params-${role}"></div></fieldset>`;
+            }).join('') + '<h3>Limits</h3>' + Object.entries(data.effectiveLimits).map(([name, entry]) => {
+                const locked = !data.canEdit || name === 'planStepBudget';
+                return `<div style="margin:12px 0"><label>${escapeHtml(name)} <input id="llm-limit-${name}" type="number" min="1" step="1" value="${entry.value === 'off' ? '' : entry.value}" ${locked || entry.value === 'off' ? 'disabled' : ''}></label>
+                    <label><input id="llm-off-${name}" type="checkbox" ${entry.value === 'off' ? 'checked' : ''} ${locked ? 'disabled' : ''}> off</label>
+                    <span>source: ${escapeHtml(entry.source)}</span> ${llmError(name)} ${llmError('limits.' + name)}</div>`;
+            }).join('');
+            for (const role of llmRoles) {
+                const select = document.getElementById(`llm-role-${role}`);
+                const show = () => renderLlmParams(role, select.value === 'auto' ? data.effective[role].model : select.value);
+                select.addEventListener('change', show);
+                show();
+            }
+            for (const name of Object.keys(data.effectiveLimits)) {
+                const number = document.getElementById(`llm-limit-${name}`);
+                const off = document.getElementById(`llm-off-${name}`);
+                const update = () => {
+                    if (!data.canEdit || name === 'planStepBudget') return;
+                    number.disabled = off.checked;
+                    const parts = name.split('.');
+                    const parent = parts.length === 2 ? (llmLimitDraft[parts[0]] ||= {}) : llmLimitDraft;
+                    parent[parts.at(-1)] = off.checked ? 'off' : Number(number.value);
+                };
+                number.addEventListener('input', update);
+                off.addEventListener('change', update);
+            }
+        }
+
+        async function saveLlmSettings() {
+            if (!llmSnapshot?.canEdit) return;
+            const notice = document.getElementById('llm-notice');
+            if (llmSessionKey !== sessionKey) {
+                notice.textContent = 'Session changed. Reopen LLM settings.';
+                return;
+            }
+            document.querySelectorAll('[data-llm-error]').forEach(node => { node.textContent = ''; });
+            const body = { limits: llmLimitDraft };
+            for (const role of llmRoles) {
+                const model = document.getElementById(`llm-role-${role}`).value;
+                body[role] = model === 'auto' ? 'auto' : { model };
+            }
+            const save = document.getElementById('llm-save');
+            save.disabled = true;
+            try {
+                const response = await hubFetch('/v1/session/models', {
+                    method: 'PUT', headers: { ...sessionHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    const field = [...document.querySelectorAll('[data-llm-error]')].find(node => node.dataset.llmError === data.error?.field);
+                    if (field) field.textContent = data.error.reason;
+                    else notice.textContent = data.error?.reason || data.message || 'Could not save settings';
+                    return;
+                }
+                renderLlmSettings(data);
+                notice.textContent = 'Saved. Model parameters are read-only in stage 1.';
+            } catch (error) {
+                notice.textContent = error.message;
+            } finally {
+                save.disabled = false;
+            }
         }
 
         async function openRagPanel() {
