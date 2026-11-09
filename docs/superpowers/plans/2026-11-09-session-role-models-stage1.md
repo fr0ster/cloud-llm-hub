@@ -22,7 +22,7 @@
 - No timeouts introduced.
 - Session isolation: settings are keyed by the caller's own session slot. No cookie, shared storage or empty header may attach them to another session.
 - No new required configuration. Only `LLM_AGENT_MODEL` stays required.
-- Changing models, parameters or limits needs `MCP_Admin` on every channel; reading the effective values does not.
+- Changing models, parameters or limits needs `MCP_Admin` on every channel, the request body `model` included (ignored with `x-clh-model-ignored` for a non-admin); reading the effective values does not.
 - The same agent MCP tool set on every connection.
 - A model or parameter the hub cannot apply is refused with a reason naming the field. Nothing is quietly replaced, and nothing is partly applied.
 - Stage 1 refuses any `params` with the reason `parameters per role arrive with llm-agent per-role call options (stage 2)`.
@@ -323,6 +323,8 @@
   - `x-clh-params-executor is refused with the stage 2 reason`
   - `every response carries x-clh-models-effective`. Cover OpenAI and Anthropic, streaming and non-streaming.
   - `role or limit headers from a non-admin fail with 403 naming the header and store nothing`
+  - `body model from a non-admin is ignored with x-clh-model-ignored; the request succeeds on the session coordinator`
+  - `body model from an admin still selects the coordinator`
 
 - [ ] **Step 2: Run the tests to verify they fail**
   Run: `npx jest test/unit/role-model-headers.test.ts test/unit/anthropic-channel.test.ts --maxWorkers=1`

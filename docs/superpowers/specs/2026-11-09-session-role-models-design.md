@@ -333,6 +333,12 @@ and unset by default; only `LLM_AGENT_MODEL` stays required.
   - Agent MCP: `models` / `limits` in `session_open` from a non-admin are
     refused, and so is `session_set_models`. The tool stays listed on every
     connection, so the tool set is the same everywhere.
+- **Body `model` too.** The request body `model` (OpenAI and Anthropic, the
+  WebUI included) selects the coordinator only for an admin. For any other
+  user it is ignored: the session keeps its coordinator, and the response
+  carries `x-clh-model-ignored`, as for a model outside the allowlist. Such a
+  request does not fail, because clients like Cline always send `model`.
+  (The user's decision.)
 - **Reading.** `GET /v1/session/models` and the `x-clh-models-effective`
   header stay readable for every user of the session, so everyone sees which
   model and limits run. (My call.)
