@@ -302,3 +302,37 @@ test('coordinator defaults to planner model and an override selects a separate m
   // The cached planner LLM is reused; the coordinator override never replaces it.
   await author.process('Plan');
 });
+
+test.each([
+  [undefined, undefined, 'A', 'A'],
+  [undefined, 'B', 'B', 'B'],
+  ['C', undefined, 'C', 'A'],
+  ['C', 'B', 'C', 'B'],
+] as const)(
+  'runtime dialogue models with coordinator=%s and planner=%s',
+  async (coordinatorModel, plannerModel, expectedCoordinator, expectedPlanner) => {
+    jest.mocked(makeHubLlm).mockImplementation(async (options) => ({
+      ...model,
+      model: options.model,
+    }));
+    const selected = jest.spyOn(SmartAgentBuilder.prototype, 'withMainLlm');
+    const roleConfig: AgentConfig = {
+      ...config,
+      llm: { ...config.llm, model: 'A', coordinatorModel, plannerModel },
+    };
+    const empty: IMcpClient = {
+      listTools: async () => ({ ok: true, value: [] }),
+      callTool: async () => ({ ok: true, value: { content: '' } }),
+    };
+    try {
+      const coordinator = await buildPlannerAgent(roleConfig, 'Coordinate');
+      releasePlannerAgent(coordinator);
+      expect(selected.mock.calls.at(-1)?.[0].model).toBe(expectedCoordinator);
+      const author = await buildPlannerAgent(roleConfig, 'Author', empty);
+      releasePlannerAgent(author);
+      expect(selected.mock.calls.at(-1)?.[0].model).toBe(expectedPlanner);
+    } finally {
+      selected.mockRestore();
+    }
+  },
+);

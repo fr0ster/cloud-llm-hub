@@ -3,9 +3,11 @@ import {
   setRoleModels,
 } from '../../srv/lib/role-model-settings';
 import {
+  clearRequestModel,
   currentRoleModel,
   effectiveRoleModels,
   roleOfProfile,
+  setRequestModel,
   withRoleModels,
 } from '../../srv/lib/role-models-scope';
 
@@ -97,6 +99,48 @@ test.each([
       });
     } finally {
       process.env = saved;
+    }
+  },
+);
+
+test.each([
+  [undefined, undefined, 'A', 'deploy', 'A', 'deploy'],
+  [undefined, 'B', 'B', 'env', 'B', 'env'],
+  ['C', undefined, 'C', 'env', 'A', 'deploy'],
+  ['C', 'B', 'C', 'env', 'B', 'env'],
+  ['  C  ', '  B  ', 'C', 'env', 'B', 'env'],
+] as const)(
+  'effective dialogue models with coordinator=%s and planner=%s',
+  (coordinator, planner, coordinatorModel, coordinatorSource, plannerModel, plannerSource) => {
+    const saved = { ...process.env };
+    process.env.LLM_AGENT_MODEL = 'A';
+    delete process.env.LLM_AGENT_COORDINATOR_MODEL;
+    delete process.env.LLM_AGENT_PLANNER_MODEL;
+    if (coordinator !== undefined)
+      process.env.LLM_AGENT_COORDINATOR_MODEL = coordinator;
+    if (planner !== undefined) process.env.LLM_AGENT_PLANNER_MODEL = planner;
+    try {
+      expect(effectiveRoleModels('precedence', 'key')).toMatchObject({
+        coordinator: { model: coordinatorModel, source: coordinatorSource },
+        planner: { model: plannerModel, source: plannerSource },
+      });
+      setRequestModel('precedence', 'key', 'request');
+      expect(effectiveRoleModels('precedence', 'key')).toMatchObject({
+        coordinator: { model: 'request', source: 'request' },
+        planner: { model: plannerModel, source: plannerSource },
+      });
+      setRoleModels('precedence', 'key', {
+        coordinator: { model: 'session-coordinator' },
+        planner: { model: 'session-planner' },
+      });
+      expect(effectiveRoleModels('precedence', 'key')).toMatchObject({
+        coordinator: { model: 'session-coordinator', source: 'user' },
+        planner: { model: 'session-planner', source: 'user' },
+      });
+    } finally {
+      process.env = saved;
+      clearRequestModel('precedence', 'key');
+      clearRoleModels('precedence', 'key');
     }
   },
 );

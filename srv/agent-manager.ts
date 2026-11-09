@@ -6,6 +6,7 @@ import {
   coordinatorToolsClient as createCoordinatorToolsClient,
   currentCoordinatorRun,
 } from './lib/coordinator-tools-client';
+import { resolveDialogueRoleModel } from './lib/dialogue-role-model';
 import {
   currentLimit,
   currentSessionLimit,
@@ -3047,18 +3048,15 @@ export async function buildPlannerAgent(
   options?: CallOptions,
   recorder?: RecordingMcpClient,
 ): Promise<SmartAgent> {
-  if (!authorClient && config.llm.coordinatorModel) {
-    config = {
-      ...config,
-      llm: { ...config.llm, plannerModel: config.llm.coordinatorModel },
-    };
-  }
   const llm = await getOrCreateSharedLlms(
     {
       ...config,
       llm: {
         ...config.llm,
-        model: config.llm.plannerModel ?? config.llm.model,
+        model: resolveDialogueRoleModel(
+          authorClient ? 'planner' : 'coordinator',
+          config.llm,
+        ).model,
       },
     },
     authorClient ? 'planner-author' : 'chat',

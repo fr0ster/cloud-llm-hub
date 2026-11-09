@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { deployModel } from './deploy-model';
 import { configuredRoleModel } from './deploy-role-config';
+import { resolveDialogueRoleModel } from './dialogue-role-model';
 import { type ExecutionLimits, withExecutionLimits } from './execution-limits';
 import { parseModelAllowlist } from './model-policy';
 import {
@@ -87,9 +88,11 @@ export function effectiveRoleModels(
 ): Record<RoleName, EffectiveModel> {
   const settings = getRoleModels(userId, key);
   const request = dialogueRequestModel(userId, key);
-  const deploy: EffectiveModel = {
+  const dialogueDefaults = {
     model: deployModel(),
-    source: 'deploy',
+    plannerModel: process.env.LLM_AGENT_PLANNER_MODEL?.trim() || undefined,
+    coordinatorModel:
+      process.env.LLM_AGENT_COORDINATOR_MODEL?.trim() || undefined,
   };
   const resolve = (
     role: RoleName,
@@ -104,21 +107,16 @@ export function effectiveRoleModels(
       ? { model, source: 'config' }
       : { model: null, source: 'coordinator' };
   };
-  const result = {
-    coordinator: resolve(
-      'coordinator',
-      request !== undefined
-        ? { model: request, source: 'request' }
-        : process.env.LLM_AGENT_COORDINATOR_MODEL
-          ? { model: process.env.LLM_AGENT_COORDINATOR_MODEL, source: 'env' }
-          : deploy,
-    ),
-    planner: resolve(
-      'planner',
-      process.env.LLM_AGENT_PLANNER_MODEL
-        ? { model: process.env.LLM_AGENT_PLANNER_MODEL, source: 'env' }
-        : deploy,
-    ),
+  const result: Record<RoleName, EffectiveModel> = {
+    coordinator: resolveDialogueRoleModel('coordinator', {
+      ...dialogueDefaults,
+      sessionModel: settings.coordinator?.model,
+      requestModel: request,
+    }),
+    planner: resolveDialogueRoleModel('planner', {
+      ...dialogueDefaults,
+      sessionModel: settings.planner?.model,
+    }),
     executor: resolve('executor', workerDefault('executor')),
     checker: resolve('checker', workerDefault('checker')),
   };
