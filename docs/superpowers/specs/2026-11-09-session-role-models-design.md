@@ -1,0 +1,300 @@
+# Session role models and parameters — design
+
+Status: draft, 2026-11-09.
+
+## Intent
+
+The hub is in test operation. The user measures how well prompts and skills
+work and compares runs. For that the user must be able to set, on the fly,
+which model each agent role uses and with which model parameters, for one
+session, from every channel the hub serves.
+
+Today:
+
+- the request `model` becomes the coordinator model (allowlist checked);
+- the plan author model comes only from `LLM_AGENT_PLANNER_MODEL` (deploy);
+- executor and checker models are chosen by the coordinator (`delegate_task`
+  `model`) or fall back to the deploy model;
+- the only model parameters are global `LLM_AGENT_TEMPERATURE` (0.7) and
+  `LLM_AGENT_MAX_TOKENS` (2000), the same for every role; max tokens can never
+  be left out, and there is no reasoning parameter at all;
+- the WebUI toolbar has an `LLM` select (it feeds the request `model`, so the
+  coordinator), a `CLASSIFIER` select whose value no server code reads, and
+  read-only `EMBEDDER` and `PLANNER` labels;
+- the WebUI does not show which model actually runs. On the POC (2026-11-09)
+  `LLM` showed Sonnet while the coordinator ran on Opus.
+
+## Goals
+
+1. Per session, the user can set the model of each role: **coordinator,
+   planner (plan author), executor, checker**.
+2. Per session and role, the user can set every parameter the chosen model
+   supports. Every limit (max output tokens, reasoning budgets) can be
+   switched off.
+3. A role with no user setting behaves as today:
+   - the coordinator chooses the executor and checker models from the
+     allowlist;
+   - the planner uses `LLM_AGENT_PLANNER_MODEL` or the deploy model;
+   - the coordinator model is the request model, then
+     `LLM_AGENT_COORDINATOR_MODEL`, then the deploy model.
+4. The same settings are reachable from the WebUI, the OpenAI- and
+   Anthropic-compatible APIs, and the agent MCP.
+5. A run can be compared afterwards: the usage ledger shows, per LLM call, the
+   model and the parameters in effect.
+
+## Non-goals
+
+- Agent execution budgets (step and tool-call limits that end a task with
+  "budget exhausted"). They are not model parameters. (My call: the user did
+  not ask for them in this window.)
+- Changing how the classifier works or making the embedder selectable.
+- Changing defaults for other sessions or for the deployment.
+- Cost coefficients per model.
+
+## Anti-goals
+
+- A setting of one session reaching another session (session isolation is
+  guaranteed; no shared or implicit fallback).
+- A silent fallback: a model or parameter the hub cannot apply must be
+  reported to the caller, never quietly replaced.
+- A hidden limit during measurements: when the user switches a limit off,
+  the hub must not send a value of its own (the 2000-token default included).
+- New required configuration. Only `LLM_AGENT_MODEL` stays required.
+
+## Decisions (the user's)
+
+- **Lifetime.** A setting holds until the end of the session, until the user
+  changes it, or until a hub restart. After a restart the session is back on
+  defaults.
+- **Who wins.** A user setting for a role overrides the coordinator's choice
+  for that role (the `delegate_task` `model` and a profile `model`). Without a
+  user setting the coordinator keeps choosing.
+- **Parameters.** The settings show all parameters the chosen model supports.
+  Max output tokens and budgets can be set or switched off.
+- **WebUI.**
+  - The `LLM` select in the toolbar is replaced by an `LLM` button next to
+    `MANAGE`.
+  - Like `MANAGE`, the button opens a window: models and parameters for
+    coordinator, planner, executor and checker.
+  - A model picker at login or session start was mentioned as an alternative.
+    The window is the chosen form.
+- **OpenAI / Anthropic APIs.** Settings travel in request headers. Clients are
+  the user's scripts, Cline and goose; all can send headers.
+- **Agent MCP.** Settings are arguments of `session_open`, and a separate tool
+  changes them later. There is no hub coordinator on this channel (the
+  connecting agent coordinates), so the roles there are planner, executor and
+  checker.
+
+## Design
+
+### Session settings
+
+One typed object per session, held with the session (not in the global
+config and not in any process-wide cache):
+
+```
+RoleModelSettings = {
+  coordinator?: RoleSetting;
+  planner?: RoleSetting;
+  executor?: RoleSetting;
+  checker?: RoleSetting;
+}
+RoleSetting = {
+  model?: string;                // allowlisted model id; absent = default
+  params?: ModelParams;          // absent field = model/provider default
+}
+ModelParams = {
+  temperature?: number;
+  topP?: number;
+  maxOutputTokens?: number | 'off';
+  reasoning?: ReasoningSetting;  // shape per model family, see below
+}
+```
+
+- `'off'` means the hub sends no limit of its own.
+- A field that is absent means: today's value. That is the global
+  `LLM_AGENT_TEMPERATURE` / `LLM_AGENT_MAX_TOKENS` default where the hub sends
+  one today, else nothing. A model-only setting therefore runs exactly as
+  today's runs, apart from the model. The settings window and
+  `GET /v1/session/models` show these effective values, so nothing applies
+  unseen. (My call: keeps runs comparable with earlier ones.)
+- `params` require an explicit `model` in the same role. Parameters with
+  "auto" are refused: the coordinator picks the model later, and the
+  parameters could not be checked against it. (My call.)
+- Settings are not written to the dialogue state store, so a restart drops
+  them (user decision). The existing `coordinatorModel` persistence stays for
+  the request-model path.
+- Validation is one function shared by all channels: unknown role, model not
+  on the allowlist, parameter the model does not support, value out of range
+  → the whole update is refused with a reason that names the field. Nothing
+  is partly applied.
+
+### Where each role takes its setting
+
+- **Coordinator.** The coordinator LLM (`coordinatorModel` ALS,
+  `preparePlanner` in `srv/lib/dialogue-sessions.ts`) uses
+  `settings.coordinator` when present, else today's request/deploy model.
+- **Planner (plan author).** `buildPlannerAgent` (`srv/agent-manager.ts`) uses
+  `settings.planner` for the `planner-author` component, else
+  `LLM_AGENT_PLANNER_MODEL` / deploy model. The chat planner keeps following
+  the coordinator.
+- **Executor and checker.** `createWorker`
+  (`srv/lib/agent-profile-runner.ts`) resolves the model as: user setting for
+  the worker's role → `delegate_task` `model` → profile `model` → deploy
+  model. The checker is the profile with `result: verdict`; every other
+  worker profile counts as executor. (My call; the builder may map by profile
+  name if that proves cleaner.)
+- **llm-agent internal roles.** These are the SmartAgent's own planner,
+  reviewer, finalizer and helper calls.
+  - Inside a worker, they follow that worker's role setting: executor or
+    checker.
+  - On the coordinator path (including the chat planner), they follow the
+    coordinator setting.
+  - The classifier keeps its own setting.
+  - The same mapping fills the `role` field in the ledger. (My call.)
+- When the user setting overrides a coordinator choice, the task record and
+  the coordinator's tool result say which model ran, so the coordinator does
+  not retry or argue.
+
+### Parameters per model
+
+There is no source today of which parameters a model supports: AI Core
+catalogue entries carry only capabilities, context length and streaming. The
+hub keeps a typed capability table per model family (Anthropic Claude, OpenAI
+GPT/o-series, Google Gemini, Mistral and others the allowlist uses), listing
+the supported parameters, their ranges and whether a limit may be left out.
+
+- **Anthropic.** The Messages API requires `max_tokens`. For `'off'` the hub
+  sends the model's maximum output, never a smaller hub default. Thinking:
+  enabled/disabled plus budget tokens, or the effort form where the model
+  takes it.
+- **OpenAI reasoning models.** `reasoning_effort`; `max_completion_tokens`
+  may be omitted.
+- **Through SAP AI Core orchestration.** Unset values are already left out by
+  the provider.
+
+Library gaps (llm-agent): per-role `CallOptions` are not passed to planner,
+reviewer or finalizer roles; there is no reasoning option; the Anthropic
+provider always sends `max_tokens ?? 4096`. These go to llm-agent as a draft
+PR first, then the hub uses them (the hub composes llm-agent parts; a missing
+part is added in llm-agent).
+
+The LLM cache key (`hubLlmKey`) must include the parameters, so two sessions
+with different settings never share a client.
+
+### Channels
+
+**Read and write API (shared).**
+
+- `GET /v1/session/models` (with `x-clh-session`): the session's settings,
+  the effective model per role, and for each allowlisted model its parameter
+  capabilities.
+- `PUT /v1/session/models`: replaces the settings; validation as above.
+- `GET /v1/models` keeps its shape and adds the capability table, so clients
+  without a session can read it.
+
+**WebUI** (`app/chat/webapp/index.html`).
+
+- Toolbar: the `LLM` select becomes an `LLM` button next to `MANAGE`. The
+  read-only `PLANNER` label moves into the window. `CLASSIFIER` and
+  `EMBEDDER` stay as they are. (My call.)
+- The window has one block per role. Each block has:
+  - a model select, whose first entry is "auto" (coordinator chooses; for the
+    coordinator itself: deploy default);
+  - fields for the parameters the selected model supports;
+  - an "off" switch on every limit.
+- Save calls `PUT /v1/session/models`; opening the window calls
+  `GET /v1/session/models`. A refusal shows the server's reason at the field.
+- The chat request no longer sends the toolbar `model`; the coordinator comes
+  from the session settings.
+
+**OpenAI- and Anthropic-compatible APIs.**
+
+- Headers per role: `x-clh-model-coordinator`, `x-clh-model-planner`,
+  `x-clh-model-executor`, `x-clh-model-checker`; parameters as JSON in
+  `x-clh-params-<role>`. The value `auto` clears a role.
+- Headers are sticky: a request that carries them updates the session's
+  settings (same validation, same all-or-nothing rule); later requests
+  without them keep the settings.
+- The body `model` keeps selecting the coordinator as today. When both the
+  body `model` and `x-clh-model-coordinator` are present, the header wins.
+  (My call.)
+- A refused header fails the request with 400 and names the field. Today's
+  `x-clh-model-ignored` stays only for the body `model`, which clients such as
+  Cline fill with whatever their model list shows.
+- Every response carries `x-clh-models-effective` with the effective model
+  per role, so scripts can log what ran.
+
+**Agent MCP** (`srv/agent-mcp.ts`).
+
+- `session_open` takes optional `models` with `planner`, `executor`,
+  `checker` (each `RoleSetting`).
+- A new tool, `session_set_models`, with arguments `{ session, models }`,
+  replaces them for an open session and returns the effective settings.
+- A `coordinator` entry is refused on this channel with a reason (the
+  connecting agent is the coordinator).
+- What each role controls on this channel:
+  - `executor`: `execute_step`, and executor delegations through
+    `delegate_task`;
+  - `checker`: checker delegations through `delegate_task`;
+  - `planner`: plan authoring through `plan_create` / `plan_revise`.
+  - The setting has effect wherever that tool runs, so none is accepted
+    without effect.
+  - The builder verifies each path. A role whose path does not exist on this
+    channel is refused, not ignored.
+- The tool is listed with the other session tools on every agent MCP
+  connection.
+
+### Usage ledger
+
+Each `llm.call` record gets the effective parameters (temperature, top-p,
+max output tokens or `off`, reasoning setting) next to the model it already
+stores, and the role. This is an llm-agent usage schema addition, done in the
+same llm-agent draft PR. Nothing is analysed by the hub; the ledger only
+stores. (My call: comparing runs needs to know which parameters were in
+effect.)
+
+## Constraints
+
+- Static typing everywhere: no `any`, no `unknown` outside narrowed caught
+  errors, no `as unknown as`, no `as never`.
+- No timeouts introduced.
+- Session isolation: settings are keyed by the session that the caller owns;
+  no cookie, shared storage or empty header may attach them to another
+  session.
+- Same tool set on every agent MCP connection.
+
+## Left to the builder
+
+- The exact header names beyond the pattern above, the JSON shape of
+  `x-clh-params-<role>`, and the error texts.
+- How the capability table is organised (by family with per-model
+  overrides is expected), as long as unknown models get no parameter fields
+  rather than guessed ones.
+- WebUI layout inside the window.
+- Splitting the work into PRs within the two stages below.
+
+## Stages
+
+llm-agent releases go: version PR → signed tags → the user publishes to npm.
+The hub cannot depend on an unpublished llm-agent, so the work comes in two
+stages.
+
+1. **Hub only.**
+   - Settings store and validation.
+   - `GET`/`PUT /v1/session/models`.
+   - The WebUI window: models for all four roles. Parameter fields show the
+     effective values read-only until stage 2.
+   - Headers.
+   - `session_open` `models` and `session_set_models`.
+   - The model per role on all paths.
+   - The capability table.
+   - Every channel accepts `params` already, but stage 1 refuses them with a
+     reason ("parameters per role need llm-agent X"). They are never accepted
+     without effect.
+2. **After the llm-agent release.**
+   - Per-role `CallOptions` on every role.
+   - Reasoning settings.
+   - `'off'` for max tokens (Anthropic provider included).
+   - Ledger parameters.
+   - The hub then enables `params`.
