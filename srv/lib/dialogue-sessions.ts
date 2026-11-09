@@ -103,6 +103,7 @@ import {
   longSessionLlms,
   type SessionLlms,
 } from './session-llms';
+import { sessionSlot as slot } from './session-slot';
 import { evaluateGated } from './step-reviewer';
 import { cachedSystemIdentity } from './system-identity-cache';
 import { createTaskResultStore } from './task-result-store';
@@ -279,7 +280,6 @@ export function sharedExecutorPool(): IConcurrencyPool | undefined {
   executorPool ??= new SemaphorePool(limit);
   return executorPool;
 }
-const slot = (userId: string, key: string) => JSON.stringify([userId, key]);
 
 /** Open the shared board without sending a coordinator message. */
 export async function headlessDialogueFor(
