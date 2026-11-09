@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.7.1] - 2026-11-09
+
 ### Changed
 
 - WebUI shows deployment-configured classifier and embedding models with their configuration sources in the LLM window instead of the system bar; chat requests no longer send an unused classifier model override.
