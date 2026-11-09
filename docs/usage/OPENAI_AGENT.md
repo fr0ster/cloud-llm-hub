@@ -195,7 +195,9 @@ planner, executor and checker. It shows effective models, limits and their
 sources. Non-admin users get an information-only window without Save.
 Model parameter controls are read-only in stage 1; their effective values are
 not currently exposed by the session API. Hub-owned limits support numbers
-and `off`; library-owned `planStepBudget` is unavailable until stage 2.
+and `off`; an empty input with `off` unchecked clears the session override.
+Unchecking `off` prefills the config/default value when numeric. Select model
+`auto` to clear a role model override. Library-owned `planStepBudget` is unavailable until stage 2.
 
 ### Chat API headers (OpenAI and Anthropic)
 
@@ -209,7 +211,9 @@ and `off`; library-owned `planStepBudget` is unavailable until stage 2.
   Per-run roles are coordinator, executor and checker. Session-wide fields
   are `toolResultMaxChars` and `historyTokenBudget`. `planStepBudget` is
   refused in stage 1. `off` removes the hub limit; stop the task or close the
-  session to stop a run.
+  session to stop a run. A limit value of `null` clears that individual session
+  override and restores its config/default source, for example
+  `{"executor":{"maxIterations":null}}`. Omitted header fields stay unchanged.
 
 Headers are **sticky**: supplied fields merge into the session settings;
 requests without them keep previous values. Nested role limits merge field
@@ -240,7 +244,8 @@ Both endpoints require `x-clh-session` for an open session:
   `limits`, for example
   `{"executor":{"model":"gpt-4o"},"checker":"auto","limits":{"executor":{"maxIterations":"off"}}}`.
   Use a model from this deployment's allowlist. Omitted settings revert to
-  defaults. Success returns the same snapshot as GET; validation failures
+  defaults. Individual limit values also accept `null` to clear an override.
+  Success returns the same snapshot as GET; validation failures
   return `400 {"error":{"field":"...","reason":"..."}}`; permission
   failures return 403.
 
@@ -249,7 +254,8 @@ Both endpoints require `x-clh-session` for an open session:
 For `MCP_Admin`, `session_open` accepts optional `models` and `limits`.
 `models` contains planner, executor and checker role settings; a coordinator
 entry is refused because the connecting agent coordinates. Limits use the
-same shape and stage 1 restrictions as the HTTP API.
+same shape and stage 1 restrictions as the HTTP API, including `null` to
+clear individual limit overrides.
 
 `session_set_models` accepts `{ session, models, limits }` for an open session,
 replaces the settings and returns the effective snapshot. It is listed only

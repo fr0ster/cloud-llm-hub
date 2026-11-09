@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- WebUI shows deployment-configured classifier and embedding models with their configuration sources in the LLM window instead of the system bar; chat requests no longer send an unused classifier model override.
+
+### Fixed
+
+- WebUI LLM settings restore config/default limits when an unchecked limit is empty, prefill the base value when disabling off, and display the effective model separator correctly. HTTP, MCP and sticky limit headers accept `null` to clear individual overrides.
+
 ## [10.7.0] - 2026-11-09
 
 ### Added

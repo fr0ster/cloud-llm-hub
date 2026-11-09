@@ -21,6 +21,7 @@ export interface ExecutionLimits {
 const limit = z.union([
   z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   z.literal('off'),
+  z.null(),
 ]);
 const run = z.strictObject({
   maxIterations: limit.optional(),
@@ -62,7 +63,26 @@ export function validateExecutionLimits(
           'run and plan-step budgets arrive with llm-agent library limits (stage 2)',
       },
     };
-  return { ok: true, value: parsed.data };
+  const value: ExecutionLimits = {};
+  for (const role of ['coordinator', 'executor', 'checker'] as const) {
+    const input = parsed.data[role];
+    if (!input) continue;
+    const run: RunLimits = {};
+    for (const name of ['maxIterations', 'maxToolCalls'] as const) {
+      const limit = input[name];
+      if (limit != null) run[name] = limit;
+    }
+    if (Object.keys(run).length) value[role] = run;
+  }
+  for (const name of [
+    'toolResultMaxChars',
+    'historyTokenBudget',
+    'planStepBudget',
+  ] as const) {
+    const limit = parsed.data[name];
+    if (limit != null) value[name] = limit;
+  }
+  return { ok: true, value };
 }
 const store = new Map<string, ExecutionLimits>();
 const scope = new AsyncLocalStorage<ExecutionLimits>();
@@ -137,7 +157,11 @@ export function effectiveExecutionLimits(
   key: string,
 ): Record<
   string,
-  { value: Limit; source: 'user' | 'env' | 'config' | 'default' }
+  {
+    value: Limit;
+    source: 'user' | 'env' | 'config' | 'default';
+    baseValue: Limit;
+  }
 > {
   const settings = getExecutionLimits(userId, key);
   const config = configuredExecutionLimits();
@@ -150,10 +174,10 @@ export function effectiveExecutionLimits(
   ) => {
     result[name] =
       value !== undefined
-        ? { value, source: 'user' }
+        ? { value, source: 'user', baseValue: configured ?? fallback }
         : configured !== undefined
-          ? { value: configured, source: 'config' }
-          : { value: fallback, source: 'default' };
+          ? { value: configured, source: 'config', baseValue: configured }
+          : { value: fallback, source: 'default', baseValue: fallback };
   };
   for (const role of ['coordinator', 'executor', 'checker'] as const) {
     add(

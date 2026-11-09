@@ -161,7 +161,7 @@ describe('deploy configuration parity', () => {
     });
     expect(
       effectiveExecutionLimits('user', 'key')['executor.maxIterations'],
-    ).toEqual({ value: 'off', source: 'config' });
+    ).toEqual({ value: 'off', source: 'config', baseValue: 'off' });
   });
   it('LLM_AGENT_HISTORY_TOKEN_BUDGET unset keeps 8000', () => {
     loadAgentConfig();
@@ -223,7 +223,7 @@ describe('deploy configuration parity', () => {
       ).toEqual({ maxIterations: Infinity, maxToolCalls: undefined });
       expect(
         effectiveExecutionLimits('user', 'key')[`${role}.maxToolCalls`],
-      ).toEqual({ value: 'off', source: 'config' });
+      ).toEqual({ value: 'off', source: 'config', baseValue: 'off' });
     }
   });
   it('session limits override configuration per value and history off removes the budget', () => {

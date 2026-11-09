@@ -52,12 +52,12 @@
         .status-waiting { color: #ffaa33; }
         .status-streaming { color: #00bfff; animation: blink 1s infinite; }
 
-        #dest-select, .aux-model-select {
+        #dest-select {
             background: #111; color: #00ff00; border: 1px solid #333; font-family: 'Courier New', Courier, monospace;
             font-size: 13px; padding: 2px 4px; border-radius: 3px; outline: none; cursor: pointer;
         }
-        #dest-select:focus, .aux-model-select:focus { border-color: #00ff00; }
-        #dest-select:disabled, .aux-model-select:disabled { opacity: 0.4; cursor: not-allowed; }
+        #dest-select:focus:focus { border-color: #00ff00; }
+        #dest-select:disabled:disabled { opacity: 0.4; cursor: not-allowed; }
 
         #llm-modal input, #llm-modal select, #llm-modal button {
             background:#1a1a1a; color:#00ff00; border:1px solid #333;
@@ -103,8 +103,6 @@
             <span><button id="help-btn" type="button" onclick="openHelp()" title="Help" aria-haspopup="dialog" style="padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00ff00;border:1px solid #333;border-radius:3px;font-family:'Courier New',monospace">HELP</button></span>
         </div>
         <div class="system-bar">
-            <span>CLASSIFIER: <select id="classifier-model-select" class="aux-model-select" disabled><option value="">...</option></select></span>
-            <span>EMBEDDER: <span id="embedding-model">...</span></span>
             <span>RAG: <span id="rag-type">...</span> <button id="rag-manage-btn" onclick="openRagPanel()" title="Manage RAG Collections" style="margin-left:4px;padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00ff00;border:1px solid #333;border-radius:3px;font-family:'Courier New',monospace">MANAGE</button> <button id="llm-settings-btn" onclick="openLlmPanel()" style="margin-left:4px;padding:1px 8px;font-size:11px;cursor:pointer;background:#1a1a1a;color:#00ff00;border:1px solid #333;border-radius:3px">LLM</button></span>
         </div>
 
@@ -117,6 +115,12 @@
               <div id="llm-fields"></div>
               <button id="llm-save" type="submit" hidden>SAVE</button>
             </form>
+            <section aria-labelledby="llm-auxiliary-heading">
+              <h3 id="llm-auxiliary-heading">Auxiliary models</h3>
+              <p>Read-only, set at deploy.</p>
+              <p>Classifier: <span id="llm-classifier-model">...</span><br>Source: config.llm.classifierModel (LLM_AGENT_CLASSIFIER_MODEL, falls back to the main model)</p>
+              <p>Embedder: <span id="llm-embedding-model">...</span><br>Source: config.rag.embedder.model (LLM_AGENT_EMBEDDING_MODEL or provider default)</p>
+            </section>
           </div>
         </div>
         <div id="rag-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:1000;overflow:auto">
@@ -262,8 +266,8 @@
               <p style="color:#ffcc00;font-style:italic;margin:0 0 10px 0">Pick what runs the answer.</p>
               <ul style="margin:0;padding-left:20px;line-height:1.7">
                 <li><b>LLM</b> dropdown &mdash; the main model that answers you.</li>
-                <li><b>CLASSIFIER</b> dropdown &mdash; small model for routing (advanced; usually leave default).</li>
-                <li><b>EMBEDDER</b> &mdash; read-only, set at deploy.</li>
+                <li><b>CLASSIFIER</b> &mdash; routing model shown in the LLM window; read-only, set at deploy.</li>
+                <li><b>EMBEDDER</b> &mdash; embedding model shown in the LLM window; read-only, set at deploy.</li>
                 <li><b>MODE</b> &mdash; read-only, current pipeline mode.</li>
                 <li>Switch <b>LLM</b> any time. The new pick applies to your next message.</li>
               </ul>
@@ -352,7 +356,6 @@
         const statusText = document.getElementById('status-text');
         const destSelect = document.getElementById('dest-select');
         const destRefreshBtn = document.getElementById('dest-refresh');
-        const classifierSelect = document.getElementById('classifier-model-select');
         let conversationHistory = [];
         let ready = false;
         let connectedDestination = '';
@@ -1710,11 +1713,10 @@
                 if (data.data && data.data.length > 0) {
                     const meta = data._meta || {};
                     const agentReady = data._agent_ready === true;
-                    populateModelSelects(data);
+                    populateAuxiliaryModels(data);
 
                     document.getElementById('agent-mode').innerText = meta.mode || '?';
                     document.getElementById('rag-type').innerText = meta.rag_type || '?';
-                    document.getElementById('embedding-model').innerText = meta.embedding_model || '?';
 
                     // Populate destination dropdown
                     const activeDest = data._active_destination || meta.mcp_destination || '';
@@ -1776,9 +1778,10 @@
         let hubStateFinishedAt = -Infinity;
         let hubStateTimer = null;
 
-        function populateModelSelects(data) {
-            if (!data.data?.length) return;
-            populateAuxSelect(classifierSelect, data.data, data._meta?.classifier_model);
+        function populateAuxiliaryModels(data) {
+            const meta = data._meta || {};
+            document.getElementById('llm-classifier-model').textContent = meta.classifier_model || '?';
+            document.getElementById('llm-embedding-model').textContent = meta.embedding_model || '?';
         }
 
         function syncHubStatePolling() {
@@ -1804,7 +1807,7 @@
                 try {
                     const resp = await hubFetch('/v1/models');
                     const data = await resp.json();
-                    populateModelSelects(data);
+                    populateAuxiliaryModels(data);
                     const destinations = data._destinations || [];
                     if (destinations.length > 0) {
                         renderDestinations(destinations, data._active_destination || '');
@@ -1823,7 +1826,7 @@
         }
 
         // destSelect is hidden (the login gate owns destination choice), so it is not a trigger.
-        for (const select of [classifierSelect, document.getElementById('gate-dest')]) {
+        for (const select of [document.getElementById('gate-dest')]) {
             select.addEventListener('mousedown', refreshHubState);
             select.addEventListener('focus', refreshHubState);
             select.addEventListener('keydown', event => {
@@ -1999,28 +2002,6 @@
             destRefreshBtn.textContent = '\u21bb';
             destRefreshBtn.disabled = false;
         });
-
-        function populateAuxSelect(selectEl, models, activeValue) {
-            const ids = models.map(m => m.id);
-            // A configured value the list does not offer is still shown, as it is what the server uses.
-            if (activeValue && !ids.includes(activeValue)) ids.unshift(activeValue);
-            const currentVal = ids.includes(selectEl.value) ? selectEl.value : activeValue;
-            const options = Array.from(selectEl.options || []);
-            // Rebuilding the options of an open dropdown can close it: leave an unchanged list alone.
-            if (options.length !== ids.length || options.some((o, i) => o.value !== ids[i])) {
-                selectEl.innerHTML = '';
-                for (const id of ids) {
-                    const opt = document.createElement('option');
-                    opt.value = id;
-                    opt.textContent = id;
-                    if (id === currentVal) opt.selected = true;
-                    selectEl.appendChild(opt);
-                }
-            } else if (currentVal && selectEl.value !== currentVal) {
-                selectEl.value = currentVal;
-            }
-            selectEl.disabled = false;
-        }
 
         async function clearChat() {
             try {
@@ -2203,7 +2184,6 @@
                         }
                     ]
                 };
-                if (classifierSelect.value) reqBody.classifier_model = classifierSelect.value;
                 // Send only current message — SmartAgent manages session history internally.
                 await ensureSession();
                 if (!mainRequest && dialogueOpen) {
@@ -2759,7 +2739,7 @@
                 return `<fieldset style="border:1px solid #333;padding:12px;margin:12px 0"><legend>${role}</legend>
                     <label>Model <select id="llm-role-${role}" ${disabled}><option value="auto">auto (${role === 'coordinator' ? 'deploy default' : 'coordinator chooses'})</option>${models.map(model => `<option value="${escapeHtml(model)}" ${model === selected ? 'selected' : ''}>${escapeHtml(model)}</option>`).join('')}</select></label>
                     ${llmError(role)} ${llmError(role + '.model')}
-                    <p>Effective: ${escapeHtml(effective.model || 'coordinator chooses')} ? source: ${escapeHtml(effective.source)}</p>
+                    <p>Effective: ${escapeHtml(effective.model || 'coordinator chooses')} · source: ${escapeHtml(effective.source)}</p>
                     <div id="llm-params-${role}"></div></fieldset>`;
             }).join('') + '<h3>Limits</h3>' + Object.entries(data.effectiveLimits).map(([name, entry]) => {
                 const locked = !data.canEdit || name === 'planStepBudget';
@@ -2781,10 +2761,16 @@
                     number.disabled = off.checked;
                     const parts = name.split('.');
                     const parent = parts.length === 2 ? (llmLimitDraft[parts[0]] ||= {}) : llmLimitDraft;
-                    parent[parts.at(-1)] = off.checked ? 'off' : Number(number.value);
+                    parent[parts.at(-1)] = off.checked ? 'off' : number.value.trim() === '' ? null : Number(number.value);
                 };
                 number.addEventListener('input', update);
-                off.addEventListener('change', update);
+                off.addEventListener('change', () => {
+                    const base = data.effectiveLimits[name].baseValue;
+                    if (!off.checked && number.value === '' && typeof base === 'number' && base > 0) {
+                        number.value = String(base);
+                    }
+                    update();
+                });
             }
         }
 
