@@ -17,6 +17,7 @@ import { handleChatCompletions, handleModels } from '../../srv/openai-handler';
 
 const mockCalls: string[] = [];
 let mockLoop = false;
+let mockRolePlan = false;
 // Model selection does not exercise discovery. Do not leave startup retry
 // timers making BTP requests after this suite has finished.
 jest.mock('../../srv/lib/destination-watch', () => ({
@@ -49,7 +50,23 @@ jest.mock('../../srv/lib/llm-factory', () => ({
               message.content?.includes('sequential adaptive plan'),
           )
             ? JSON.stringify({
-                steps: [{ id: 'answer', kind: 'answer', text: config.model }],
+                steps: mockRolePlan
+                  ? [
+                      {
+                        id: 'exec',
+                        kind: 'work',
+                        goal: 'Answer',
+                        worker: 'executor',
+                      },
+                      {
+                        id: 'check',
+                        kind: 'work',
+                        goal: 'Review',
+                        worker: 'checker',
+                      },
+                      { id: 'answer', kind: 'answer', from: 'exec' },
+                    ]
+                  : [{ id: 'answer', kind: 'answer', text: config.model }],
               })
             : (config.model ?? 'Done'),
           finishReason: 'stop',
@@ -774,6 +791,165 @@ test.each(
       }
       await registry.closeAll('shutdown');
       setLongSessionsForTest(undefined);
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+);
+
+test.each(
+  (['fixed', 'adaptive'] as const).flatMap((mode) =>
+    ['/v1/chat/completions', '/v1/messages'].flatMap((path) =>
+      [false, true].map((stream) => ({ mode, path, stream })),
+    ),
+  ),
+)(
+  'HTTP worker role models persist and isolate ($mode, $path, stream=$stream)',
+  async ({ mode, path, stream }) => {
+    const cds = (await import('@sap/cds')).default;
+    const manager = await import('../../srv/agent-manager');
+    const connections = await import('../../srv/lib/request-connection');
+    const resolver = await import('../../srv/connections/destinationResolver');
+    const { LongSessionRegistry, setLongSessionsForTest } = await import(
+      '../../srv/lib/long-session'
+    );
+    const { clearRoleModels } = await import(
+      '../../srv/lib/role-model-settings'
+    );
+    const savedEnv = { ...process.env };
+    process.env.LLM_AGENT_CHAT_COORDINATOR = mode;
+    clearAgentConfig();
+    const adapter = new McpClientAdapter(
+      new MCPClientWrapper({ transport: 'embedded' }),
+    );
+    jest.spyOn(adapter, 'listTools').mockResolvedValue({ ok: true, value: [] });
+    jest
+      .spyOn(adapter, 'healthCheck')
+      .mockResolvedValue({ ok: true, value: true });
+    const handle = await buildAgentForDestination(
+      adapter,
+      new ExpositionFilteringRag(new InMemoryRag()),
+      getAgentConfig(),
+    );
+    const smart = jest
+      .spyOn(manager, 'getSmartAgent')
+      .mockResolvedValue(handle);
+    const connection = jest
+      .spyOn(connections, 'establishRequestConnection')
+      .mockResolvedValue({ handled: false, credential: { kind: 'none' } });
+    const destination = jest
+      .spyOn(resolver, 'resolveDestinationSapConfig')
+      .mockResolvedValue({
+        destinationName: 'TEST',
+        sapConfig: { url: 'https://test.invalid', authType: 'basic' },
+        authenticationType: 'BasicAuthentication',
+      });
+    const registry = new LongSessionRegistry(
+      { ttlMs: 60000, maxSessions: 10, maxPerUser: 5, queueLength: 2 },
+      { onClose: async () => {} },
+    );
+    const configured = registry.open('worker-http', {
+      key: 'configured',
+    });
+    const defaults = registry.open('worker-http', {
+      key: 'default',
+    });
+    if ('refused' in configured || 'refused' in defaults)
+      throw new Error('Cannot open sessions');
+    setLongSessionsForTest(registry);
+    const failures: { code: string; message: string }[] = [];
+    const createWorker = AgentProfileRunner.prototype.createWorker;
+    const workers = jest
+      .spyOn(AgentProfileRunner.prototype, 'createWorker')
+      .mockImplementation(async function (
+        this: AgentProfileRunner,
+        ...args: Parameters<AgentProfileRunner['createWorker']>
+      ) {
+        const result = await createWorker.apply(this, args);
+        if (!result.ok) failures.push(result.error);
+        return result;
+      });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      const context = new cds.EventContext({ event: 'chat' });
+      context.user = new cds.User({
+        id: 'worker-http',
+        attr: {},
+        roles: ['MCP_Admin', 'MCP_Reader'],
+      });
+      cds.context = context;
+      Object.assign(req, {
+        longSession:
+          req.headers['x-clh-session'] === 'configured' ? configured : defaults,
+      });
+      next();
+    });
+    app.post('/v1/chat/completions', handleChatCompletions);
+    app.post('/v1/messages', handleAnthropicMessages);
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('No port');
+    const chat = async (key: string, headers: Record<string, string> = {}) => {
+      mockCalls.length = 0;
+      failures.length = 0;
+      const response = await fetch(`http://127.0.0.1:${address.port}${path}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-clh-session': key,
+          ...headers,
+        },
+        body: JSON.stringify({
+          model: 'worker-default',
+          stream,
+          messages: [{ role: 'user', content: 'Hello' }],
+        }),
+      });
+      return { status: response.status, text: await response.text() };
+    };
+    mockRolePlan = true;
+    try {
+      const updates: Record<string, string>[] = [
+        { 'x-clh-model-executor': 'A', 'x-clh-model-checker': 'B' },
+        {},
+      ];
+      for (const headers of updates) {
+        expect((await chat('configured', headers)).status).toBe(200);
+        expect(mockCalls).toContain('A');
+        if (mode === 'adaptive') expect(mockCalls).toContain('B');
+      }
+      expect((await chat('default')).status).toBe(200);
+      expect(new Set(mockCalls)).toEqual(new Set(['worker-default']));
+      process.env.LLM_AGENT_MODELS = 'B';
+      await chat('configured');
+      expect(failures).toContainEqual({
+        code: 'MODEL_NOT_ALLOWED',
+        message: expect.stringContaining('executor.model'),
+      });
+      expect(mockCalls).not.toContain('A');
+      if (mode === 'adaptive') {
+        process.env.LLM_AGENT_MODELS = 'A';
+        await chat('configured');
+        expect(failures).toContainEqual({
+          code: 'MODEL_NOT_ALLOWED',
+          message: expect.stringContaining('checker.model'),
+        });
+        expect(mockCalls).not.toContain('B');
+      }
+    } finally {
+      mockRolePlan = false;
+      workers.mockRestore();
+      smart.mockRestore();
+      connection.mockRestore();
+      destination.mockRestore();
+      clearRoleModels('worker-http', 'configured');
+      clearRoleModels('worker-http', 'default');
+      await registry.closeAll('shutdown');
+      setLongSessionsForTest(undefined);
+      process.env = savedEnv;
+      clearAgentConfig();
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

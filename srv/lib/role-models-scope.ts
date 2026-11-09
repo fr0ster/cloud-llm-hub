@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { deployModel } from './deploy-model';
 import { configuredRoleModel } from './deploy-role-config';
 import { type ExecutionLimits, withExecutionLimits } from './execution-limits';
 import { parseModelAllowlist } from './model-policy';
@@ -87,7 +88,7 @@ export function effectiveRoleModels(
   const settings = getRoleModels(userId, key);
   const request = dialogueRequestModel(userId, key);
   const deploy: EffectiveModel = {
-    model: process.env.LLM_AGENT_MODEL ?? null,
+    model: deployModel(),
     source: 'deploy',
   };
   const resolve = (

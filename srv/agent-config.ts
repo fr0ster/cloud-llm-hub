@@ -1,3 +1,4 @@
+import { deployModel } from './lib/deploy-model';
 import {
   configuredExecutionLimits,
   configuredLimit,
@@ -614,10 +615,7 @@ export function loadAgentConfig(): AgentConfig {
     throttleMaxWaitMs === undefined
       ? new WaitAsNeeded()
       : new WaitIfShortEnough(throttleMaxWaitMs);
-  const model =
-    process.env.LLM_AGENT_MODEL ||
-    process.env.SAP_CORE_AI_MODEL ||
-    'gpt-4o-mini';
+  const model = deployModel();
   const temperature = Number.parseFloat(
     process.env.LLM_AGENT_TEMPERATURE ||
       process.env.SAP_CORE_AI_TEMPERATURE ||

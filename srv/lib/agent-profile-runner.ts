@@ -23,7 +23,11 @@ import { runWithVerdictTools } from './checker-verdict-tool';
 import { parseModelAllowlist, resolveAgentModel } from './model-policy';
 import { withCompactRagSearch } from './rag-search-context';
 import { recordReviewProfile } from './review-scope';
-import { RoleModelNotAllowedError } from './role-models-scope';
+import {
+  currentRoleModel,
+  RoleModelNotAllowedError,
+  roleOfProfile,
+} from './role-models-scope';
 import { runWithTrustResolver, type TrustResolver } from './trust-resolver';
 
 export interface AgentProfileRunnerHost {
@@ -99,19 +103,32 @@ export class AgentProfileRunner implements IAgentProfileRunner {
     options?: CallOptions,
   ): Promise<Result<ISubAgent, AgentProfileError>> {
     const profile = structuredClone(input.profile);
-    const model = resolveAgentModel(
-      { requested: input.model, profile: profile.model },
-      parseModelAllowlist(),
-      process.env.LLM_AGENT_MODEL ?? '',
-    );
-    if (
-      !model.ok &&
-      (input.model !== undefined ||
-        profile.model !== undefined ||
-        process.env.LLM_AGENT_MODEL)
-    )
-      return { ok: false, error: { code: model.error, message: model.error } };
-    if (model.ok) profile.model = model.value;
+    try {
+      const requested = currentRoleModel(roleOfProfile(profile)) ?? input.model;
+      const model = resolveAgentModel(
+        { requested, profile: profile.model },
+        parseModelAllowlist(),
+        process.env.LLM_AGENT_MODEL ?? '',
+      );
+      if (
+        !model.ok &&
+        (requested !== undefined ||
+          profile.model !== undefined ||
+          process.env.LLM_AGENT_MODEL)
+      )
+        return {
+          ok: false,
+          error: { code: model.error, message: model.error },
+        };
+      if (model.ok) profile.model = model.value;
+    } catch (error) {
+      if (error instanceof RoleModelNotAllowedError)
+        return {
+          ok: false,
+          error: { code: 'MODEL_NOT_ALLOWED', message: error.message },
+        };
+      throw error;
+    }
     const parent = currentProfileTools();
     try {
       await this.host.prepareTools?.(profile.name, options);

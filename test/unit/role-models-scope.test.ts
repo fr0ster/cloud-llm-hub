@@ -77,3 +77,26 @@ test.each(['coordinator', 'planner', 'executor', 'checker'] as const)(
     });
   },
 );
+
+test.each([
+  ['sap-model', 'sap-model'],
+  [undefined, 'gpt-4o-mini'],
+])(
+  'effective deploy model uses SAP_CORE_AI_MODEL=%s or the built-in fallback',
+  (sapModel, expected) => {
+    const saved = { ...process.env };
+    delete process.env.LLM_AGENT_MODEL;
+    delete process.env.LLM_AGENT_COORDINATOR_MODEL;
+    delete process.env.LLM_AGENT_PLANNER_MODEL;
+    if (sapModel === undefined) delete process.env.SAP_CORE_AI_MODEL;
+    else process.env.SAP_CORE_AI_MODEL = sapModel;
+    try {
+      expect(effectiveRoleModels('fallback-user', 'default')).toMatchObject({
+        coordinator: { model: expected, source: 'deploy' },
+        planner: { model: expected, source: 'deploy' },
+      });
+    } finally {
+      process.env = saved;
+    }
+  },
+);

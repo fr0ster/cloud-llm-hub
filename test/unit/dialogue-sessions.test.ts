@@ -24,6 +24,11 @@ import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import { parseModelAllowlist } from '../../srv/lib/model-policy';
 import * as plannerMemory from '../../srv/lib/planner-memory';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
+import {
+  currentRoleModel,
+  RoleModelNotAllowedError,
+  roleOfProfile,
+} from '../../srv/lib/role-models-scope';
 import { systemToolTrust } from '../../srv/lib/system-tool-trust';
 import type { TrustResolver } from '../../srv/lib/trust-resolver';
 import { sumPlannerUsage } from '../../srv/lib/usage-wire';
@@ -311,6 +316,16 @@ jest.mock('../../srv/agent-manager', () => ({
         model?: string;
         profile: import('@mcp-abap-adt/llm-agent').WorkerProfile;
       }) => {
+        try {
+          model = currentRoleModel(roleOfProfile(profile)) ?? model;
+        } catch (error) {
+          if (error instanceof RoleModelNotAllowedError)
+            return {
+              ok: false,
+              error: { code: 'MODEL_NOT_ALLOWED', message: error.message },
+            };
+          throw error;
+        }
         mockWorkerModel = model ?? profile.model;
         if (model !== undefined && !parseModelAllowlist().has(model))
           return {

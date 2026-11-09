@@ -1221,11 +1221,9 @@ async function open(
         validateModel: (model) => profileRunner.validateModel(model),
         createWorker: async (input, options) =>
           withSessionSettings(userId, key, async () => {
-            const model =
-              currentRoleModel(roleOfProfile(input.profile)) ?? input.model;
             const result = await observeProfilePreparation(
               options?.signal,
-              () => profileRunner.createWorker({ ...input, model }, options),
+              () => profileRunner.createWorker(input, options),
             );
             return result.ok
               ? {
@@ -1233,7 +1231,10 @@ async function open(
                   value: wrapWorker(
                     result.value,
                     input.profile,
-                    model ?? input.profile.model ?? config.llm.model,
+                    currentRoleModel(roleOfProfile(input.profile)) ??
+                      input.model ??
+                      input.profile.model ??
+                      config.llm.model,
                     input.model,
                   ),
                 }
