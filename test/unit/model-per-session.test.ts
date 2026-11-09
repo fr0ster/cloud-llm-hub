@@ -346,3 +346,38 @@ test.each(
     expect(mockCalls).not.toContain('B');
   },
 );
+
+test('the plan author runs on the user planner model, else LLM_AGENT_PLANNER_MODEL, else the deploy model', async () => {
+  const { withRoleModels } = await import('../../srv/lib/role-models-scope');
+  for (const plannerModel of [undefined, 'B']) {
+    const config = getAgentConfig();
+    const adapter = new McpClientAdapter(
+      new MCPClientWrapper({ transport: 'embedded' }),
+    );
+    jest.spyOn(adapter, 'listTools').mockResolvedValue({ ok: true, value: [] });
+    jest
+      .spyOn(adapter, 'healthCheck')
+      .mockResolvedValue({ ok: true, value: true });
+    const handle = await buildAgentForDestination(
+      adapter,
+      new ExpositionFilteringRag(new InMemoryRag()),
+      {
+        ...config,
+        llm: { ...config.llm, plannerModel },
+      },
+    );
+    for (const model of ['A', undefined]) {
+      await withRoleModels(model ? { planner: { model } } : {}, async () => {
+        const prepared = await handle.profileRunner.preparePlanAuthor({
+          systemPrompt: 'Answer briefly',
+          mode: 'create',
+        });
+        if (!prepared.ok) throw new Error(prepared.error.message);
+        await prepared.value.process('Hello');
+        expect(mockCalls.at(-1)).toBe(
+          model ?? plannerModel ?? 'worker-default',
+        );
+      });
+    }
+  }
+});

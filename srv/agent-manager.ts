@@ -17,6 +17,7 @@ import {
   resolveAgentModel,
   resolveRequestModel,
 } from './lib/model-policy';
+import { currentRoleModel } from './lib/role-models-scope';
 import { resolverFor, TrustResolver } from './lib/trust-resolver';
 import { TrustStore } from './lib/trust-store';
 import { reportWorkerActivity } from './lib/worker-activity';
@@ -3331,7 +3332,12 @@ function destinationProfileRunner(
       const agent = await buildPlannerAgent(
         {
           ...config,
-          llm: { ...config.llm, model: getAgentConfig().llm.model },
+          llm: {
+            ...config.llm,
+            model: getAgentConfig().llm.model,
+            plannerModel:
+              currentRoleModel('planner') ?? config.llm.plannerModel,
+          },
         },
         systemPrompt,
         filtered,
@@ -3342,7 +3348,7 @@ function destinationProfileRunner(
       return agent;
     },
     buildPlanner: async (systemPrompt, options) => {
-      const model = coordinatorModel();
+      const model = currentRoleModel('coordinator') ?? coordinatorModel();
       const planner = await buildPlannerAgent(
         model
           ? { ...config, llm: { ...config.llm, coordinatorModel: model } }

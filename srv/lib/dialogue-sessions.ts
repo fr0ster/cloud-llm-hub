@@ -93,6 +93,14 @@ import {
 } from './planner-memory';
 import { runWithRequestSystem } from './request-system-context';
 import { captureReviewProfile } from './review-scope';
+import { getRoleModels } from './role-model-settings';
+import {
+  clearRequestModel,
+  currentRoleModel,
+  roleOfProfile,
+  setRequestModel,
+  withRoleModels,
+} from './role-models-scope';
 import {
   type ConnectionLease,
   SessionConnectionFactory,
@@ -479,7 +487,9 @@ async function open(
       pipeline = admission.admitted;
       const acquiredLease = lease;
       const admitted = pipeline;
-      const result = await admitted.run(() => run(acquiredLease, admitted));
+      const result = await withRoleModels(getRoleModels(userId, key), () =>
+        admitted.run(() => run(acquiredLease, admitted)),
+      );
       healthy =
         !lifetime.signal.aborted &&
         result.ok !== false &&
@@ -534,6 +544,8 @@ async function open(
   const wrapWorker = (
     worker: ISubAgent,
     profile?: WorkerProfile,
+    model?: string,
+    requestedModel?: string,
   ): ISubAgent => {
     const name = worker.name;
     return {
@@ -543,6 +555,18 @@ async function open(
       async run(input) {
         const ctx = scope.getStore();
         if (!ctx) throw new Error('Background task context unavailable');
+        // Stage 2 gap: TaskRecord.model exists, but TaskBoard passes a copy to
+        // wrapRun and offers no public setter for the resolved worker model.
+        if (
+          model !== undefined &&
+          requestedModel !== undefined &&
+          model !== requestedModel
+        )
+          log().info('Session role model overrides coordinator choice', {
+            taskId: ctx.taskId,
+            requestedModel,
+            model,
+          });
         input.stopSignal?.addEventListener(
           'abort',
           () => {
@@ -692,6 +716,7 @@ async function open(
       },
     );
   let selectedModel = model ?? restoredModel.model;
+  if (selectedModel !== undefined) setRequestModel(userId, key, selectedModel);
   let saving = Promise.resolve();
   const persist = (
     outboxMessages: OutboxEntry[],
@@ -952,172 +977,176 @@ async function open(
     input: Message[],
     options: AgentCallOptions,
   ) =>
-    runWithToolScope(coordinatorToolScope, async () => {
-      // Reset the library's legacy malformed-verdict failure before decisions.
-      const current = session?.snapshot();
-      const resetSteps = current && unusableCheckerPlanSteps(current);
-      if (resetSteps) {
-        const reset = await new PlannerToolsClient().callTool('plan_update', {
-          steps: resetSteps,
-        });
-        if (!reset.ok || reset.value.isError)
-          throw new Error('Unable to reset unusable checker verdict');
-        input = input.map((message, index) =>
-          index === input.length - 1
-            ? {
-                ...message,
-                content: `${message.content}\nChecker verdict correction: unusable verdicts are undecided, not failures. Their check steps are pending. Decide whether to rerun, revise or skip with a reason.`,
-              }
-            : message,
-        );
-      }
-      const caller = (options.trace && turnCallers.get(options.trace)) ??
-        eventCaller ?? {
-          userId,
-          // Restored tasks and timer events have no authenticated originating turn.
-          identity: { admin: false, channel: 'openai' as const },
+    withRoleModels(getRoleModels(userId, key), () =>
+      runWithToolScope(coordinatorToolScope, async () => {
+        // Reset the library's legacy malformed-verdict failure before decisions.
+        const current = session?.snapshot();
+        const resetSteps = current && unusableCheckerPlanSteps(current);
+        if (resetSteps) {
+          const reset = await new PlannerToolsClient().callTool('plan_update', {
+            steps: resetSteps,
+          });
+          if (!reset.ok || reset.value.isError)
+            throw new Error('Unable to reset unusable checker verdict');
+          input = input.map((message, index) =>
+            index === input.length - 1
+              ? {
+                  ...message,
+                  content: `${message.content}\nChecker verdict correction: unusable verdicts are undecided, not failures. Their check steps are pending. Decide whether to rerun, revise or skip with a reason.`,
+                }
+              : message,
+          );
+        }
+        const caller = (options.trace && turnCallers.get(options.trace)) ??
+          eventCaller ?? {
+            userId,
+            // Restored tasks and timer events have no authenticated originating turn.
+            identity: { admin: false, channel: 'openai' as const },
+          };
+        const reply = options.trace && replies.get(options.trace);
+        turnReply = undefined;
+        turnReplyUsage = options.trace
+          ? replyUsage.get(options.trace)
+          : undefined;
+        let spent: TokenUsage | undefined;
+        let contentStreamed = false;
+        const turn: PlannerTurn = {
+          traceId: options.trace?.traceId,
+          workerTraces: new Set<string>(),
+          workerRecords: [],
+          active: true,
+          reviewing: false,
         };
-      const reply = options.trace && replies.get(options.trace);
-      turnReply = undefined;
-      turnReplyUsage = options.trace
-        ? replyUsage.get(options.trace)
-        : undefined;
-      let spent: TokenUsage | undefined;
-      let contentStreamed = false;
-      const turn: PlannerTurn = {
-        traceId: options.trace?.traceId,
-        workerTraces: new Set<string>(),
-        workerRecords: [],
-        active: true,
-        reviewing: false,
-      };
-      // Set when content is reviewed; empty/failed turns settle at the generation
-      // current when they end, so their own capability does not leak forward.
-      let reviewedGeneration: number | undefined;
-      try {
-        let result = await observeLlmSpend(
-          () =>
-            runWithContextCapture(
-              { component: 'planner', sessionKey: key },
-              () =>
-                runWithSessionId(
-                  key,
-                  () =>
-                    recMcp.withSession(userId, key, () =>
-                      plannerTrace.run(turn, () =>
-                        decoratePlanner(planner).process(input, {
-                          ...options,
-                          onPartial(chunk) {
-                            if (chunk.kind === 'content' && chunk.delta)
-                              contentStreamed = true;
-                            options.onPartial?.(chunk);
-                          },
-                        }),
+        // Set when content is reviewed; empty/failed turns settle at the generation
+        // current when they end, so their own capability does not leak forward.
+        let reviewedGeneration: number | undefined;
+        try {
+          let result = await observeLlmSpend(
+            () =>
+              runWithContextCapture(
+                { component: 'planner', sessionKey: key },
+                () =>
+                  runWithSessionId(
+                    key,
+                    () =>
+                      recMcp.withSession(userId, key, () =>
+                        plannerTrace.run(turn, () =>
+                          decoratePlanner(planner).process(input, {
+                            ...options,
+                            onPartial(chunk) {
+                              if (chunk.kind === 'content' && chunk.delta)
+                                contentStreamed = true;
+                              options.onPartial?.(chunk);
+                            },
+                          }),
+                        ),
                       ),
-                    ),
-                  undefined,
-                  caller.userId,
-                  caller.identity,
-                ),
-            ),
-          (usage) => {
-            spent = addTokenUsage(spent, usage);
-            turnPlannerSpend = addTokenUsage(turnPlannerSpend, usage);
-          },
-        );
-        if (result.ok && result.value.content) {
-          turn.reviewing = true;
-          reviewedGeneration = recMcp.writeGeneration(userId, key);
-          const writeToolOffered =
-            pendingWorkerWriteCapability ||
-            recMcp.hadWriteCapability(turn.traceId) ||
-            recMcp.hadSessionWriteCapability(userId, key) ||
-            [...turn.workerTraces].some((id) => recMcp.hadWriteCapability(id));
-          const records = [
-            ...pendingWorkerRecords.splice(0),
-            ...recMcp.getToolRecords(turn.traceId),
-            ...turn.workerRecords,
-            ...[...turn.workerTraces].flatMap((id) =>
-              recMcp.getToolRecords(id),
-            ),
-          ];
-          pendingWorkerWriteCapability = false;
-          if (writeToolOffered || records.length) {
-            const verdict = await evaluateGated({
-              content: result.value.content,
-              records,
-              writeToolOffered,
-            });
-            if (!verdict.ok) {
-              const notice = `\n\n${renderNotice(verdict)}`;
-              options.onPartial?.({
-                kind: 'content',
-                delta: (contentStreamed ? '' : result.value.content) + notice,
+                    undefined,
+                    caller.userId,
+                    caller.identity,
+                  ),
+              ),
+            (usage) => {
+              spent = addTokenUsage(spent, usage);
+              turnPlannerSpend = addTokenUsage(turnPlannerSpend, usage);
+            },
+          );
+          if (result.ok && result.value.content) {
+            turn.reviewing = true;
+            reviewedGeneration = recMcp.writeGeneration(userId, key);
+            const writeToolOffered =
+              pendingWorkerWriteCapability ||
+              recMcp.hadWriteCapability(turn.traceId) ||
+              recMcp.hadSessionWriteCapability(userId, key) ||
+              [...turn.workerTraces].some((id) =>
+                recMcp.hadWriteCapability(id),
+              );
+            const records = [
+              ...pendingWorkerRecords.splice(0),
+              ...recMcp.getToolRecords(turn.traceId),
+              ...turn.workerRecords,
+              ...[...turn.workerTraces].flatMap((id) =>
+                recMcp.getToolRecords(id),
+              ),
+            ];
+            pendingWorkerWriteCapability = false;
+            if (writeToolOffered || records.length) {
+              const verdict = await evaluateGated({
+                content: result.value.content,
+                records,
+                writeToolOffered,
               });
-              result = {
-                ...result,
-                value: {
-                  ...result.value,
-                  content: result.value.content + notice,
-                },
-              };
+              if (!verdict.ok) {
+                const notice = `\n\n${renderNotice(verdict)}`;
+                options.onPartial?.({
+                  kind: 'content',
+                  delta: (contentStreamed ? '' : result.value.content) + notice,
+                });
+                result = {
+                  ...result,
+                  value: {
+                    ...result.value,
+                    content: result.value.content + notice,
+                  },
+                };
+              }
             }
           }
-        }
-        // The library appends this successful result before its final save.
-        if (result.ok) {
-          turnReply = reply;
-          const trace = options.trace;
-          const usage =
-            reply && trace
-              ? addTokenUsage(replyUsage.get(trace), result.value.usage)
-              : undefined;
-          if (trace && usage) replyUsage.set(trace, usage);
-          turnReplyUsage = usage;
-        }
-        if (!result.ok) {
-          turnReplyUsage = addTokenUsage(turnReplyUsage, spent);
-          // Only a model failure is replaced by its content-free cause.
-          turnFailureCause = isLlmFailure(result.error)
-            ? llmFailure(result.error)
-            : undefined;
-        }
-        return result;
-      } catch (error) {
-        turnReplyUsage = addTokenUsage(turnReplyUsage, spent);
-        if (!isLlmFailure(error)) {
-          turnFailureCause = undefined;
-          throw error;
-        }
-        turnFailureCause = llmFailure(error);
-        throw new Error(turnFailureCause);
-      } finally {
-        // Preserve evidence arriving during review, or during an empty/failed turn.
-        if (runningWorkers === 0) {
-          recMcp.markReviewed(
-            userId,
-            key,
-            reviewedGeneration ?? recMcp.writeGeneration(userId, key),
-          );
-          // An empty or failed turn never reviews, so evidence buffered before it
-          // is settled here. Evidence arriving during a review stays pending.
-          if (reviewedGeneration === undefined) {
-            pendingWorkerRecords.length = 0;
-            pendingWorkerWriteCapability = false;
+          // The library appends this successful result before its final save.
+          if (result.ok) {
+            turnReply = reply;
+            const trace = options.trace;
+            const usage =
+              reply && trace
+                ? addTokenUsage(replyUsage.get(trace), result.value.usage)
+                : undefined;
+            if (trace && usage) replyUsage.set(trace, usage);
+            turnReplyUsage = usage;
           }
+          if (!result.ok) {
+            turnReplyUsage = addTokenUsage(turnReplyUsage, spent);
+            // Only a model failure is replaced by its content-free cause.
+            turnFailureCause = isLlmFailure(result.error)
+              ? llmFailure(result.error)
+              : undefined;
+          }
+          return result;
+        } catch (error) {
+          turnReplyUsage = addTokenUsage(turnReplyUsage, spent);
+          if (!isLlmFailure(error)) {
+            turnFailureCause = undefined;
+            throw error;
+          }
+          turnFailureCause = llmFailure(error);
+          throw new Error(turnFailureCause);
+        } finally {
+          // Preserve evidence arriving during review, or during an empty/failed turn.
+          if (runningWorkers === 0) {
+            recMcp.markReviewed(
+              userId,
+              key,
+              reviewedGeneration ?? recMcp.writeGeneration(userId, key),
+            );
+            // An empty or failed turn never reviews, so evidence buffered before it
+            // is settled here. Evidence arriving during a review stays pending.
+            if (reviewedGeneration === undefined) {
+              pendingWorkerRecords.length = 0;
+              pendingWorkerWriteCapability = false;
+            }
+          }
+          turn.active = false;
+          turn.workerTraces.clear();
+          turn.workerRecords.length = 0;
+          const traceId = options.trace?.traceId;
+          if (
+            recMcp.hadWriteCapability(traceId) ||
+            recMcp.getToolRecords(traceId).length
+          )
+            recMcp.dropRequest(traceId);
+          for (const task of session?.snapshot().tasks ?? []) emitTask(task);
         }
-        turn.active = false;
-        turn.workerTraces.clear();
-        turn.workerRecords.length = 0;
-        const traceId = options.trace?.traceId;
-        if (
-          recMcp.hadWriteCapability(traceId) ||
-          recMcp.getToolRecords(traceId).length
-        )
-          recMcp.dropRequest(traceId);
-        for (const task of session?.snapshot().tasks ?? []) emitTask(task);
-      }
-    });
+      }),
+    );
   const source = createAgentProfileSource(
     userId,
     () =>
@@ -1189,45 +1218,61 @@ async function open(
         : { profileTimeoutMs: config.profiles.timeoutMs }),
       profileRunner: {
         validateModel: (model) => profileRunner.validateModel(model),
-        createWorker: async (input, options) => {
-          const result = await observeProfilePreparation(options?.signal, () =>
-            profileRunner.createWorker(input, options),
-          );
-          return result.ok
-            ? { ok: true, value: wrapWorker(result.value, input.profile) }
-            : result;
-        },
-        preparePlanner: async (input, options) =>
-          runWithToolScope(coordinatorToolScope, async () => {
-            coordinatorToolResolver = trustResolver.forProfile(input);
-            const result = await withCoordinatorRun(
-              async (run) =>
-                (await dialogueFor(userId, key, destination)).runStep(run),
-              () =>
-                withCoordinatorModel(selectedModel, () =>
-                  observeProfilePreparation(options?.signal, () =>
-                    profileRunner.preparePlanner(input, options),
-                  ),
-                ),
+        createWorker: async (input, options) =>
+          withRoleModels(getRoleModels(userId, key), async () => {
+            const model =
+              currentRoleModel(roleOfProfile(input.profile)) ?? input.model;
+            const result = await observeProfilePreparation(
+              options?.signal,
+              () => profileRunner.createWorker({ ...input, model }, options),
             );
-            if (!result.ok) {
-              if (/timeout|timed out|deadline/i.test(result.error.message))
-                log().warn('Agent profile/preparation deadline observed');
-              return result;
-            }
-            const prepared = result.value;
-            return {
-              ok: true,
-              value: new Proxy(prepared, {
-                get(target, property, receiver) {
-                  if (property === 'process')
-                    return (input: Message[], options: AgentCallOptions) =>
-                      processPlanner(prepared, input, options);
-                  return Reflect.get(target, property, receiver);
-                },
-              }),
-            };
+            return result.ok
+              ? {
+                  ok: true,
+                  value: wrapWorker(
+                    result.value,
+                    input.profile,
+                    model ?? input.profile.model ?? config.llm.model,
+                    input.model,
+                  ),
+                }
+              : result;
           }),
+        preparePlanner: async (input, options) =>
+          withRoleModels(getRoleModels(userId, key), () =>
+            runWithToolScope(coordinatorToolScope, async () => {
+              coordinatorToolResolver = trustResolver.forProfile(input);
+              const result = await withCoordinatorRun(
+                async (run) =>
+                  (await dialogueFor(userId, key, destination)).runStep(run),
+                () =>
+                  withCoordinatorModel(
+                    currentRoleModel('coordinator') ?? selectedModel,
+                    () =>
+                      observeProfilePreparation(options?.signal, () =>
+                        profileRunner.preparePlanner(input, options),
+                      ),
+                  ),
+              );
+              if (!result.ok) {
+                if (/timeout|timed out|deadline/i.test(result.error.message))
+                  log().warn('Agent profile/preparation deadline observed');
+                return result;
+              }
+              const prepared = result.value;
+              return {
+                ok: true as const,
+                value: new Proxy(prepared, {
+                  get(target, property, receiver) {
+                    if (property === 'process')
+                      return (input: Message[], options: AgentCallOptions) =>
+                        processPlanner(prepared, input, options);
+                    return Reflect.get(target, property, receiver);
+                  },
+                }),
+              };
+            }),
+          ),
       },
       logger: {
         warn(message) {
@@ -1495,6 +1540,7 @@ async function open(
     async selectModel(model) {
       if (model === undefined || model === selectedModel) return;
       selectedModel = model;
+      setRequestModel(userId, key, model);
       await outbox.upsert([]);
     },
     destination,
@@ -1617,6 +1663,7 @@ export function closeDialogue(
       }
     } finally {
       handles.delete(id);
+      clearRequestModel(userId, key);
       if (reason !== 'shutdown' && deleteState) {
         try {
           await deleteDialogueState(userId, key);
