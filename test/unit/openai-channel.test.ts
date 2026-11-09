@@ -1021,3 +1021,55 @@ for (const failure of ['error chunk', 'exception'] as const)
       '"prompt_tokens":7,"completion_tokens":3,"total_tokens":10',
     );
   });
+
+describe('stage 1 model response headers', () => {
+  afterEach(() => {
+    harness.user.is = () => true;
+  });
+  it.each([false, true])(
+    'every response carries x-clh-models-effective (stream=%s)',
+    async (stream) => {
+      const { res, done } = call(body(stream));
+      await done;
+      expect(
+        JSON.parse(String(res.headers['x-clh-models-effective'])),
+      ).toHaveProperty('executor', null);
+      expect(res.headers['x-clh-params-ignored']).toBeUndefined();
+    },
+  );
+  it('body model from a non-admin is ignored with x-clh-model-ignored; the request succeeds on the session coordinator', async () => {
+    harness.user.is = () => false;
+    const { res, done } = call({ ...body(), model: 'client-model' });
+    await done;
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['x-clh-model-ignored']).toBe('client-model');
+  });
+  it.each([false, true])(
+    'body temperature, top_p, max_tokens, reasoning_effort and thinking are ignored in stage 1 and listed in x-clh-params-ignored, for admins and non-admins; the request succeeds (admin=%s)',
+    async (admin) => {
+      harness.user.is = () => admin;
+      const { res, done } = call({
+        ...body(),
+        temperature: 0.5,
+        top_p: 0.8,
+        max_tokens: 100,
+        max_completion_tokens: 100,
+        reasoning_effort: 'high',
+        thinking: { type: 'enabled', budget_tokens: 1024 },
+      });
+      await done;
+      expect(res.statusCode).toBe(200);
+      expect(harness.seenOptions[0]).not.toHaveProperty('temperature');
+      expect(harness.seenOptions[0]).not.toHaveProperty('topP');
+      expect(harness.seenOptions[0]).not.toHaveProperty('maxTokens');
+      expect(String(res.headers['x-clh-params-ignored']).split(',')).toEqual([
+        'temperature',
+        'top_p',
+        'max_tokens',
+        'max_completion_tokens',
+        'reasoning_effort',
+        'thinking',
+      ]);
+    },
+  );
+});

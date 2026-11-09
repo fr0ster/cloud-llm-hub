@@ -9,13 +9,14 @@ import {
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
 import { failureMessage, observeLlmSpend } from './lib/llm-failure';
-import {
-  ignoredModelHeader,
-  parseModelAllowlist,
-  resolveRequestModel,
-} from './lib/model-policy';
+import { ignoredModelHeader } from './lib/model-policy';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
+import {
+  applyRoleModelHeaders,
+  chatRequestModel,
+  sessionCoordinator,
+} from './lib/role-model-headers';
 import { runWithRequestLlms } from './lib/session-llms';
 import {
   measureRequest,
@@ -148,6 +149,15 @@ async function handleAnthropicMessagesMeasured(
   req: Request,
   res: Response,
 ): Promise<void> {
+  if (
+    !applyRoleModelHeaders(
+      req,
+      res,
+      cds.context?.user?.id ?? 'anonymous',
+      cds.context?.user?.is('MCP_Admin') === true,
+    )
+  )
+    return;
   // Block requests until the providers are built and the agent is available
   if (!isProvidersReady() || !isAgentReady()) {
     const aiCoreAvailable = isAiCoreConfigured();
@@ -183,6 +193,11 @@ async function handleAnthropicMessagesMeasured(
     }
     const { session: _session, ...body } = parsed.data;
     normalized = adapter.normalizeRequest(body);
+    if (normalized.options) {
+      delete normalized.options.temperature;
+      delete normalized.options.topP;
+      delete normalized.options.maxTokens;
+    }
   } catch (err) {
     if (err instanceof AdapterValidationError) {
       res.status(400).json({
@@ -194,11 +209,11 @@ async function handleAnthropicMessagesMeasured(
     throw err;
   }
 
-  const requestModel = resolveRequestModel(
+  const requestModel = chatRequestModel(
     typeof normalized.context.protocol.model === 'string'
       ? normalized.context.protocol.model
       : undefined,
-    parseModelAllowlist(),
+    cds.context?.user?.is('MCP_Admin') === true,
   );
   if (requestModel.ignored) {
     res.setHeader(
@@ -371,11 +386,11 @@ async function serveMessages(
   const log = cds.log('anthropic-handler');
   const dialogueMode = getAgentConfig().agent.chatCoordinator === 'dialogue';
   const { stream, options, context } = normalized;
-  const resolvedModel = resolveRequestModel(
+  const resolvedModel = chatRequestModel(
     typeof context.protocol.model === 'string'
       ? context.protocol.model
       : undefined,
-    parseModelAllowlist(),
+    cds.context?.user?.is('MCP_Admin') === true,
   );
   let { messages } = normalized;
 
@@ -528,7 +543,10 @@ async function serveMessages(
   // it, getSmartAgent would fall to the configured default destination.
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
-    handle = await getSmartAgent(resolvedModel.model, destination);
+    handle = await getSmartAgent(
+      sessionCoordinator(req, userId) ?? resolvedModel.model,
+      destination,
+    );
   } catch (err) {
     await releaseRequestConnection(requestConnection, s);
     const message = err instanceof Error ? err.message : String(err);
@@ -603,7 +621,15 @@ async function serveMessages(
 
   const chatAgent =
     useDialogue && s
-      ? dialogueChat(req, userId, s, destination, res, req, resolvedModel.model)
+      ? dialogueChat(
+          req,
+          userId,
+          s,
+          destination,
+          res,
+          req,
+          sessionCoordinator(req, userId) ?? resolvedModel.model,
+        )
       : handle.agent;
 
   const usage = usageRuntime()

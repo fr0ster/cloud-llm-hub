@@ -9,13 +9,14 @@ import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
 import { failureMessage, observeLlmSpend } from './lib/llm-failure';
 import { capabilitiesFor } from './lib/model-capabilities';
-import {
-  ignoredModelHeader,
-  parseModelAllowlist,
-  resolveRequestModel,
-} from './lib/model-policy';
+import { ignoredModelHeader, parseModelAllowlist } from './lib/model-policy';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
+import {
+  applyRoleModelHeaders,
+  chatRequestModel,
+  sessionCoordinator,
+} from './lib/role-model-headers';
 import { runWithRequestLlms } from './lib/session-llms';
 import { summarizeToolResult } from './lib/tool-result-summary';
 import {
@@ -310,6 +311,15 @@ async function handleChatCompletionsMeasured(
   req: Request,
   res: Response,
 ): Promise<void> {
+  if (
+    !applyRoleModelHeaders(
+      req,
+      res,
+      cds.context?.user?.id ?? 'anonymous',
+      cds.context?.user?.is('MCP_Admin') === true,
+    )
+  )
+    return;
   // Block requests until the providers are built and the agent is available
   if (!isProvidersReady() || !isAgentReady()) {
     const aiCoreAvailable = isAiCoreConfigured();
@@ -447,7 +457,10 @@ async function handleChatCompletionsMeasured(
     return;
   }
   body = { ...body, tools: consumerTools };
-  const requestModel = resolveRequestModel(body.model, parseModelAllowlist());
+  const requestModel = chatRequestModel(
+    body.model,
+    cds.context?.user?.is('MCP_Admin') === true,
+  );
   if (requestModel.ignored) {
     res.setHeader(
       'x-clh-model-ignored',
@@ -665,11 +678,13 @@ async function serveChatCompletions(
   });
 
   // Resolve the request model without changing deployment defaults.
-  const modelResolution = resolveRequestModel(
+  const modelResolution = chatRequestModel(
     typeof body.model === 'string' ? body.model : undefined,
-    parseModelAllowlist(),
+    cds.context?.user?.is('MCP_Admin') === true,
   );
-  const requestedModel = modelResolution.model;
+  const requestedModel =
+    sessionCoordinator(req, authenticatedCaller.userId) ??
+    modelResolution.model;
   const requestedDestination = req.headers['x-sap-destination'] as
     | string
     | undefined;

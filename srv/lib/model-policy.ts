@@ -35,14 +35,14 @@ export function resolveAgentModel(
 }
 
 /** Printable ASCII only: safe for HTTP headers, including lone surrogates. */
-export function ignoredModelHeader(model: string): string {
+export function ignoredModelHeader(model: string, maxLength = 128): string {
   let out = '';
   for (const char of model) {
     const code = char.codePointAt(0) ?? 0;
     // Drop control characters; mask everything outside printable ASCII.
     if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) continue;
     out += code > 0x7e ? '?' : char;
-    if (out.length >= 128) break;
+    if (out.length >= maxLength) break;
   }
   return out;
 }

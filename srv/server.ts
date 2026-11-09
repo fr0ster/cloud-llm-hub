@@ -846,7 +846,7 @@ cds.on('bootstrap', (app: Application) => {
       'Access-Control-Allow-Headers',
       // No X-Session-Id: no route reads it. x-clh-session carries the key of
       // a long session this service issued.
-      'Content-Type, Authorization, X-Rag-Collections, x-clh-session, x-clh-turn-id',
+      'Content-Type, Authorization, X-Rag-Collections, x-clh-session, x-clh-turn-id, x-clh-model-coordinator, x-clh-model-planner, x-clh-model-executor, x-clh-model-checker, x-clh-params-coordinator, x-clh-params-planner, x-clh-params-executor, x-clh-params-checker, x-clh-limits',
     );
     res.writeHead(204);
     res.end();
