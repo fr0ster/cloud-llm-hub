@@ -339,6 +339,17 @@ and unset by default; only `LLM_AGENT_MODEL` stays required.
   carries `x-clh-model-ignored`, as for a model outside the allowlist. Such a
   request does not fail, because clients like Cline always send `model`.
   (The user's decision.)
+- **Body parameters too.** The same rule covers the body's model parameters
+  (`temperature`, `top_p`, `max_tokens` / `max_completion_tokens`,
+  `reasoning_effort`, Anthropic `thinking`). The hub reads none of them today.
+  - From an admin, in stage 2, they become the coordinator's parameters for
+    this request, validated against the model's capabilities like the
+    `x-clh-params-coordinator` header.
+  - From any other user they are ignored, and the response carries
+    `x-clh-params-ignored` with the ignored names. The request does not fail.
+  - In stage 1 they are ignored for everyone and reported the same way,
+    because parameters per role need llm-agent. (The user's decision for
+    non-admins; the staging is my call.)
 - **Reading.** `GET /v1/session/models` and the `x-clh-models-effective`
   header stay readable for every user of the session, so everyone sees which
   model and limits run. (My call.)

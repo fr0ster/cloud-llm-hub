@@ -325,6 +325,7 @@
   - `role or limit headers from a non-admin fail with 403 naming the header and store nothing`
   - `body model from a non-admin is ignored with x-clh-model-ignored; the request succeeds on the session coordinator`
   - `body model from an admin still selects the coordinator`
+  - `body temperature, top_p, max_tokens, reasoning_effort and thinking are ignored in stage 1 and listed in x-clh-params-ignored, for admins and non-admins; the request succeeds`
 
 - [ ] **Step 2: Run the tests to verify they fail**
   Run: `npx jest test/unit/role-model-headers.test.ts test/unit/anthropic-channel.test.ts --maxWorkers=1`
