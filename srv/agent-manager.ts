@@ -3959,6 +3959,7 @@ function scopedLlmOnlyHandle(
 export async function getSmartAgent(
   requestedModel?: string,
   requestedDestination?: string,
+  scopedExecutor = false,
 ): Promise<HubAgentHandle> {
   const log = cds.log('agent-manager');
   const config = getAgentConfig();
@@ -3996,10 +3997,19 @@ export async function getSmartAgent(
   const isExplicit = !!requestedDestination;
   const allowFallback = config.agent.allowLlmOnlyFallback;
 
+  // Session limits are build-time inputs. Never cache this scoped handle.
+  const forCall = async (shared: HubAgentHandle): Promise<HubAgentHandle> => {
+    if (!scopedExecutor) return shared;
+    const state = destinationStates.get(destName);
+    if (!state?.mcpAdapter || !state.toolsRag)
+      throw new Error('Destination resources unavailable for scoped executor');
+    return buildAgentForDestination(state.mcpAdapter, state.toolsRag, config);
+  };
+
   // Ready → serve immediately.
   let handle = agentHandles.get(destName);
   if (handle) {
-    return handle;
+    return forCall(handle);
   }
 
   // Nothing configured at all → LLM-only (there is genuinely nothing to wait
@@ -4020,7 +4030,7 @@ export async function getSmartAgent(
     await ensureDestinationInit(destName).catch(() => undefined);
     handle = agentHandles.get(destName);
     if (handle) {
-      return handle;
+      return forCall(handle);
     }
   }
 

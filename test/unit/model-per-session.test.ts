@@ -16,6 +16,7 @@ import type { HubLlmConfig } from '../../srv/lib/llm-factory';
 import { handleChatCompletions, handleModels } from '../../srv/openai-handler';
 
 const mockCalls: string[] = [];
+let mockLoop = false;
 // Model selection does not exercise discovery. Do not leave startup retry
 // timers making BTP requests after this suite has finished.
 jest.mock('../../srv/lib/destination-watch', () => ({
@@ -27,6 +28,17 @@ jest.mock('../../srv/lib/llm-factory', () => ({
     model: config.model,
     chat: async (messages) => {
       mockCalls.push(config.model ?? '');
+      if (mockLoop)
+        return {
+          ok: true,
+          value: {
+            content: '',
+            toolCalls: [
+              { id: String(mockCalls.length), name: 'tick', arguments: {} },
+            ],
+            finishReason: 'tool_calls',
+          },
+        };
       await new Promise<void>((resolve) => setImmediate(resolve));
       return {
         ok: true,
@@ -46,6 +58,19 @@ jest.mock('../../srv/lib/llm-factory', () => ({
     },
     streamChat: async function* () {
       mockCalls.push(config.model ?? '');
+      if (mockLoop) {
+        yield {
+          ok: true,
+          value: {
+            content: '',
+            toolCalls: [
+              { id: String(mockCalls.length), name: 'tick', arguments: {} },
+            ],
+            finishReason: 'tool_calls',
+          },
+        };
+        return;
+      }
       await new Promise<void>((resolve) => setImmediate(resolve));
       yield {
         ok: true,
@@ -379,5 +404,64 @@ test('the plan author runs on the user planner model, else LLM_AGENT_PLANNER_MOD
         );
       });
     }
+  }
+});
+
+test('shared destination executor applies scoped model and maxIterations without leaking to another session', async () => {
+  const { withRoleModels } = await import('../../srv/lib/role-models-scope');
+  const { withExecutionLimits } = await import(
+    '../../srv/lib/execution-limits'
+  );
+  const config = getAgentConfig();
+  const adapter = new McpClientAdapter(
+    new MCPClientWrapper({ transport: 'embedded' }),
+  );
+  jest.spyOn(adapter, 'listTools').mockResolvedValue({
+    ok: true,
+    value: [
+      {
+        name: 'tick',
+        description: 'Read',
+        inputSchema: { type: 'object', properties: {} },
+      },
+    ],
+  });
+  jest
+    .spyOn(adapter, 'callTool')
+    .mockResolvedValue({ ok: true, value: { content: 'tick' } });
+  jest
+    .spyOn(adapter, 'healthCheck')
+    .mockResolvedValue({ ok: true, value: true });
+  const shared = await withExecutionLimits({}, () =>
+    buildAgentForDestination(
+      adapter,
+      new ExpositionFilteringRag(new InMemoryRag()),
+      config,
+    ),
+  );
+  const source = new AgentProfileSource(getCollectionRegistry(), {
+    userId: 'reader',
+    globalCollectionId: 'agents',
+    selectedCollectionId: () => 'agents',
+    plannerRecord: 'coordinator',
+  });
+  mockLoop = true;
+  try {
+    mockCalls.length = 0;
+    await withRoleModels(
+      { executor: { model: 'A' } },
+      () =>
+        runExecutorStep(() => source, shared, 'reader', 'Run', 'executor', {}),
+      { executor: { maxIterations: 3, maxToolCalls: 'off' } },
+    );
+    expect(mockCalls).toEqual(['A', 'A', 'A']);
+    mockCalls.length = 0;
+    await withRoleModels({}, () =>
+      runExecutorStep(() => source, shared, 'reader', 'Run', 'executor', {}),
+    );
+    expect(mockCalls).toHaveLength(10);
+    expect(new Set(mockCalls)).toEqual(new Set(['worker-default']));
+  } finally {
+    mockLoop = false;
   }
 });

@@ -1,3 +1,25 @@
+import {
+  currentLimit,
+  currentSessionLimit,
+  effectiveExecutionLimits,
+  executionLimitsSchema,
+  getExecutionLimits,
+  setExecutionLimits,
+  validateExecutionLimits,
+} from './lib/execution-limits';
+import { parseModelAllowlist } from './lib/model-policy';
+import {
+  getRoleModels,
+  roleModelSettingsSchema,
+  setRoleModels,
+  validateRoleModelSettings,
+} from './lib/role-model-settings';
+import {
+  currentRoleModel,
+  effectiveRoleModels,
+  withRoleModels,
+} from './lib/role-models-scope';
+
 export {
   EXECUTE_STEP_DESCRIPTION,
   executeStepSchema,
@@ -194,6 +216,7 @@ function measuredAgentCallback<
   userId: string,
   tool:
     | 'session_open'
+    | 'session_set_models'
     | 'session_close'
     | 'list_destinations'
     | RagMcpTool
@@ -218,6 +241,7 @@ async function measureAgentTool<R extends ReturnType<typeof textResult>>(
   tool:
     | 'execute_step'
     | 'session_open'
+    | 'session_set_models'
     | 'session_close'
     | 'list_destinations'
     | RagMcpTool
@@ -271,25 +295,31 @@ async function executeStepMeasured(
   try {
     const s = await resolveSession(caller.userId, args.session);
     if (!s) return textResult('SESSION_NOT_FOUND', true);
-    const result = await longSessions().run(s, async () => {
-      if (
-        s.destination !== undefined &&
-        args.destination !== undefined &&
-        args.destination.trim() !== s.destination
-      ) {
-        return textResult(
-          `Destination "${args.destination}" differs from session destination "${s.destination}".`,
-          true,
-        );
-      }
-      return executeStepRun(
-        req,
-        caller,
-        { ...args, destination: s.destination ?? args.destination },
-        callerSignal,
-        s,
-      );
-    });
+    const result = await longSessions().run(s, () =>
+      withRoleModels(
+        getRoleModels(caller.userId, s.key),
+        async () => {
+          if (
+            s.destination !== undefined &&
+            args.destination !== undefined &&
+            args.destination.trim() !== s.destination
+          ) {
+            return textResult(
+              `Destination "${args.destination}" differs from session destination "${s.destination}".`,
+              true,
+            );
+          }
+          return executeStepRun(
+            req,
+            caller,
+            { ...args, destination: s.destination ?? args.destination },
+            callerSignal,
+            s,
+          );
+        },
+        getExecutionLimits(caller.userId, s.key),
+      ),
+    );
     return 'refused' in result ? textResult(result.refused, true) : result;
   } catch (err) {
     return textResult(
@@ -367,7 +397,15 @@ async function executeStepRun(
       );
     }
 
-    handle = await getSmartAgent(undefined, targetDestination);
+    handle = await getSmartAgent(
+      undefined,
+      targetDestination,
+      currentRoleModel('executor') !== undefined ||
+        currentLimit('executor', 'maxIterations') !== undefined ||
+        currentLimit('executor', 'maxToolCalls') !== undefined ||
+        currentSessionLimit('historyTokenBudget') !== undefined ||
+        currentSessionLimit('toolResultMaxChars') !== undefined,
+    );
     const agentHandle = handle as ExecutorAgentHandle;
 
     // Ephemeral session per call → the executor loads/saves no history.
@@ -657,73 +695,164 @@ export async function createAgentMcpServerForRequest(
     measuredAgentCallback(req, userId, 'list_destinations', listDestinations),
   );
 
+  const admin = cds.context?.user?.is('MCP_Admin') ?? false;
+  const settingsSchema = {
+    models: roleModelSettingsSchema.optional(),
+    limits: executionLimitsSchema.optional(),
+  };
+  type SettingsInput = {
+    models?: z.input<typeof roleModelSettingsSchema>;
+    limits?: z.input<typeof executionLimitsSchema>;
+  };
+  const validateSettings = (input: SettingsInput) => {
+    if (!admin && (input.models !== undefined || input.limits !== undefined))
+      return {
+        field: input.models !== undefined ? 'models' : 'limits',
+        reason: 'MCP_Admin is required',
+      };
+    const models = validateRoleModelSettings(input.models ?? {}, {
+      allow: parseModelAllowlist(),
+      channel: 'mcp',
+      paramsEnabled: false,
+    });
+    if (!models.ok) return models.error;
+    if (input.limits?.coordinator !== undefined)
+      return {
+        field: 'coordinator',
+        reason: 'The connecting agent is the coordinator on MCP',
+      };
+    const limits = validateExecutionLimits(input.limits ?? {}, {
+      libraryLimitsEnabled: false,
+    });
+    if (!limits.ok) return limits.error;
+    return undefined;
+  };
+  const applySettings = (key: string, input: SettingsInput) => {
+    const models = validateRoleModelSettings(input.models ?? {}, {
+      allow: parseModelAllowlist(),
+      channel: 'mcp',
+      paramsEnabled: false,
+    });
+    const limits = validateExecutionLimits(input.limits ?? {}, {
+      libraryLimitsEnabled: false,
+    });
+    if (!models.ok || !limits.ok)
+      throw new Error('Settings changed during validation');
+    if (input.models !== undefined) setRoleModels(userId, key, models.value);
+    if (input.limits !== undefined)
+      setExecutionLimits(userId, key, limits.value);
+    return {
+      settings: getRoleModels(userId, key),
+      effective: effectiveRoleModels(userId, key),
+      limits: getExecutionLimits(userId, key),
+      effectiveLimits: effectiveExecutionLimits(userId, key),
+    };
+  };
+  if (admin)
+    server.registerTool(
+      'session_set_models',
+      {
+        description:
+          'Replace role models and execution limits for an owned session.',
+        inputSchema: { session: z.string(), ...settingsSchema },
+      },
+      measuredAgentCallback(
+        req,
+        userId,
+        'session_set_models',
+        async (input: SettingsInput & { session: string }) => {
+          const session = await resolveSession(userId, input.session);
+          if (!session) return textResult('SESSION_NOT_FOUND', true);
+          const error = validateSettings(input);
+          if (error) return textResult(JSON.stringify({ error }), true);
+          return textResult(JSON.stringify(applySettings(session.key, input)));
+        },
+      ),
+    );
+
   server.registerTool(
     'session_open',
     {
       description:
         'Open a session for multi-step work sharing conversation and ABAP connection.',
-      inputSchema: {
+      inputSchema: z.strictObject({
         destination: z.string().optional(),
         agentsCollectionId: z.string().optional(),
+        ...(admin ? settingsSchema : {}),
         session: z.string().optional(),
-      },
+      }),
     },
-    measuredAgentCallback(
-      req,
-      userId,
-      'session_open',
-      async ({
-        destination,
-        agentsCollectionId,
-        session,
-      }: {
-        destination?: string;
-        agentsCollectionId?: string;
-        session?: string;
-      }): Promise<{
-        isError?: boolean | undefined;
-        content: { type: 'text'; text: string }[];
-      }> => {
-        const headerDestination = req.headers['x-sap-destination'];
-        const target =
-          destination?.trim() ||
-          (typeof headerDestination === 'string'
-            ? headerDestination.trim()
-            : undefined);
-        let s: Awaited<ReturnType<typeof openSession>>;
-        try {
-          if (session !== undefined) {
-            const existing = await resolveSession(userId, session);
-            if (!existing) return textResult('SESSION_NOT_FOUND', true);
-            await setSessionAgentsCollection(existing, agentsCollectionId);
-            s = existing;
-          } else s = await openSession(userId, target, agentsCollectionId);
-        } catch (error) {
-          return textResult(
-            error instanceof Error
-              ? error.message
-              : 'Invalid agentsCollectionId',
-            true,
-          );
-        }
-        if (!('refused' in s))
-          requestMeasurement(req)?.bind(undefined, {
-            userId,
-            sessionId: s.key,
-            destination: s.destination,
-          });
-        return 'refused' in s
-          ? textResult(s.refused, true)
-          : textResult(
-              JSON.stringify({
-                session: s.key,
-                ttlSeconds: longSessions().ttlMs / 1000,
-                destination: s.destination,
-                agentsCollectionId: s.agentsCollectionId,
-              }),
+    (args) =>
+      measuredAgentCallback(
+        req,
+        userId,
+        'session_open',
+        async ({
+          destination,
+          agentsCollectionId,
+          session,
+          models,
+          limits,
+        }: SettingsInput & {
+          destination?: string;
+          agentsCollectionId?: string;
+          session?: string;
+        }): Promise<{
+          isError?: boolean | undefined;
+          content: { type: 'text'; text: string }[];
+        }> => {
+          const error = validateSettings({ models, limits });
+          if (error) return textResult(JSON.stringify({ error }), true);
+          const headerDestination = req.headers['x-sap-destination'];
+          const target =
+            destination?.trim() ||
+            (typeof headerDestination === 'string'
+              ? headerDestination.trim()
+              : undefined);
+          let s: Awaited<ReturnType<typeof openSession>>;
+          try {
+            if (session !== undefined) {
+              const existing = await resolveSession(userId, session);
+              if (!existing) return textResult('SESSION_NOT_FOUND', true);
+              await setSessionAgentsCollection(existing, agentsCollectionId);
+              s = existing;
+            } else s = await openSession(userId, target, agentsCollectionId);
+          } catch (error) {
+            return textResult(
+              error instanceof Error
+                ? error.message
+                : 'Invalid agentsCollectionId',
+              true,
             );
-      },
-    ),
+          }
+          if (!('refused' in s)) applySettings(s.key, { models, limits });
+          if (!('refused' in s))
+            requestMeasurement(req)?.bind(undefined, {
+              userId,
+              sessionId: s.key,
+              destination: s.destination,
+            });
+          return 'refused' in s
+            ? textResult(s.refused, true)
+            : textResult(
+                JSON.stringify({
+                  session: s.key,
+                  ttlSeconds: longSessions().ttlMs / 1000,
+                  destination: s.destination,
+                  agentsCollectionId: s.agentsCollectionId,
+                }),
+              );
+        },
+      )(
+        z
+          .object({
+            destination: z.string().optional(),
+            agentsCollectionId: z.string().optional(),
+            session: z.string().optional(),
+            ...settingsSchema,
+          })
+          .parse(args),
+      ),
   );
   server.registerTool(
     'session_close',

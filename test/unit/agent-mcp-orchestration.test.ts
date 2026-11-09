@@ -555,3 +555,106 @@ test.each(['plan_create', 'plan_revise'] as const)(
     }
   },
 );
+
+import {
+  clearExecutionLimits,
+  currentLimit,
+  setExecutionLimits,
+} from '../../srv/lib/execution-limits';
+import {
+  clearRoleModels,
+  setRoleModels,
+} from '../../srv/lib/role-model-settings';
+import { currentRoleModel } from '../../srv/lib/role-models-scope';
+
+afterEach(() => {
+  clearRoleModels('alice', 'owned');
+  clearExecutionLimits('alice', 'owned');
+});
+
+test('plan_create runs the plan author on the session planner model', async () => {
+  setRoleModels('alice', 'owned', { planner: { model: 'planner-session' } });
+  const create = jest.spyOn(mockSession, 'callTool');
+  jest.mocked(mockCreate).mockImplementationOnce(async () => {
+    expect(currentRoleModel('planner')).toBe('planner-session');
+    return { ok: true, value: structuredClone(mockPlan) };
+  });
+  expect(
+    (await call('plan_create', { session: 'owned', goal: 'Read' })).isError,
+  ).toBeUndefined();
+  expect(mockCreate).toHaveBeenCalled();
+  create.mockRestore();
+});
+
+test('plan_revise runs the plan author on the session planner model', async () => {
+  await call('plan_create', { session: 'owned', goal: 'Read' });
+  setRoleModels('alice', 'owned', { planner: { model: 'planner-session' } });
+  jest.mocked(mockRevise).mockImplementationOnce(async (input) => {
+    expect(currentRoleModel('planner')).toBe('planner-session');
+    return { ok: true, value: input.plan };
+  });
+  expect(
+    (await call('plan_revise', { session: 'owned', change: 'Read' })).isError,
+  ).toBeUndefined();
+  expect(mockRevise).toHaveBeenCalled();
+});
+
+test('delegate_task to the checker profile runs on the session checker model', async () => {
+  await mockSession.close();
+  const runner = new AgentProfileRunner({
+    catalogue: () => [],
+    grants: () => new Set(),
+    buildPlanner: async () => {
+      throw new Error('No planner expected');
+    },
+    buildWorker: async (profile) => {
+      expect(
+        currentRoleModel(profile.result === 'verdict' ? 'checker' : 'executor'),
+      ).toBe('checker-session');
+      expect(currentLimit('checker', 'maxIterations')).toBe(2);
+      return { ...mockWorker, name: 'checker', run: (input) => mockRun(input) };
+    },
+  });
+  mockSession = await DialogueSession.open({
+    id: 'owned',
+    planner: { process: async () => ({ ok: true, value: { content: '' } }) },
+    board: {
+      profileSource: {
+        ...mockSource,
+        list: async () => ({
+          ok: true,
+          value: [{ name: 'checker', description: '', result: 'verdict' }],
+        }),
+        get: async () => ({
+          ok: true,
+          value: {
+            name: 'checker',
+            description: '',
+            systemPrompt: '',
+            tools: 'all',
+            result: 'verdict',
+          },
+        }),
+      },
+      profileRunner: runner,
+    },
+    maxCorrections: 0,
+  });
+  setRoleModels('alice', 'owned', { checker: { model: 'checker-session' } });
+  setExecutionLimits('alice', 'owned', { checker: { maxIterations: 2 } });
+  mockRun.mockImplementation(async () => {
+    expect(currentRoleModel('checker')).toBe('checker-session');
+    expect(currentLimit('checker', 'maxIterations')).toBe(2);
+    return { output: 'checked' };
+  });
+  expect(
+    await call('delegate_task', {
+      session: 'owned',
+      worker: 'checker',
+      goal: 'Check',
+    }),
+  ).not.toMatchObject({ isError: true });
+  for (let i = 0; i < 50 && !mockRun.mock.calls.length; i++)
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(mockRun).toHaveBeenCalled();
+});

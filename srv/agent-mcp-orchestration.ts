@@ -1,8 +1,11 @@
+import { getExecutionLimits } from './lib/execution-limits';
 import {
   type OrchestrationTool,
   orchestrationDefinitions,
   orchestrationTools,
 } from './lib/orchestration-tool-definitions';
+import { getRoleModels } from './lib/role-model-settings';
+import { withRoleModels } from './lib/role-models-scope';
 import { runWithRequestLlms } from './lib/session-llms';
 
 export {
@@ -246,7 +249,11 @@ export async function executeOrchestrationTool(
       );
     }
     try {
-      return await runWithRequestLlms(s, run);
+      return await withRoleModels(
+        getRoleModels(caller.userId, s.key),
+        () => runWithRequestLlms(s, run),
+        getExecutionLimits(caller.userId, s.key),
+      );
     } finally {
       lease.release();
       releaseHold();
