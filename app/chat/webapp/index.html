@@ -2759,7 +2759,7 @@
                 return `<fieldset style="border:1px solid #333;padding:12px;margin:12px 0"><legend>${role}</legend>
                     <label>Model <select id="llm-role-${role}" ${disabled}><option value="auto">auto (${role === 'coordinator' ? 'deploy default' : 'coordinator chooses'})</option>${models.map(model => `<option value="${escapeHtml(model)}" ${model === selected ? 'selected' : ''}>${escapeHtml(model)}</option>`).join('')}</select></label>
                     ${llmError(role)} ${llmError(role + '.model')}
-                    <p>Effective: ${escapeHtml(effective.model || 'coordinator chooses')} ? source: ${escapeHtml(effective.source)}</p>
+                    <p>Effective: ${escapeHtml(effective.model || 'coordinator chooses')} · source: ${escapeHtml(effective.source)}</p>
                     <div id="llm-params-${role}"></div></fieldset>`;
             }).join('') + '<h3>Limits</h3>' + Object.entries(data.effectiveLimits).map(([name, entry]) => {
                 const locked = !data.canEdit || name === 'planStepBudget';
@@ -2781,10 +2781,16 @@
                     number.disabled = off.checked;
                     const parts = name.split('.');
                     const parent = parts.length === 2 ? (llmLimitDraft[parts[0]] ||= {}) : llmLimitDraft;
-                    parent[parts.at(-1)] = off.checked ? 'off' : Number(number.value);
+                    parent[parts.at(-1)] = off.checked ? 'off' : number.value.trim() === '' ? null : Number(number.value);
                 };
                 number.addEventListener('input', update);
-                off.addEventListener('change', update);
+                off.addEventListener('change', () => {
+                    const base = data.effectiveLimits[name].baseValue;
+                    if (!off.checked && number.value === '' && typeof base === 'number' && base > 0) {
+                        number.value = String(base);
+                    }
+                    update();
+                });
             }
         }
 

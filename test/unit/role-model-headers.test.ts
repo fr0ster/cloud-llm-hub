@@ -200,3 +200,18 @@ test('effective models remain complete JSON beyond 128 characters', async () => 
     },
   );
 });
+
+test('null limit headers clear one nested override and preserve omitted fields', async () => {
+  await request({
+    'x-clh-limits':
+      '{"executor":{"maxIterations":"off","maxToolCalls":5},"historyTokenBudget":1234}',
+  });
+  const res = await request({
+    'x-clh-limits':
+      '{"executor":{"maxIterations":null},"historyTokenBudget":null}',
+  });
+  expect(res.status).toBe(200);
+  expect(getExecutionLimits('headers-user', 'one')).toEqual({
+    executor: { maxToolCalls: 5 },
+  });
+});

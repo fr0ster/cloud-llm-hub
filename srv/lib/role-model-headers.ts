@@ -3,6 +3,7 @@ import type { Result } from '@mcp-abap-adt/llm-agent';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import {
+  type ExecutionLimitsInput,
   executionLimitsSchema,
   getExecutionLimits,
   setExecutionLimits,
@@ -179,7 +180,7 @@ export function applyRoleModelHeaders(
       models.error.reason,
     );
   }
-  let limits = getExecutionLimits(userId, key);
+  let limits: ExecutionLimitsInput = getExecutionLimits(userId, key);
   const rawLimits = req.headers['x-clh-limits'];
   if (rawLimits !== undefined) {
     if (Array.isArray(rawLimits))

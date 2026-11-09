@@ -186,3 +186,36 @@ it('GET exposes the parameters actually sent for every role with their sources',
     process.env = saved;
   }
 });
+
+it('null clears individual limits to config/default and auto clears the role model', async () => {
+  const saved = process.env.LLM_AGENT_HISTORY_TOKEN_BUDGET;
+  process.env.LLM_AGENT_HISTORY_TOKEN_BUDGET = '4321';
+  try {
+    await call('PUT', {
+      executor: { model: 'gpt-5' },
+      limits: { historyTokenBudget: 'off', executor: { maxIterations: 3 } },
+    });
+    const res = await call('PUT', {
+      executor: 'auto',
+      limits: {
+        historyTokenBudget: null,
+        executor: { maxIterations: null, maxToolCalls: 5 },
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      settings: {},
+      limits: { executor: { maxToolCalls: 5 } },
+      effectiveLimits: {
+        historyTokenBudget: { value: 4321, source: 'config' },
+      },
+    });
+    expect(getRoleModels('alice', 'one')).toEqual({});
+    expect(getExecutionLimits('alice', 'one')).toEqual({
+      executor: { maxToolCalls: 5 },
+    });
+  } finally {
+    if (saved === undefined) delete process.env.LLM_AGENT_HISTORY_TOKEN_BUDGET;
+    else process.env.LLM_AGENT_HISTORY_TOKEN_BUDGET = saved;
+  }
+});

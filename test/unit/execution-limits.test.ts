@@ -191,7 +191,7 @@ test('an absent field keeps the configured value; effectiveExecutionLimits repor
   try {
     expect(
       effectiveExecutionLimits('u', 'k')['executor.maxIterations'],
-    ).toEqual({ value: 17, source: 'config' });
+    ).toEqual({ value: 17, source: 'config', baseValue: 17 });
   } finally {
     if (saved === undefined) delete process.env.LLM_AGENT_MAX_ITERATIONS;
     else process.env.LLM_AGENT_MAX_ITERATIONS = saved;
@@ -322,4 +322,16 @@ test('store and active scopes snapshot limits and restore nested scopes', async 
   });
   expect(getExecutionLimits('snapshot', 'key').executor?.maxIterations).toBe(4);
   clearExecutionLimits('snapshot', 'key');
+});
+
+test('null limit values normalize to absent overrides without changing siblings', () => {
+  expect(
+    validateExecutionLimits(
+      {
+        executor: { maxIterations: null, maxToolCalls: 7 },
+        historyTokenBudget: null,
+      },
+      { libraryLimitsEnabled: false },
+    ),
+  ).toEqual({ ok: true, value: { executor: { maxToolCalls: 7 } } });
 });

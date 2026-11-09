@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- WebUI LLM settings restore config/default limits when an unchecked limit is empty, prefill the base value when disabling off, and display the effective model separator correctly. HTTP, MCP and sticky limit headers accept `null` to clear individual overrides.
+
 ## [10.7.0] - 2026-11-09
 
 ### Added

@@ -958,3 +958,21 @@ test('execute_step honours a session executor maxIterations and another session 
   expect(rounds).toEqual([3, 10]);
   expect(currentLimit('executor', 'maxIterations')).toBeUndefined();
 });
+
+test('session_set_models accepts null to restore a default limit', async () => {
+  const session = await opened();
+  setExecutionLimits('alice', session, { historyTokenBudget: 'off' });
+  const result = await call('session_set_models', {
+    session,
+    limits: { historyTokenBudget: null },
+  });
+  expect(result.isError).not.toBe(true);
+  expect(getExecutionLimits('alice', session)).toEqual({});
+  expect(JSON.parse(result.content[0].text)).toMatchObject({
+    effectiveLimits: {
+      historyTokenBudget: {
+        source: expect.stringMatching(/^(config|default)$/),
+      },
+    },
+  });
+});
