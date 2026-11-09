@@ -248,8 +248,8 @@ with different settings never share a client.
     without effect.
   - The builder verifies each path. A role whose path does not exist on this
     channel is refused, not ignored.
-- The tool is listed with the other session tools on every agent MCP
-  connection.
+- The tool is listed with the other session tools for users with
+  `MCP_Admin` only (see Admin role).
 
 ### Execution limits
 
@@ -330,9 +330,13 @@ and unset by default; only `LLM_AGENT_MODEL` stays required.
     and is not mounted yet).
   - Chat API role and limit headers from a non-admin: 403 naming the header,
     so nothing is stored.
-  - Agent MCP: `models` / `limits` in `session_open` from a non-admin are
-    refused, and so is `session_set_models`. The tool stays listed on every
-    connection, so the tool set is the same everywhere.
+  - Agent MCP: `session_set_models` is listed only for a user with
+    `MCP_Admin`. Other users do not see it, and a direct call is refused as
+    an unknown tool. (The user's decision; it is a deliberate exception to
+    "the same tool set on every connection".) For the same users the
+    `models` / `limits` arguments of `session_open` are left out of its
+    schema, and they are refused if sent anyway. (My call, to match the
+    tool rule.)
 - **Body `model` too.** The request body `model` (OpenAI and Anthropic, the
   WebUI included) selects the coordinator only for an admin. For any other
   user it is ignored: the session keeps its coordinator, and the response
@@ -373,7 +377,8 @@ effect.)
 - Session isolation: settings are keyed by the session that the caller owns;
   no cookie, shared storage or empty header may attach them to another
   session.
-- Same tool set on every agent MCP connection.
+- Same tool set on every agent MCP connection, except `session_set_models`,
+  which only `MCP_Admin` users see.
 
 ## Left to the builder
 

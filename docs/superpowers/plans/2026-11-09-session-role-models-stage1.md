@@ -23,7 +23,7 @@
 - Session isolation: settings are keyed by the caller's own session slot. No cookie, shared storage or empty header may attach them to another session.
 - No new required configuration. Only `LLM_AGENT_MODEL` stays required.
 - Changing models, parameters or limits needs `MCP_Admin` on every channel, the request body `model` included (ignored with `x-clh-model-ignored` for a non-admin); reading the effective values does not.
-- The same agent MCP tool set on every connection.
+- The same agent MCP tool set on every connection, except `session_set_models`, which is listed only for `MCP_Admin` (the user's decision).
 - A model or parameter the hub cannot apply is refused with a reason naming the field. Nothing is quietly replaced, and nothing is partly applied.
 - Stage 1 refuses any `params` with the reason `parameters per role arrive with llm-agent per-role call options (stage 2)`.
 - Settings are not written to the dialogue state store. The existing `coordinatorModel` persistence stays.
@@ -365,9 +365,9 @@
   - `execute_step runs on the session executor model`
   - `delegate_task to the checker profile runs on the session checker model`
   - `plan_create runs the plan author on the session planner model`
-  - `session_set_models is listed on every agent MCP connection`
+  - `session_set_models is listed for an MCP_Admin user and absent for others`
   - `session_set_models for a session of another user is refused as not found`
-  - `session_set_models and session_open models/limits from a user without MCP_Admin are refused with a reason; the tool stays listed`
+  - `without MCP_Admin: session_set_models is absent and a direct call is refused as unknown; session_open has no models/limits in its schema and refuses them if sent`
 
 - [ ] **Step 2: Run the tests to verify they fail**
   Run: `npx jest test/unit/agent-mcp-session-tools.test.ts test/unit/agent-mcp-orchestration.test.ts --maxWorkers=1`
