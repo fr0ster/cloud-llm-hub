@@ -58,6 +58,13 @@ describe('agent config: settings read at the point of use before', () => {
       process.env.LLM_AGENT_MODEL = 'main-model';
       clearAgentConfig();
     });
+    it('rejects catalog mode with a non-SAP provider before server startup', () => {
+      process.env.LLM_AGENT_PROVIDER = 'openai';
+      process.env.LLM_AGENT_MODELS = 'catalog,extra';
+      expect(() => loadAgentConfig()).toThrow(BuildValidationError);
+      expect(() => loadAgentConfig()).toThrow('LLM_AGENT_MODELS');
+    });
+
     afterAll(() => {
       process.env = saved;
       clearAgentConfig();

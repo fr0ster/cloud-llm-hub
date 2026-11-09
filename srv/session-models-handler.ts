@@ -8,6 +8,7 @@ import {
   validateExecutionLimits,
 } from './lib/execution-limits';
 import { capabilitiesFor } from './lib/model-capabilities';
+import { ensureModelCatalog } from './lib/model-catalog';
 import { parseModelAllowlist } from './lib/model-policy';
 import {
   getRoleModels,
@@ -56,9 +57,15 @@ function snapshot(userId: string, key: string) {
   };
 }
 
-export function handleGetSessionModels(req: Request, res: Response): void {
+export async function handleGetSessionModels(
+  req: Request,
+  res: Response,
+): Promise<void> {
   const session = sessionOf(req, res);
-  if (session) res.status(200).json(snapshot(session.userId, session.key));
+  if (session) {
+    await ensureModelCatalog();
+    res.status(200).json(snapshot(session.userId, session.key));
+  }
 }
 
 /** Mounted behind requireAdminRole; validate the whole replacement before writing. */

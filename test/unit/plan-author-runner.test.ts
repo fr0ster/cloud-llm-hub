@@ -263,6 +263,28 @@ test.each([undefined, 'explicit-planner'])(
   },
 );
 
+// Configured coordinator models are checked against the allowlist at runtime.
+let previousAllowlist: string | undefined;
+beforeEach(() => {
+  previousAllowlist = process.env.LLM_AGENT_MODELS;
+  process.env.LLM_AGENT_MODELS = 'coordinator-model,C';
+});
+afterEach(() => {
+  if (previousAllowlist === undefined) delete process.env.LLM_AGENT_MODELS;
+  else process.env.LLM_AGENT_MODELS = previousAllowlist;
+});
+
+test('a configured coordinator model outside the allowlist never builds an LLM', async () => {
+  jest.mocked(makeHubLlm).mockClear();
+  await expect(
+    buildPlannerAgent(
+      { ...config, llm: { ...config.llm, coordinatorModel: 'not-allowed' } },
+      'Coordinate',
+    ),
+  ).rejects.toThrow('coordinator.model: MODEL_NOT_ALLOWED');
+  expect(makeHubLlm).not.toHaveBeenCalled();
+});
+
 test('coordinator defaults to planner model and an override selects a separate model', async () => {
   jest.mocked(makeHubLlm).mockImplementation(async (options) => ({
     ...model,

@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- `LLM_AGENT_MODELS=catalog` loads eligible SAP AI Core orchestration chat models into the allowlist, with explicit additions and GET-triggered retries after failures.
+
+### Changed
+
+- Upgrade `@mcp-abap-adt/llm-agent` to `^30.35.0` and `@mcp-abap-adt/sap-aicore-llm` to `^30.14.0` for fresh catalogs and orchestration eligibility filtering.
+
 ## [10.8.0] - 2026-11-09
 
 ### Added

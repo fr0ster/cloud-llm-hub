@@ -263,3 +263,8 @@ for `MCP_Admin`; direct calls by other users are refused as an unknown tool.
 For other users, `session_open` omits `models` and `limits` from its schema
 and refuses them if supplied anyway. Admin access applies only to the
 caller's own session.
+
+With `LLM_AGENT_MODELS=catalog` (SAP AI Core only), the model list and capabilities
+include eligible orchestration chat models plus explicit names and deployment defaults.
+Until loading succeeds only the explicit allowlist applies. Both model GET endpoints
+retry failed catalog loading. See [configuration](../llm-agent/CONFIG_USAGE.md).

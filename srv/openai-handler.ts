@@ -10,7 +10,12 @@ import { lookupDialogue } from './lib/dialogue-sessions';
 import { getExecutionLimits } from './lib/execution-limits';
 import { failureMessage, observeLlmSpend } from './lib/llm-failure';
 import { capabilitiesFor } from './lib/model-capabilities';
-import { ignoredModelHeader, parseModelAllowlist } from './lib/model-policy';
+import { ensureModelCatalog } from './lib/model-catalog';
+import {
+  ignoredModelHeader,
+  parseModelAllowlist,
+  usesModelCatalog,
+} from './lib/model-policy';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
 import {
@@ -1714,6 +1719,7 @@ export async function handleModels(
   _req: Request,
   res: Response,
 ): Promise<void> {
+  await ensureModelCatalog();
   const log = cds.log('openai-handler/models');
   const config = getAgentConfig();
   const activeModel = getCurrentModel();
@@ -1725,7 +1731,14 @@ export async function handleModels(
     owned_by: string;
   }[];
   try {
-    models = await getAvailableModels(config.llm);
+    models = usesModelCatalog()
+      ? [...parseModelAllowlist()].map((id) => ({
+          id,
+          object: 'model',
+          created: 0,
+          owned_by: 'sap-ai-core',
+        }))
+      : await getAvailableModels(config.llm);
   } catch (err) {
     log.warn('Failed to fetch AI Core models, returning active model only', {
       error: err instanceof Error ? err.message : String(err),

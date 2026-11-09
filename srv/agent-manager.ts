@@ -6,7 +6,6 @@ import {
   coordinatorToolsClient as createCoordinatorToolsClient,
   currentCoordinatorRun,
 } from './lib/coordinator-tools-client';
-import { resolveDialogueRoleModel } from './lib/dialogue-role-model';
 import {
   currentLimit,
   currentSessionLimit,
@@ -25,7 +24,11 @@ import {
   resolveAgentModel,
   resolveRequestModel,
 } from './lib/model-policy';
-import { currentRoleModel, roleOfProfile } from './lib/role-models-scope';
+import {
+  allowedDialogueRoleModel,
+  currentRoleModel,
+  roleOfProfile,
+} from './lib/role-models-scope';
 import { resolverFor, TrustResolver } from './lib/trust-resolver';
 import { TrustStore } from './lib/trust-store';
 import { reportWorkerActivity } from './lib/worker-activity';
@@ -3053,10 +3056,10 @@ export async function buildPlannerAgent(
       ...config,
       llm: {
         ...config.llm,
-        model: resolveDialogueRoleModel(
+        model: allowedDialogueRoleModel(
           authorClient ? 'planner' : 'coordinator',
           config.llm,
-        ).model,
+        ),
       },
     },
     authorClient ? 'planner-author' : 'chat',

@@ -1,3 +1,4 @@
+import { ensureModelCatalog } from './lib/model-catalog';
 import { RAG_WRITE_MAX_BYTES } from './lib/rag-write-operations';
 import { requireAdminRole } from './lib/require-admin-role';
 import {
@@ -968,6 +969,7 @@ cds.on('bootstrap', (app: Application) => {
 // server from listening on port 8080, causing CF health check timeout (60s).
 // The 503 readiness guard in openai-handler.ts protects against requests before ready.
 cds.on('served', () => {
+  void ensureModelCatalog();
   installThrottleObserver();
   const log = cds.log('agent-manager/init');
   // Both sweeps start here, whatever initialisation does next. Inside its

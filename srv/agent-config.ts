@@ -6,6 +6,7 @@ import {
 } from './lib/deploy-role-config';
 import type { ExecutionLimits } from './lib/execution-limits';
 import { type ExternalMcpConfig, parseExternalMcp } from './lib/external-mcp';
+import { validateModelCatalogProvider } from './lib/model-catalog';
 import { configuredTemperature } from './lib/temperature-config';
 import { parseTrustDefaults, type TrustDefaults } from './lib/trust';
 /**
@@ -596,6 +597,7 @@ export function parseDestinationConfig(
  * @throws Error if required configuration is missing
  */
 export function loadAgentConfig(): AgentConfig {
+  validateModelCatalogProvider();
   const log = cds.log('agent-config');
 
   // Validated here because this runs at startup. A malformed limit must stop

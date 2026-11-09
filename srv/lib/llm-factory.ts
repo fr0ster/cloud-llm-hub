@@ -22,10 +22,14 @@ import {
 import { LlmAdapter, LlmProviderBridge } from '@mcp-abap-adt/llm-agent-libs';
 import { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
 import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
-import { SapCoreAIProvider } from '@mcp-abap-adt/sap-aicore-llm';
+import {
+  type SapCoreAIConfig,
+  SapCoreAIProvider,
+} from '@mcp-abap-adt/sap-aicore-llm';
 import cds from '@sap/cds';
 import type { LlmProvider } from '../agent-config';
 import { captureLlm } from './context-capture';
+import { deployModel } from './deploy-model';
 import { reliableLlm } from './llm-failure';
 import { sessionLlms } from './session-llms';
 import { usageRuntime } from './usage/runtime';
@@ -100,6 +104,36 @@ export function getAiCoreAccess(): AiCoreAccess {
     };
   }
   return aiCoreAccess;
+}
+
+/** The only SapCoreAIProvider construction: process credential, logger and usage recorder. */
+function aiCoreProvider(
+  options: Omit<SapCoreAIConfig, 'credential' | 'apiBaseUrl' | 'log' | 'usage'>,
+): SapCoreAIProvider {
+  const access = getAiCoreAccess();
+  const log = cds.log('sap-ai-sdk');
+  const usage = usageRuntime()?.recorder;
+  return new SapCoreAIProvider({
+    ...options,
+    ...(usage ? { usage } : {}),
+    credential: access.credential,
+    // A getter, so the service key is still unread at construction.
+    get apiBaseUrl() {
+      return access.apiBaseUrl;
+    },
+    log: {
+      debug: (msg, meta) => log.debug(msg, meta ?? ''),
+      error: (msg, meta) => log.error(msg, meta ?? ''),
+    },
+  });
+}
+
+/** Build a catalog provider with the same process credential as chat providers. */
+export function makeHubCatalogProvider(): SapCoreAIProvider {
+  return aiCoreProvider({
+    model: deployModel(),
+    resourceGroup: process.env.LLM_AGENT_RESOURCE_GROUP,
+  });
 }
 
 /** One credential per key, shared by every LLM and embedder on that account. */
@@ -205,24 +239,12 @@ async function createHubLlm(
     | AnthropicProvider
     | DeepSeekProvider;
   switch (cfg.provider) {
-    case 'sap-ai-sdk': {
-      const access = getAiCoreAccess();
-      const log = cds.log('sap-ai-sdk');
-      provider = new SapCoreAIProvider({
+    case 'sap-ai-sdk':
+      provider = aiCoreProvider({
         ...common,
-        credential: access.credential,
-        // A getter, so the service key is still unread at construction.
-        get apiBaseUrl() {
-          return access.apiBaseUrl;
-        },
         resourceGroup: cfg.resourceGroup,
-        log: {
-          debug: (msg, meta) => log.debug(msg, meta ?? ''),
-          error: (msg, meta) => log.error(msg, meta ?? ''),
-        },
       });
       break;
-    }
     case 'openai':
       provider = new OpenAIProvider({
         ...common,

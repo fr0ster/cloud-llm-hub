@@ -1,3 +1,14 @@
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import type { IModelInfo } from '@mcp-abap-adt/llm-agent';
+import express from 'express';
+import { resetModelCatalog } from '../../srv/lib/model-catalog';
+
+const mockCatalog = jest.fn<Promise<IModelInfo[]>, []>();
+jest.mock('../../srv/lib/llm-factory', () => ({
+  makeHubCatalogProvider: () => ({ getModelCatalog: mockCatalog }),
+}));
+
 // Bootstrap logging is tested with real CAP in logging-config.test.ts.
 jest.mock('../../srv/lib/logging-config', () => ({
   applyLoggingConfig: jest.fn(),
@@ -98,5 +109,43 @@ it('/v1/models includes _meta.capabilities for the allowlist', async () => {
   } finally {
     if (previous === undefined) delete process.env.LLM_AGENT_MODELS;
     else process.env.LLM_AGENT_MODELS = previous;
+  }
+});
+
+it('GET /v1/models retries a failed catalog and returns the catalog allowlist', async () => {
+  const previousEnv = { ...process.env };
+  process.env.LLM_AGENT_MODELS = 'catalog,extra-model';
+  process.env.LLM_AGENT_MODEL = 'main-model';
+  delete process.env.LLM_AGENT_PLANNER_MODEL;
+  resetModelCatalog();
+  mockCatalog
+    .mockRejectedValueOnce(new Error('catalog unavailable'))
+    .mockResolvedValue([
+      {
+        id: 'gpt-6-luna',
+        capabilities: ['text-generation'],
+        scenarios: ['orchestration'],
+      },
+    ]);
+  const app = express();
+  app.get('/v1/models', handleModels);
+  const server = createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/models`;
+  try {
+    const before = await fetch(url);
+    expect(await before.json()).toMatchObject({
+      data: [{ id: 'extra-model' }, { id: 'main-model' }],
+    });
+    const after = await fetch(url);
+    expect(await after.json()).toMatchObject({
+      data: [{ id: 'extra-model' }, { id: 'main-model' }, { id: 'gpt-6-luna' }],
+      _meta: { capabilities: { 'gpt-6-luna': { family: 'openai' } } },
+    });
+    expect(mockCatalog).toHaveBeenCalledTimes(2);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    process.env = previousEnv;
+    resetModelCatalog();
   }
 });
