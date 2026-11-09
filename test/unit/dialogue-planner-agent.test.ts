@@ -17,6 +17,7 @@ import * as agentConfig from '../../srv/agent-config';
 import {
   buildAgentForDestination,
   buildExecutorWorker,
+  buildLlmOnlyAgent,
   buildPlannerAgent,
   docsMcp,
   ExpositionFilteringRag,
@@ -37,6 +38,7 @@ import { makeHubLlm } from '../../srv/lib/llm-factory';
 import { startProviders } from '../../srv/lib/providers';
 import { ragToolEffect, ragToolNames } from '../../srv/lib/rag-tool-catalogue';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
+import { withRoleModels } from '../../srv/lib/role-models-scope';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import {
@@ -68,6 +70,7 @@ jest.mock('../../srv/lib/llm-factory', () => ({
   makeHubLlm: jest.fn(),
 }));
 const config: AgentConfig = {
+  limits: {},
   trust: {
     defaults: {
       global: 3,
@@ -898,3 +901,99 @@ test.each(['direct', 'rag', 'auto'])(
     }
   },
 );
+
+// The LLM client is shared; the agents and their run budgets must remain separate.
+test('coordinator agents apply session limits without mutating shared configuration', async () => {
+  let rounds = 0;
+  const chat: ILlm['chat'] = async () => {
+    rounds++;
+    return {
+      ok: true,
+      value:
+        rounds <= 12
+          ? {
+              content: '',
+              toolCalls: [{ id: String(rounds), name: 'tick', arguments: {} }],
+              finishReason: 'tool_calls',
+            }
+          : { content: 'done', finishReason: 'stop' },
+    };
+  };
+  const model: ILlm = {
+    chat,
+    streamChat: async function* (messages, tools, options) {
+      yield await chat(messages, tools, options);
+    },
+  };
+  jest.mocked(makeHubLlm).mockResolvedValue(model);
+  initProviders(await startProviders(config));
+  const original = structuredClone(config.agent);
+  const client: import('@mcp-abap-adt/llm-agent').IMcpClient = {
+    listTools: async () => ({
+      ok: true,
+      value: [
+        {
+          name: 'tick',
+          description: 'Advance',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ],
+    }),
+    callTool: async () => ({ ok: true, value: { content: 'next' } }),
+  };
+  for (const maxIterations of [3, 'off', undefined] as const) {
+    rounds = 0;
+    await withRoleModels(
+      {},
+      async () => {
+        const planner = await buildPlannerAgent(
+          config,
+          'Run twelve rounds',
+          client,
+        );
+        const result = await planner.process('Run twelve rounds');
+        expect(rounds).toBe(
+          maxIterations === 'off'
+            ? 13
+            : (maxIterations ?? config.agent.maxIterations),
+        );
+        expect(result.ok && result.value.content).toBe(
+          maxIterations === 'off' ? 'done' : '',
+        );
+      },
+      { coordinator: { maxIterations, maxToolCalls: 'off' } },
+    );
+    expect(config.agent).toEqual(original);
+  }
+});
+
+test('LLM-only agents omit the history manager for off and honor numeric session budgets', async () => {
+  const model = llm('history-limits');
+  jest.mocked(makeHubLlm).mockResolvedValue(model.agent);
+  initProviders(await startProviders(config));
+  const install = jest.spyOn(SmartAgentBuilder.prototype, 'withSessionManager');
+  await withRoleModels(
+    {},
+    async () => {
+      await buildLlmOnlyAgent(config, 'waiting');
+      expect(install).not.toHaveBeenCalled();
+    },
+    { historyTokenBudget: 'off' },
+  );
+  await withRoleModels(
+    {},
+    async () => {
+      await buildLlmOnlyAgent(config, 'waiting');
+      const manager = install.mock.calls.at(-1)?.[0];
+      if (!manager) throw new Error('Expected a history manager');
+      manager.addTokens(2);
+      expect(manager.isOverBudget()).toBe(true);
+    },
+    { historyTokenBudget: 2 },
+  );
+  await buildLlmOnlyAgent(config, 'waiting');
+  const manager = install.mock.calls.at(-1)?.[0];
+  if (!manager) throw new Error('Expected the default history manager');
+  manager.addTokens(2);
+  expect(manager.isOverBudget()).toBe(false);
+});

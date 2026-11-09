@@ -16,6 +16,7 @@ import {
 import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
 import { compactRagSearch } from '../../srv/lib/rag-search-context';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
+import { withRoleModels } from '../../srv/lib/role-models-scope';
 import {
   profileToolAllowed,
   runWithProfileTools,
@@ -364,3 +365,76 @@ test('compact search scope follows plan author process and stream iteration only
   }
   expect(compactRagSearch()).toBe(false);
 });
+
+test.each(['report', 'verdict'] as const)(
+  '%s workers resolve role, input, profile, and deploy models in order',
+  async (result) => {
+    const saved = { ...process.env };
+    process.env.LLM_AGENT_MODEL = 'deploy';
+    process.env.LLM_AGENT_MODELS = 'role,input,profile,deploy';
+    const models: (string | undefined)[] = [];
+    const runner = new AgentProfileRunner({
+      catalogue: () => [],
+      grants: () => new Set(),
+      buildPlanner: async () => {
+        throw new Error('Unexpected planner');
+      },
+      buildWorker: async (selected) => {
+        models.push(selected.model);
+        return {
+          name: selected.name,
+          description: '',
+          capabilities: { contextPolicy: 'optional' },
+          run: async () => ({ output: '' }),
+        };
+      },
+    });
+    const role = result === 'verdict' ? 'checker' : 'executor';
+    try {
+      await withRoleModels({ [role]: { model: 'role' } }, async () => {
+        expect(
+          (
+            await runner.createWorker({
+              profile: { ...profile, result, model: 'profile' },
+              model: 'input',
+            })
+          ).ok,
+        ).toBe(true);
+        process.env.LLM_AGENT_MODELS = 'input,profile,deploy';
+        expect(
+          await runner.createWorker({
+            profile: { ...profile, result },
+            model: 'input',
+          }),
+        ).toMatchObject({
+          ok: false,
+          error: {
+            code: 'MODEL_NOT_ALLOWED',
+            message: expect.stringContaining(`${role}.model`),
+          },
+        });
+      });
+      expect(
+        (
+          await runner.createWorker({
+            profile: { ...profile, result, model: 'profile' },
+            model: 'input',
+          })
+        ).ok,
+      ).toBe(true);
+      expect(
+        (
+          await runner.createWorker({
+            profile: { ...profile, result, model: 'profile' },
+          })
+        ).ok,
+      ).toBe(true);
+      expect(
+        (await runner.createWorker({ profile: { ...profile, result } })).ok,
+      ).toBe(true);
+      expect(models).toEqual(['role', 'input', 'profile', 'deploy']);
+    } finally {
+      process.env = saved;
+    }
+  },
+);

@@ -152,6 +152,7 @@ import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
 import { runWithSessionId } from '../../srv/request-session';
 
 const config: AgentConfig = {
+  limits: {},
   trust: {
     defaults: {
       global: 3,

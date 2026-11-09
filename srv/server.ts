@@ -1,4 +1,5 @@
 import { RAG_WRITE_MAX_BYTES } from './lib/rag-write-operations';
+import { requireAdminRole } from './lib/require-admin-role';
 import {
   beginUsageShutdown,
   closeUsageSessions,
@@ -7,6 +8,10 @@ import {
   completeUsageShutdown,
   USAGE_SHUTDOWN_TIMEOUT_MS,
 } from './lib/usage/shutdown';
+import {
+  handleGetSessionModels,
+  handlePutSessionModels,
+} from './session-models-handler';
 import { createUsageRouter } from './usage-handler';
 /**
  * Custom server.ts for CAP bootstrap.
@@ -833,12 +838,15 @@ cds.on('bootstrap', (app: Application) => {
   // CORS preflight for /v1/* routes
   app.options('/v1/{*path}', (_req: Request, res: Response) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader(
+      'Access-Control-Allow-Methods',
+      'GET, POST, PUT, DELETE, OPTIONS',
+    );
     res.setHeader(
       'Access-Control-Allow-Headers',
       // No X-Session-Id: no route reads it. x-clh-session carries the key of
       // a long session this service issued.
-      'Content-Type, Authorization, X-Rag-Collections, x-clh-session, x-clh-turn-id',
+      'Content-Type, Authorization, X-Rag-Collections, x-clh-session, x-clh-turn-id, x-clh-model-coordinator, x-clh-model-planner, x-clh-model-executor, x-clh-model-checker, x-clh-params-coordinator, x-clh-params-planner, x-clh-params-executor, x-clh-params-checker, x-clh-limits',
     );
     res.writeHead(204);
     res.end();
@@ -934,6 +942,8 @@ cds.on('bootstrap', (app: Application) => {
   // POST /v1/session/close (sendBeacon) — close it, or clear a plain session.
   app.get('/v1/session/events', handleDialogueEvents as never);
   app.post('/v1/session/events/ack', handleDialogueAck as never);
+  app.get('/v1/session/models', handleGetSessionModels);
+  app.put('/v1/session/models', requireAdminRole, handlePutSessionModels);
   app.post('/v1/session', handleOpenSession as never);
   app.delete('/v1/session', handleCloseSession as never);
   app.post('/v1/session/close', handleCloseSession as never);

@@ -1,3 +1,10 @@
+import { deployModel } from './lib/deploy-model';
+import {
+  configuredExecutionLimits,
+  configuredLimit,
+  configuredRoleModel,
+} from './lib/deploy-role-config';
+import type { ExecutionLimits } from './lib/execution-limits';
 import { type ExternalMcpConfig, parseExternalMcp } from './lib/external-mcp';
 import { parseTrustDefaults, type TrustDefaults } from './lib/trust';
 /**
@@ -171,6 +178,7 @@ export function parseAgentProfilesConfig(
 }
 
 export interface AgentConfig {
+  limits: ExecutionLimits;
   trust: { defaults: TrustDefaults };
   externalMcp?: ExternalMcpConfig;
   profiles?: AgentProfilesConfig;
@@ -197,6 +205,8 @@ export interface AgentConfig {
     plannerModel?: string;
     /** Optional coordinator override; defaults to the planner model. */
     coordinatorModel?: string;
+    executorModel?: string;
+    checkerModel?: string;
 
     /** Temperature (0.0 - 2.0) */
     temperature: number;
@@ -605,10 +615,7 @@ export function loadAgentConfig(): AgentConfig {
     throttleMaxWaitMs === undefined
       ? new WaitAsNeeded()
       : new WaitIfShortEnough(throttleMaxWaitMs);
-  const model =
-    process.env.LLM_AGENT_MODEL ||
-    process.env.SAP_CORE_AI_MODEL ||
-    'gpt-4o-mini';
+  const model = deployModel();
   const temperature = Number.parseFloat(
     process.env.LLM_AGENT_TEMPERATURE ||
       process.env.SAP_CORE_AI_TEMPERATURE ||
@@ -640,10 +647,10 @@ export function loadAgentConfig(): AgentConfig {
 
   // SmartAgent settings
   const mode = (process.env.LLM_AGENT_MODE || 'smart') as SmartAgentMode;
-  const maxIterations = Number.parseInt(
-    process.env.LLM_AGENT_MAX_ITERATIONS || '10',
-    10,
-  );
+  const limits = configuredExecutionLimits();
+  const configuredIterations = configuredLimit('LLM_AGENT_MAX_ITERATIONS');
+  const maxIterations =
+    configuredIterations === 'off' ? Infinity : (configuredIterations ?? 10);
   const ragType = (process.env.LLM_AGENT_RAG_TYPE || 'in-memory') as RagType;
 
   // History recency window (max recent messages from client history)
@@ -659,6 +666,7 @@ export function loadAgentConfig(): AgentConfig {
   );
 
   const config: AgentConfig = {
+    limits,
     trust: {
       defaults: parseTrustDefaults(process.env.LLM_AGENT_TRUST_DEFAULTS),
     },
@@ -670,6 +678,8 @@ export function loadAgentConfig(): AgentConfig {
       provider,
       model,
       classifierModel: process.env.LLM_AGENT_CLASSIFIER_MODEL || model,
+      executorModel: configuredRoleModel('executor'),
+      checkerModel: configuredRoleModel('checker'),
       plannerModel: process.env.LLM_AGENT_PLANNER_MODEL?.trim() || undefined,
       coordinatorModel:
         process.env.LLM_AGENT_COORDINATOR_MODEL?.trim() || undefined,
@@ -915,28 +925,16 @@ export function dialogueMaxTasks(): number {
 export function parseToolResultMaxChars(
   env: NodeJS.ProcessEnv = process.env,
 ): number {
-  const raw = env.LLM_AGENT_TOOL_RESULT_MAX_CHARS?.trim();
-  if (!raw) return 60000;
-  const value = Number(raw);
-  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value))
-    throw new BuildValidationError(
-      'Invalid LLM_AGENT_TOOL_RESULT_MAX_CHARS: expected an integer, 0 or more',
-    );
-  return value;
+  const value = configuredLimit('LLM_AGENT_TOOL_RESULT_MAX_CHARS', env);
+  return value === 'off' ? 0 : (value ?? 60000);
 }
 
 /** Per-run tool-call budget; unset preserves the library default. */
 export function parseMaxToolCalls(
   env: NodeJS.ProcessEnv = process.env,
 ): number | undefined {
-  const raw = env.LLM_AGENT_MAX_TOOL_CALLS?.trim();
-  if (!raw) return undefined;
-  const value = Number(raw);
-  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value < 1)
-    throw new BuildValidationError(
-      'Invalid LLM_AGENT_MAX_TOOL_CALLS: expected a positive integer',
-    );
-  return value;
+  const value = configuredLimit('LLM_AGENT_MAX_TOOL_CALLS', env);
+  return value === 'off' ? undefined : value;
 }
 
 function dialogueWaitLimit(name: string): number | undefined {

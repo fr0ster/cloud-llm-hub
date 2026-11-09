@@ -513,3 +513,39 @@ describe('shared cookie jar isolation', () => {
     ).toBe(a.body.session);
   });
 });
+
+it('mounts the session models routes with caller-owned session isolation', async () => {
+  const missing = await fetch(`${base}/v1/session/models`);
+  expect(missing.status).toBe(400);
+  expect(await missing.json()).toMatchObject({
+    error: { field: 'x-clh-session' },
+  });
+  const opened = await openOne();
+  const headers = {
+    [SESSION_HEADER]: String(opened.body.session),
+    'content-type': 'application/json',
+  };
+  const saved = await fetch(`${base}/v1/session/models`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({ limits: { historyTokenBudget: 'off' } }),
+  });
+  expect(saved.status).toBe(200);
+  expect(await saved.json()).toMatchObject({
+    limits: { historyTokenBudget: 'off' },
+    canEdit: true,
+  });
+  user.id = 'bob';
+  expect(
+    (await fetch(`${base}/v1/session/models`, { headers })).status,
+  ).toBeGreaterThanOrEqual(400);
+  expect(
+    (
+      await fetch(`${base}/v1/session/models`, {
+        method: 'PUT',
+        headers,
+        body: '{}',
+      })
+    ).status,
+  ).toBeGreaterThanOrEqual(400);
+});

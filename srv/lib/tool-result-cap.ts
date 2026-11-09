@@ -2,6 +2,10 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { IMcpClient, McpToolResult } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { parseToolResultMaxChars } from '../agent-config';
+import {
+  currentSessionLimit,
+  sessionToolResultMaxChars,
+} from './execution-limits';
 
 export const toolResultBudget = new AsyncLocalStorage<number>();
 
@@ -9,7 +13,11 @@ export function withinToolResultBudget<T>(
   maxChars: number,
   operation: () => T,
 ): T {
-  const outer = toolResultBudget.getStore() ?? 0;
+  maxChars = sessionToolResultMaxChars(maxChars);
+  const outer =
+    currentSessionLimit('toolResultMaxChars') === 'off'
+      ? 0
+      : (toolResultBudget.getStore() ?? 0);
   const effective =
     outer && maxChars ? Math.min(outer, maxChars) : outer || maxChars;
   return toolResultBudget.run(effective, operation);
@@ -26,6 +34,7 @@ export function capToolResult(
   maxChars: number,
   knownName?: string,
 ): { result: McpToolResult; truncation?: ToolResultTruncation } {
+  maxChars = sessionToolResultMaxChars(maxChars);
   if (maxChars === 0) return { result };
   const content = result.content;
   // Match the installed tool loop's string/JSON conversion exactly.

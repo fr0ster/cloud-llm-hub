@@ -119,6 +119,8 @@ async function opened() {
 }
 beforeEach(async () => {
   harness.reset();
+  harness.user.is = () => true;
+  tools.clear();
   if (!(await getCollectionRegistry().getCollection('agents')))
     await getCollectionRegistry().createCollection({
       id: 'agents',
@@ -590,7 +592,7 @@ test('execute_step ignores agents selection supplied as an extra execution field
   );
 });
 
-it('agent MCP lists all 23 tools including orchestration', async () => {
+it('agent MCP lists session settings and orchestration tools', async () => {
   const { coordinatorToolsClient } = await import(
     '../../srv/lib/coordinator-tools-client'
   );
@@ -608,6 +610,7 @@ it('agent MCP lists all 23 tools including orchestration', async () => {
           ![
             'session_open',
             'session_close',
+            'session_set_models',
             'execute_step',
             'list_destinations',
           ].includes(name),
@@ -623,7 +626,7 @@ it('agent MCP lists all 23 tools including orchestration', async () => {
   if (!catalogue.ok) throw new Error(catalogue.error.message);
   for (const tool of library.value)
     expect(catalogue.value).toContainEqual(tool);
-  expect(tools.size).toBe(25);
+  expect(tools.size).toBe(26);
   const {
     executeStepSchema,
     EXECUTE_STEP_DESCRIPTION,
@@ -766,3 +769,192 @@ function coordinatorDependencies() {
     ) => runExecutorStep(manager.createAgentProfileSource, ...args),
   };
 }
+const sessionToolsSavedEnv = { ...process.env };
+afterEach(() => {
+  process.env = { ...sessionToolsSavedEnv };
+});
+
+import {
+  currentLimit,
+  getExecutionLimits,
+  setExecutionLimits,
+} from '../../srv/lib/execution-limits';
+import { currentExecutorModel } from '../../srv/lib/executor-step';
+import {
+  getRoleModels,
+  setRoleModels,
+} from '../../srv/lib/role-model-settings';
+
+test('session_open with models stores them for the opened session', async () => {
+  process.env.LLM_AGENT_MODELS = 'test-model';
+  const result = await call('session_open', {
+    models: { executor: { model: 'test-model' } },
+  });
+  const key = JSON.parse(result.content[0].text).session;
+  expect(getRoleModels('alice', key)).toEqual({
+    executor: { model: 'test-model' },
+  });
+});
+
+test('session_set_models replaces them and returns effective models', async () => {
+  process.env.LLM_AGENT_MODELS = 'test-model';
+  const session = await opened();
+  setRoleModels('alice', session, { checker: { model: 'test-model' } });
+  const result = await call('session_set_models', {
+    session,
+    models: { executor: { model: 'test-model' } },
+  });
+  expect(JSON.parse(result.content[0].text)).toMatchObject({
+    settings: { executor: { model: 'test-model' } },
+    effective: { executor: { model: 'test-model', source: 'user' } },
+    limits: {},
+    effectiveLimits: expect.any(Object),
+  });
+  expect(getRoleModels('alice', session).checker).toBeUndefined();
+});
+
+test('a coordinator entry is refused with field "coordinator"', async () => {
+  const session = await opened();
+  for (const update of [
+    { models: { coordinator: 'auto' } },
+    { limits: { coordinator: { maxIterations: 3 } } },
+  ]) {
+    const result = await call('session_set_models', { session, ...update });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error.field).toBe('coordinator');
+  }
+});
+
+test('session_set_models is listed for an MCP_Admin user and absent for others', async () => {
+  expect(tools.has('session_set_models')).toBe(true);
+  tools.clear();
+  harness.user.is = () => false;
+  await createAgentMcpServerForRequest(req);
+  expect(tools.has('session_set_models')).toBe(false);
+});
+
+test('without MCP_Admin: session_set_models is absent and a direct call is refused as unknown; session_open has no models/limits in its schema and refuses them if sent', async () => {
+  tools.clear();
+  harness.user.is = () => false;
+  await createAgentMcpServerForRequest(req);
+  expect(tools.has('session_set_models')).toBe(false);
+  const sdk = jest.requireMock<{
+    definitions: Map<string, { inputSchema: z.ZodObject }>;
+  }>('@modelcontextprotocol/sdk/server/mcp.js');
+  const schema = sdk.definitions.get('session_open')?.inputSchema;
+  expect(schema?.shape.models).toBeUndefined();
+  expect(schema?.shape.limits).toBeUndefined();
+  expect(schema?.safeParse({ models: {} }).success).toBe(false);
+  for (const input of [{ models: {} }, { limits: {} }])
+    expect((await call('session_open', input)).isError).toBe(true);
+});
+
+test('session_set_models for a session of another user is refused as not found', async () => {
+  const session = await opened();
+  harness.user.id = 'bob';
+  tools.clear();
+  try {
+    await createAgentMcpServerForRequest(req);
+    expect(
+      await call('session_set_models', { session, models: {} }),
+    ).toMatchObject({
+      isError: true,
+      content: [{ text: 'SESSION_NOT_FOUND' }],
+    });
+  } finally {
+    harness.user.id = 'alice';
+  }
+});
+
+test('models and limits are validated together and applied all-or-nothing', async () => {
+  const session = await opened();
+  setExecutionLimits('alice', session, { executor: { maxIterations: 7 } });
+  const result = await call('session_set_models', {
+    session,
+    models: { executor: { model: 'test-model' } },
+    limits: { planStepBudget: 3 },
+  });
+  expect(result.isError).toBe(true);
+  expect(getRoleModels('alice', session)).toEqual({});
+  expect(getExecutionLimits('alice', session)).toEqual({
+    executor: { maxIterations: 7 },
+  });
+});
+
+test('execute_step runs on the session executor model', async () => {
+  process.env.LLM_AGENT_MODELS = 'test-model';
+  const session = await opened();
+  setRoleModels('alice', session, { executor: { model: 'test-model' } });
+  harness.process = async () => {
+    expect(currentExecutorModel()).toBe('test-model');
+    return { ok: true, value: { content: 'done' } };
+  };
+  expect(
+    (await executeStep(req, caller, { session, task: 'Read' })).isError,
+  ).toBeUndefined();
+});
+
+test('execute_step honours a session executor maxIterations and another session on the same destination keeps the default', async () => {
+  const { SmartAgentBuilder } = await import('@mcp-abap-adt/llm-agent-libs');
+  const { runLimitOptions } = await import('../../srv/lib/execution-limits');
+  const limited = await opened();
+  const defaults = await opened();
+  setExecutionLimits('alice', limited, { executor: { maxIterations: 3 } });
+  const rounds: number[] = [];
+  harness.process = async () => {
+    let count = 0;
+    const llm: import('@mcp-abap-adt/llm-agent').ILlm = {
+      chat: async () => {
+        count++;
+        return {
+          ok: true,
+          value: {
+            content: '',
+            toolCalls: [{ id: String(count), name: 'tick', arguments: {} }],
+            finishReason: 'tool_calls',
+          },
+        };
+      },
+      streamChat: async function* (messages, tools, options) {
+        yield await llm.chat(messages, tools, options);
+      },
+    };
+    const handle = await new SmartAgentBuilder({
+      skipModelValidation: true,
+      agent: {
+        ...runLimitOptions('executor', { maxIterations: 10 }),
+        classificationEnabled: false,
+        ragTranslateEnabled: false,
+      },
+    })
+      .withMainLlm(llm)
+      .withMcpClients([
+        {
+          listTools: async () => ({
+            ok: true,
+            value: [
+              {
+                name: 'tick',
+                description: '',
+                inputSchema: { type: 'object', properties: {} },
+              },
+            ],
+          }),
+          callTool: async () => ({ ok: true, value: { content: 'tick' } }),
+        },
+      ])
+      .withClassification(false)
+      .withMode('hard')
+      .build();
+    const result = await handle.agent.process('Run');
+    expect(result).toMatchObject({ ok: true });
+    rounds.push(count);
+    return result.ok
+      ? { ok: true, value: { content: result.value.content } }
+      : { ok: false, error: new Error(result.error.message) };
+  };
+  await executeStep(req, caller, { session: limited, task: 'Run' });
+  await executeStep(req, caller, { session: defaults, task: 'Run' });
+  expect(rounds).toEqual([3, 10]);
+  expect(currentLimit('executor', 'maxIterations')).toBeUndefined();
+});

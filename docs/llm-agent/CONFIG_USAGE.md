@@ -474,3 +474,29 @@ Download using the same `cf ssh` / SQLite `VACUUM INTO` workflow as usage: creat
 Credential-like password/passwd, authorization, bearer, client_secret/clientsecret, x-sap-* header and sap-password values are replaced with `?redacted?` in request and response strings before storage, including tool arguments and definitions. Other context is retained in full; restrict access to the file accordingly. All filesystem and SQLite work runs in a worker thread. The main thread queues at most 64 serialized rows, including one in flight; overflow drops new rows, increments the drop count exposed by `contextStoreStatus()`, and warns once per overflow burst. Worker failure warns once and disables capture for the process without restarting. Capture never changes the LLM result, and queued rows can be lost if the process exits before they are drained.
 
 Dialogue workers store results only in their current session collections. The coordinator uses `rag_persist({ collection, records?, name })` to copy records verbatim into its user collection, creating it if missing. Omitted records selects enabled records; record ids are upserted and provenance is added. Other coordinator RAG tools remain read-only. Plain chat, user MCP calls and REST retain their existing write behavior.
+
+### Deploy defaults for session roles and limits
+
+All variables below are optional. Session settings override configuration per
+value; unset configuration preserves the existing behavior. Configured
+`LLM_AGENT_EXECUTOR_MODEL` and `LLM_AGENT_CHECKER_MODEL` override the
+coordinator's `delegate_task` model for every session. They must belong to the
+`LLM_AGENT_MODELS` allowlist (which also includes the main and planner models).
+An invalid configured worker model fails startup naming the variable.
+
+| Variable | Default / behavior |
+|---|---|
+| `LLM_AGENT_EXECUTOR_MODEL` | Coordinator chooses the executor model when unset |
+| `LLM_AGENT_CHECKER_MODEL` | Coordinator chooses the checker model when unset |
+| `LLM_AGENT_<ROLE>_MAX_ITERATIONS` | Falls back to `LLM_AGENT_MAX_ITERATIONS`, then 10 |
+| `LLM_AGENT_<ROLE>_MAX_TOOL_CALLS` | Falls back to `LLM_AGENT_MAX_TOOL_CALLS`, then the library default of 30 |
+| `LLM_AGENT_TOOL_RESULT_MAX_CHARS` | 60000; legacy `0` also disables the limit |
+| `LLM_AGENT_HISTORY_TOKEN_BUDGET` | 8000 |
+
+`<ROLE>` is `COORDINATOR`, `EXECUTOR`, or `CHECKER`. Every limit listed here,
+including `LLM_AGENT_MAX_ITERATIONS` and `LLM_AGENT_MAX_TOOL_CALLS`, accepts
+`off` to remove the hub limit. Otherwise values must be positive safe integers
+written as decimal digits (with the legacy zero exception for tool results).
+Blank values count as unset. Invalid limits fail startup naming the variable.
+Effective worker model and limit values supplied by configuration report
+`source: 'config'`; session settings report `source: 'user'`.

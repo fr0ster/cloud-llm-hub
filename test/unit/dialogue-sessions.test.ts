@@ -21,8 +21,14 @@ import { dialogueChat } from '../../srv/lib/dialogue-chat';
 import { followDialogue } from '../../srv/lib/dialogue-follow';
 import { clientTurnId, turnSource } from '../../srv/lib/dialogue-turn-source';
 import { reportLlmSpend } from '../../srv/lib/llm-failure';
+import { parseModelAllowlist } from '../../srv/lib/model-policy';
 import * as plannerMemory from '../../srv/lib/planner-memory';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
+import {
+  currentRoleModel,
+  RoleModelNotAllowedError,
+  roleOfProfile,
+} from '../../srv/lib/role-models-scope';
 import { systemToolTrust } from '../../srv/lib/system-tool-trust';
 import type { TrustResolver } from '../../srv/lib/trust-resolver';
 import { sumPlannerUsage } from '../../srv/lib/usage-wire';
@@ -129,6 +135,7 @@ const mockWriteCapability = jest.fn((_traceId?: string) => false);
 const mockPlannerTurns: string[] = [];
 const mockAuthorTurns: string[] = [];
 const mockEnvironments: string[] = [];
+let mockWorkerModel: string | undefined;
 let mockGoal = 'read';
 let mockWorkerTrust: { target: number } | undefined;
 let mockPlannerHook: ((text: string) => Promise<void>) | undefined;
@@ -279,6 +286,7 @@ jest.mock('../../srv/agent-manager', () => ({
     toolTrustFor: (resolver: TrustResolver) =>
       systemToolTrust(() => true, resolver),
     profileRunner: {
+      validateModel: () => ({ ok: true, value: undefined }),
       preparePlanAuthor: async () => ({
         ok: true,
         value: {
@@ -303,16 +311,36 @@ jest.mock('../../srv/agent-manager', () => ({
       }),
       createWorker: async ({
         profile,
+        model,
       }: {
+        model?: string;
         profile: import('@mcp-abap-adt/llm-agent').WorkerProfile;
-      }) => ({
-        ok: true,
-        value: {
-          name: profile.name,
-          capabilities: { contextPolicy: 'optional' },
-          run: (input: ISubAgentInput) => mockRun(input),
-        },
-      }),
+      }) => {
+        try {
+          model = currentRoleModel(roleOfProfile(profile)) ?? model;
+        } catch (error) {
+          if (error instanceof RoleModelNotAllowedError)
+            return {
+              ok: false,
+              error: { code: 'MODEL_NOT_ALLOWED', message: error.message },
+            };
+          throw error;
+        }
+        mockWorkerModel = model ?? profile.model;
+        if (model !== undefined && !parseModelAllowlist().has(model))
+          return {
+            ok: false,
+            error: { code: 'MODEL_NOT_ALLOWED', message: 'MODEL_NOT_ALLOWED' },
+          };
+        return {
+          ok: true,
+          value: {
+            name: profile.name,
+            capabilities: { contextPolicy: 'optional' },
+            run: (input: ISubAgentInput) => mockRun(input),
+          },
+        };
+      },
       preparePlanner: async () => ({
         ok: true,
         value: await jest
@@ -3632,4 +3660,171 @@ test('hub dialogue sessions receive a session-scoped task result store', async (
   } finally {
     open.mockRestore();
   }
+});
+
+test('the coordinator runs on the user coordinator model over the request model', async () => {
+  const { coordinatorModel } = await import('../../srv/lib/coordinator-model');
+  const { setRoleModels, clearRoleModels } = await import(
+    '../../srv/lib/role-model-settings'
+  );
+  const { effectiveRoleModels } = await import(
+    '../../srv/lib/role-models-scope'
+  );
+  const previous = process.env.LLM_AGENT_MODELS;
+  process.env.LLM_AGENT_MODELS = 'request,user-coordinator';
+  setRoleModels('alice', 'key', { coordinator: { model: 'user-coordinator' } });
+  try {
+    await dialogueFor('alice', 'key', 'TEST', 'request');
+    mockPlannerPreparationHook = () =>
+      expect(coordinatorModel()).toBe('user-coordinator');
+    const { h } = await ready();
+    await h.session.send('go');
+    expect(effectiveRoleModels('alice', 'key').coordinator).toMatchObject({
+      model: 'user-coordinator',
+      source: 'user',
+    });
+    clearRoleModels('alice', 'key');
+    expect(effectiveRoleModels('alice', 'key').coordinator).toMatchObject({
+      model: 'request',
+      source: 'request',
+    });
+  } finally {
+    clearRoleModels('alice', 'key');
+    if (previous === undefined) delete process.env.LLM_AGENT_MODELS;
+    else process.env.LLM_AGENT_MODELS = previous;
+  }
+});
+
+test.each([
+  [
+    'createWorker uses the user executor model over the delegate_task model',
+    'executor',
+    'A',
+  ],
+  [
+    'createWorker uses the user checker model for a verdict profile',
+    'checker',
+    'B',
+  ],
+  [
+    'createWorker keeps the delegate_task model when no user setting exists',
+    'none',
+    'A',
+  ],
+])('%s', async (_name, role, expected) => {
+  const { setRoleModels, clearRoleModels } = await import(
+    '../../srv/lib/role-model-settings'
+  );
+  const previous = process.env.LLM_AGENT_MODELS;
+  process.env.LLM_AGENT_MODELS = 'A,B';
+  if (role === 'executor')
+    setRoleModels('alice', 'key', { executor: { model: 'A' } });
+  if (role === 'checker')
+    setRoleModels('alice', 'key', { checker: { model: 'B' } });
+  try {
+    const { h } = await ready();
+    const delegated = await h.session.callTool('delegate_task', {
+      worker: role === 'checker' ? 'checker' : 'executor',
+      goal: 'Read',
+      model: role === 'executor' ? 'B' : 'A',
+    });
+    if (delegated.ok && delegated.value.isError)
+      throw new Error(JSON.stringify(delegated.value));
+    await until(() => mockRun.mock.calls.length > 0);
+    expect(mockWorkerModel).toBe(expected);
+    await until(() =>
+      h.session.snapshot().tasks.some((t) => t.state === 'done'),
+    );
+  } finally {
+    clearRoleModels('alice', 'key');
+    if (previous === undefined) delete process.env.LLM_AGENT_MODELS;
+    else process.env.LLM_AGENT_MODELS = previous;
+  }
+});
+
+test('a user model removed from the allowlist is refused at the next worker with MODEL_NOT_ALLOWED', async () => {
+  const { setRoleModels, clearRoleModels } = await import(
+    '../../srv/lib/role-model-settings'
+  );
+  const previous = process.env.LLM_AGENT_MODELS;
+  process.env.LLM_AGENT_MODELS = 'removed';
+  setRoleModels('alice', 'key', { executor: { model: 'removed' } });
+  try {
+    const { h } = await ready();
+    await h.session.callTool('delegate_task', {
+      worker: 'executor',
+      goal: 'Read',
+    });
+    await until(() =>
+      h.session.snapshot().tasks.some((t) => t.state === 'done'),
+    );
+    expect(mockWorkerModel).toBe('removed');
+    process.env.LLM_AGENT_MODELS = '';
+    mockRun.mockClear();
+    await h.session.callTool('delegate_task', {
+      worker: 'executor',
+      goal: 'Read again',
+    });
+    await until(() =>
+      h.session.snapshot().tasks.some((t) => t.state === 'failed'),
+    );
+    expect(h.session.snapshot().tasks.at(-1)?.error).toContain(
+      'MODEL_NOT_ALLOWED',
+    );
+    expect(mockRun).not.toHaveBeenCalled();
+  } finally {
+    clearRoleModels('alice', 'key');
+    if (previous === undefined) delete process.env.LLM_AGENT_MODELS;
+    else process.env.LLM_AGENT_MODELS = previous;
+  }
+});
+
+test('session entry points replace an inherited role scope with the caller own session settings', async () => {
+  const { setRoleModels, clearRoleModels } = await import(
+    '../../srv/lib/role-model-settings'
+  );
+  const { currentRoleModel, withRoleModels } = await import(
+    '../../srv/lib/role-models-scope'
+  );
+  const previous = process.env.LLM_AGENT_MODELS;
+  process.env.LLM_AGENT_MODELS = 'alice-only,other-session';
+  setRoleModels('alice', 'key', { executor: { model: 'alice-only' } });
+  setRoleModels('alice', 'other-key', { executor: { model: 'other-session' } });
+  try {
+    const { h } = await ready();
+    const { h: bob } = await ready('bob');
+    await withRoleModels({ executor: { model: 'foreign' } }, async () => {
+      await Promise.all([
+        h.runStep(async () => {
+          expect(currentRoleModel('executor')).toBe('alice-only');
+          return { ok: true };
+        }),
+        bob.runStep(async () => {
+          expect(currentRoleModel('executor')).toBeUndefined();
+          return { ok: true };
+        }),
+      ]);
+    });
+  } finally {
+    clearRoleModels('alice', 'key');
+    clearRoleModels('alice', 'other-key');
+    if (previous === undefined) delete process.env.LLM_AGENT_MODELS;
+    else process.env.LLM_AGENT_MODELS = previous;
+  }
+});
+
+test('closing the session clears its settings', async () => {
+  const { setRoleModels, getRoleModels } = await import(
+    '../../srv/lib/role-model-settings'
+  );
+  const { setExecutionLimits, getExecutionLimits } = await import(
+    '../../srv/lib/execution-limits'
+  );
+  setRoleModels('alice', 'key', { executor: { model: 'gpt-5' } });
+  setExecutionLimits('alice', 'key', { historyTokenBudget: 'off' });
+  setRoleModels('bob', 'key', { checker: { model: 'gpt-5' } });
+  await closeDialogue('alice', 'key', 'explicit');
+  expect(getRoleModels('alice', 'key')).toEqual({});
+  expect(getExecutionLimits('alice', 'key')).toEqual({});
+  expect(getRoleModels('bob', 'key')).toEqual({ checker: { model: 'gpt-5' } });
 });

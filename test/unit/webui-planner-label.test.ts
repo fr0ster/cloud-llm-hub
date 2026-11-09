@@ -23,7 +23,6 @@ class Select {
 }
 function harness() {
   let now = 0;
-  const model = new Select();
   const classifier = new Select();
   const dest = new Select();
   const gate = new Select();
@@ -36,7 +35,6 @@ function harness() {
     hubSignedOut: false,
     llmOnlyMode: false,
     gateDestinations: [] as { name: string; status: string }[],
-    modelSelect: model,
     classifierSelect: classifier,
     destSelect: dest,
     Date: { now: () => now },
@@ -96,7 +94,6 @@ function harness() {
   return {
     state,
     api,
-    model,
     classifier,
     dest,
     gate,
@@ -111,20 +108,20 @@ function harness() {
   };
 }
 
-test('chat turn completion refreshes PLANNER after a hot-swap', async () => {
+test('chat turn completion refreshes hub state', async () => {
   const h = harness();
   h.api.turn();
   expect(h.state.hubFetch).toHaveBeenCalledTimes(1);
   await h.api.refresh();
   expect(h.state.hubFetch).toHaveBeenCalledTimes(1);
-  expect(h.label.innerText).toBe('swapped');
+  expect(html).not.toContain('id="planner-model"');
 });
 
 test('normal ready state has no polling; dropdown triggers share requests and cooldown', async () => {
   const h = harness();
   h.api.sync();
   expect(h.intervals.size).toBe(0);
-  for (const select of [h.model, h.classifier, h.gate]) {
+  for (const select of [h.classifier, h.gate]) {
     select.listeners.mousedown({ key: '' });
     select.listeners.focus({ key: '' });
     select.listeners.keydown({ key: 'ArrowDown' });
@@ -139,29 +136,27 @@ test('normal ready state has no polling; dropdown triggers share requests and co
 
 test('refresh adds models and preserves offered user selections', async () => {
   const h = harness();
-  h.model.value = 'chosen';
+  h.classifier.value = 'chosen';
   h.classifier.value = 'chosen';
   h.payload.data.push({ id: 'new' });
   await h.api.refresh();
-  expect(h.model.options.map((o) => o.value)).toContain('new');
-  expect(h.model.value).toBe('chosen');
+  expect(h.classifier.options.map((o) => o.value)).toContain('new');
   expect(h.classifier.value).toBe('chosen');
   h.advance();
   h.payload.data = [{ id: 'main' }];
   await h.api.refresh();
-  expect(h.model.value).toBe('main');
   expect(h.classifier.value).toBe('main');
 });
 
 test('an unchanged model list is not rebuilt, so an open dropdown stays open', async () => {
   const h = harness();
   await h.api.refresh();
-  expect(h.model.rebuilds).toBe(1);
-  h.model.value = 'chosen';
+  expect(h.classifier.rebuilds).toBe(1);
+  h.classifier.value = 'chosen';
   h.advance();
   await h.api.refresh();
-  expect(h.model.rebuilds).toBe(1);
-  expect(h.model.value).toBe('chosen');
+  expect(h.classifier.rebuilds).toBe(1);
+  expect(h.classifier.value).toBe('chosen');
 });
 
 test('a configured model the list does not offer is still shown and selected', async () => {

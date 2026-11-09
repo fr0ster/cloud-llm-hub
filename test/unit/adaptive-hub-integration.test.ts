@@ -24,6 +24,7 @@ jest.mock('../../srv/lib/llm-factory', () => ({
 }));
 
 const config: AgentConfig = {
+  limits: {},
   trust: {
     defaults: {
       global: 3,

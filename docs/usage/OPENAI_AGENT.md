@@ -180,3 +180,80 @@ See `.env.example` for token setup instructions.
 - [CAP Express Auth](../development/CAP_EXPRESS_AUTH.md) - How auth works on custom routes
 
 `UNVERIFIED_WRITE` notices use deterministic tool-journal checks, with no automatic LLM review of workers or answers. Failed/unanswered write notices and recording placeholders remain. `LLM_AGENT_STEP_REVIEW_ENABLED=false` disables claim-based notices only. Verification checks are explicit coordinator decisions each turn: run a planned check, skip it stating why, or add an unplanned check; user input can require `plan_revise`. Checker failures need exact result quotes and cited supplied evidence (or `none provided`); invalid failures are unusable verdicts for the coordinator to assess, not failures. No tools executed alone is never grounds for fail.
+
+
+## Session role models and limits
+
+Send `x-clh-session: <key>` for an open session owned by the authenticated user.
+Session settings last until changed, the session closes, or the hub restarts;
+they are isolated from other sessions and users. Only `MCP_Admin` may change
+models or limits through any channel. Reading settings is available to the
+session owner without that role.
+
+The WebUI **LLM** button next to **MANAGE** opens settings for coordinator,
+planner, executor and checker. It shows effective models, limits and their
+sources. Non-admin users get an information-only window without Save.
+Model parameter controls are read-only in stage 1; their effective values are
+not currently exposed by the session API. Hub-owned limits support numbers
+and `off`; library-owned `planStepBudget` is unavailable until stage 2.
+
+### Chat API headers (OpenAI and Anthropic)
+
+- `x-clh-model-coordinator`, `x-clh-model-planner`, `x-clh-model-executor`,
+  `x-clh-model-checker`: allowlisted model ID; `auto` or an empty value clears
+  the role override.
+- `x-clh-params-<role>`: JSON model parameters. Stage 1 refuses these with a
+  field-specific reason; parameter support follows in stage 2.
+- `x-clh-limits`: JSON execution limits, for example
+  `{"executor":{"maxIterations":"off","maxToolCalls":30},"historyTokenBudget":8000}`.
+  Per-run roles are coordinator, executor and checker. Session-wide fields
+  are `toolResultMaxChars` and `historyTokenBudget`. `planStepBudget` is
+  refused in stage 1. `off` removes the hub limit; stop the task or close the
+  session to stop a run.
+
+Headers are **sticky**: supplied fields merge into the session settings;
+requests without them keep previous values. Nested role limits merge field
+by field. All supplied models and limits are validated together and applied
+atomically. Invalid updates return 400 with `error.field` and `error.reason`;
+non-admin updates return 403. Settings headers require an open session and
+`x-clh-session`; they cannot configure a plain request without a session.
+
+`x-clh-models-effective` in the response contains JSON mapping each role to
+its effective model (null means the coordinator chooses). A session role
+override wins over the request body's coordinator `model`. The response
+`x-clh-model-ignored` reports an ignored body model, including models sent
+by non-admin users or outside the allowlist. `x-clh-params-ignored` lists
+ignored body parameter names (`temperature`, `top_p`, `max_tokens`,
+`max_completion_tokens`, `reasoning_effort`, `thinking`); in stage 1 body
+parameters are ignored for everyone. These ignored body fields do not fail
+the request.
+
+### Session settings endpoints
+
+Both endpoints require `x-clh-session` for an open session:
+
+- `GET /v1/session/models` returns `{ settings, effective, capabilities,
+  limits, effectiveLimits, canEdit }`. Effective models and limits include
+  their source. Capabilities are keyed by allowlisted model ID.
+- `PUT /v1/session/models` (MCP_Admin only) replaces all role settings and
+  limits together. The body has role settings at the top level, plus
+  `limits`, for example
+  `{"executor":{"model":"gpt-4o"},"checker":"auto","limits":{"executor":{"maxIterations":"off"}}}`.
+  Use a model from this deployment's allowlist. Omitted settings revert to
+  defaults. Success returns the same snapshot as GET; validation failures
+  return `400 {"error":{"field":"...","reason":"..."}}`; permission
+  failures return 403.
+
+### Agent MCP
+
+For `MCP_Admin`, `session_open` accepts optional `models` and `limits`.
+`models` contains planner, executor and checker role settings; a coordinator
+entry is refused because the connecting agent coordinates. Limits use the
+same shape and stage 1 restrictions as the HTTP API.
+
+`session_set_models` accepts `{ session, models, limits }` for an open session,
+replaces the settings and returns the effective snapshot. It is listed only
+for `MCP_Admin`; direct calls by other users are refused as an unknown tool.
+For other users, `session_open` omits `models` and `limits` from its schema
+and refuses them if supplied anyway. Admin access applies only to the
+caller's own session.

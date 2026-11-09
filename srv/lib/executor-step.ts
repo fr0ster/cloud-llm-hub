@@ -8,6 +8,7 @@ import type { getSmartAgent } from '../agent-manager';
 import { runWithToolGateBypass } from '../request-session';
 import { renderNotice } from './notify-policy';
 import { captureReviewProfile, recordReviewProfile } from './review-scope';
+import { currentRoleModel, roleOfProfile } from './role-models-scope';
 import { evaluateGated } from './step-reviewer';
 
 const executorModel = new AsyncLocalStorage<string | undefined>();
@@ -54,7 +55,7 @@ export async function runExecutorStep(
         const prepared = await agentHandle.profileRunner.createWorker(
           {
             profile: profile.value,
-            model,
+            model: currentRoleModel(roleOfProfile(profile.value)) ?? model,
             workerBase: prompts.value.workerBase,
           },
           opts,
@@ -90,7 +91,7 @@ export async function runExecutorStep(
           },
         };
       }
-      return executorModel.run(model, () =>
+      return executorModel.run(currentRoleModel('executor') ?? model, () =>
         (agentHandle.executor ?? agentHandle.agent).process(
           [...history, { role: 'user', content: task }],
           opts,
