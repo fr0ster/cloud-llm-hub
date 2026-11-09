@@ -22,6 +22,7 @@
 - No timeouts introduced.
 - Session isolation: settings are keyed by the caller's own session slot. No cookie, shared storage or empty header may attach them to another session.
 - No new required configuration. Only `LLM_AGENT_MODEL` stays required.
+- Changing models, parameters or limits needs `MCP_Admin` on every channel; reading the effective values does not.
 - The same agent MCP tool set on every connection.
 - A model or parameter the hub cannot apply is refused with a reason naming the field. Nothing is quietly replaced, and nothing is partly applied.
 - Stage 1 refuses any `params` with the reason `parameters per role arrive with llm-agent per-role call options (stage 2)`.
@@ -216,6 +217,46 @@
 - [ ] **Step 5: Commit**
   `git commit -S -m "feat(limits): per-session execution limits with off"`
 
+### Task 3c: Deploy configuration parity
+
+**Files:**
+- Modify: `srv/agent-config.ts`: new optional variables next to `plannerModel` / `coordinatorModel` near :673, the limit parsers near :643, :915 and :929.
+- Modify: `srv/lib/role-models-scope.ts` and `srv/lib/execution-limits.ts`: configuration is the default layer under the session setting.
+- Test: extend `test/unit/session-config.test.ts`
+
+**Interfaces:**
+- Consumes: Tasks 3 and 3b.
+- Produces:
+  - `AgentConfig.llm.executorModel?: string` from `LLM_AGENT_EXECUTOR_MODEL`.
+  - `AgentConfig.llm.checkerModel?: string` from `LLM_AGENT_CHECKER_MODEL`.
+  - `AgentConfig.limits: ExecutionLimits`, built from:
+    - `LLM_AGENT_<ROLE>_MAX_ITERATIONS` and `LLM_AGENT_<ROLE>_MAX_TOOL_CALLS` (`ROLE` = `COORDINATOR` | `EXECUTOR` | `CHECKER`), falling back to the existing `LLM_AGENT_MAX_ITERATIONS` / `LLM_AGENT_MAX_TOOL_CALLS`;
+    - `LLM_AGENT_TOOL_RESULT_MAX_CHARS`;
+    - `LLM_AGENT_HISTORY_TOKEN_BUDGET`.
+  - Every limit variable accepts `off`.
+  - The `effective*` sources gain `config`.
+
+- [ ] **Step 1: Write the failing tests**
+  - `LLM_AGENT_EXECUTOR_MODEL overrides the delegate_task model for every session`
+  - `a session executor setting overrides LLM_AGENT_EXECUTOR_MODEL`
+  - `LLM_AGENT_CHECKER_MODEL outside the allowlist fails startup naming the variable`
+  - `LLM_AGENT_EXECUTOR_MAX_ITERATIONS=off gives the executor no iteration limit; the coordinator keeps LLM_AGENT_MAX_ITERATIONS`
+  - `LLM_AGENT_HISTORY_TOKEN_BUDGET unset keeps 8000`
+  - `no new variable is required: only LLM_AGENT_MODEL set still starts`
+
+- [ ] **Step 2: Run the tests to verify they fail**
+  Run: `npx jest test/unit/session-config.test.ts --maxWorkers=1`
+
+- [ ] **Step 3: Implement**
+  - Resolution order per value: session setting → configuration → today's behaviour (the coordinator's choice for worker models, the built-in default for limits).
+  - Document the new variables where the existing `LLM_AGENT_*` variables are documented (find with `grep -rl LLM_AGENT_PLANNER_MODEL docs`).
+
+- [ ] **Step 4: Run the tests to verify they pass**
+  Same command. Expected: PASS.
+
+- [ ] **Step 5: Commit**
+  `git commit -S -m "feat(config): deploy defaults for role models and execution limits"`
+
 ### Task 4: Session models HTTP API and capabilities in /v1/models
 
 **Files:**
@@ -230,7 +271,8 @@
 - Consumes: Tasks 1–3.
 - Produces:
   - `GET /v1/session/models` with `x-clh-session` → `200 { settings: RoleModelSettings, effective: ReturnType<typeof effectiveRoleModels>, capabilities: ReturnType<typeof capabilitiesFor> }`.
-  - `PUT /v1/session/models` with body `RoleModelSettingsInput` → `200` with the same body as GET, or `400 { error: { field, reason } }`.
+  - `PUT /v1/session/models` with body `RoleModelSettingsInput` → `200` with the same body as GET, or `400 { error: { field, reason } }`. The route is mounted behind `requireAdminRole` (`srv/lib/require-admin-role.ts`), so a non-admin gets `403`.
+  - GET is open to every user of the session and adds `canEdit: boolean`, which is true only for `MCP_Admin`.
   - Without a session header the answer is `400 { error: { field: 'x-clh-session', reason } }`.
   - Both bodies also carry `limits: ExecutionLimits`, and the GET answer carries `effectiveLimits`. A PUT validates models and limits together and applies both or neither.
 
@@ -239,6 +281,8 @@
   - `PUT stores and GET returns settings and effective models`
   - `PUT with params is 400 with the stage 2 reason and leaves settings unchanged`
   - `closing the session clears its settings`
+  - `PUT by a non-admin is 403 and leaves settings unchanged`
+  - `GET by a non-admin returns settings with canEdit false`
   - `/v1/models includes _meta.capabilities for the allowlist`
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -278,6 +322,7 @@
   - `role headers without x-clh-session fail with 400 naming x-clh-session`
   - `x-clh-params-executor is refused with the stage 2 reason`
   - `every response carries x-clh-models-effective`. Cover OpenAI and Anthropic, streaming and non-streaming.
+  - `role or limit headers from a non-admin fail with 403 naming the header and store nothing`
 
 - [ ] **Step 2: Run the tests to verify they fail**
   Run: `npx jest test/unit/role-model-headers.test.ts test/unit/anthropic-channel.test.ts --maxWorkers=1`
@@ -319,6 +364,7 @@
   - `plan_create runs the plan author on the session planner model`
   - `session_set_models is listed on every agent MCP connection`
   - `session_set_models for a session of another user is refused as not found`
+  - `session_set_models and session_open models/limits from a user without MCP_Admin are refused with a reason; the tool stays listed`
 
 - [ ] **Step 2: Run the tests to verify they fail**
   Run: `npx jest test/unit/agent-mcp-session-tools.test.ts test/unit/agent-mcp-orchestration.test.ts --maxWorkers=1`
@@ -354,6 +400,7 @@
   - **Role blocks.** One block per role: a model select with `auto` first, then the parameter fields from `capabilities[model]`. Parameter fields are read-only and show the effective values in stage 1, with each limit's "off" switch disabled.
   - **Open and save.** Opening calls `GET /v1/session/models`; Save calls `PUT`. A 400 shows `reason` next to `field`.
   - **Limits section.** Below the roles, a "Limits" section with one row per limit from `effectiveLimits`. Each row has a number field and an "off" switch, and both are editable in stage 1 for the hub-owned limits. `planStepBudget` is shown disabled.
+  - **Without the admin role.** When `canEdit` is false, the same `LLM` button opens the window as information only: every field read-only, no Save, a line saying changes need the `MCP_Admin` role.
   - **Chat request.** It stops sending the toolbar `model`.
 
 - [ ] **Step 2: Playwright check**
@@ -362,7 +409,8 @@
   - Reload the page in the same session: the window shows the setting.
   - Send a chat message: the response header `x-clh-models-effective` names the executor model.
   - Switch `maxIterations` for the executor to "off" and save: the window shows `off` with source `user` after reload.
-  - Expected: all five checks pass. Save screenshots of the window before and after save.
+  - As a user without `MCP_Admin`, open the window: everything is read-only and there is no Save.
+  - Expected: all six checks pass. Save screenshots of the window before and after save.
 
 - [ ] **Step 3: Docs and CHANGELOG**
   - Docs: the headers and their sticky rule, `GET`/`PUT /v1/session/models`, the `session_open` `models` argument and `session_set_models`.

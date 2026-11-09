@@ -44,6 +44,12 @@ Today:
 6. Per session, the user can set or switch off the execution budgets and
    limits, without a deploy and without `cf set-env`. The user's words: they
    need to test this, and deploying every time is inconvenient.
+7. **Parity.** Everything the WebUI window can set (role models, model
+   parameters, execution limits) can also be set through the deploy
+   configuration, the chat API headers and the agent MCP. No channel has a
+   setting the others lack.
+8. **Admin only.** Only a user with the `MCP_Admin` role may change these
+   settings, on every channel.
 
 ## Non-goals
 
@@ -280,6 +286,58 @@ ExecutionLimits = {
   `toolResultMaxChars`, `historyTokenBudget`) come in stage 1. Limits owned
   by llm-agent (run and plan-step budgets, `maxItemsPerStep`) come in
   stage 2. Until then they are refused with a reason, not ignored.
+
+### Deploy configuration (parity)
+
+Every session setting has a deploy-level counterpart. It is the default for
+all sessions, and a session setting overrides it. All of them are optional
+and unset by default; only `LLM_AGENT_MODEL` stays required.
+
+| Setting | Configuration |
+|---|---|
+| coordinator model | `LLM_AGENT_COORDINATOR_MODEL` (exists) |
+| planner model | `LLM_AGENT_PLANNER_MODEL` (exists) |
+| executor model | `LLM_AGENT_EXECUTOR_MODEL` (new) |
+| checker model | `LLM_AGENT_CHECKER_MODEL` (new) |
+| role parameters (stage 2) | `LLM_AGENT_<ROLE>_PARAMS`, JSON `ModelParams` (new) |
+| run limits per role | `LLM_AGENT_<ROLE>_MAX_ITERATIONS`, `LLM_AGENT_<ROLE>_MAX_TOOL_CALLS` (new); the existing `LLM_AGENT_MAX_ITERATIONS` / `LLM_AGENT_MAX_TOOL_CALLS` stay as the fallback for every role |
+| tool result size | `LLM_AGENT_TOOL_RESULT_MAX_CHARS` (exists) |
+| history token budget | `LLM_AGENT_HISTORY_TOKEN_BUDGET` (new; today a fixed 8000) |
+| plan-step budget (stage 2) | `LLM_AGENT_PLAN_STEP_BUDGET` (new) |
+
+- Every limit variable accepts `off`.
+- A configured executor or checker model acts like the same WebUI setting:
+  it overrides the coordinator's choice for every session. Unset, the
+  coordinator chooses. (My call: the configuration means exactly what the
+  window means.)
+- Invalid values are refused at startup with the variable name, as other
+  configuration is today. A configured model outside the allowlist is an
+  error, not a silent fallback.
+- Changing configuration on the POC is still a `cf set-env` plus restart,
+  each needing the user's approval. The session settings are the way to
+  change things without that.
+
+### Admin role
+
+- **Who may change settings.** Changing models, parameters or limits needs
+  `MCP_Admin` (`xs-security.json`; checked as `user.is('MCP_Admin')`).
+- **Per channel:**
+  - WebUI: for an admin the `LLM` window is editable. Without the role the
+    same button opens the window as information only: effective models,
+    parameters and limits with their source, all fields read-only, no Save.
+    (The user's decision.)
+  - `PUT /v1/session/models`: 403 for a non-admin (`requireAdminRole` exists
+    and is not mounted yet).
+  - Chat API role and limit headers from a non-admin: 403 naming the header,
+    so nothing is stored.
+  - Agent MCP: `models` / `limits` in `session_open` from a non-admin are
+    refused, and so is `session_set_models`. The tool stays listed on every
+    connection, so the tool set is the same everywhere.
+- **Reading.** `GET /v1/session/models` and the `x-clh-models-effective`
+  header stay readable for every user of the session, so everyone sees which
+  model and limits run. (My call.)
+- **An admin changes only their own session.** The admin role grants no
+  access to another user's session.
 
 ### Usage ledger
 
