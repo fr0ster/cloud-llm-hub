@@ -1,5 +1,7 @@
 # Session role models and parameters — design
 
+<!-- docs-check:proposed-env: stage 2 names (LLM_AGENT_PLAN_STEP_BUDGET) are not implemented yet -->
+
 Status: draft, 2026-11-09.
 
 ## Intent

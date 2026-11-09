@@ -3,12 +3,37 @@ import type { ExecutionLimits, Limit } from './execution-limits';
 import { parseModelAllowlist } from './model-policy';
 import type { RoleName } from './role-model-settings';
 
+const ROLE_ENV = {
+  coordinator: {
+    model: 'LLM_AGENT_COORDINATOR_MODEL',
+    maxIterations: 'LLM_AGENT_COORDINATOR_MAX_ITERATIONS',
+    maxToolCalls: 'LLM_AGENT_COORDINATOR_MAX_TOOL_CALLS',
+  },
+  planner: {
+    model: 'LLM_AGENT_PLANNER_MODEL',
+  },
+  executor: {
+    model: 'LLM_AGENT_EXECUTOR_MODEL',
+    maxIterations: 'LLM_AGENT_EXECUTOR_MAX_ITERATIONS',
+    maxToolCalls: 'LLM_AGENT_EXECUTOR_MAX_TOOL_CALLS',
+  },
+  checker: {
+    model: 'LLM_AGENT_CHECKER_MODEL',
+    maxIterations: 'LLM_AGENT_CHECKER_MAX_ITERATIONS',
+    maxToolCalls: 'LLM_AGENT_CHECKER_MAX_TOOL_CALLS',
+  },
+} as const satisfies Record<RoleName, { model: string }> &
+  Record<
+    Exclude<RoleName, 'planner'>,
+    { maxIterations: string; maxToolCalls: string }
+  >;
+
 /** Shared by startup validation and dependency-light runtime scopes. */
 export function configuredRoleModel(
   role: RoleName,
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-  const name = `LLM_AGENT_${role.toUpperCase()}_MODEL`;
+  const name = ROLE_ENV[role].model;
   const model = env[name]?.trim() || undefined;
   if (model && !parseModelAllowlist(env).has(model))
     throw new BuildValidationError(
@@ -48,15 +73,9 @@ export function configuredExecutionLimits(
   for (const role of ['coordinator', 'executor', 'checker'] as const) {
     limits[role] = {
       maxIterations:
-        configuredLimit(
-          `LLM_AGENT_${role.toUpperCase()}_MAX_ITERATIONS`,
-          env,
-        ) ?? maxIterations,
+        configuredLimit(ROLE_ENV[role].maxIterations, env) ?? maxIterations,
       maxToolCalls:
-        configuredLimit(
-          `LLM_AGENT_${role.toUpperCase()}_MAX_TOOL_CALLS`,
-          env,
-        ) ?? maxToolCalls,
+        configuredLimit(ROLE_ENV[role].maxToolCalls, env) ?? maxToolCalls,
     };
   }
   return limits;
