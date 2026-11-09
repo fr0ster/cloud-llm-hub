@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.7.0] - 2026-11-09
+
 ### Added
 
 - Per-session models for coordinator, planner, executor and checker from the WebUI LLM window, chat API headers and agent MCP, with hub-owned execution limits; model parameters follow in stage 2.
