@@ -8,6 +8,7 @@ import {
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
 import { failureMessage, observeLlmSpend } from './lib/llm-failure';
+import { capabilitiesFor } from './lib/model-capabilities';
 import {
   ignoredModelHeader,
   parseModelAllowlist,
@@ -1714,6 +1715,7 @@ export async function handleModels(
       _destinations: getDestinationStates(),
       _destination_discovery: getDestinationDiscoveryState(),
       _meta: {
+        capabilities: capabilitiesFor(parseModelAllowlist()),
         temperature: config.llm.temperature,
         max_tokens: config.llm.maxTokens,
         mode: config.agent.mode,

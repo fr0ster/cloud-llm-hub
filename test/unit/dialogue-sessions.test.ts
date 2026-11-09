@@ -3793,3 +3793,19 @@ test('session entry points replace an inherited role scope with the caller own s
     clearRoleModels('alice', 'other-key');
   }
 });
+
+test('closing the session clears its settings', async () => {
+  const { setRoleModels, getRoleModels } = await import(
+    '../../srv/lib/role-model-settings'
+  );
+  const { setExecutionLimits, getExecutionLimits } = await import(
+    '../../srv/lib/execution-limits'
+  );
+  setRoleModels('alice', 'key', { executor: { model: 'gpt-5' } });
+  setExecutionLimits('alice', 'key', { historyTokenBudget: 'off' });
+  setRoleModels('bob', 'key', { checker: { model: 'gpt-5' } });
+  await closeDialogue('alice', 'key', 'explicit');
+  expect(getRoleModels('alice', 'key')).toEqual({});
+  expect(getExecutionLimits('alice', 'key')).toEqual({});
+  expect(getRoleModels('bob', 'key')).toEqual({ checker: { model: 'gpt-5' } });
+});

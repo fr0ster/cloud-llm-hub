@@ -86,3 +86,17 @@ describe('/v1/models _meta', () => {
     }
   });
 });
+
+it('/v1/models includes _meta.capabilities for the allowlist', async () => {
+  const previous = process.env.LLM_AGENT_MODELS;
+  process.env.LLM_AGENT_MODELS = 'gpt-5,unrecognized-model';
+  try {
+    expect((await meta()).capabilities).toMatchObject({
+      'gpt-5': { family: 'openai-reasoning' },
+      'unrecognized-model': null,
+    });
+  } finally {
+    if (previous === undefined) delete process.env.LLM_AGENT_MODELS;
+    else process.env.LLM_AGENT_MODELS = previous;
+  }
+});

@@ -94,7 +94,7 @@ import {
 } from './planner-memory';
 import { runWithRequestSystem } from './request-system-context';
 import { captureReviewProfile } from './review-scope';
-import { getRoleModels } from './role-model-settings';
+import { clearRoleModels, getRoleModels } from './role-model-settings';
 import {
   clearRequestModel,
   currentRoleModel,
@@ -1666,6 +1666,7 @@ export function closeDialogue(
       handles.delete(id);
       clearRequestModel(userId, key);
       clearExecutionLimits(userId, key);
+      clearRoleModels(userId, key);
       if (reason !== 'shutdown' && deleteState) {
         try {
           await deleteDialogueState(userId, key);
