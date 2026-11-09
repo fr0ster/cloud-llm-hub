@@ -1480,7 +1480,7 @@ export function createToolQueryAnalyzer(): ToolQueryAnalyzer {
           resourceGroup: config.llm.resourceGroup,
           whenThrottled: config.llm.whenThrottled,
         },
-        0.1,
+        config.llm.temperature === undefined ? undefined : 0.1,
       ),
     config.agent.toolGateTimeoutMs,
   );
@@ -2841,7 +2841,7 @@ function getOrCreateSharedLlms(
         resourceGroup: config.llm.resourceGroup,
         whenThrottled: config.llm.whenThrottled,
       },
-      0.1,
+      config.llm.temperature === undefined ? undefined : 0.1,
     ).then(trackedLlm);
   }
   return {

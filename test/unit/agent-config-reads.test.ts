@@ -5,6 +5,7 @@ import {
   parseSkillRagK,
   parseTimeZone,
 } from '../../srv/agent-config';
+import { BuildValidationError } from '../../srv/lib/build-validation-error';
 
 // Settings that used to be read from process.env at their point of use. They
 // are parsed once, here, and handed in (config is parsed only in agent-config).
@@ -42,6 +43,8 @@ describe('agent config: settings read at the point of use before', () => {
     beforeEach(() => {
       process.env = { ...saved };
       for (const k of [
+        'LLM_AGENT_TEMPERATURE',
+        'SAP_CORE_AI_TEMPERATURE',
         'LLM_AGENT_TIME_ZONE',
         'LLM_AGENT_CLASSIFIER_MODEL',
         'LLM_AGENT_PLANNER_MODEL',
@@ -78,6 +81,25 @@ describe('agent config: settings read at the point of use before', () => {
       process.env.LLM_AGENT_TIME_ZONE = 'invalid/zone';
       expect(() => loadAgentConfig()).toThrow('LLM_AGENT_TIME_ZONE');
     });
+
+    it('keeps the temperature default and supports off over the legacy fallback', () => {
+      expect(loadAgentConfig().llm.temperature).toBe(0.7);
+      process.env.SAP_CORE_AI_TEMPERATURE = '0.3';
+      expect(loadAgentConfig().llm.temperature).toBe(0.3);
+      process.env.LLM_AGENT_TEMPERATURE = 'off';
+      expect(loadAgentConfig().llm.temperature).toBeUndefined();
+      process.env.LLM_AGENT_TEMPERATURE = '0';
+      expect(loadAgentConfig().llm.temperature).toBe(0);
+    });
+
+    it.each(['invalid', '0.7junk', 'NaN', 'Infinity', '1e999', '   '])(
+      'rejects invalid temperature %s at startup',
+      (value) => {
+        process.env.LLM_AGENT_TEMPERATURE = value;
+        expect(() => loadAgentConfig()).toThrow(BuildValidationError);
+        expect(() => loadAgentConfig()).toThrow('LLM_AGENT_TEMPERATURE');
+      },
+    );
 
     it('classifier model falls back to the main model', () => {
       expect(loadAgentConfig().llm.classifierModel).toBe('main-model');

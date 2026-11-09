@@ -6,6 +6,7 @@ import {
 } from './lib/deploy-role-config';
 import type { ExecutionLimits } from './lib/execution-limits';
 import { type ExternalMcpConfig, parseExternalMcp } from './lib/external-mcp';
+import { configuredTemperature } from './lib/temperature-config';
 import { parseTrustDefaults, type TrustDefaults } from './lib/trust';
 /**
  * Agent Configuration Module
@@ -22,7 +23,7 @@ import { parseTrustDefaults, type TrustDefaults } from './lib/trust';
  *
  * Configuration variables:
  * - LLM_AGENT_MODEL: Model name (e.g., 'gpt-4o-mini', 'claude-3-5-sonnet')
- * - LLM_AGENT_TEMPERATURE: Temperature (default: 0.7)
+ * - LLM_AGENT_TEMPERATURE: Temperature (default: 0.7; off omits the parameter)
  * - LLM_AGENT_MAX_TOKENS: Max tokens (default: 2000)
  * - LLM_AGENT_MCP_DESTINATION: Destination name for MCP/ABAP connection (required)
  * - LLM_AGENT_MCP_ENDPOINT: MCP proxy endpoint URL (optional, defaults to local)
@@ -209,7 +210,7 @@ export interface AgentConfig {
     checkerModel?: string;
 
     /** Temperature (0.0 - 2.0) */
-    temperature: number;
+    temperature: number | undefined;
 
     /** Maximum tokens in response */
     maxTokens: number;
@@ -616,11 +617,7 @@ export function loadAgentConfig(): AgentConfig {
       ? new WaitAsNeeded()
       : new WaitIfShortEnough(throttleMaxWaitMs);
   const model = deployModel();
-  const temperature = Number.parseFloat(
-    process.env.LLM_AGENT_TEMPERATURE ||
-      process.env.SAP_CORE_AI_TEMPERATURE ||
-      '0.7',
-  );
+  const temperature = configuredTemperature();
   const maxTokens = Number.parseInt(
     process.env.LLM_AGENT_MAX_TOKENS ||
       process.env.SAP_CORE_AI_MAX_TOKENS ||

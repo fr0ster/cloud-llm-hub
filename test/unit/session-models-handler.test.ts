@@ -167,6 +167,15 @@ it('GET exposes the parameters actually sent for every role with their sources',
         ]),
       ),
     });
+    process.env.LLM_AGENT_TEMPERATURE = 'off';
+    expect(await (await call()).json()).toMatchObject({
+      effective: Object.fromEntries(
+        ['coordinator', 'planner', 'executor', 'checker'].map((role) => [
+          role,
+          { params: { temperature: { value: 'off', source: 'config' } } },
+        ]),
+      ),
+    });
     process.env.LLM_AGENT_TEMPERATURE = '0.2';
     process.env.LLM_AGENT_MAX_TOKENS = '4096';
     expect(await (await call()).json()).toMatchObject({

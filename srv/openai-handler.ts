@@ -1748,7 +1748,7 @@ export async function handleModels(
       _destination_discovery: getDestinationDiscoveryState(),
       _meta: {
         capabilities: capabilitiesFor(parseModelAllowlist()),
-        temperature: config.llm.temperature,
+        temperature: config.llm.temperature ?? 'off',
         max_tokens: config.llm.maxTokens,
         mode: config.agent.mode,
         max_iterations: config.agent.maxIterations,
