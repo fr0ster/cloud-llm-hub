@@ -7,6 +7,13 @@ import {
   currentCoordinatorRun,
 } from './lib/coordinator-tools-client';
 import {
+  currentLimit,
+  currentSessionLimit,
+  historyBudgetOptions,
+  runLimitOptions,
+  withExecutionLimits,
+} from './lib/execution-limits';
+import {
   currentExecutorModel,
   type ExecutorStepArgs,
   runExecutorStep as executeExecutorStep,
@@ -17,7 +24,7 @@ import {
   resolveAgentModel,
   resolveRequestModel,
 } from './lib/model-policy';
-import { currentRoleModel } from './lib/role-models-scope';
+import { currentRoleModel, roleOfProfile } from './lib/role-models-scope';
 import { resolverFor, TrustResolver } from './lib/trust-resolver';
 import { TrustStore } from './lib/trust-store';
 import { reportWorkerActivity } from './lib/worker-activity';
@@ -2173,10 +2180,9 @@ async function initDestination(
 
     // Build a full SmartAgent for this destination, referencing the SHARED
     // tool RAG (no per-destination re-vectorization).
-    const handle = await buildAgentForDestination(
-      state.mcpAdapter,
-      sharedRag,
-      config,
+    const adapter = state.mcpAdapter;
+    const handle = await withExecutionLimits({}, () =>
+      buildAgentForDestination(adapter, sharedRag, config),
     );
     agentHandles.set(destinationName, handle);
     state.status = 'ready';
@@ -2860,6 +2866,7 @@ async function configureDestinationAgentBuilder(
     skipRetrieval?: boolean;
     systemPrompt?: string;
     role?: string;
+    limitRole?: 'coordinator' | 'executor' | 'checker';
     signal?: AbortSignal;
   },
 ): Promise<SmartAgentBuilder> {
@@ -2879,7 +2886,7 @@ async function configureDestinationAgentBuilder(
     skipModelValidation,
     agent: {
       timeZone: config.timeZone,
-      maxIterations: config.agent.maxIterations,
+      ...runLimitOptions(opts?.limitRole ?? 'executor', config.agent),
       mode: config.agent.mode,
       historyRecencyWindow: config.agent.historyRecencyWindow,
       refreshToolsPerIteration: false,
@@ -2960,8 +2967,11 @@ async function configureDestinationAgentBuilder(
     if (historyRag) builder.setHistoryRag(historyRag);
   }
 
-  if (config.agent.maxToolCalls !== undefined)
-    builder.withMaxToolCalls(config.agent.maxToolCalls);
+  const maxToolCalls = runLimitOptions(
+    opts?.limitRole ?? 'executor',
+    config.agent,
+  ).maxToolCalls;
+  if (maxToolCalls !== undefined) builder.withMaxToolCalls(maxToolCalls);
 
   // Mandatory skill pool. The builder vectorizes each skill into toolsRag as
   // `skill:<name>` = "Skill: <name>\n<description>" and the hardcoded flow
@@ -2996,7 +3006,6 @@ async function configureDestinationAgentBuilder(
     // SAP connection — and replayed write tools. Caching belongs to the MCP
     // server, which knows what may be cached and for whom.
     .withMetrics(metrics)
-    .withSessionManager(new SessionManager({ tokenBudget: 8000 }))
     .withClientAdapter(new ClineClientAdapter())
     // Consumer-owned seam: tells the tool loop an MCP failure means the
     // destination is unavailable (fail loud) rather than a tool-level error to
@@ -3008,6 +3017,10 @@ async function configureDestinationAgentBuilder(
     // this same shared helper — is the one whose tool loop actually runs
     // tools and needs it.
     .withMcpFailureClassifier(outageClassifier);
+
+  const historyBudget = historyBudgetOptions();
+  if (historyBudget)
+    builder.withSessionManager(new SessionManager(historyBudget));
 
   // The builder auto-creates a history store when summarization is enabled,
   // even without setHistoryRag. Keep that store on the executor alone.
@@ -3089,7 +3102,7 @@ export async function buildPlannerAgent(
       Boolean(authorClient) || config.llm.provider !== 'sap-ai-sdk',
     agent: {
       timeZone: config.timeZone,
-      maxIterations: config.agent.maxIterations,
+      ...runLimitOptions('coordinator', config.agent),
       classificationEnabled: false,
       ragQueryK: config.agent.ragQueryK,
       ragTranslateEnabled: false,
@@ -3104,8 +3117,11 @@ export async function buildPlannerAgent(
     .setToolsRag(docsMcp().withToolsRag(plannerTools, 'planner'))
     .withClassification(false)
     .withMode('hard');
-  if (config.agent.maxToolCalls !== undefined)
-    builder.withMaxToolCalls(config.agent.maxToolCalls);
+  const maxToolCalls = runLimitOptions(
+    'coordinator',
+    config.agent,
+  ).maxToolCalls;
+  if (maxToolCalls !== undefined) builder.withMaxToolCalls(maxToolCalls);
   // DialogueSession owns the coordinator history; authors use the tool window.
   if (authorClient)
     builder.withToolLoopContextStrategyFactory(() => createToolLoopWindow());
@@ -3259,7 +3275,12 @@ function destinationProfileRunner(
             model: profile.model ?? getAgentConfig().llm.model,
           },
         },
-        { systemPrompt, role: profile.name, signal: options?.signal },
+        {
+          systemPrompt,
+          role: profile.name,
+          limitRole: roleOfProfile(profile),
+          signal: options?.signal,
+        },
       );
       options?.signal?.throwIfAborted();
       const handle = await builder.build();
@@ -3776,7 +3797,7 @@ export async function buildLlmOnlyAgent(
     skipModelValidation: config.llm.provider !== 'sap-ai-sdk',
     agent: {
       timeZone: config.timeZone,
-      maxIterations: 1,
+      ...runLimitOptions('coordinator', { ...config.agent, maxIterations: 1 }),
       mode: config.agent.mode,
       historyRecencyWindow: config.agent.historyRecencyWindow,
       refreshToolsPerIteration: false,
@@ -3808,12 +3829,17 @@ export async function buildLlmOnlyAgent(
     .withClassification(false)
     .withLlmCallStrategy(new FallbackLlmCallStrategy())
     .withMetrics(metrics)
-    .withSessionManager(new SessionManager({ tokenBudget: 8000 }))
     .withHistorySummarization(20)
     .withClientAdapter(new ClineClientAdapter());
 
-  if (config.agent.maxToolCalls !== undefined)
-    builder.withMaxToolCalls(config.agent.maxToolCalls);
+  const maxToolCalls = runLimitOptions(
+    'coordinator',
+    config.agent,
+  ).maxToolCalls;
+  if (maxToolCalls !== undefined) builder.withMaxToolCalls(maxToolCalls);
+  const historyBudget = historyBudgetOptions();
+  if (historyBudget)
+    builder.withSessionManager(new SessionManager(historyBudget));
 
   const e = getProviders().embedding;
   if (e) builder.withEmbedder(agentQueryEmbedder(e));
@@ -3884,6 +3910,52 @@ export function withRequestModel(agent: SmartAgent, model: string): SmartAgent {
   });
 }
 
+async function defaultLlmOnlyHandle(
+  config: AgentConfig,
+  why: 'waiting' | 'unreachable',
+): Promise<SmartAgentHandle> {
+  const handle = await withExecutionLimits({}, () =>
+    buildLlmOnlyAgent(config, why),
+  );
+  return scopedLlmOnlyHandle(handle, config, why);
+}
+
+/** Resolve scoped limits at invocation time; cached fallback agents retain defaults. */
+function scopedLlmOnlyHandle(
+  handle: SmartAgentHandle,
+  config: AgentConfig,
+  why: 'waiting' | 'unreachable',
+): SmartAgentHandle {
+  const scoped = () =>
+    currentLimit('coordinator', 'maxIterations') !== undefined ||
+    currentLimit('coordinator', 'maxToolCalls') !== undefined ||
+    currentSessionLimit('historyTokenBudget') !== undefined;
+  return {
+    ...handle,
+    agent: new Proxy(handle.agent, {
+      get(target, property, receiver) {
+        if (property === 'process')
+          return async (...args: Parameters<SmartAgent['process']>) => {
+            const agent = scoped()
+              ? (await buildLlmOnlyAgent(config, why)).agent
+              : target;
+            return agent.process(...args);
+          };
+        if (property === 'streamProcess')
+          return async function* (
+            ...args: Parameters<SmartAgent['streamProcess']>
+          ) {
+            const agent = scoped()
+              ? (await buildLlmOnlyAgent(config, why)).agent
+              : target;
+            yield* agent.streamProcess(...args);
+          };
+        return Reflect.get(target, property, receiver);
+      },
+    }),
+  };
+}
+
 export async function getSmartAgent(
   requestedModel?: string,
   requestedDestination?: string,
@@ -3909,7 +3981,14 @@ export async function getSmartAgent(
     // Destination agents and their workers are shared across request models.
     if (base.profileRunner)
       return { ...base, agent: withRequestModel(base.agent, resolved.model) };
-    return { ...base, ...(await buildLlmOnlyAgent(selected, 'waiting')) };
+    return {
+      ...base,
+      ...scopedLlmOnlyHandle(
+        await buildLlmOnlyAgent(selected, 'waiting'),
+        selected,
+        'waiting',
+      ),
+    };
   }
 
   // --- Destination lookup (no hot-swap — each dest has its own agent) ---
@@ -3927,7 +4006,7 @@ export async function getSmartAgent(
   // for). This is not the "explicit destination not ready" case.
   if (!destName) {
     if (!llmOnlyHandle) {
-      llmOnlyHandle = await buildLlmOnlyAgent(config, 'waiting');
+      llmOnlyHandle = await defaultLlmOnlyHandle(config, 'waiting');
     }
     return llmOnlyHandle;
   }
@@ -3990,7 +4069,7 @@ export async function getSmartAgent(
     status,
   });
   if (!llmOnlyFallbackHandle) {
-    llmOnlyFallbackHandle = await buildLlmOnlyAgent(config, 'unreachable');
+    llmOnlyFallbackHandle = await defaultLlmOnlyHandle(config, 'unreachable');
   }
   return llmOnlyFallbackHandle;
 }
@@ -4016,7 +4095,7 @@ export async function initSmartAgents(): Promise<void> {
       model: getCurrentModel(),
       mode: config.agent.mode,
     });
-    llmOnlyHandle = await buildLlmOnlyAgent(config, 'waiting');
+    llmOnlyHandle = await defaultLlmOnlyHandle(config, 'waiting');
     initializationDone = true;
     watchForDestinations();
     return;

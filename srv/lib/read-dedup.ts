@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 
 import { parseToolResultMaxChars } from '../agent-config';
+import { sessionToolResultMaxChars } from './execution-limits';
 import { toolResultBudget } from './tool-result-cap';
 
 export const DEFAULT_READ_LIMIT = 32000;
@@ -81,7 +82,9 @@ export function readLoopPage(
 ) {
   // Measure the complete MCP content, including attributes and both JSON layers,
   // before dedup records delivery. A cap too small for progress must not consume a page.
-  const cap = toolResultBudget.getStore() ?? parseToolResultMaxChars();
+  const cap =
+    toolResultBudget.getStore() ??
+    sessionToolResultMaxChars(parseToolResultMaxChars());
   if (cap && serialize) {
     const fits = (size: number) =>
       JSON.stringify(serialize(readPage(id, text, offset, size))).length <= cap;

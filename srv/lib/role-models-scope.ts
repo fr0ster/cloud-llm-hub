@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { type ExecutionLimits, withExecutionLimits } from './execution-limits';
 import {
   getRoleModels,
   type RoleModelSettings,
@@ -31,8 +32,10 @@ export function dialogueRequestModel(
 export function withRoleModels<T>(
   settings: RoleModelSettings,
   fn: () => Promise<T>,
+  limits?: ExecutionLimits,
 ): Promise<T> {
-  return settingsScope.run(structuredClone(settings), fn);
+  const run = () => settingsScope.run(structuredClone(settings), fn);
+  return limits === undefined ? run() : withExecutionLimits(limits, run);
 }
 
 export function currentRoleModel(role: RoleName): string | undefined {

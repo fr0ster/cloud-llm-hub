@@ -81,6 +81,7 @@ import {
   touchDialogueState,
 } from './dialogue-store';
 import { clientTurnId, turnSource } from './dialogue-turn-source';
+import { clearExecutionLimits, getExecutionLimits } from './execution-limits';
 import { admitBackground, type PipelineSession } from './gatekeeper';
 import { isLlmFailure, llmFailure, observeLlmSpend } from './llm-failure';
 import { longSessionsIfReady } from './long-session';
@@ -487,7 +488,7 @@ async function open(
       pipeline = admission.admitted;
       const acquiredLease = lease;
       const admitted = pipeline;
-      const result = await withRoleModels(getRoleModels(userId, key), () =>
+      const result = await withSessionSettings(userId, key, () =>
         admitted.run(() => run(acquiredLease, admitted)),
       );
       healthy =
@@ -977,7 +978,7 @@ async function open(
     input: Message[],
     options: AgentCallOptions,
   ) =>
-    withRoleModels(getRoleModels(userId, key), () =>
+    withSessionSettings(userId, key, () =>
       runWithToolScope(coordinatorToolScope, async () => {
         // Reset the library's legacy malformed-verdict failure before decisions.
         const current = session?.snapshot();
@@ -1219,7 +1220,7 @@ async function open(
       profileRunner: {
         validateModel: (model) => profileRunner.validateModel(model),
         createWorker: async (input, options) =>
-          withRoleModels(getRoleModels(userId, key), async () => {
+          withSessionSettings(userId, key, async () => {
             const model =
               currentRoleModel(roleOfProfile(input.profile)) ?? input.model;
             const result = await observeProfilePreparation(
@@ -1239,7 +1240,7 @@ async function open(
               : result;
           }),
         preparePlanner: async (input, options) =>
-          withRoleModels(getRoleModels(userId, key), () =>
+          withSessionSettings(userId, key, () =>
             runWithToolScope(coordinatorToolScope, async () => {
               coordinatorToolResolver = trustResolver.forProfile(input);
               const result = await withCoordinatorRun(
@@ -1664,6 +1665,7 @@ export function closeDialogue(
     } finally {
       handles.delete(id);
       clearRequestModel(userId, key);
+      clearExecutionLimits(userId, key);
       if (reason !== 'shutdown' && deleteState) {
         try {
           await deleteDialogueState(userId, key);
@@ -1698,5 +1700,17 @@ export async function touchDialogue(
           await handle.drainPending();
         }
       : undefined,
+  );
+}
+
+function withSessionSettings<T>(
+  userId: string,
+  key: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return withRoleModels(
+    getRoleModels(userId, key),
+    fn,
+    getExecutionLimits(userId, key),
   );
 }
