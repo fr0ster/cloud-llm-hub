@@ -1732,7 +1732,7 @@ test.each(['all', 'checker', 'allow-deny'] as const)(
           const html = readFileSync(path, 'utf8');
           const start = html.indexOf('                const reqBody = {');
           const end = html.indexOf(
-            '                if (classifierSelect.value)',
+            '                // Send only current message',
             start,
           );
           const request = z

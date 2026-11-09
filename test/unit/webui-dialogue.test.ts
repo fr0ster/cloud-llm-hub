@@ -95,7 +95,6 @@ function harness(
     getActiveRagCollections: () => [],
     attachedFiles: [] as Array<{ documentIds: string[] }>,
     renderAttachedFiles: jest.fn(),
-    classifierSelect: { value: '' },
     inputHistory: [],
     historyIndex: -1,
     historyDraft: '',

@@ -23,7 +23,8 @@ class Select {
 }
 function harness() {
   let now = 0;
-  const classifier = new Select();
+  const classifier = { textContent: '' };
+  const embedder = { textContent: '' };
   const dest = new Select();
   const gate = new Select();
   const label = { innerText: 'main' };
@@ -35,13 +36,18 @@ function harness() {
     hubSignedOut: false,
     llmOnlyMode: false,
     gateDestinations: [] as { name: string; status: string }[],
-    classifierSelect: classifier,
     destSelect: dest,
     Date: { now: () => now },
     document: {
       hidden: false,
       getElementById: (id: string) =>
-        id === 'gate-dest' ? gate : id === 'planner-model' ? label : overlay,
+        id === 'gate-dest'
+          ? gate
+          : id === 'llm-classifier-model'
+            ? classifier
+            : id === 'llm-embedding-model'
+              ? embedder
+              : overlay,
       createElement: () => ({ value: '', textContent: '', selected: false }),
       addEventListener: (name: string, callback: () => void) => {
         listeners[name] = callback;
@@ -66,20 +72,16 @@ function harness() {
   const payload = {
     data: [{ id: 'main' }, { id: 'chosen' }],
     _active_model: 'main',
-    _meta: { planner_model: 'swapped', classifier_model: 'main' },
+    _meta: {
+      planner_model: 'swapped',
+      classifier_model: 'main',
+      embedding_model: 'embed-small',
+    },
     _destinations: [] as { name: string; status: string }[],
   };
   const source = html.slice(
     html.indexOf('        // Lazy hub state refresh'),
     html.indexOf('        // Destination diagnostic'),
-  );
-  const population = html.slice(
-    html.indexOf('        function populateAuxSelect('),
-    html.indexOf('        function populateAuxSelect(') +
-      html
-        .slice(html.indexOf('        function populateAuxSelect('))
-        .indexOf('\n        }') +
-      10,
   );
   const api: {
     refresh: () => Promise<void>;
@@ -87,7 +89,6 @@ function harness() {
     turn: () => void;
   } = runInNewContext(
     source +
-      population +
       `\nfunction releaseTurn() {\n${html.slice(html.indexOf('                if (released) return;', html.indexOf('async function sendMessage()')), html.indexOf('\n            }', html.indexOf('                if (released) return;', html.indexOf('async function sendMessage()'))))}\n}\nconst ownTurns = new Set(); const clientTurnId = 'test'; let released = false; const sendToken = ''; function unlockInput() {}\n({refresh: refreshHubState, sync: syncHubStatePolling, turn: releaseTurn})`,
     state,
   );
@@ -95,6 +96,7 @@ function harness() {
     state,
     api,
     classifier,
+    embedder,
     dest,
     gate,
     label,
@@ -121,7 +123,7 @@ test('normal ready state has no polling; dropdown triggers share requests and co
   const h = harness();
   h.api.sync();
   expect(h.intervals.size).toBe(0);
-  for (const select of [h.classifier, h.gate]) {
+  for (const select of [h.gate]) {
     select.listeners.mousedown({ key: '' });
     select.listeners.focus({ key: '' });
     select.listeners.keydown({ key: 'ArrowDown' });
@@ -134,41 +136,28 @@ test('normal ready state has no polling; dropdown triggers share requests and co
   expect(h.state.hubFetch).toHaveBeenCalledTimes(2);
 });
 
-test('refresh adds models and preserves offered user selections', async () => {
-  const h = harness();
-  h.classifier.value = 'chosen';
-  h.classifier.value = 'chosen';
-  h.payload.data.push({ id: 'new' });
-  await h.api.refresh();
-  expect(h.classifier.options.map((o) => o.value)).toContain('new');
-  expect(h.classifier.value).toBe('chosen');
-  h.advance();
-  h.payload.data = [{ id: 'main' }];
-  await h.api.refresh();
-  expect(h.classifier.value).toBe('main');
-});
-
-test('an unchanged model list is not rebuilt, so an open dropdown stays open', async () => {
-  const h = harness();
-  await h.api.refresh();
-  expect(h.classifier.rebuilds).toBe(1);
-  h.classifier.value = 'chosen';
-  h.advance();
-  await h.api.refresh();
-  expect(h.classifier.rebuilds).toBe(1);
-  expect(h.classifier.value).toBe('chosen');
-});
-
-test('a configured model the list does not offer is still shown and selected', async () => {
+test('the LLM window shows both deployment auxiliary models, including unlisted models', async () => {
   const h = harness();
   h.payload._meta.classifier_model = 'unlisted';
   await h.api.refresh();
-  expect(h.classifier.options.map((o) => o.value)).toEqual([
-    'unlisted',
-    'main',
-    'chosen',
-  ]);
-  expect(h.classifier.value).toBe('unlisted');
+  expect(h.classifier.textContent).toBe('unlisted');
+  expect(h.embedder.textContent).toBe('embed-small');
+  const modal = html.slice(
+    html.indexOf('id="llm-modal"'),
+    html.indexOf('id="rag-modal"'),
+  );
+  expect(modal).toContain('Auxiliary models');
+  expect(modal).toContain('id="llm-classifier-model"');
+  expect(modal).toContain('id="llm-embedding-model"');
+  expect(modal).toContain('config.llm.classifierModel');
+  expect(modal).toContain('config.rag.embedder.model');
+  expect(modal).toContain('Read-only, set at deploy.');
+  expect(html).not.toContain('classifier-model-select');
+  expect(html).not.toContain('reqBody.classifier_model');
+  h.advance();
+  h.payload._meta.embedding_model = '';
+  await h.api.refresh();
+  expect(h.embedder.textContent).toBe('?');
 });
 
 test('the gate does not poll for destinations that will not become ready', () => {
