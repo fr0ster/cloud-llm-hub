@@ -91,7 +91,8 @@ goal sizes, states, durations and hashed session keys. They never contain goal t
 | `LLM_AGENT_CONTEXT_CAPTURE_FILE` | `context.sqlite` | Container-local full-context SQLite path, relative to the app directory. |
 | `LLM_AGENT_CONTEXT_CAPTURE_MAX_MB` | `512` | Stop writing at this file size in MiB and warn once; no automatic deletion. |
 | `LLM_AGENT_CONTEXT_CAPTURE` | `off` | `off`, `full` (SQLite; see Full LLM context capture below), or legacy `stats`: one content-free `context-capture` info line per LLM call, after completion (including failures). Counts messages/characters by role, tool results and definitions; records the three largest tool results by name/size, component, model, known task ids and salted session hashes, and provider input/output tokens when supplied. Streaming calls log once when consumed or closed; no token estimates or message/tool content. |
-| `LLM_AGENT_TEMPERATURE`, `LLM_AGENT_MAX_TOKENS` | provider defaults | Sampling parameters |
+| `LLM_AGENT_TEMPERATURE` | `0.7` | Finite numeric temperature; `off` omits temperature from all LLM calls (including classifier and workers), using the provider/model default. Invalid values fail startup. |
+| `LLM_AGENT_MAX_TOKENS` | `2000` | Maximum output tokens |
 | `LLM_AGENT_SAP_RELEVANCE_SCORE` | deprecated | Ignored, including invalid values; no automatic LLM critic |
 | `LLM_AGENT_MODE`, `LLM_AGENT_MAX_ITERATIONS` | see `agent-config.ts` | Agent loop behaviour |
 | `LLM_AGENT_HISTORY_RECENCY_WINDOW` | see `agent-config.ts` | How much history reaches the model |

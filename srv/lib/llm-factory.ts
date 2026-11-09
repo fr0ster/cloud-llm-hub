@@ -123,7 +123,10 @@ const credentialIds = new WeakMap<object, number>();
 let nextCredentialId = 0;
 
 /** Cache identity contains configuration and an opaque credential identity only. */
-export function hubLlmKey(cfg: HubLlmConfig, temperature: number): string {
+export function hubLlmKey(
+  cfg: HubLlmConfig,
+  temperature: number | undefined,
+): string {
   const credential =
     cfg.provider === 'sap-ai-sdk'
       ? getAiCoreAccess().credential
@@ -149,7 +152,7 @@ export function hubLlmKey(cfg: HubLlmConfig, temperature: number): string {
 /** Build the provider for `cfg` and wrap it as an `ILlm`. */
 export async function makeHubLlm(
   cfg: HubLlmConfig,
-  temperature: number,
+  temperature: number | undefined,
 ): Promise<ILlm> {
   const llm = await createHubLlm(cfg, temperature);
   const key = hubLlmKey(cfg, temperature);
@@ -183,14 +186,14 @@ export async function makeHubLlm(
 
 async function createHubLlm(
   cfg: HubLlmConfig,
-  temperature: number,
+  temperature: number | undefined,
 ): Promise<ILlm> {
   const maxTokens = cfg.maxTokens != null ? Number(cfg.maxTokens) : undefined;
   const usage = usageRuntime()?.recorder;
   const common = {
     ...(usage ? { usage } : {}),
     model: cfg.model,
-    temperature,
+    ...(temperature === undefined ? {} : { temperature }),
     maxTokens,
     whenThrottled: cfg.whenThrottled,
     quotaScope: cfg.quotaScope,

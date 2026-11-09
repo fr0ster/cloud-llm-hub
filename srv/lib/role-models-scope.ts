@@ -10,6 +10,7 @@ import {
   type RoleName,
 } from './role-model-settings';
 import { sessionSlot } from './session-slot';
+import { configuredTemperature } from './temperature-config';
 
 const settingsScope = new AsyncLocalStorage<RoleModelSettings>();
 const requestModels = new Map<string, string>();
@@ -77,7 +78,10 @@ type ModelSource =
   | 'deploy'
   | 'coordinator';
 interface EffectiveModel {
-  params?: Record<string, { value: number; source: 'config' | 'default' }>;
+  params?: Record<
+    string,
+    { value: number | 'off'; source: 'config' | 'default' }
+  >;
   model: string | null;
   source: ModelSource;
 }
@@ -127,7 +131,7 @@ export function effectiveRoleModels(
       process.env.LLM_AGENT_MAX_TOKENS || process.env.SAP_CORE_AI_MAX_TOKENS;
     effective.params = {
       temperature: {
-        value: Number.parseFloat(temperature || '0.7'),
+        value: configuredTemperature() ?? 'off',
         source: temperature ? 'config' : 'default',
       },
       maxOutputTokens: {

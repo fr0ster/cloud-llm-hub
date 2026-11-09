@@ -179,7 +179,7 @@ jest.mock('../../srv/agent-config', (): object => ({
       model: string;
       classifierModel: string;
       plannerModel?: string;
-      temperature: number;
+      temperature: number | undefined;
       maxTokens: number;
       apiKey?: string;
       baseUrl?: string;
