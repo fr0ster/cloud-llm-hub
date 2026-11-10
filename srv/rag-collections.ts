@@ -1,4 +1,4 @@
-import { validateAgentProfileRecord } from './lib/agent-profile-records';
+import { validateAgentProfileRecordWithCatalog } from './lib/agent-profile-records';
 import {
   loadAgentProfileSeeds,
   seedAgentProfiles,
@@ -1704,8 +1704,10 @@ export class CollectionRegistry {
       meta.collectionKind !== 'agents'
     )
       throw new Error('Invalid agents copy');
-    const records = source.documents.map((document) =>
-      validateAgentProfileRecord(document),
+    const records = await Promise.all(
+      source.documents.map((document) =>
+        validateAgentProfileRecordWithCatalog(document),
+      ),
     );
     if (new Set(records.map((record) => record.id)).size !== records.length)
       throw new Error('Duplicate agent record');
@@ -1851,7 +1853,7 @@ export class CollectionRegistry {
     collectionId: string,
     document: Omit<RagDocument, 'createdAt'>,
   ): Promise<RagDocument> {
-    validateAgentProfileRecord(document);
+    await validateAgentProfileRecordWithCatalog(document);
     const key = JSON.stringify([collectionId, document.id]);
     const previous = this.agentCreates.get(key) ?? Promise.resolve();
     let release: () => void = () => {};
@@ -1976,7 +1978,7 @@ export class CollectionRegistry {
     }
     options?.signal?.throwIfAborted();
     if (stored.meta.collectionKind === 'agents')
-      validateAgentProfileRecord(doc);
+      await validateAgentProfileRecordWithCatalog(doc);
     // Backend first, memory only on success; see addPersistentDocument.
     if (stored.persistent) {
       if (!storageEnabled())
@@ -2069,7 +2071,7 @@ export class CollectionRegistry {
     if (target?.collectionKind === 'agents') {
       const ids = new Set<string>();
       for (const doc of docs) {
-        validateAgentProfileRecord(doc);
+        await validateAgentProfileRecordWithCatalog(doc);
         if (ids.has(doc.id)) throw new Error('Duplicate agent record');
         ids.add(doc.id);
       }
@@ -2215,7 +2217,7 @@ export class CollectionRegistry {
       };
     }
     if (stored.meta.collectionKind === 'agents')
-      validateAgentProfileRecord({
+      await validateAgentProfileRecordWithCatalog({
         id: docId,
         text: update.text ?? existing.text,
         metadata:

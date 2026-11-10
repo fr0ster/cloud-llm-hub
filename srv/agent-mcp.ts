@@ -7,6 +7,7 @@ import {
   setExecutionLimits,
   validateExecutionLimits,
 } from './lib/execution-limits';
+import { withModelCatalog } from './lib/model-catalog';
 import { parseModelAllowlist } from './lib/model-policy';
 import {
   getRoleModels,
@@ -188,6 +189,23 @@ export function executeStep(
   },
   signal?: AbortSignal,
 ) {
+  return withModelCatalog(() =>
+    executeStepWithCatalog(req, caller, input, signal),
+  );
+}
+
+function executeStepWithCatalog(
+  req: Request,
+  caller: StepCaller,
+  input: {
+    session?: string;
+    destination?: string;
+    task: string;
+    worker?: string;
+    model?: string;
+  },
+  signal?: AbortSignal,
+) {
   requestStart(req);
   const runtime = usageRuntime();
   if (!runtime || (!runtime.enabled('request') && !runtime.enabled('session')))
@@ -223,6 +241,8 @@ function measuredAgentCallback<
     | OrchestrationTool,
   run: (args: T) => Promise<R>,
 ): (args: T) => Promise<R> {
+  const callback = run;
+  run = (args) => withModelCatalog(() => callback(args));
   const runtime = usageRuntime();
   if (!runtime || (!runtime.enabled('request') && !runtime.enabled('session')))
     return run;

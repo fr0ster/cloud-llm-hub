@@ -8,7 +8,7 @@ import {
   validateExecutionLimits,
 } from './lib/execution-limits';
 import { capabilitiesFor } from './lib/model-capabilities';
-import { ensureModelCatalog } from './lib/model-catalog';
+import { awaitModelCatalog, ensureModelCatalog } from './lib/model-catalog';
 import { parseModelAllowlist } from './lib/model-policy';
 import {
   getRoleModels,
@@ -69,7 +69,12 @@ export async function handleGetSessionModels(
 }
 
 /** Mounted behind requireAdminRole; validate the whole replacement before writing. */
-export function handlePutSessionModels(req: Request, res: Response): void {
+export async function handlePutSessionModels(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const pendingCatalog = awaitModelCatalog();
+  if (pendingCatalog) await pendingCatalog;
   const session = sessionOf(req, res);
   if (!session) return;
   const parsed = updateSchema.safeParse(req.body);

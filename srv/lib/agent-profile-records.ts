@@ -2,6 +2,7 @@ import type { WorkerProfile } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { z } from 'zod';
 import type { RagDocument } from '../rag-collections';
+import { withModelCatalog } from './model-catalog';
 import { parseModelAllowlist } from './model-policy';
 import { trustMapSchema } from './trust';
 
@@ -79,6 +80,14 @@ export type AgentProfileRecord = {
   text: string;
   metadata: ProfileFrontmatter & { canonicalKey: string };
 };
+
+/** Await catalog availability before validating a profile write. */
+export function validateAgentProfileRecordWithCatalog(
+  document: Omit<RagDocument, 'createdAt'> &
+    Partial<Pick<RagDocument, 'createdAt'>>,
+): Promise<AgentProfileRecord> {
+  return withModelCatalog(async () => validateAgentProfileRecord(document));
+}
 
 /** Errors deliberately identify fields without including configuration text. */
 export function validateAgentProfileRecord(

@@ -396,9 +396,10 @@ Use `catalog` or `catalog,extra-model` with `LLM_AGENT_PROVIDER=sap-ai-sdk`
 (the default) to include SAP AI Core foundation models eligible for orchestration
 chat: text generation, orchestration scenario, and not deprecated. Other providers
 reject this token at startup. Explicit names and main/planner defaults remain allowed.
-The catalog loads once after the server is served; before success only the explicit
-part applies. Failures log the cause once; the next `GET /v1/models` or
-`GET /v1/session/models` retries. Concurrent loads are shared, with no periodic refresh.
+The catalog loads once after the server is served. Requests that resolve or validate
+models wait for loading to finish. If loading fails, only the explicit allowlist applies.
+Failures log the cause once; any later model request retries, including chat and MCP
+requests. Concurrent loads are shared, with no periodic refresh.
 Configured role models skip startup membership validation in catalog mode; after loading,
 missing models are logged as errors. Runtime validation rejects disallowed role models
 without falling back.
