@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- Chat completion and Anthropic message responses report the serving coordinator model, including request and session overrides, in both JSON and streaming responses.
+
 ## [10.9.1] - 2026-11-10
 
 ### Fixed

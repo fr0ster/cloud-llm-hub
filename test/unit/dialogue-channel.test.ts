@@ -9,6 +9,7 @@ import {
 import { DialogueOutbox } from '../../srv/lib/dialogue-outbox';
 import { plannerWithAttachments } from '../../srv/lib/dialogue-planner-content';
 import type { DialogueHandle } from '../../srv/lib/dialogue-sessions';
+import * as gatekeeper from '../../srv/lib/gatekeeper';
 import {
   admitPipeline,
   resetGatekeeperForTest,
@@ -16,8 +17,13 @@ import {
 } from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
 import { longSessions } from '../../srv/lib/long-session';
+import {
+  clearRequestModel,
+  setRequestModel,
+} from '../../srv/lib/role-models-scope';
 import { parseTrustDefaults } from '../../srv/lib/trust';
 import { TrustResolver } from '../../srv/lib/trust-resolver';
+import { typedResponse } from './helpers/response-model';
 
 jest.mock(
   '@sap/cds',
@@ -1001,6 +1007,53 @@ function streamingRequest() {
 for (const anthropic of [false, true]) {
   const handler = anthropic ? handleAnthropicMessages : handleChatCompletions;
   const label = anthropic ? 'anthropic' : 'openai';
+  for (const stream of [false, true]) {
+    it(`${label}: resolves the saved coordinator after dialogue restore (stream=${stream})`, async () => {
+      const savedModels = process.env.LLM_AGENT_MODELS;
+      process.env.LLM_AGENT_MODELS = 'm,saved-model';
+      harness.user.is = () => false;
+      const handle = await dialogueFor('alice', session.key, 'DEST');
+      jest.mocked(dialogueFor).mockImplementationOnce(async () => {
+        setRequestModel('alice', session.key, 'saved-model');
+        return handle;
+      });
+      const req = streamingRequest();
+      req.body = {
+        max_tokens: 100,
+        stream,
+        messages: [{ role: 'user', content: 'hi' }],
+      };
+      const res = fakeRes();
+      try {
+        await handler(req, typedResponse(res));
+        expect(res.body).toContain('"model":"saved-model"');
+        expect(res.body).not.toContain('"model":"m"');
+      } finally {
+        if (savedModels === undefined) delete process.env.LLM_AGENT_MODELS;
+        else process.env.LLM_AGENT_MODELS = savedModels;
+        harness.user.is = () => true;
+        clearRequestModel('alice', session.key);
+      }
+    });
+
+    it(`${label}: admission refusal never opens or revives a dialogue (stream=${stream})`, async () => {
+      const admission = jest
+        .spyOn(gatekeeper, 'admitPipeline')
+        .mockResolvedValueOnce({ closed: true });
+      jest.mocked(dialogueFor).mockClear();
+      const req = streamingRequest();
+      req.body.stream = stream;
+      const res = fakeRes();
+      try {
+        await handler(req, typedResponse(res));
+        expect(admission).toHaveBeenCalled();
+        expect(dialogueFor).not.toHaveBeenCalled();
+        expect(send).not.toHaveBeenCalled();
+      } finally {
+        admission.mockRestore();
+      }
+    });
+  }
   it(`${label}: headers and immediate keep-alive precede initialization`, async () => {
     jest.useFakeTimers();
     const gate = deferred();

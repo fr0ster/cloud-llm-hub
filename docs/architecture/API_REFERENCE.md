@@ -140,7 +140,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
 }
 ```
 
-- `model` (optional) — LLM model name; if different from current, triggers model switch
+- `model` (optional) — allowed request model for `MCP_Admin`; ignored for non-admin callers. Session coordinator settings take precedence.
 - `messages` (required) — OpenAI-format message array
 - `stream` (optional, default: `true`) — SSE streaming or JSON response
 - `tools` (optional) — external tool definitions to pass alongside MCP tools
@@ -170,6 +170,8 @@ curl -H "Authorization: Basic YWxpY2U6" \
 - `200 OK` - Chat response
 - `401 Unauthorized` - Missing or invalid authentication
 - `503 Service Unavailable` - SmartAgent is initializing (MCP connect + tool corpus load), or the tool corpus was not built (`ToolCorpusMissingError` — run the build step)
+
+The response `model` field identifies the serving coordinator model, including session settings and accepted request overrides. This also applies to every OpenAI streaming chunk and Anthropic message responses.
 
 **Honesty guard note *(v6.28+)*:** the response (streaming or non-streaming, and the same on `/v1/messages` and `execute_step`) may carry a trailing `UNVERIFIED_WRITE:` line when the deterministic check finds a claimed write (create/update/activate/…) unsupported by the actual tool results. It's a soft warning — verify against the system before relying on the claim — never a block. Disable via `LLM_AGENT_STEP_REVIEW_ENABLED=false`.
 

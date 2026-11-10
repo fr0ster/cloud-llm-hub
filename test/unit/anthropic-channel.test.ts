@@ -1,6 +1,7 @@
 import { LlmError } from '@mcp-abap-adt/llm-agent';
 import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import { chatSessionBodyTests } from './helpers/chat-session-body';
+import { responseModelTests, typedResponse } from './helpers/response-model';
 
 // Bootstrap logging is tested with real CAP in logging-config.test.ts.
 jest.mock('../../srv/lib/logging-config', () => ({
@@ -39,7 +40,7 @@ jest.mock('../../srv/lib/request-system-context', () =>
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AnthropicApiAdapter } from '@mcp-abap-adt/llm-agent';
-import type { Request, Response } from 'express';
+import express, { type Request, type Response } from 'express';
 import { handleAnthropicMessages } from '../../srv/anthropic-handler';
 import { trackCall } from '../../srv/lib/admission-scope';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
@@ -87,11 +88,17 @@ const body = (stream = false) => ({
   messages: [{ role: 'user', content: 'hi' }],
 });
 
-function call(b: unknown, res = fakeRes()) {
-  const done = handleAnthropicMessages(
-    fakeReq(b) as unknown as Request,
-    res as unknown as Response,
+function call(b: unknown, res = fakeRes(), session?: LongSession) {
+  const req = Object.assign(
+    Object.defineProperties(
+      express().request,
+      Object.getOwnPropertyDescriptors(fakeReq(b)),
+    ),
+    {
+      longSession: session,
+    },
   );
+  const done = handleAnthropicMessages(req, typedResponse(res));
   return { res, done };
 }
 
@@ -981,3 +988,5 @@ describe('stage 1 model response headers', () => {
     },
   );
 });
+
+responseModelTests(body, (b, session) => call(b, undefined, session));

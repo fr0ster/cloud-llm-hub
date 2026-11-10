@@ -4,8 +4,10 @@ import {
 } from '../../srv/lib/role-model-settings';
 import {
   allowedDialogueRoleModel,
+  chatResponseModel,
   clearRequestModel,
   currentRoleModel,
+  dialogueRequestModel,
   effectiveRoleModels,
   roleOfProfile,
   setRequestModel,
@@ -160,4 +162,33 @@ test('a configured coordinator model outside the allowlist is refused, never use
     }),
   ).toBe('B');
   expect(allowedDialogueRoleModel('planner', { model: 'A' })).toBe('A');
+});
+
+test('dialogue response model follows the effective coordinator including the current request', () => {
+  const saved = { ...process.env };
+  process.env.LLM_AGENT_MODEL = 'deploy';
+  process.env.LLM_AGENT_PLANNER_MODEL = 'planner';
+  process.env.LLM_AGENT_COORDINATOR_MODEL = 'coordinator';
+  const dialogue = { userId: 'response-user', key: 'response-key' };
+  try {
+    expect(chatResponseModel(undefined, 'deploy', dialogue)).toBe(
+      'coordinator',
+    );
+    setRequestModel(dialogue.userId, dialogue.key, 'previous-request');
+    expect(chatResponseModel(undefined, 'deploy', dialogue)).toBe(
+      'previous-request',
+    );
+    expect(chatResponseModel('A', 'deploy', dialogue)).toBe('A');
+    expect(dialogueRequestModel(dialogue.userId, dialogue.key)).toBe(
+      'previous-request',
+    );
+    setRoleModels(dialogue.userId, dialogue.key, {
+      coordinator: { model: 'B' },
+    });
+    expect(chatResponseModel('A', 'deploy', dialogue)).toBe('B');
+  } finally {
+    process.env = saved;
+    clearRequestModel(dialogue.userId, dialogue.key);
+    clearRoleModels(dialogue.userId, dialogue.key);
+  }
 });

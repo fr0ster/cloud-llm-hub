@@ -25,6 +25,7 @@ import { parseModelAllowlist } from '../../srv/lib/model-policy';
 import * as plannerMemory from '../../srv/lib/planner-memory';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import {
+  chatResponseModel,
   currentRoleModel,
   RoleModelNotAllowedError,
   roleOfProfile,
@@ -3037,6 +3038,26 @@ test('allowed model switches persist across reuse and revival; omitted and forei
     await revived.outbox.upsert([]);
     expect(
       (await getDialogueStoreBackend().load('alice', 'key'))?.coordinatorModel,
+    ).toBe('B');
+  } finally {
+    if (previous === undefined) delete process.env.LLM_AGENT_MODELS;
+    else process.env.LLM_AGENT_MODELS = previous;
+  }
+});
+
+test('revived dialogue reports its saved coordinator model without request or session overrides', async () => {
+  const previous = process.env.LLM_AGENT_MODELS;
+  process.env.LLM_AGENT_MODELS = 'A,B';
+  try {
+    const first = await dialogueFor('alice', 'key', 'D', 'B');
+    await first.outbox.upsert([]);
+    await closeDialogue('alice', 'key', 'shutdown');
+    expect(
+      (await getDialogueStoreBackend().load('alice', 'key'))?.coordinatorModel,
+    ).toBe('B');
+    await dialogueFor('alice', 'key', 'D');
+    expect(
+      chatResponseModel(undefined, 'A', { userId: 'alice', key: 'key' }),
     ).toBe('B');
   } finally {
     if (previous === undefined) delete process.env.LLM_AGENT_MODELS;

@@ -4,6 +4,7 @@ import {
   parseModelAllowlist,
   resolveAgentModel,
 } from '../../srv/lib/model-policy';
+import { responseModelTests } from './helpers/response-model';
 
 const mockCatalog = jest.fn<Promise<IModelInfo[]>, []>();
 const mockCatalogError = jest.fn();
@@ -119,8 +120,11 @@ function call(
   res = fakeRes(),
   sessionId = 's-1',
   toolResults?: string,
+  session?: LongSession,
 ) {
-  const request = fakeReq(b, sessionId);
+  const request = Object.assign(fakeReq(b, sessionId), {
+    longSession: session,
+  });
   if (toolResults)
     Object.assign(request.headers, { 'x-clh-tool-results': toolResults });
   const done = handleChatCompletions(
@@ -1185,3 +1189,7 @@ describe('catalog loading at the chat entry point', () => {
     expect(mockCatalog).not.toHaveBeenCalled();
   });
 });
+
+responseModelTests(body, (b, session) =>
+  call(b, undefined, undefined, undefined, session),
+);
