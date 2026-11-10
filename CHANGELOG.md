@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.9.3] - 2026-11-10
+
 ### Security
 
 - SAP AI SDK packages are updated to 2.18.0, which keeps destination credentials out of deployment resolution error messages.
