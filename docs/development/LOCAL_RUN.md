@@ -207,3 +207,5 @@ Local models are weaker at tool calling than SAP AI Core's deployed models.
 Expect more missed or malformed tool calls, especially with a model smaller
 than `qwen2.5:14b`. This kit is for iterating on the hub itself, not for
 judging model quality or running load tests.
+
+LLM-only sessions support read-only RAG tools to search and read collections. Collection writes and SAP actions are refused.

@@ -77,30 +77,26 @@ beforeEach(() => {
   });
 });
 
-it('logs once and continues without retrieval when unselected enumeration fails', async () => {
-  registry.listCollections.mockRejectedValueOnce(new Error('restore failed'));
-  const log = cds.log('enumeration-test');
-  const warn = jest.spyOn(log, 'warn').mockImplementation(() => {});
+it('does not enumerate, inject stores, or search without a selection', async () => {
   const original = {};
   const agent = { deps: { ragStores: original } };
-  const messages: Message[] = [{ role: 'user', content: 'question' }];
-  try {
-    expect(
-      await collectionRetrieval(agent).retrieve(
-        req(),
-        messages,
-        'alice',
-        undefined,
-        log,
-      ),
-    ).toEqual({ messages });
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(query).not.toHaveBeenCalled();
-    expect(registry.getRagStores).not.toHaveBeenCalled();
-    expect(agent.deps.ragStores).toBe(original);
-  } finally {
-    warn.mockRestore();
-  }
+  const message: Message = { role: 'user', content: 'question' };
+  const messages: Message[] = [message];
+  const result = await collectionRetrieval(agent).retrieve(
+    req(),
+    messages,
+    'alice',
+    undefined,
+    cds.log('test'),
+  );
+  expect(result.messages).toBe(messages);
+  expect(result.messages?.[0]).toBe(message);
+  expect(message.content).toBe('question');
+  expect(registry.listCollections).not.toHaveBeenCalled();
+  expect(registry.getRagStores).not.toHaveBeenCalled();
+  expect(registry.getRagStore).not.toHaveBeenCalled();
+  expect(query).not.toHaveBeenCalled();
+  expect(agent.deps.ragStores).toBe(original);
 });
 
 it('keeps the structured 503 refusal for an explicit selection when restore fails', async () => {
@@ -283,29 +279,23 @@ it('filters disabled collections before querying or injecting stores', async () 
   expect(registry.getRagStores).not.toHaveBeenCalled();
 });
 
-it('uses enabled defaults without a selection and respects an empty client intersection', async () => {
-  const list = jest.spyOn(registry, 'listCollections');
-  list.mockResolvedValueOnce([
-    { id: 'physical', logicalId: 'selected', scope: 'user', owner: 'alice' },
-  ]);
-  const step = collectionRetrieval({ deps: { ragStores: {} } });
-  await step.retrieve(
-    req(),
-    [{ role: 'user', content: 'question' }],
-    'alice',
-    undefined,
-    cds.log('test'),
-  );
-  expect(query).toHaveBeenCalledTimes(1);
-  query.mockClear();
-  await step.retrieve(
+it('respects an explicit empty collection list', async () => {
+  const original = {};
+  const agent = { deps: { ragStores: original } };
+  const messages: Message[] = [{ role: 'user', content: 'question' }];
+  const result = await collectionRetrieval(agent).retrieve(
     req(undefined, { rag_collections: [] }),
-    [{ role: 'user', content: 'question' }],
+    messages,
     'alice',
     undefined,
     cds.log('test'),
   );
+  expect(result.messages).toBe(messages);
+  expect(registry.listCollections).not.toHaveBeenCalled();
+  expect(registry.getRagStores).not.toHaveBeenCalled();
+  expect(registry.getRagStore).not.toHaveBeenCalled();
   expect(query).not.toHaveBeenCalled();
+  expect(agent.deps.ragStores).toBe(original);
 });
 
 it('allows explicitly attached session uploads for that request', async () => {

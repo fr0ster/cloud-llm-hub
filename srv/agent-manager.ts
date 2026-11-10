@@ -140,6 +140,7 @@ export { destinationRequiresCredentials } from './lib/destination-authentication
 import {
   DialogueRagMcpClient,
   dialogueResultToolSelection,
+  llmOnlyReadToolSelection,
   withDialogueRagTools,
 } from './lib/dialogue-rag-tools';
 import { type ExpositionLevel, resolveExposition } from './lib/exposition';
@@ -3778,7 +3779,7 @@ export function withConversationHistory(agent: SmartAgent): SmartAgent {
 }
 
 /**
- * Build a SmartAgent without MCP tools — LLM-only mode.
+ * Build a SmartAgent with read-only RAG tools — LLM-only mode.
  *
  * @param why - `waiting`: the subaccount has no SAP destination yet;
  * `unreachable`: one exists but cannot be reached (the escape-hatch fallback).
@@ -3794,12 +3795,24 @@ export async function buildLlmOnlyAgent(
   const mainLlm = await mainLlmPromise;
   const classifierLlm = await classifierLlmPromise;
 
+  const emptyClient: IMcpClient = {
+    listTools: async () => ({ ok: true, value: [] }),
+    callTool: async () => ({
+      ok: true,
+      value: {
+        isError: true,
+        content: 'Tool unavailable in a session without SAP tools.',
+      },
+    }),
+  };
+
   const builder = new SmartAgentBuilder({
     skipModelValidation: config.llm.provider !== 'sap-ai-sdk',
     agent: {
       timeZone: config.timeZone,
-      ...runLimitOptions('coordinator', { ...config.agent, maxIterations: 1 }),
-      mode: config.agent.mode,
+      ...runLimitOptions('coordinator', config.agent),
+      // Pass mode skips tool selection; LLM-only sessions always support reads.
+      mode: 'smart',
       historyRecencyWindow: config.agent.historyRecencyWindow,
       refreshToolsPerIteration: false,
       toolReselectPerIteration: false,
@@ -3811,9 +3824,9 @@ export async function buildLlmOnlyAgent(
       system: await appendBaseSkills(
         [
           why === 'waiting'
-            ? 'You are a helpful AI assistant. No MCP tools are available — no SAP system destination is configured.'
-            : 'You are a helpful AI assistant. No MCP tools are available — the SAP system destination is unreachable.',
-          'Answer questions using your knowledge. No action of any kind (SAP operations, storing or searching collection documents via tools, checks, delegation) can run in this session. Never report an action as done or started.',
+            ? 'You are a helpful AI assistant. SAP tools are unavailable — no SAP system destination is configured.'
+            : 'You are a helpful AI assistant. SAP tools are unavailable — the SAP system destination is unreachable.',
+          "Answer questions using your knowledge and search or read the user's collections with the RAG read tools when needed. You cannot store, change or delete records or collections, run SAP operations, checks or delegation. Never report an action as done or started.",
           why === 'waiting'
             ? 'Say plainly that the hub is waiting for SAP destinations, and that full functionality (ABAP tools) needs at least one SAP destination added to the BTP subaccount — it is picked up automatically once it exists.'
             : 'Say plainly that the SAP destination exists but cannot be reached right now, and that its connectivity (the destination, the Cloud Connector) needs checking — do not suggest adding a destination.',
@@ -3824,6 +3837,13 @@ export async function buildLlmOnlyAgent(
       ),
     },
   })
+    .withMcpClients([
+      withToolResultCap(
+        new DialogueRagMcpClient(emptyClient, undefined, false, true),
+        config.agent.toolResultMaxChars,
+      ),
+    ])
+    .withToolSelectionStrategy(llmOnlyReadToolSelection)
     .withToolTrust(getSystemToolTrust())
     .withMainLlm(mainLlm)
     .withClassifierLlm(classifierLlm)
@@ -3856,7 +3876,7 @@ export async function buildLlmOnlyAgent(
       : mainLlm,
     why,
   });
-  log.info('LLM-only agent built (no MCP tools)');
+  log.info('LLM-only agent built (read-only RAG tools)');
   return handle;
 }
 

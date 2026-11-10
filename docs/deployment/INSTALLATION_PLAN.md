@@ -442,3 +442,5 @@ Scenario B (external provider):
 
 - [Testing After Deployment](TESTING_AFTER_DEPLOYMENT.md) — comprehensive testing guide
 - [Architecture](../architecture/ARCHITECTURE.md) — system architecture and configuration reference
+
+LLM-only sessions support read-only RAG tools to search and read collections. Collection writes and SAP actions are refused.

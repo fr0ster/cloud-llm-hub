@@ -1,6 +1,7 @@
 import type { IMcpClient, IRag, IUsageRecorder } from '@mcp-abap-adt/llm-agent';
 import { TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
+import * as ragExecution from '../../srv/agent-mcp-rag';
 import {
   createCallRegister,
   runWithAdmission,
@@ -902,4 +903,50 @@ test('external schemas and descriptions remain canonical after role-specific dis
         },
       })),
   );
+});
+
+test('LLM-only local client exposes exactly read-effect tools and rejects other tools', async () => {
+  const { inner } = setup();
+  const client = new LocalRagMcpClient(inner, undefined, false, true);
+  const execute = jest
+    .spyOn(ragExecution, 'executeRagTool')
+    .mockResolvedValue({ content: [] });
+  try {
+    expect(await client.listTools()).toMatchObject({
+      value: ragToolNames
+        .filter((name) => ragToolEffect(name) === 'read')
+        .map((name) => ({ name })),
+    });
+    for (const name of [
+      'rag_persist',
+      'record_add',
+      'collection_delete',
+      'GetTable',
+      'unknown',
+    ]) {
+      expect(await inSession(() => client.callTool(name, {}))).toMatchObject({
+        value: {
+          isError: true,
+          content: expect.stringContaining('without SAP tools'),
+        },
+      });
+    }
+    expect(execute).not.toHaveBeenCalled();
+    expect(inner.callTool).not.toHaveBeenCalled();
+    expect(await client.callTool('collections_list', {})).toMatchObject({
+      value: { isError: true },
+    });
+    expect(execute).not.toHaveBeenCalled();
+    await inSession(() => client.callTool('collections_list', {}));
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'alice',
+        sessionKey: liveSession('alice', 'dialogue-1'),
+      }),
+      'collections_list',
+      {},
+    );
+  } finally {
+    execute.mockRestore();
+  }
 });

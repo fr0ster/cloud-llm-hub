@@ -86,7 +86,7 @@ ignores headers entirely, reporting on the server's own configuration. Passing
 }
 ```
 
-**Note:** `mcpConnected: false` is expected for LLM-only mode (no MCP tools).
+**Note:** `mcpConnected: false` is expected for LLM-only mode (no SAP tools; read-only RAG tools remain available).
 
 #### 2. Simple Chat, keeping the session
 

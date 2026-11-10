@@ -16,6 +16,7 @@ import type { HubLlmConfig } from '../../srv/lib/llm-factory';
 import { handleChatCompletions, handleModels } from '../../srv/openai-handler';
 
 const mockCalls: string[] = [];
+const mockOfferedTools: string[][] = [];
 let mockLoop = false;
 let mockRolePlan = false;
 // Model selection does not exercise discovery. Do not leave startup retry
@@ -27,7 +28,20 @@ jest.mock('../../srv/lib/llm-factory', () => ({
   ...jest.requireActual('../../srv/lib/llm-factory'),
   makeHubLlm: async (config: HubLlmConfig): Promise<ILlm> => ({
     model: config.model,
-    chat: async (messages) => {
+    chat: async (messages, tools) => {
+      if (
+        messages.some((message) =>
+          message.content?.includes('Classify the last user request'),
+        )
+      )
+        return {
+          ok: true,
+          value: {
+            content: '{"action":false,"language":"uk"}',
+            finishReason: 'stop',
+          },
+        };
+      mockOfferedTools.push((tools ?? []).map((tool) => tool.name));
       mockCalls.push(config.model ?? '');
       if (mockLoop)
         return {
@@ -73,7 +87,8 @@ jest.mock('../../srv/lib/llm-factory', () => ({
         },
       };
     },
-    streamChat: async function* () {
+    streamChat: async function* (_messages, tools) {
+      mockOfferedTools.push((tools ?? []).map((tool) => tool.name));
       mockCalls.push(config.model ?? '');
       if (mockLoop) {
         yield {
@@ -113,6 +128,30 @@ import {
   withRequestModel,
 } from '../../srv/agent-manager';
 import { startProviders } from '../../srv/lib/providers';
+import {
+  buildRagToolSchemas,
+  ragToolEffect,
+} from '../../srv/lib/rag-tool-catalogue';
+
+test.each(['smart', 'hard', 'pass'] as const)(
+  'LLM-only offers read tools to the main LLM in %s mode',
+  async (mode) => {
+    const config = getAgentConfig();
+    const handle = await buildLlmOnlyAgent(
+      { ...config, agent: { ...config.agent, mode } },
+      'waiting',
+    );
+    mockOfferedTools.length = 0;
+    await handle.agent.process('Що в моїй колекції про ZMTO28?');
+    expect(mockOfferedTools).toHaveLength(1);
+    expect(mockOfferedTools[0].sort()).toEqual(
+      buildRagToolSchemas(false)
+        .map(({ function: tool }) => tool.name)
+        .filter((name) => ragToolEffect(name) === 'read')
+        .sort(),
+    );
+  },
+);
 
 const saved = { ...process.env };
 beforeAll(async () => {
@@ -757,7 +796,11 @@ test.each(
           expect(built).toEqual(
             key === 'configured'
               ? { iterations: 3, calls: undefined, history: false }
-              : { iterations: 1, calls: 30, history: true },
+              : {
+                  iterations: getAgentConfig().agent.maxIterations,
+                  calls: 30,
+                  history: true,
+                },
           );
       }
       const allowlist = process.env.LLM_AGENT_MODELS;

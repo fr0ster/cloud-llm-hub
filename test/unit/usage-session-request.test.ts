@@ -840,6 +840,26 @@ test.each([
   },
 );
 
+test('retrieval without a selection records zero collections and no injection', async (): Promise<void> => {
+  const usage = runtime.forSession(session).with({ requestId: 'unselected' });
+  await collectionRetrieval({ deps: { ragStores: {} } }).retrieve(
+    { headers: {}, body: {} },
+    [{ role: 'user', content: 'question' }],
+    'alice',
+    'plain',
+    cds.log('test'),
+    false,
+    usage,
+  );
+  expect(await rows('x.hub.retrieval')).toMatchObject([
+    {
+      context: { sessionId: 'plain', requestId: 'unselected' },
+      values: { collections: 0, chunks: 0, chars: 0, injected: false },
+    },
+  ]);
+  expect(await rows('x.hub.retrieval')).toHaveLength(1);
+});
+
 test('explicit deletion awaits a fresh snapshot before history cleanup', async (): Promise<void> => {
   const admitted = lease(theRetention(), 'plain');
   appendToSession('plain', 'alice', {
