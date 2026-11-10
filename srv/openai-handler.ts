@@ -10,7 +10,7 @@ import { lookupDialogue } from './lib/dialogue-sessions';
 import { getExecutionLimits } from './lib/execution-limits';
 import { failureMessage, observeLlmSpend } from './lib/llm-failure';
 import { capabilitiesFor } from './lib/model-capabilities';
-import { ensureModelCatalog } from './lib/model-catalog';
+import { awaitModelCatalog, ensureModelCatalog } from './lib/model-catalog';
 import {
   ignoredModelHeader,
   parseModelAllowlist,
@@ -318,6 +318,8 @@ async function handleChatCompletionsMeasured(
   req: Request,
   res: Response,
 ): Promise<void> {
+  const pendingCatalog = awaitModelCatalog();
+  if (pendingCatalog) await pendingCatalog;
   if (
     !applyRoleModelHeaders(
       req,

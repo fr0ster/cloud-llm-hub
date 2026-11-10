@@ -34,6 +34,17 @@ export function ensureModelCatalog(): Promise<void> {
   return inFlight;
 }
 
+/** Return a load only while catalog mode still needs a snapshot. */
+export function awaitModelCatalog(): Promise<void> | undefined {
+  return !loaded && usesModelCatalog() ? ensureModelCatalog() : undefined;
+}
+
+/** Preserve the synchronous hot path once loaded or outside catalog mode. */
+export function withModelCatalog<T>(run: () => Promise<T>): Promise<T> {
+  const pending = awaitModelCatalog();
+  return pending ? pending.then(run) : run();
+}
+
 async function loadCatalog(): Promise<void> {
   try {
     const catalog = await makeHubCatalogProvider().getModelCatalog();

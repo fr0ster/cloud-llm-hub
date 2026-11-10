@@ -1,3 +1,16 @@
+import type { IModelInfo } from '@mcp-abap-adt/llm-agent';
+import { resetModelCatalog } from '../../srv/lib/model-catalog';
+import {
+  parseModelAllowlist,
+  resolveAgentModel,
+} from '../../srv/lib/model-policy';
+
+const mockCatalog = jest.fn<Promise<IModelInfo[]>, []>();
+const mockCatalogError = jest.fn();
+jest.mock('../../srv/lib/llm-factory', () => ({
+  makeHubCatalogProvider: () => ({ getModelCatalog: mockCatalog }),
+}));
+
 import { LlmError } from '@mcp-abap-adt/llm-agent';
 import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import { chatSessionBodyTests } from './helpers/chat-session-body';
@@ -12,7 +25,12 @@ jest.mock(
   () => ({
     __esModule: true,
     default: {
-      log: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
+      log: () => ({
+        info() {},
+        warn() {},
+        error: mockCatalogError,
+        debug() {},
+      }),
       get context() {
         return { user: require('./helpers/channel-harness').harness.user };
       },
@@ -1072,4 +1090,98 @@ describe('stage 1 model response headers', () => {
       ]);
     },
   );
+});
+
+describe('catalog loading at the chat entry point', () => {
+  const catalog: IModelInfo[] = [
+    {
+      id: 'catalog-chat',
+      capabilities: ['text-generation'],
+      scenarios: ['orchestration'],
+    },
+  ];
+  let previousModels: string | undefined;
+  beforeEach(() => {
+    previousModels = process.env.LLM_AGENT_MODELS;
+    process.env.LLM_AGENT_MODELS = 'catalog,m';
+    resetModelCatalog();
+    mockCatalog.mockReset();
+    mockCatalogError.mockClear();
+  });
+  afterEach(() => {
+    if (previousModels === undefined) delete process.env.LLM_AGENT_MODELS;
+    else process.env.LLM_AGENT_MODELS = previousModels;
+    resetModelCatalog();
+  });
+
+  it('waits for the initial load and shares it between concurrent chat requests', async () => {
+    let finish: (models: IModelInfo[]) => void = () => {};
+    mockCatalog.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const first = call(
+      { ...body(), model: 'catalog-chat' },
+      fakeRes(),
+      'catalog-one',
+    );
+    const second = call(
+      { ...body(), model: 'catalog-chat' },
+      fakeRes(),
+      'catalog-two',
+    );
+    expect(mockCatalog).toHaveBeenCalledTimes(1);
+    expect(harness.events).toEqual([]);
+    finish(catalog);
+    await Promise.all([first.done, second.done]);
+    expect(first.res.statusCode).toBe(200);
+    expect(first.res.headers['x-clh-model-ignored']).toBeUndefined();
+    expect(second.res.statusCode).toBe(200);
+    expect(second.res.headers['x-clh-model-ignored']).toBeUndefined();
+    expect(mockCatalog).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a failed load on the next chat request', async () => {
+    mockCatalog
+      .mockRejectedValueOnce(new Error('unavailable'))
+      .mockResolvedValueOnce(catalog);
+    const first = call({ ...body(), model: 'catalog-chat' });
+    await first.done;
+    expect(first.res.headers['x-clh-model-ignored']).toBeDefined();
+    const second = call({ ...body(), model: 'catalog-chat' });
+    await second.done;
+    expect(second.res.statusCode).toBe(200);
+    expect(second.res.headers['x-clh-model-ignored']).toBeUndefined();
+    expect(mockCatalog).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps refusing catalog models when retry fails', async () => {
+    mockCatalog.mockRejectedValue(new Error('unavailable'));
+    const first = call({ ...body(), model: 'catalog-chat' });
+    await first.done;
+    const second = call({ ...body(), model: 'catalog-chat' });
+    await second.done;
+    expect(second.res.headers['x-clh-model-ignored']).toBe(
+      first.res.headers['x-clh-model-ignored'],
+    );
+    expect(
+      resolveAgentModel(
+        { requested: 'catalog-chat' },
+        parseModelAllowlist(),
+        'm',
+      ),
+    ).toEqual({ ok: false, error: 'MODEL_NOT_ALLOWED' });
+    expect(mockCatalogError).toHaveBeenCalledTimes(1);
+    expect(mockCatalog).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not load without the catalog token', async () => {
+    process.env.LLM_AGENT_MODELS = 'm';
+    const request = call(body());
+    await request.done;
+    expect(request.res.statusCode).toBe(200);
+    expect(mockCatalog).not.toHaveBeenCalled();
+  });
 });

@@ -19,9 +19,11 @@ jest.mock('@sap/cds', () => ({
 import { BuildValidationError } from '../../srv/lib/build-validation-error';
 import { configuredRoleModel } from '../../srv/lib/deploy-role-config';
 import {
+  awaitModelCatalog,
   ensureModelCatalog,
   resetModelCatalog,
   validateModelCatalogProvider,
+  withModelCatalog,
 } from '../../srv/lib/model-catalog';
 import {
   parseModelAllowlist,
@@ -191,4 +193,22 @@ it('defers configured role checks, logs missing models after loading, and reject
     expect.stringContaining('LLM_AGENT_CHECKER_MODEL'),
   );
   expect(() => currentRoleModel('executor')).toThrow(RoleModelNotAllowedError);
+});
+
+it('keeps loaded and non-catalog callbacks on the immediate path', async () => {
+  process.env.LLM_AGENT_MODELS = 'explicit';
+  expect(awaitModelCatalog()).toBeUndefined();
+  const run = jest.fn(() => Promise.resolve());
+  const result = withModelCatalog(run);
+  expect(run).toHaveBeenCalledTimes(1);
+  expect(mockCatalog).not.toHaveBeenCalled();
+  await result;
+  process.env.LLM_AGENT_MODELS = 'catalog';
+  mockCatalog.mockResolvedValue([]);
+  await ensureModelCatalog();
+  expect(awaitModelCatalog()).toBeUndefined();
+  const loadedResult = withModelCatalog(run);
+  expect(run).toHaveBeenCalledTimes(2);
+  expect(mockCatalog).toHaveBeenCalledTimes(1);
+  await loadedResult;
 });

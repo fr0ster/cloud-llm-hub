@@ -85,6 +85,7 @@ import { clearExecutionLimits, getExecutionLimits } from './execution-limits';
 import { admitBackground, type PipelineSession } from './gatekeeper';
 import { isLlmFailure, llmFailure, observeLlmSpend } from './llm-failure';
 import { longSessionsIfReady } from './long-session';
+import { withModelCatalog } from './model-catalog';
 import { parseModelAllowlist, resolveRequestModel } from './model-policy';
 import { stripNoMessage } from './no-message';
 import { renderNotice } from './notify-policy';
@@ -306,6 +307,17 @@ export async function headlessDialogueFor(
 }
 
 export function dialogueFor(
+  userId: string,
+  key: string,
+  destination: string,
+  model?: string,
+): Promise<DialogueHandle> {
+  return withModelCatalog(() =>
+    dialogueForWithCatalog(userId, key, destination, model),
+  );
+}
+
+function dialogueForWithCatalog(
   userId: string,
   key: string,
   destination: string,

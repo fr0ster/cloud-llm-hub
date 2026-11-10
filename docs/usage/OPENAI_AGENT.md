@@ -266,5 +266,5 @@ caller's own session.
 
 With `LLM_AGENT_MODELS=catalog` (SAP AI Core only), the model list and capabilities
 include eligible orchestration chat models plus explicit names and deployment defaults.
-Until loading succeeds only the explicit allowlist applies. Both model GET endpoints
-retry failed catalog loading. See [configuration](../llm-agent/CONFIG_USAGE.md).
+Requests wait for catalog loading before validating models. After a failure, the
+explicit allowlist applies and any later model request retries, including chat and MCP. See [configuration](../llm-agent/CONFIG_USAGE.md).

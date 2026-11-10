@@ -24,7 +24,7 @@ import {
   sessionCollectionId,
   userCollectionId,
 } from './collection-ids';
-import { validateAgentProfileRecord } from './lib/agent-profile-records';
+import { validateAgentProfileRecordWithCatalog } from './lib/agent-profile-records';
 import { collectionAccessError } from './lib/collection-access';
 import { CollectionBackendError } from './lib/collection-persistence';
 import {
@@ -965,7 +965,9 @@ export function registerRagRoutes(
           const parsed = agentRecordInput.safeParse(req.body);
           if (!parsed.success)
             return error(res, 400, 'Invalid agent record fields');
-          const record = validateAgentProfileRecord(parsed.data);
+          const record = await validateAgentProfileRecordWithCatalog(
+            parsed.data,
+          );
           json(res, 201, await registry.createAgentRecord(physId, record));
           return;
         }
@@ -1164,7 +1166,7 @@ export function registerRagRoutes(
             (parsed.data.id !== undefined && parsed.data.id !== req.params.did)
           )
             return error(res, 400, 'Invalid agent record fields');
-          const record = validateAgentProfileRecord({
+          const record = await validateAgentProfileRecordWithCatalog({
             ...parsed.data,
             id: req.params.did,
           });

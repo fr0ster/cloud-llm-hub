@@ -8,6 +8,7 @@ import {
   profileFrontmatter,
   validateAgentProfileRecord,
 } from './agent-profile-records';
+import { awaitModelCatalog } from './model-catalog';
 
 export interface AgentProfileSeedStore {
   /** Must resolve the exact global identity and await backend restoration. */
@@ -89,6 +90,8 @@ export async function seedAgentProfiles(
   seeds: readonly AgentProfileRecord[],
   plannerRecord: string,
 ): Promise<void> {
+  const pendingCatalog = awaitModelCatalog();
+  if (pendingCatalog) await pendingCatalog;
   // Validate all seeds before mutation; release seeds replace changed built-ins.
   const names = new Set<string>();
   const validatedSeeds = seeds.map((seed) =>

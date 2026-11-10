@@ -21,6 +21,7 @@ import {
 } from './agent-profile-tools';
 import { submitVerdictTool } from './checker-verdict-tool';
 import { collectionAccessError } from './collection-access';
+import { awaitModelCatalog } from './model-catalog';
 import { recordPolicy } from './record-policy';
 import { resolverFor, type TrustResolver } from './trust-resolver';
 
@@ -84,6 +85,8 @@ export class AgentProfileSource implements IAgentProfileSource {
   }
 
   private async readCollection(options: CallOptions): Promise<RagDocument[]> {
+    const pendingCatalog = awaitModelCatalog();
+    if (pendingCatalog) await pendingCatalog;
     await this.selection.prepareCatalogue?.();
     const id = await this.selection.selectedCollectionId();
     options.signal?.throwIfAborted();
