@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- Requests without a collection selection no longer have the top results from every collection injected into their context.
+
 ## [10.9.3] - 2026-11-10
 
 ### Security

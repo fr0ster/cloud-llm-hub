@@ -68,32 +68,7 @@ export function collectionRetrieval(agent: object) {
       let chunks = 0;
       let chars = 0;
       const requested = requestedCollectionIds(req);
-      const hasSelection =
-        req.headers['x-rag-collections'] !== undefined ||
-        req.body?.rag_collections !== undefined;
-      let ragCollectionIds = requested;
-      if (!hasSelection) {
-        try {
-          ragCollectionIds = (
-            await getCollectionRegistry().listCollections(userId)
-          )
-            .filter(
-              (c) =>
-                c.collectionKind !== 'agents' &&
-                c.collectionKind !== 'task-results' &&
-                (c.scope !== 'session' || c.sessionId === sessionId),
-            )
-            .map((c) => c.id);
-        } catch (err) {
-          log.warn(
-            'Collection enumeration failed; continuing without collection retrieval',
-            {
-              error: err instanceof Error ? err.message : String(err),
-            },
-          );
-          ragCollectionIds = [];
-        }
-      }
+      const ragCollectionIds = requested;
       // Resolve each entry: bare logical names → caller's own physical id; physical
       // ids owned by another user → dropped. Session collection shadows user
       // collection. Reused by both the RAG store injection and semantic search below.

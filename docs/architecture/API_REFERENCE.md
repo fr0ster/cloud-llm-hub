@@ -144,7 +144,7 @@ curl -H "Authorization: Basic YWxpY2U6" \
 - `messages` (required) — OpenAI-format message array
 - `stream` (optional, default: `true`) — SSE streaming or JSON response
 - `tools` (optional) — external tool definitions to pass alongside MCP tools
-- `rag_collections` (optional) — array of RAG collection names to include in context (alternative to `X-Rag-Collections` header)
+- `rag_collections` (optional) — array of RAG collection names to include in context, narrowed to enabled collections (alternative to `X-Rag-Collections` header); omitted or empty selections perform no request-level retrieval, while the model can still use RAG tools
 
 **Response (streaming):** Server-Sent Events with OpenAI delta format.
 
@@ -1120,7 +1120,7 @@ source override, then class default. Clearing an override restores inheritance.
 
 Session overrides take precedence over collection defaults. They are deleted with session state. Long sessions persist overrides in their session record (SQLite/HANA/PG as configured) and restore them with the destination and history after restart; plain sessions keep overrides in memory, like their destination state.
 
-Request retrieval uses enabled collections; `rag_collections` and `X-Rag-Collections` only narrow that set, including an explicit empty list. A request explicitly selecting its session `uploads` collection can use attached files for that request. Planner knowledge checks enablement on every search, so the next turn observes a toggle. Tool selection and built-in skills use separate tool/skill stores rather than these user collections. Executor history remains session memory. Explicit RAG tools share the canonical catalogue on every channel. Disabled content is listed with attributes and reason, without text.
+Request retrieval runs only on collections named in `rag_collections` or `X-Rag-Collections`, narrowed to enabled collections. A request without a collection selection (or with an explicit empty list) gets no request-level retrieval; the model can still use the RAG tools. A request explicitly selecting its session `uploads` collection can use attached files for that request. Planner knowledge checks enablement on every search, so the next turn observes a toggle. Tool selection and built-in skills use separate tool/skill stores rather than these user collections. Executor history remains session memory. Explicit RAG tools share the canonical catalogue on every channel. Disabled content is listed with attributes and reason, without text.
 
 
 ### Record enable/disable
