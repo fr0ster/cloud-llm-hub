@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.9.4] - 2026-11-11
+
 ### Changed
 
 - LLM-only sessions can search and read collections with RAG tools; collection writes and SAP actions remain unavailable.
