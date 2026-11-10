@@ -23,7 +23,11 @@ import {
   chatRequestModel,
 } from './lib/role-model-headers';
 import { getRoleModels } from './lib/role-model-settings';
-import { currentRoleModel, withRoleModels } from './lib/role-models-scope';
+import {
+  chatResponseModel,
+  currentRoleModel,
+  withRoleModels,
+} from './lib/role-models-scope';
 import { runWithRequestLlms } from './lib/session-llms';
 import { summarizeToolResult } from './lib/tool-result-summary';
 import {
@@ -873,8 +877,10 @@ async function serveChatCompletions(
     callerLeft.abort(new Error('caller disconnected'));
   });
 
+  let responseModel: string;
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
+    responseModel = chatResponseModel(requestedModel, getCurrentModel());
     // Use destAfter (header OR session/default) — the same destination the
     // connection was established for. requestedDestination alone is undefined
     // for session-scoped chats, which would fall to the configured default.
@@ -1144,7 +1150,12 @@ async function serveChatCompletions(
       return await streamDialogue({
         stream: early,
         protocol: 'openai',
-        model: getCurrentModel(),
+        model: () =>
+          chatResponseModel(
+            requestedModel,
+            responseModel,
+            s ? { userId, key: s.key } : undefined,
+          ),
         agent: chatAgent as ReturnType<typeof dialogueChat>,
         source: chatAgent.streamProcess(normalizedMessages, opts),
         run: (fn) =>
@@ -1254,7 +1265,7 @@ async function serveChatCompletions(
         if (!lastUsage || usageSent) return;
         usageSent = true;
         out.write(
-          `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: getCurrentModel(), choices: [], usage: lastUsage })}\n\n`,
+          `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: responseModel, choices: [], usage: lastUsage })}\n\n`,
         );
       };
 
@@ -1374,7 +1385,7 @@ async function serveChatCompletions(
                           id,
                           object: 'chat.completion.chunk',
                           created,
-                          model: getCurrentModel(),
+                          model: responseModel,
                           usage: null,
                         };
 
@@ -1508,7 +1519,7 @@ async function serveChatCompletions(
             id,
             object: 'chat.completion.chunk',
             created,
-            model: getCurrentModel(),
+            model: responseModel,
             choices: [
               {
                 index: 0,
@@ -1673,7 +1684,13 @@ async function serveChatCompletions(
         id: `chatcmpl-${randomUUID()}`,
         object: 'chat.completion',
         created: Math.floor(Date.now() / 1000),
-        model: getCurrentModel(),
+        model:
+          useDialogue && s
+            ? chatResponseModel(requestedModel, responseModel, {
+                userId,
+                key: s.key,
+              })
+            : responseModel,
         choices: [
           {
             index: 0,

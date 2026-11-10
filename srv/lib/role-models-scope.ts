@@ -104,9 +104,10 @@ interface EffectiveModel {
 export function effectiveRoleModels(
   userId: string,
   key: string,
+  requestModel?: string,
 ): Record<RoleName, EffectiveModel> {
   const settings = getRoleModels(userId, key);
-  const request = dialogueRequestModel(userId, key);
+  const request = requestModel ?? dialogueRequestModel(userId, key);
   const dialogueDefaults = {
     model: deployModel(),
     plannerModel: process.env.LLM_AGENT_PLANNER_MODEL?.trim() || undefined,
@@ -156,4 +157,15 @@ export function effectiveRoleModels(
     };
   }
   return result;
+}
+
+export function chatResponseModel(
+  requestedModel: string | undefined,
+  fallback: string,
+  dialogue?: { userId: string; key: string },
+): string {
+  return dialogue
+    ? (effectiveRoleModels(dialogue.userId, dialogue.key, requestedModel)
+        .coordinator.model ?? fallback)
+    : (currentRoleModel('coordinator') ?? requestedModel ?? fallback);
 }

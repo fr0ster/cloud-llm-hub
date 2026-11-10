@@ -19,7 +19,11 @@ import {
   chatRequestModel,
 } from './lib/role-model-headers';
 import { getRoleModels } from './lib/role-model-settings';
-import { currentRoleModel, withRoleModels } from './lib/role-models-scope';
+import {
+  chatResponseModel,
+  currentRoleModel,
+  withRoleModels,
+} from './lib/role-models-scope';
 import { runWithRequestLlms } from './lib/session-llms';
 import {
   measureRequest,
@@ -55,6 +59,7 @@ import { getAgentConfig, isAiCoreConfigured } from './agent-config';
 import {
   closeDestination,
   getCurrentDestination,
+  getCurrentModel,
   getSmartAgent,
   isAgentReady,
   isDestinationClosed,
@@ -560,8 +565,10 @@ async function serveMessages(
   // established for (resolved above from x-sap-destination / session). Passing
   // it explicitly ensures the agent's MCP tools match the connection — without
   // it, getSmartAgent would fall to the configured default destination.
+  let responseModel: string;
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
+    responseModel = chatResponseModel(resolvedModel.model, getCurrentModel());
     handle = await getSmartAgent(
       currentRoleModel('coordinator') ?? resolvedModel.model,
       destination,
@@ -602,6 +609,8 @@ async function serveMessages(
   const caller = authenticatedCaller.caller;
   log.info('MCP caller', caller);
   const callerExposition = caller.exposition;
+
+  context.protocol.model = responseModel;
 
   let pipeline: PipelineSession;
   try {
@@ -742,7 +751,12 @@ async function serveMessages(
       return await streamDialogue({
         stream: early,
         protocol: 'anthropic',
-        model: String(context.protocol.model),
+        model: () =>
+          chatResponseModel(
+            resolvedModel.model,
+            responseModel,
+            s ? { userId, key: s.key } : undefined,
+          ),
         context,
         agent: chatAgent as ReturnType<typeof dialogueChat>,
         source: chatAgent.streamProcess(messages, agentOpts),
@@ -931,6 +945,12 @@ async function serveMessages(
 
     // --- Non-streaming ---
     const result = await runAgent(() => chatAgent.process(messages, agentOpts));
+    if (useDialogue && s)
+      context.protocol.model = chatResponseModel(
+        resolvedModel.model,
+        responseModel,
+        { userId, key: s.key },
+      );
 
     if (result.ok) {
       if (

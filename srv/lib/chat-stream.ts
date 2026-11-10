@@ -103,7 +103,7 @@ export type ChatStream = ReturnType<typeof chatStream>;
 export async function streamDialogue(opts: {
   stream: ChatStream;
   protocol: 'openai' | 'anthropic';
-  model: string;
+  model: string | (() => string);
   context?: ApiRequestContext;
   agent: ReturnType<typeof dialogueChat>;
   source: AsyncIterable<Result<DialogueStreamChunk, OrchestratorError>>;
@@ -134,9 +134,17 @@ export async function streamDialogue(opts: {
       tasks: usage.tasks?.filter((task) => !deliveredTasks.has(task.id)),
     });
   };
+  let ready!: () => void;
+  const firstChunk = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  let model: string | undefined;
+  const responseModel = () =>
+    (model ??= typeof opts.model === 'function' ? opts.model() : opts.model);
   const push = (chunk: Chunk) =>
     new Promise<void>((written) => {
       queue.push({ chunk, written });
+      ready();
       wake?.();
     });
   const source = (async function* () {
@@ -160,7 +168,9 @@ export async function streamDialogue(opts: {
     id,
     object: 'chat.completion.chunk',
     created: Math.floor(Date.now() / 1000),
-    model: opts.model,
+    get model() {
+      return responseModel();
+    },
   };
   const delta = (content: string, finish_reason: string | null = null) =>
     stream.out.write(
@@ -169,8 +179,10 @@ export async function streamDialogue(opts: {
   let usage: LlmStreamChunk['usage'];
   const consuming = (async () => {
     try {
+      await firstChunk;
       if (protocol === 'anthropic') {
         if (!opts.context) throw new Error('Missing Anthropic request context');
+        opts.context.protocol.model = responseModel();
         for await (const event of new AnthropicApiAdapter().transformStream(
           source,
           opts.context,
@@ -317,6 +329,7 @@ export async function streamDialogue(opts: {
       failure = error;
     }
     closed = true;
+    ready();
     wake?.();
     await consuming;
     opts.onEnd?.(text);
