@@ -281,9 +281,9 @@ describe('LLM-only guard', () => {
       source.indexOf('async function buildLlmOnlyAgent('),
       source.indexOf('export function getDestinationInitWaitMs('),
     );
-    expect(build).toContain('No MCP tools are available');
+    expect(build).toContain('SAP tools are unavailable');
     expect(build).toContain(
-      'No action of any kind (SAP operations, storing or searching collection documents via tools, checks, delegation) can run in this session. Never report an action as done or started.',
+      'You cannot store, change or delete records or collections, run SAP operations, checks or delegation. Never report an action as done or started.',
     );
     expect(build).toContain('handle.agent = guardLlmOnlyAgent(inner, {');
     // The classifier only when the variable is set: config.llm.classifierModel
@@ -436,4 +436,14 @@ describe('LLM-only guard', () => {
     await guarded.process(messages);
     expect(chat.mock.calls[0][2].signal.aborted).toBe(true);
   });
+});
+
+test('collection search passes the guard and classifier instructions permit reads', async () => {
+  const { guarded, agent, chat } = setup('{"action":false,"language":"en"}');
+  await guarded.process('Search my collection');
+  expect(agent.process).toHaveBeenCalledWith('Search my collection', undefined);
+  expect(chat.mock.calls[0][0][0].content).toContain(
+    'Searching, reading and listing collection documents are not actions.',
+  );
+  expect(chat.mock.calls[0][0][0].content).not.toContain('store/change/search');
 });

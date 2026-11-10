@@ -36,6 +36,18 @@ import { usageRuntime } from './usage/runtime';
 
 export { runWithDialogueRagTools } from './dialogue-rag-scope';
 
+/** LLM-only read tools are available independently of retrieval relevance. */
+export const llmOnlyReadToolSelection: IToolSelectionStrategy = {
+  name: 'llm-only-read-tools',
+  select() {
+    return localRagTools(false, true).map(({ name }) => ({
+      text: `Tool: ${name}`,
+      metadata: { id: `tool:${name}`, name },
+      score: 1,
+    }));
+  },
+};
+
 /** References must remain readable even when relevance selection drops them. */
 export const dialogueResultToolSelection: IToolSelectionStrategy = {
   name: 'dialogue-result-readers',
@@ -59,13 +71,20 @@ const removedNames = new Set([
   'rag_correct',
   'rag_deprecate',
 ]);
-export function localRagTools(coordinator = false): McpTool[] {
-  return buildRagToolSchemas(coordinator).map(({ function: tool }) => ({
-    name: tool.name,
-    description: tool.description,
-    inputSchema: tool.parameters,
-    annotations: { readOnlyHint: ragToolEffect(tool.name) === 'read' },
-  }));
+export function localRagTools(
+  coordinator = false,
+  readOnly = false,
+): McpTool[] {
+  return buildRagToolSchemas(coordinator)
+    .filter(
+      ({ function: tool }) => !readOnly || ragToolEffect(tool.name) === 'read',
+    )
+    .map(({ function: tool }) => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.parameters,
+      annotations: { readOnlyHint: ragToolEffect(tool.name) === 'read' },
+    }));
 }
 
 /** Inside recording and result caps so local calls retain the same evidence. */
@@ -75,10 +94,12 @@ export class LocalRagMcpClient implements IMcpClient {
     private readonly inner: IMcpClient,
     private readonly registry?: () => CollectionRegistry,
     private readonly coordinator = false,
+    private readonly readOnly = false,
   ) {
     this.healthCheck = inner.healthCheck?.bind(inner);
   }
   async listTools(options?: CallOptions): Promise<Result<McpTool[], McpError>> {
+    if (this.readOnly) return { ok: true, value: localRagTools(false, true) };
     const result = await this.inner.listTools(options);
     if (!result.ok) return result;
     const imported = new Map(
@@ -113,6 +134,14 @@ export class LocalRagMcpClient implements IMcpClient {
     args: Parameters<IMcpClient['callTool']>[1],
     options?: CallOptions,
   ): Promise<Result<McpToolResult, McpError>> {
+    if (this.readOnly && (!isRagTool(name) || ragToolEffect(name) !== 'read'))
+      return {
+        ok: true,
+        value: {
+          isError: true,
+          content: 'Tool unavailable in a session without SAP tools.',
+        },
+      };
     if (name === submitVerdictTool.name)
       return {
         ok: true,
@@ -145,7 +174,12 @@ export class LocalRagMcpClient implements IMcpClient {
       };
     if (!isRagTool(name)) return this.inner.callTool(name, args, options);
     const identity = getRagCallerIdentity();
-    const userId = getRequestUserId() ?? '';
+    const userId = getRequestUserId();
+    if (!userId)
+      return {
+        ok: true,
+        value: { isError: true, content: 'Authenticated user required.' },
+      };
     const sessionKey = getRequestSessionId();
     const permissions = currentProfileTools() ?? { allows: () => true };
     const value = await executeRagTool(

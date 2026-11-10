@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
+- LLM-only sessions can search and read collections with RAG tools; collection writes and SAP actions remain unavailable.
+
 - Requests without a collection selection no longer have the top results from every collection injected into their context.
 
 ## [10.9.3] - 2026-11-10

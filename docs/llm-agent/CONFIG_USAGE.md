@@ -514,3 +514,5 @@ written as decimal digits (with the legacy zero exception for tool results).
 Blank values count as unset. Invalid limits fail startup naming the variable.
 Effective worker model and limit values supplied by configuration report
 `source: 'config'`; session settings report `source: 'user'`.
+
+LLM-only sessions support read-only RAG tools to search and read collections. Collection writes and SAP actions are refused.

@@ -1,10 +1,12 @@
 import { HandlerExporter } from '@mcp-abap-adt/lib/handlers';
+import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
 import {
   MCPClientWrapper,
   McpClientAdapter,
 } from '@mcp-abap-adt/llm-agent-mcp';
 import { CompositeSkillManager } from '../../srv/lib/composite-skill-manager';
+import { ragToolEffect, ragToolNames } from '../../srv/lib/rag-tool-catalogue';
 import * as skillsPool from '../../srv/lib/skills-pool';
 import * as reviewer from '../../srv/lib/step-reviewer';
 import { isReadOnlyTools } from '../../srv/request-session';
@@ -42,6 +44,17 @@ test.each(['waiting', 'unreachable'] as const)(
     buildMock.mockResolvedValue({ agent: workerAgent, ragStores: {} });
     try {
       await agentManager.buildLlmOnlyAgent(config, why);
+      const clients = withMcpClients.mock.calls.at(-1)?.[0];
+      expect(clients).toHaveLength(1);
+      expect(await clients?.[0].listTools()).toMatchObject({
+        value: ragToolNames
+          .filter((name) => ragToolEffect(name) === 'read')
+          .map((name) => ({ name })),
+      });
+      expect(
+        jest.mocked(SmartAgentBuilder).mock.calls.at(-1)?.[0]?.agent
+          ?.maxIterations,
+      ).toBe(config.agent.maxIterations);
       const calls = jest.mocked(SmartAgentBuilder).mock.calls;
       expect(calls.at(-1)?.[0]?.prompts?.system).toContain(
         'Mandatory base instructions',
@@ -70,7 +83,7 @@ const withCoordinator = jest.fn();
 const withDagCoordinator = jest.fn();
 const withStepperCoordinator = jest.fn();
 const withSkillManager = jest.fn();
-const withMcpClients = jest.fn();
+const withMcpClients = jest.fn<void, [IMcpClient[]]>();
 const withMcpFailureClassifier = jest.fn();
 const withToolCache = jest.fn();
 const buildMock = jest.fn();
