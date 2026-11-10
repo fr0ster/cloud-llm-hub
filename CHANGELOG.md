@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.9.1] - 2026-11-10
+
 ### Fixed
 
 - Catalog model requests wait for the shared initial load and retry failed loads on chat, MCP, session settings, dialogue restore, and profile validation paths.
