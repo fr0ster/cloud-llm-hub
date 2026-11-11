@@ -4,16 +4,17 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [10.10.0] - 2026-11-11
+
 ### Added
 
 - Object-cluster tool search with separate reader/writer budgets and role-filtered expansion.
 - Generated tool-object snapshot guards against upstream drift.
+- Tests guard against duplicate tools across the shared corpus, role collections, embedding bundle, and model search results.
 
 ### Changed
 
 - Writer tool texts emphasize object keywords; planners delegate one system action per step.
-
-- Tests guard against duplicate tools across the shared corpus, role collections, embedding bundle, and model search results.
 
 ## [10.9.4] - 2026-11-11
 
