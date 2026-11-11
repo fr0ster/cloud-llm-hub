@@ -148,7 +148,9 @@ parameter out. Add one only when you actually need to change the behaviour:
 | `LLM_AGENT_EMBEDDING_MODEL` | `text-embedding-3-small` | Only when your provider names the model differently |
 | `LLM_AGENT_RAG_TYPE` | `in-memory` (keyword-only) | Set to `vector` for semantic tool selection — requires a reachable embeddings endpoint |
 | `DESTINATION_MAPPING` | empty | Only for CALM or other external callers that address systems as `DEV.100` instead of a destination name |
-| `LLM_AGENT_RAG_QUERY_K` | `15` in `mta.yaml` (code fallback is `5`) | Tuning how many tools reach the model |
+| `LLM_AGENT_RAG_QUERY_K` | `15` in `mta.yaml` (code fallback is `5`) | Legacy budget for other RAG stores |
+| `LLM_AGENT_TOOLS_K_READER` | `2` | Reader seed tools per query; positive integer |
+| `LLM_AGENT_TOOLS_K_WRITER` | `5` | Writer seed tools per query; positive integer. Write roles expand object clusters within their allowed tools |
 
 For Scenario B, replace the AI Core block with `LLM_AGENT_PROVIDER`, `LLM_AGENT_API_KEY` and
 `LLM_AGENT_BASE_URL`, and leave the AI Core resource inactive.

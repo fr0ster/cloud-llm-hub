@@ -51,6 +51,7 @@ sk.json
 !xs-security.json
 !**/xs-security.json
 !**/package.json
+!srv/tool-objects.json
 !srv/tool-intents.json
 !srv/tool-embeddings.json
 !tools/tool-rag-queries.json

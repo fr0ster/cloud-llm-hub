@@ -273,7 +273,9 @@ it.each(['coordinator', 'planner-create', 'planner-revise'])(
       );
       expect(prompt).toContain('otherwise retirement must be reversible');
       expect(prompt).toContain(
-        'split only for parallel work, size limits or a result that needs its own check',
+        name.startsWith('planner-')
+          ? 'Each step performs exactly ONE action on the system'
+          : 'split only for parallel work, size limits or a result that needs its own check',
       );
     } else {
       expect(prompt).toContain(

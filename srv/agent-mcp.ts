@@ -54,7 +54,7 @@ import { tokenUsageToWire } from './lib/usage-wire';
  *
  *   - `list_destinations` — the SAP systems this instance can reach, so the
  *     planner can choose one.
- *   - `execute_step` — delegate ONE concrete step to the SmartAgent executor on
+ *   - `execute_step` — delegate exactly ONE operation per call to the SmartAgent executor on
  *     the chosen destination and return its text.
  *
  * The division of labour lives in `execute_step`'s description: the connecting
