@@ -55,7 +55,18 @@ describe('role-scoped tool collections', () => {
   it('offers each corpus tool once when a caller searches both role collections', async () => {
     const reader = fakeStore();
     const writer = fakeStore();
-    const rag = new ExpositionFilteringRag(reader, writer);
+    const rag = new ExpositionFilteringRag(
+      reader,
+      writer,
+      undefined,
+      3,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      1000,
+      1000,
+    );
     const backend = rag.writer();
     if (!backend) throw new Error('no writer');
     const docs = getSharedCorpusDocs();
@@ -178,19 +189,32 @@ describe('role-scoped tool collections', () => {
         metadata: { id: `tool:${id}`, exposition: 'high' },
       });
     }
-    const rag = new ExpositionFilteringRag(reader as never, writer as never);
+    const rag = new ExpositionFilteringRag(
+      reader,
+      writer,
+      undefined,
+      3,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      2,
+      2,
+    );
 
     const res = await rag.query({} as never, 2, {
       ragFilter: { exposition: ['readonly', 'search', 'system', 'high'] },
     });
     if (!res.ok) throw new Error('query failed');
     const ids = res.value.map((r) => r.metadata.id);
-    expect(ids).toEqual([
-      'tool:GetPackageContents',
-      'tool:GetPackageTree',
+    expect(ids.slice(0, 4)).toEqual([
       'tool:DeleteClass',
       'tool:DeleteTable',
+      'tool:GetPackageContents',
+      'tool:GetPackageTree',
     ]);
+    expect(ids).toContain('tool:ActivateClass');
+    expect(ids).not.toContain('tool:DeleteDomain');
   });
 
   it('with no role at all, only the reader collection is searched', async () => {

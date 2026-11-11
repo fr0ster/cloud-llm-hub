@@ -100,3 +100,34 @@ describe('buildToolDocs', () => {
     expect(create.text).toContain('ActivateZzThing (activate zz thing)');
   });
 });
+
+it('puts object keywords first only for writer tools and isolates unit tests', () => {
+  const docs = buildToolDocs([
+    {
+      name: 'CreateDdl',
+      description: '[read-only] Create a CDS view',
+      inputSchema: {},
+    },
+    {
+      name: 'CreateCdsUnitTest',
+      description: 'Create a CDS view unit test',
+      inputSchema: {},
+    },
+    { name: 'GetTable', description: 'reader text', inputSchema: {} },
+  ]).entries;
+  expect(byName(docs, 'CreateDdl').text).toMatch(
+    /^Tool: CreateDdl\nObjects: CDS view/,
+  );
+  expect(byName(docs, 'CreateDdl').text).not.toContain('[read-only]');
+  expect(byName(docs, 'CreateCdsUnitTest').text).toContain(
+    'Operation: create the unit test.',
+  );
+  expect(byName(docs, 'CreateCdsUnitTest').text).not.toContain('CDS view');
+  const cache: Record<string, { enriched: string }> = JSON.parse(
+    require('node:fs').readFileSync(
+      require('node:path').join(__dirname, '../../srv/tool-intents.json'),
+      'utf8',
+    ),
+  );
+  expect(byName(docs, 'GetTable').text).toBe(cache.GetTable.enriched);
+});

@@ -57,7 +57,9 @@ goal sizes, states, durations and hashed session keys. They never contain goal t
 | `LLM_AGENT_RESOURCE_GROUP` | `default` | SAP AI Core resource group |
 | `LLM_AGENT_MCP_DESTINATION` | empty | Default BTP destination; empty means LLM-only mode |
 | `LLM_AGENT_RAG_TYPE` | `in-memory` | Legacy switch: `in-memory` is keyword-only; any other value takes the vector path. Still read — it is the default the per-class variables below fall back to |
-| `LLM_AGENT_RAG_QUERY_K` | `5` in code, **`15` in `mta.yaml`** | Tools returned per query by the tool-intent RAG |
+| `LLM_AGENT_RAG_QUERY_K` | `5` in code, **`15` in `mta.yaml`** | Legacy RAG budget for other stores; tool collections use the budgets below |
+| `LLM_AGENT_TOOLS_K_READER` | `2` | Reader collection seed tools per query; positive integer |
+| `LLM_AGENT_TOOLS_K_WRITER` | `5` | Writer collection seed tools per query; positive integer. Write roles expand found object clusters within their allowed tools |
 | `LLM_AGENT_EMBEDDER` | `sap-ai-core` if `LLM_AGENT_PROVIDER=sap-ai-sdk`, else `openai` | `sap-ai-core` \| `openai` \| `ollama`. Only accepted when at least one RAG class below is not `in-memory` |
 | `LLM_AGENT_EMBEDDING_MODEL` | `text-embedding-3-small` (`ollama`: none — required) | Embedding model id |
 | `LLM_AGENT_EMBEDDING_DIMENSION` | ? | Optional positive integer for Qdrant task-result vectors. Otherwise resolved once per provider/embedder from existing hub collections with the same embedder (dimensions must agree), then from one constant-text embedding probe. Target collection 404 is expected for a new session. HANA/Postgres retain 1536. |

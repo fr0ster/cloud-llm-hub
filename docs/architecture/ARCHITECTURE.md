@@ -1163,7 +1163,9 @@ graph TB
 | `LLM_AGENT_MODE` | `agent-config.ts` | SmartAgent mode (`smart` \| `pass` \| `hard`, default: `smart`) |
 | `LLM_AGENT_MAX_ITERATIONS` | `agent-config.ts` | Max tool-loop iterations (default: `10`) |
 | `LLM_AGENT_RAG_TYPE` | `agent-config.ts`, `agent-manager.ts` | Selects the tool-intent RAG mode. `in-memory` (the default) is keyword-only and builds **no** embedder (`agent-manager.ts`: `if (ragType === 'in-memory') return null`). **Any other value** — every deployment template sets `vector` — takes the vector path, with the embedder chosen by `LLM_AGENT_PROVIDER`. There is no separate Ollama backend, despite the `RagType` union in `agent-config.ts` still naming `ollama` |
-| `LLM_AGENT_RAG_QUERY_K` | `agent-config.ts` | Number of tools selected per query by the tool-intent RAG. Code fallback is `5`, but `mta.yaml` sets `15` — that is what a BTP deployment runs with. Too-low K makes outcome-phrased requests miss tools |
+| `LLM_AGENT_RAG_QUERY_K` | `agent-config.ts` | Legacy budget for other RAG stores; tool search uses separate reader/writer budgets |
+| `LLM_AGENT_TOOLS_K_READER` | `agent-config.ts` | Reader collection seed budget, default `2`; positive integer |
+| `LLM_AGENT_TOOLS_K_WRITER` | `agent-config.ts` | Writer collection seed budget, default `5`; positive integer. Write roles expand found object clusters within their allowed tools |
 | `LLM_AGENT_CLASSIFIER_MODEL` | `agent-config.ts` (`llm.classifierModel`) | Model for helper calls (classification, query translation); falls back to `LLM_AGENT_MODEL` |
 | `LLM_AGENT_SKILL_RAG_K` | `agent-config.ts` (`agent.skillRagK`) | Most `skill:*` entries one tool-RAG query surfaces (default `3`; `0` disables skills). Skills and tools compete for one top-K |
 | `LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK` | `agent-config.ts` (`agent.allowLlmOnlyFallback`) | `true`: a request naming no destination may fall back to the LLM-only agent when the default destination is not ready |

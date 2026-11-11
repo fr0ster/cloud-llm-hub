@@ -294,8 +294,12 @@ export interface AgentConfig {
     /** Max recent messages to include from client history (older excluded, available via RAG) */
     historyRecencyWindow?: number;
 
-    /** Number of tools selected by RAG per query (default: 5) */
+    /** Legacy query budget for other RAG stores (default: 5). */
     ragQueryK: number;
+    /** Reader tool seeds per query (default: 2). */
+    kReader?: number;
+    /** Writer tool seeds per query (default: 5). */
+    kWriter?: number;
 
     /**
      * Most `skill:*` entries one RAG query may surface (`LLM_AGENT_SKILL_RAG_K`,
@@ -735,6 +739,8 @@ export function loadAgentConfig(): AgentConfig {
       ragType,
       historyRecencyWindow,
       ragQueryK,
+      kReader: parseToolSearchK(process.env.LLM_AGENT_TOOLS_K_READER, 2),
+      kWriter: parseToolSearchK(process.env.LLM_AGENT_TOOLS_K_WRITER, 5),
       toolGate: parseToolGate(process.env.LLM_AGENT_TOOL_GATE),
       toolGateTimeoutMs: parseToolGateTimeoutMs(
         process.env.LLM_AGENT_TOOL_GATE_TIMEOUT_MS,
@@ -957,4 +963,17 @@ export function dialogueMaxCorrections(): number {
       `Invalid ${name}: expected a nonnegative whole number`,
     );
   return value;
+}
+
+/** Positive integer budgets for the two tool collections. */
+export function parseToolSearchK(
+  value: string | undefined,
+  fallback: number,
+): number {
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error('Tool search K must be a positive integer');
+  }
+  return parsed;
 }

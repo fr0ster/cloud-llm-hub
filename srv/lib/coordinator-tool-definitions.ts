@@ -6,7 +6,7 @@ import { getAvailableDestinations } from './btp-destinations';
  * moment it lists tools — this is what makes the role split self-documenting.
  */
 export const EXECUTE_STEP_DESCRIPTION = [
-  'Delegate ONE step to the ABAP/SAP executor agent — describe the OUTCOME you want, and get its result.',
+  'Delegate exactly ONE operation per call to the ABAP/SAP executor agent — describe the OUTCOME you want, and get its result.',
   '',
   'You say WHAT, the executor decides HOW. State the goal in plain business/domain terms. Do NOT prescribe the approach — do not name SAP transactions, GUI steps, MCP tools, function modules, or endpoints. Your theoretical knowledge of HOW something is usually done in SAP (e.g. "run ST22", "use SE11") is very likely WRONG here: the executor works through ADT and picks the right tool itself — telling it HOW only pushes it down a wrong path. Name the subject/outcome (the WHAT — e.g. "the latest short dumps", "table VBAK’s definition"), never the method (the HOW). If it cannot do something, it will tell you.',
   '',

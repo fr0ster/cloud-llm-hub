@@ -29,6 +29,7 @@ import {
   currentRoleModel,
   roleOfProfile,
 } from './lib/role-models-scope';
+import { objectToolText, toolObjects } from './lib/tool-objects';
 import { resolverFor, TrustResolver } from './lib/trust-resolver';
 import { TrustStore } from './lib/trust-store';
 import { reportWorkerActivity } from './lib/worker-activity';
@@ -332,6 +333,8 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     private readonly toolGate: 'classifier' | 'off' = getAgentConfig().agent
       .toolGate ?? 'classifier',
     private readonly agentMode = getAgentConfig().agent.mode,
+    private readonly kReader = getAgentConfig().agent.kReader ?? 2,
+    private readonly kWriter = getAgentConfig().agent.kWriter ?? 5,
   ) {}
 
   /** The store a given exposition's entries live in. */
@@ -570,6 +573,8 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     // many skills live in this store (the writer tracks them), so add that headroom
     // to GUARANTEE k tools are reachable even when all skills rank first.
     const overFetchK = k * 3 + this.vectorizedSkillIds.size;
+    const readerFetchK = this.kReader * 3 + this.vectorizedSkillIds.size;
+    const writerFetchK = this.kWriter * 3 + this.vectorizedSkillIds.size;
 
     // TWO SEPARATE SEARCHES, each with its own k — the budget is not divided.
     // Step 1 always runs against the reader collection. Step 2 runs against the
@@ -582,9 +587,9 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     const grantsWriteLevel = (allowedExpositions ?? []).some(
       (e) => collectionFor(e) === 'writer',
     );
-    const searches = [this.inner.query(embedding, overFetchK, cleanOpts)];
+    const searches = [this.inner.query(embedding, readerFetchK, cleanOpts)];
     if (this.writerStore && grantsWriteLevel) {
-      searches.push(this.writerStore.query(embedding, overFetchK, cleanOpts));
+      searches.push(this.writerStore.query(embedding, writerFetchK, cleanOpts));
     }
     // Skills are not role-gated: their own store is always searched, and the
     // skill cap below applies across every collection as before.
@@ -609,24 +614,65 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     // let a write tool that outscores every read tool (Delete* on a $TMP query)
     // take the read tools' places. Skills are capped once, across both.
     const capPerCollection = (collections: RagResult[][]) => {
-      const tools = collections.flatMap((rows) =>
+      const tools = collections.flatMap((rows, index) =>
         rows
           .filter((r) => !isSkillId(r.metadata.id))
           .sort((a, b) => b.score - a.score)
-          .slice(0, k),
+          .slice(0, index === 0 ? this.kReader : this.kWriter),
       );
       const skills = collections
         .flat()
         .filter((r) => isSkillId(r.metadata.id))
         .sort((a, b) => b.score - a.score)
         .slice(0, this.skillRagK);
-      return [...tools, ...skills];
+      const found = tools.sort((a, b) => b.score - a.score);
+      const names = new Set(
+        found.map((row) => String(row.metadata.id).replace(/^tool:/, '')),
+      );
+      const expanded: RagResult[] = [];
+      if (grantsWriteLevel) {
+        const objects = new Set(
+          [...names].map((name) => toolObjects[name]).filter(Boolean),
+        );
+        for (const doc of getSharedCorpusDocs()) {
+          if (
+            !toolObjects[doc.name] ||
+            !objects.has(toolObjects[doc.name]) ||
+            names.has(doc.name)
+          )
+            continue;
+          const row: RagResult = {
+            text: doc.text,
+            score: 0,
+            metadata: {
+              id: doc.id,
+              name: doc.name,
+              exposition: doc.exposition,
+            },
+          };
+          if (isAllowed(row)) {
+            expanded.push(row);
+            names.add(doc.name);
+          }
+        }
+      }
+      const unique = found.filter(
+        (row, index) =>
+          found.findIndex(
+            (other) =>
+              String(other.metadata.id).replace(/^tool:/, '') ===
+              String(row.metadata.id).replace(/^tool:/, ''),
+          ) === index,
+      );
+      return [...unique, ...expanded, ...skills];
     };
 
     if (result.ok) {
       log.debug('RAG tool search results', {
         k,
         overFetchK,
+        kReader: this.kReader,
+        kWriter: this.kWriter,
         totalResults: result.value.length,
         // The EFFECTIVE value, not the requested one: with no role the filter
         // falls back to reader level, and logging 'all' there would describe
@@ -1695,6 +1741,17 @@ export function buildToolDocs(tools: ToolDocInput[]): {
     }
   }
 
+  for (const entry of entries) {
+    if (collectionFor(getToolExpositionMap().get(entry.name)) !== 'writer')
+      continue;
+    const original = basicEntries.find((tool) => tool.name === entry.name);
+    const text = objectToolText(entry.name, original?.description ?? '');
+    if (text) {
+      entry.text = text;
+      const basic = uncached.find((tool) => tool.name === entry.name);
+      if (basic) basic.text = text;
+    }
+  }
   return { entries, uncached };
 }
 

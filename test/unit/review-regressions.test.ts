@@ -83,12 +83,16 @@ it('checker offered tools exclude writes even with developer permissions', async
       ragFilter: { exposition: ['readonly', 'high'] },
     }),
   );
-  expect(result.ok && result.value.map((r) => r.metadata.id)).toEqual([
-    'tool:GetClass',
-    'tool:GetProgram',
-    'tool:CheckClass',
-    'tool:GetATCFindings',
-  ]);
+  const ids = result.ok ? result.value.map((r) => r.metadata.id) : [];
+  // Seeds plus their object clusters, cut to read-only tools for the checker.
+  expect(ids).toEqual(
+    expect.arrayContaining(['tool:GetClass', 'tool:GetProgram']),
+  );
+  expect(ids).toContain('tool:CheckClass');
+  expect(ids).not.toContain('tool:CreateClass');
+  expect(
+    ids.filter((id) => /^tool:(Create|Update|Delete|Activate)/.test(id ?? '')),
+  ).toEqual([]);
 });
 
 it('keeps both users and both sessions independently and deletes only the named owner', async () => {
