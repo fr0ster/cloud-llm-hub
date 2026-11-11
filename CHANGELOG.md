@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- Tests guard against duplicate tools across the shared corpus, role collections, embedding bundle, and model search results.
+
 ## [10.9.4] - 2026-11-11
 
 ### Changed
