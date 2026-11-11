@@ -1,8 +1,11 @@
+import { TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
 import {
   collectionFor,
   ExpositionFilteringRag,
+  getSharedCorpusDocs,
   runWithRequestConnection,
 } from '../../srv/agent-manager';
+import { resolveExposition } from '../../srv/lib/exposition';
 
 type Row = { score: number; metadata: Record<string, unknown> };
 
@@ -20,8 +23,12 @@ function fakeStore() {
     deleted,
     query: async () => {
       stats.queries++;
-      return { ok: true as const, value: rows };
+      return {
+        ok: true as const,
+        value: rows.map((row) => ({ text: '', ...row })),
+      };
     },
+    getById: async () => ({ ok: true as const, value: null }),
     writer: () => ({
       upsertRaw: async (id: string, _t: string, m: Record<string, unknown>) => {
         rows.push({ score: 0.9, metadata: { id, ...m } });
@@ -45,6 +52,40 @@ function fakeStore() {
 // collection that role searches — so it cannot reach the model's context at
 // all, rather than being removed afterwards by a filter that might not run.
 describe('role-scoped tool collections', () => {
+  it('offers each corpus tool once when a caller searches both role collections', async () => {
+    const reader = fakeStore();
+    const writer = fakeStore();
+    const rag = new ExpositionFilteringRag(reader, writer);
+    const backend = rag.writer();
+    if (!backend) throw new Error('no writer');
+    const docs = getSharedCorpusDocs();
+    for (const doc of docs) {
+      const result = await backend.upsertRaw(doc.id, doc.text, {
+        name: doc.name,
+        exposition: doc.exposition,
+      });
+      expect(result.ok).toBe(true);
+    }
+    expect(reader.rows.length).toBeGreaterThan(0);
+    expect(writer.rows.length).toBeGreaterThan(0);
+    const result = await rag.query(
+      new TextOnlyEmbedding('tools'),
+      docs.length,
+      {
+        ragFilter: {
+          exposition: resolveExposition(['MCP_Reader', 'MCP_Developer']),
+        },
+      },
+    );
+    if (!result.ok) throw new Error('query failed');
+    const names = result.value.map((row) => row.metadata.name);
+    expect(reader.stats.queries).toBe(1);
+    expect(writer.stats.queries).toBe(1);
+    expect(names).toHaveLength(docs.length);
+    expect(new Set(names).size).toBe(names.length);
+    expect([...names].sort()).toEqual(docs.map((doc) => doc.name).sort());
+  });
+
   it('routes by the ROLE boundary, not by whether a tool modifies', () => {
     // `high` holds ~70 read tools (GetPackage, GetTable…). Routing by semantics
     // would put those in the reader collection and drift from the boundary the
