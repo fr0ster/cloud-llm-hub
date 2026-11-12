@@ -25,6 +25,7 @@ import {
   resolveRequestModel,
 } from './lib/model-policy';
 import { callOptionsFor } from './lib/rag-caller';
+import { isRagMigrationReady } from './lib/rag-readiness';
 import {
   allowedDialogueRoleModel,
   currentRoleModel,
@@ -1331,6 +1332,7 @@ let providers: Providers | null = null;
 
 /** Called once by server startup; components get instances, not config. */
 export function initProviders(p: Providers): void {
+  historyProviders.clear();
   // Provider-only consumers do not need access stores. Validate the backend
   // when an agent or caller first requests access, retaining real persistence.
   initHubRagAccess(() =>
@@ -1357,9 +1359,9 @@ export function getQueryEmbedder(): IQueryEmbedder | undefined {
   return e ? agentQueryEmbedder(e, 'collection-retrieval') : undefined;
 }
 
-/** False until server startup has built the providers; requests wait for it. */
+/** False until startup has built and migrated every hub provider. */
 export function isProvidersReady(): boolean {
-  return providers !== null;
+  return providers !== null && isRagMigrationReady();
 }
 
 // ---------------------------------------------------------------------------
@@ -1589,7 +1591,11 @@ export function getSharedHistoryRag(): SessionHistoryRouter {
  * The provider of the `session` class's backend: the collections' provider
  * when both classes are on the same backend, else one of its own.
  */
+const historyProviders = new Map<RagBackendKind, IRagProvider>();
+
 export function historyProvider(kind: RagBackendKind): IRagProvider {
+  const cached = historyProviders.get(kind);
+  if (cached) return cached;
   const p = getProviders();
   if (p.stores.backendOf('persistent') === kind && p.collections)
     return p.collections;
@@ -1606,6 +1612,7 @@ export function historyProvider(kind: RagBackendKind): IRagProvider {
   );
   if (!provider)
     throw new Error(`no history provider for session backend "${kind}"`);
+  historyProviders.set(kind, provider);
   return provider;
 }
 

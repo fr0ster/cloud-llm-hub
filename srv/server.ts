@@ -1,4 +1,9 @@
 import { ensureModelCatalog } from './lib/model-catalog';
+import {
+  isRagMigrationReady,
+  migrateHubRagProviders,
+} from './lib/rag-migration';
+import { ragReadinessGuard } from './lib/rag-readiness';
 import { RAG_WRITE_MAX_BYTES } from './lib/rag-write-operations';
 import { requireAdminRole } from './lib/require-admin-role';
 import {
@@ -42,6 +47,7 @@ import {
   collectionsRestoreStatus,
   getCollectionRegistry,
   getDestinationMappings,
+  historyProvider,
   initProviders,
   initSmartAgents,
   isProvidersReady,
@@ -581,6 +587,9 @@ cds.on('bootstrap', (app: Application) => {
     lifecycleHooks(createSessionRecordStore(sessions, getAgentConfig().rag)),
   );
 
+  // First HTTP middleware: default deny also covers routes added during bootstrap.
+  app.use(ragReadinessGuard(isRagMigrationReady));
+
   // Before CAP's own /health (mounted after `bootstrap`), so this one answers.
   // 200 { status: 'UP' } as CAP's does; with persistent collections, 503 with
   // the restore's state and cause until the restore has succeeded.
@@ -1033,6 +1042,20 @@ cds.on('served', () => {
     })
     .then(async (p) => {
       initProviders(p);
+      const persistentKind = p.stores.backendOf('persistent');
+      const sessionKind = p.stores.backendOf('session');
+      const migrations = [
+        { provider: p.collections ?? null, kind: persistentKind },
+      ];
+      if (['hana-vector', 'pg-vector', 'qdrant'].includes(sessionKind))
+        migrations.push({
+          provider: historyProvider(sessionKind),
+          kind: sessionKind,
+        });
+      const migration = await migrateHubRagProviders(migrations, (line) =>
+        log.info(line),
+      );
+      if (!migration.ok) throw migration.error;
       registerRagRoutes(ragRouter, getCollectionRegistry());
       // Restore and validate configuration before initializing agents.
       await startCollectionRestore();
