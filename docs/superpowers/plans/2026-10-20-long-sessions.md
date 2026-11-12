@@ -1,5 +1,7 @@
 # Long Sessions Implementation Plan
 
+> Historical design: v32 supersedes the history and access model below. Current history uses session-owned `h_hist_<hash>` collections, deleted when the session ends, preserved on process shutdown. Sessions have stable bindings; trace IDs are request identifiers. Administrators have no read bypass. See [current configuration](../../llm-agent/CONFIG_USAGE.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A hub session with a server-issued key that holds one ABAP connection between requests, lives until it is closed or idle past its TTL, and is revived from a session record after a hub restart.

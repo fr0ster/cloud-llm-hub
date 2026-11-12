@@ -132,3 +132,47 @@ test('all invalid owner tuples are reported before any valid row is copied', asy
     catalog?.ok && catalog.value.records.map((record) => record.name),
   ).toEqual(['h_history']);
 });
+
+test.each(['conflict', 'unbound', 'error'])(
+  'migration preflights session bindings: %s',
+  async (scenario) => {
+    initHubRagAccess(createHubRagAccess(null, 'in-memory'));
+    const bindings = getHubRagAccess().access.bindings;
+    if (scenario === 'conflict') await bindings.bind('legacy-session', 'bob');
+    const provider = legacyProvider(
+      ['clean-session', 'legacy-session'].map((sessionId) => ({
+        id: sessionId,
+        text: 'private record contents',
+        metadata: {
+          userId: 'alice',
+          sessionId,
+          owner: JSON.stringify(['alice', sessionId]),
+        },
+      })),
+    );
+    const get =
+      scenario === 'error'
+        ? jest
+            .spyOn(bindings, 'getUserId')
+            .mockRejectedValue(new Error('private store error'))
+        : undefined;
+    const result = await migrateSharedHistory(provider);
+    get?.mockRestore();
+    const catalog = await provider.describeCollections?.();
+    if (scenario === 'unbound') {
+      expect(result).toEqual({ ok: true, value: { moved: 2 } });
+      expect(await bindings.getUserId('legacy-session')).toEqual({
+        ok: true,
+        value: 'alice',
+      });
+    } else {
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error('Expected refusal');
+      expect(result.error.message).toContain('legacy-session');
+      expect(result.error.message).not.toContain('private');
+      expect(
+        catalog?.ok && catalog.value.records.map((record) => record.name),
+      ).toEqual(['h_history']);
+    }
+  },
+);

@@ -31,7 +31,7 @@ export async function restampHubStores(
     // Record writers use the provider default dimension and never embed text.
     const zeroVector = new Array<number>(PROVIDER_DEFAULT_DIMENSION).fill(0);
     for (const record of catalog.value.records) {
-      if (!stores.has(record.storeName)) continue;
+      if (!stores.has(record.name)) continue;
       const opened = await provider.openCollection(record);
       if (!opened.ok) return opened;
       const { rag } = opened.value;
@@ -49,7 +49,7 @@ export async function restampHubStores(
         if (!page.ok) return page;
         for (const row of page.value.records) {
           const { sessionId, userId, ...metadata } = row.metadata;
-          const planner = record.storeName === 'h_planner_memory';
+          const planner = record.name === 'h_planner_memory';
           const keys = new Set<string>();
           const check = (source: string, target: string) => {
             const sourceValue = row.metadata[source];
@@ -92,7 +92,7 @@ export async function restampHubStores(
           }
           if (userId !== undefined) metadata.authorUserId = userId;
           if (
-            record.storeName !== 'h_planner_memory' &&
+            record.name !== 'h_planner_memory' &&
             !writer.upsertPrecomputedRaw
           )
             return {
@@ -102,7 +102,7 @@ export async function restampHubStores(
               ),
             };
           const result =
-            record.storeName === 'h_planner_memory'
+            record.name === 'h_planner_memory'
               ? await writer.upsertRaw(row.id, row.text, metadata)
               : await writer.upsertPrecomputedRaw?.(
                   row.id,

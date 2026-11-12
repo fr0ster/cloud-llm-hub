@@ -1232,7 +1232,6 @@ async function open(
         destinationHandle.toolTrustFor?.(coordinatorToolResolver)(name),
       profileSource: source,
       planAuthor: new BriefPlanAuthor({
-        caller: boundCaller.value,
         source,
         runner: profileRunner,
         notes: async (options) => {

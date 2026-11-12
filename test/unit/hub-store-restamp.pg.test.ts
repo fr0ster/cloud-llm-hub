@@ -372,3 +372,50 @@ it('filters before top-k and scopes PG scans and deletion to the planner owner',
   const empty = await rag.scan();
   expect(empty.ok && empty.value.records).toHaveLength(0);
 });
+
+it('restamps prefixed physical stores using their logical catalog name', async () => {
+  const provider = newProvider();
+  for (const name of ['h_dialogue', 'h_planner_memory']) {
+    const storeName = `cloud_llm_hub_${name}`;
+    const created = await provider.createCollection(storeName, {
+      scope: 'global',
+      collectionName: name,
+    });
+    if (!created.ok) throw created.error;
+    await real.query(
+      `INSERT INTO "${pgl.schema}"."rag_documents" (collection, id, text, vector, metadata) VALUES ($1, $2, $3, $4::vector, $5::jsonb)`,
+      [
+        storeName,
+        'legacy',
+        'legacy text',
+        JSON.stringify(new Array<number>(DIM).fill(0)),
+        JSON.stringify({ sessionId: 's1', userId: 'alice' }),
+      ],
+    );
+  }
+  expect(await restampHubStores(provider)).toEqual({
+    ok: true,
+    value: { rewritten: 2 },
+  });
+  const rows = await real.query(
+    `SELECT collection, metadata FROM "${pgl.schema}"."rag_documents" ORDER BY collection`,
+  );
+  expect(rows.rows).toEqual([
+    {
+      collection: 'cloud_llm_hub_h_dialogue',
+      metadata: {
+        ownerScope: 'global',
+        hubSessionId: 's1',
+        authorUserId: 'alice',
+      },
+    },
+    {
+      collection: 'cloud_llm_hub_h_planner_memory',
+      metadata: {
+        ownerScope: 'global',
+        namespace: 's1',
+        authorUserId: 'alice',
+      },
+    },
+  ]);
+});

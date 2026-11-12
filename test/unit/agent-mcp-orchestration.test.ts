@@ -162,7 +162,6 @@ async function callBoundPlanAuthor(
   if (!bound.ok) throw bound.error;
   const retrieval = await plannerMemory.plannerSessionOptions('alice', 'owned');
   const author = new BriefPlanAuthor({
-    caller: bound.value,
     source: mockSource,
     runner: {
       preparePlanAuthor: async () => ({ ok: true, value: mockAuthorAgent }),

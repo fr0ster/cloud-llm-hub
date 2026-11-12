@@ -1,5 +1,7 @@
 # Persistent RAG Collections — Implementation Plan
 
+> Historical design: v32 supersedes the history and access model below. Current history uses session-owned `h_hist_<hash>` collections, deleted when the session ends, preserved on process shutdown. Sessions have stable bindings; trace IDs are request identifiers. Administrators have no read bypass. See [current configuration](../../llm-agent/CONFIG_USAGE.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** User and session collections and session history persist on `hana-vector` (HDI, shared layout), `pg-vector` or `qdrant`, chosen by configuration, through the llm-agent providers. Collections are restored at startup, and the current RAG functionality is verified on HANA in a test subaccount.

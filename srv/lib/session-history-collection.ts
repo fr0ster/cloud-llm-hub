@@ -674,6 +674,32 @@ export async function migrateSharedHistory(
       }
       batches.push({ storeName: record.storeName, prefix, groups });
     }
+    const refused = new Set<string>();
+    const bindings = getHubRagAccess().access.bindings;
+    for (const { groups } of batches) {
+      for (const [sessionId, group] of groups) {
+        try {
+          const binding = await bindings.getUserId(sessionId);
+          if (!binding.ok) {
+            refused.add(sessionId);
+          } else if (binding.value === null || binding.value === undefined) {
+            const bound = await bindings.bind(sessionId, group.userId);
+            if (!bound.ok) refused.add(sessionId);
+          } else if (binding.value !== group.userId) {
+            refused.add(sessionId);
+          }
+        } catch {
+          refused.add(sessionId);
+        }
+      }
+    }
+    if (refused.size > 0)
+      return {
+        ok: false,
+        error: new RagError(
+          `Shared history session binding refused: ${[...refused].sort().join(', ')}`,
+        ),
+      };
     // Every source row has passed validation before the first target is created.
     for (const { storeName, prefix, groups } of batches) {
       for (const [sessionId, group] of groups) {
