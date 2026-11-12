@@ -1,3 +1,5 @@
+export type ToolClusterStrategy = 'all-seeds' | 'top-writer';
+
 import { deployModel } from './lib/deploy-model';
 import {
   configuredExecutionLimits,
@@ -298,8 +300,10 @@ export interface AgentConfig {
     ragQueryK: number;
     /** Reader tool seeds per query (default: 2). */
     kReader?: number;
-    /** Writer tool seeds per query (default: 5). */
+    /** Writer tool seeds per query (default: 1). */
     kWriter?: number;
+    /** Object cluster expansion strategy (default: all-seeds). */
+    toolClusterStrategy?: ToolClusterStrategy;
 
     /**
      * Most `skill:*` entries one RAG query may surface (`LLM_AGENT_SKILL_RAG_K`,
@@ -740,7 +744,10 @@ export function loadAgentConfig(): AgentConfig {
       historyRecencyWindow,
       ragQueryK,
       kReader: parseToolSearchK(process.env.LLM_AGENT_TOOLS_K_READER, 2),
-      kWriter: parseToolSearchK(process.env.LLM_AGENT_TOOLS_K_WRITER, 5),
+      kWriter: parseToolSearchK(process.env.LLM_AGENT_TOOLS_K_WRITER, 1),
+      toolClusterStrategy: parseToolClusterStrategy(
+        process.env.LLM_AGENT_TOOLS_CLUSTER_STRATEGY,
+      ),
       toolGate: parseToolGate(process.env.LLM_AGENT_TOOL_GATE),
       toolGateTimeoutMs: parseToolGateTimeoutMs(
         process.env.LLM_AGENT_TOOL_GATE_TIMEOUT_MS,
@@ -976,4 +983,15 @@ export function parseToolSearchK(
     throw new Error('Tool search K must be a positive integer');
   }
   return parsed;
+}
+
+/** Select how found tools seed object cluster expansion for write roles. */
+export function parseToolClusterStrategy(
+  value: string | undefined,
+): ToolClusterStrategy {
+  if (value === undefined) return 'all-seeds';
+  if (value === 'all-seeds' || value === 'top-writer') return value;
+  throw new Error(
+    'LLM_AGENT_TOOLS_CLUSTER_STRATEGY must be one of: all-seeds, top-writer',
+  );
 }

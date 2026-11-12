@@ -59,7 +59,8 @@ goal sizes, states, durations and hashed session keys. They never contain goal t
 | `LLM_AGENT_RAG_TYPE` | `in-memory` | Legacy switch: `in-memory` is keyword-only; any other value takes the vector path. Still read — it is the default the per-class variables below fall back to |
 | `LLM_AGENT_RAG_QUERY_K` | `5` in code, **`15` in `mta.yaml`** | Legacy RAG budget for other stores; tool collections use the budgets below |
 | `LLM_AGENT_TOOLS_K_READER` | `2` | Reader collection seed tools per query; positive integer |
-| `LLM_AGENT_TOOLS_K_WRITER` | `5` | Writer collection seed tools per query; positive integer. Write roles expand found object clusters within their allowed tools |
+| `LLM_AGENT_TOOLS_K_WRITER` | `1` | Writer collection seed tools per query; positive integer. Write roles expand found object clusters within their allowed tools |
+| `LLM_AGENT_TOOLS_CLUSTER_STRATEGY` | `all-seeds` | Write-role cluster expansion: `all-seeds` (default) uses every found tool; `top-writer` uses only the highest-scoring writer tool with an object. Found tools and role filtering are preserved |
 | `LLM_AGENT_EMBEDDER` | `sap-ai-core` if `LLM_AGENT_PROVIDER=sap-ai-sdk`, else `openai` | `sap-ai-core` \| `openai` \| `ollama`. Only accepted when at least one RAG class below is not `in-memory` |
 | `LLM_AGENT_EMBEDDING_MODEL` | `text-embedding-3-small` (`ollama`: none — required) | Embedding model id |
 | `LLM_AGENT_EMBEDDING_DIMENSION` | ? | Optional positive integer for Qdrant task-result vectors. Otherwise resolved once per provider/embedder from existing hub collections with the same embedder (dimensions must agree), then from one constant-text embedding probe. Target collection 404 is expected for a new session. HANA/Postgres retain 1536. |
@@ -99,6 +100,16 @@ goal sizes, states, durations and hashed session keys. They never contain goal t
 | `LLM_AGENT_MODE`, `LLM_AGENT_MAX_ITERATIONS` | see `agent-config.ts` | Agent loop behaviour |
 | `LLM_AGENT_HISTORY_RECENCY_WINDOW` | see `agent-config.ts` | How much history reaches the model |
 | `LLM_AGENT_MCP_ENDPOINT` | — | **Inert.** Read and logged, consumed by nothing |
+
+Offline measurement on 91 RW prompts with the Developer role:
+
+| Strategy | kWriter | Target cluster complete | Average tools | Average foreign tools |
+| --- | --- | --- | --- | --- |
+| all-seeds | 1 | 91/91 | 11.5 | 4.5 |
+| all-seeds (previous default) | 5 | 91/91 | 20.7 | 13.6 |
+| top-writer | 1 | 78/91 | 9.2 | 3.3 |
+
+The default is `all-seeds` with `LLM_AGENT_TOOLS_K_WRITER=1`: it preserved complete target clusters in this sample while reducing tool count and foreign tools. Consumers can override either environment variable.
 
 All `LLM_GATEKEEPER_*` values: unset means off. A value that is not plain digits for a positive integer (`0x10`, `1e3`, ` 5` and `5.0` are refused) — or a combination the notes above forbid — stops `cds serve` before it listens, naming the variable. The values in force are logged at startup and returned in `Health()`.
 
