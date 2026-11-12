@@ -345,7 +345,7 @@ jest.mock('../../srv/agent-manager', (): object => ({
             displayName: id,
             description: '',
             scope: 'user',
-            owner: 'alice',
+            owner: id.endsWith('-bob') ? 'bob' : 'alice',
             createdAt: new Date(0).toISOString(),
             documentCount: 1,
             sourceCount: 1,
@@ -368,7 +368,11 @@ jest.mock('../../srv/collection-ids', (): object => ({
   ...jest.requireActual<typeof import('../../srv/collection-ids')>(
     '../../srv/collection-ids',
   ),
-  resolveRouteId: async (): Promise<string> => 'selected',
+  resolveRouteId: async (
+    _registry: object,
+    entry: string,
+    userId: string,
+  ): Promise<string> => `${entry}-${userId}`,
 }));
 jest.mock('../../srv/lib/session-connection-pool', (): object => ({
   SessionConnectionFactory: class {

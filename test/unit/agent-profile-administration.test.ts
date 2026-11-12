@@ -73,7 +73,10 @@ function source(id: string, userId = 'alice') {
 async function request(path: string, method = 'GET', body?: object) {
   return fetch(base + path, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      cookie: `clh_session=profile-${mockIdentity.id}`,
+    },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
 }
@@ -210,7 +213,6 @@ test('global REST writes require admin; owner writes and canonical create/update
     collectionAccessError(
       { scope: 'user', owner: 'alice', collectionKind: 'agents' },
       'bob',
-      true,
       'write',
     )?.status,
   ).toBe(404);

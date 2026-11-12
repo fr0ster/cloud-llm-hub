@@ -202,7 +202,11 @@ test('REST lists state, validates toggles, and changes all chunks of only one up
     routes,
     'GET',
     '/rag/collections/:id/documents',
-    makeReq({ params: { id }, path: '/documents' }),
+    makeReq({
+      sessionId: 'record-toggle-alice',
+      params: { id },
+      path: '/documents',
+    }),
   );
   expect(listed._body).toMatchObject({
     documents: [

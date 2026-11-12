@@ -5,8 +5,8 @@ jest.mock('../../srv/agent-manager', () => ({
 jest.mock('../../srv/collection-ids', () => ({ resolveRouteId: jest.fn() }));
 
 import {
-  type IRag,
   type Message,
+  type SmartAgentRagStores,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
@@ -21,7 +21,10 @@ import {
   RAG_CONTEXT_MARKER,
   userTextOf,
 } from '../../srv/lib/rag-context-marker';
-import { CollectionSearchRag } from '../../srv/rag-collections';
+import {
+  CollectionRegistry,
+  CollectionSearchRag,
+} from '../../srv/rag-collections';
 
 const req = (header?: string, body: unknown = {}) => ({
   headers: header === undefined ? {} : { 'x-rag-collections': header },
@@ -61,7 +64,15 @@ const registry = {
 };
 beforeEach(() => {
   jest.clearAllMocks();
-  jest.mocked(getCollectionRegistry).mockReturnValue(registry as never);
+  jest.mocked(getCollectionRegistry).mockReturnValue(
+    new Proxy(new CollectionRegistry(), {
+      get(target, property, receiver) {
+        return property in registry
+          ? Reflect.get(registry, property)
+          : Reflect.get(target, property, receiver);
+      },
+    }),
+  );
   jest.mocked(resolveRouteId).mockResolvedValue('physical');
   registry.degradedOf.mockResolvedValue(undefined);
   registry.getEnabled.mockReturnValue(undefined);
@@ -86,7 +97,7 @@ it('does not enumerate, inject stores, or search without a selection', async () 
     req(),
     messages,
     'alice',
-    undefined,
+    'session',
     cds.log('test'),
   );
   expect(result.messages).toBe(messages);
@@ -112,7 +123,7 @@ it('keeps the structured 503 refusal for an explicit selection when restore fail
         req('selected'),
         [],
         'alice',
-        undefined,
+        'session',
         cds.log('test'),
       ),
     ).toEqual({
@@ -140,7 +151,7 @@ it('reads header or body ids, with header precedence', () => {
 });
 
 it('resolves ids, appends context with provenance, and restores stores', async () => {
-  const original: Record<string, IRag> = {};
+  const original: SmartAgentRagStores = {};
   const agent = { deps: { ragStores: original } };
   const step = collectionRetrieval(agent);
   const messages: Message[] = [{ role: 'user', content: 'question' }];
@@ -153,7 +164,7 @@ it('resolves ids, appends context with provenance, and restores stores', async (
       cds.log('test'),
     );
     expect(resolveRouteId).toHaveBeenCalledWith(
-      registry,
+      getCollectionRegistry(),
       'selected',
       'alice',
       'session',
@@ -166,10 +177,14 @@ it('resolves ids, appends context with provenance, and restores stores', async (
     expect(userTextOf(result.messages[0])).toBe('question');
     expect(messages[0].content).toBe('question');
     expect(agent.deps.ragStores).toEqual({
-      selected: expect.any(CollectionSearchRag),
+      selected: {
+        name: 'selected',
+        rag: expect.any(CollectionSearchRag),
+        owner: { scope: 'user', userId: 'alice' },
+      },
     });
     expect(query).toHaveBeenCalledWith(expect.anything(), 3);
-    const injected = await agent.deps.ragStores.selected.query(
+    const injected = await agent.deps.ragStores.selected.rag.query(
       new TextOnlyEmbedding('question'),
       1,
     );
@@ -198,7 +213,7 @@ it('keeps the original messages when no result passes the threshold', async () =
           req('selected'),
           messages,
           'alice',
-          undefined,
+          'session',
           cds.log('test'),
         )
       ).messages,
@@ -222,7 +237,7 @@ it.each([409, 503])(
           req('selected'),
           [],
           'alice',
-          undefined,
+          'session',
           cds.log('test'),
         ),
       ).toEqual({
@@ -251,7 +266,7 @@ it('restores injected stores after a search failure', async () => {
         req('selected'),
         [{ role: 'user', content: 'question' }],
         'alice',
-        undefined,
+        'session',
         cds.log('test'),
       ),
     ).rejects.toThrow('search failed');
@@ -287,7 +302,7 @@ it('respects an explicit empty collection list', async () => {
     req(undefined, { rag_collections: [] }),
     messages,
     'alice',
-    undefined,
+    'session',
     cds.log('test'),
   );
   expect(result.messages).toBe(messages);
@@ -333,7 +348,7 @@ it('explicit agents selections never reach knowledge stores or degraded checks',
     req('agents'),
     [{ role: 'user', content: 'question' }],
     'alice',
-    undefined,
+    'session',
     cds.log('test'),
   );
   expect(query).not.toHaveBeenCalled();

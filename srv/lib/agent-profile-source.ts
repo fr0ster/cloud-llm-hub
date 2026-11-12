@@ -108,10 +108,7 @@ export class AgentProfileSource implements IAgentProfileSource {
           Boolean(this.selection.userId) &&
           this.selection.userId !== 'anonymous' &&
           meta.owner === this.selection.userId);
-    if (
-      !eligible ||
-      collectionAccessError(meta, this.selection.userId, false, 'read')
-    )
+    if (!eligible || collectionAccessError(meta, this.selection.userId, 'read'))
       throw new ProfileFailure('unavailable');
     const identities = new Set<string>();
     for (const document of collection.documents) {

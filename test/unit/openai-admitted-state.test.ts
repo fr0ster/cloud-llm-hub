@@ -53,7 +53,11 @@ jest.mock('../../srv/collection-ids', () => ({
   resolveRouteId: (_registry: unknown, id: string) => id,
 }));
 
-import { type Message, RagError } from '@mcp-abap-adt/llm-agent';
+import {
+  type Message,
+  RagError,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import type { Request, Response } from 'express';
 import * as manager from '../../srv/agent-manager';
 import {
@@ -92,6 +96,7 @@ const body = () => ({
 beforeEach(async () => {
   harness.reset();
   const registry = manager.getCollectionRegistry();
+  // Exercise retrieval for the caller's own collections without an admin bypass.
   for (const id of ['col-1', 'col-2']) {
     if (!(await registry.getCollection(id))) {
       await registry.createCollection({
@@ -100,10 +105,10 @@ beforeEach(async () => {
         displayName: id,
         description: '',
         scope: 'user',
-        owner: 'bob',
+        owner: harness.user.id,
       });
     }
-    await registry.setEnabled('bob', id, true);
+    await registry.setEnabled(harness.user.id, id, true);
   }
 });
 afterEach(() => {
@@ -205,7 +210,7 @@ describe('the RAG stores a request names', () => {
         deps: {
           ragStores: Record<
             string,
-            { query(e: unknown, k: number, o: unknown): Promise<unknown> }
+            { rag: import('@mcp-abap-adt/llm-agent').IRag }
           >;
         };
       };
@@ -215,9 +220,13 @@ describe('the RAG stores a request names', () => {
     harness.process = async (m: unknown) => {
       const msgs = m as Message[];
       prompt = String(msgs[msgs.length - 1].content);
-      agentSearch = await handle.agent.deps.ragStores['col-1'].query({}, 3, {
-        ragFilter: { namespace: 'bob:DEST', exposition: ['readonly'] },
-      });
+      agentSearch = await handle.agent.deps.ragStores['col-1'].rag.query(
+        new TextOnlyEmbedding('hi'),
+        3,
+        {
+          ragFilter: { namespace: 'bob:DEST', exposition: ['readonly'] },
+        },
+      );
       return { ok: true, value: { content: 'done', stopReason: 'stop' } };
     };
 
@@ -231,7 +240,13 @@ describe('the RAG stores a request names', () => {
       value: [
         {
           ...doc,
-          metadata: { ...doc.metadata, source: 'user:col-1/d1', trust: 3.5 },
+          metadata: {
+            ...doc.metadata,
+            source: 'user:col-1/d1',
+            trust: 3.5,
+            ownerScope: 'user',
+            userId: harness.user.id,
+          },
         },
       ],
     });

@@ -68,6 +68,10 @@ beforeEach(async () => {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
+    Object.assign(req, { sessionId: 'test-rag-session' });
+    next();
+  });
+  app.use((req, _res, next) => {
     if (req.headers['x-test-nan']) req.body = { trust: Number.NaN };
     next();
   });
@@ -260,7 +264,7 @@ test.each([true, false])(
     }
   },
 );
-test('admin sees another owner ordinary collection but trust stays fixed', async () => {
+test('admin cannot see or change trust in another owner ordinary collection', async () => {
   const id = userCollectionId('other', 'bob');
   await registry.createCollection({
     id,
@@ -270,9 +274,9 @@ test('admin sees another owner ordinary collection but trust stays fixed', async
     scope: 'user',
     owner: 'bob',
   });
-  expect((await rest(id, 3)).status).toBe(409);
+  expect((await rest(id, 3)).status).toBe(404);
   expect((await mcp(id, 3)).structuredContent).toMatchObject({
-    error: { code: 'TRUST_FIXED' },
+    error: { code: 'NOT_FOUND' },
   });
 });
 test('base skills are fixed and missing skill/collection/record is NOT_FOUND', async () => {

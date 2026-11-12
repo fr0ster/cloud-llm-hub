@@ -201,7 +201,7 @@ test('worker without profile RAG tools can discover, select and read only own ta
 for (const dialogueRole of ['worker', 'coordinator'] as const) {
   test.each([
     { userId: 'alice', sessionKey: 'another-session' },
-    { userId: 'bob', sessionKey: scope.sessionKey },
+    { userId: 'bob', sessionKey: 'bob-gate-session' },
   ])(
     `${dialogueRole} task-results isolation: $userId/$sessionKey`,
     async (other) => {
@@ -253,7 +253,7 @@ test.each(['worker', 'coordinator'] as const)(
   async (dialogueRole) => {
     for (const other of [
       { userId: 'alice', sessionKey: 'another-session' },
-      { userId: 'bob', sessionKey: scope.sessionKey },
+      { userId: 'bob', sessionKey: 'bob-gate-session' },
     ]) {
       liveSession(other.userId, other.sessionKey);
       const write = (collection: string) =>

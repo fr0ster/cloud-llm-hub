@@ -1,17 +1,58 @@
-import type { IRag, IUsageRecorder, Message } from '@mcp-abap-adt/llm-agent';
-import { formatTrustTag } from '@mcp-abap-adt/llm-agent';
+import type {
+  IRag,
+  IUsageRecorder,
+  Message,
+  SmartAgentRagStores,
+} from '@mcp-abap-adt/llm-agent';
+import { formatTrustTag, stampRagOwner } from '@mcp-abap-adt/llm-agent';
 import type cds from '@sap/cds';
 import type { Request } from 'express';
 import { getCollectionRegistry, getQueryEmbedder } from '../agent-manager';
 import { resolveRouteId } from '../collection-ids';
-import { CollectionSearchRag } from '../rag-collections';
-import { CollectionBackendError } from './collection-persistence';
+import { type CollectionMeta, CollectionSearchRag } from '../rag-collections';
+import { checkAccess } from './collection-access';
+import { CollectionBackendError, catalogOwner } from './collection-persistence';
 import { collectionEnabled } from './collection-toggle';
+import { bindCaller } from './rag-caller';
 import { withRagContext } from './rag-context-marker';
 import { resolverFor } from './trust-resolver';
 import { trustedRetrievalStore } from './trusted-retrieval';
 import { retrievalRecord } from './usage/hub-records';
 import { usageRuntime } from './usage/runtime';
+
+/** Library-facing reads retain the catalog identity, including legacy untagged rows.
+ * Hub document reads and exports continue stripping library bookkeeping.
+ */
+function ownerBoundRetrievalRag(rag: IRag, meta: CollectionMeta): IRag {
+  const owner = catalogOwner(meta);
+  return new Proxy(rag, {
+    get(target, property) {
+      if (property === 'query')
+        return async (...args: Parameters<IRag['query']>) => {
+          const result = await target.query(...args);
+          return result.ok
+            ? {
+                ...result,
+                value: result.value.map((row) => {
+                  // The registry's raw store may carry its internal global tags.
+                  // The catalog is authoritative at the library-facing boundary.
+                  const {
+                    ownerScope: _ownerScope,
+                    userId: _userId,
+                    sessionId: _sessionId,
+                    roleId: _roleId,
+                    ...metadata
+                  } = row.metadata;
+                  return { ...row, metadata: stampRagOwner(metadata, owner) };
+                }),
+              }
+            : result;
+        };
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
 
 export function requestedCollectionIds(
   req: Pick<Request, 'headers' | 'body'>,
@@ -37,7 +78,7 @@ export function requestedCollectionIds(
  */
 export function collectionRetrieval(agent: object) {
   const deps = Reflect.get(agent, 'deps') as {
-    ragStores: Record<string, IRag>;
+    ragStores: SmartAgentRagStores;
   };
   const originalRagStores = deps.ragStores;
   return {
@@ -64,6 +105,7 @@ export function collectionRetrieval(agent: object) {
           messages?: never;
         }
     > {
+      if (sessionId) await bindCaller(sessionId, userId, false);
       const measureRetrieval = usage && usageRuntime()?.enabled('request');
       let chunks = 0;
       let chars = 0;
@@ -112,13 +154,18 @@ export function collectionRetrieval(agent: object) {
               const registry = getCollectionRegistry();
               const ids: string[] = [];
               for (const entry of ragCollectionIds) {
-                const id = await resolveRouteId(
-                  registry,
-                  entry,
-                  userId,
-                  sessionId,
-                  false,
-                );
+                const exact = entry.includes('__')
+                  ? await registry.getCollection(entry)
+                  : null;
+                const id =
+                  exact?.id ??
+                  (await resolveRouteId(
+                    registry,
+                    entry,
+                    userId,
+                    sessionId,
+                    false,
+                  ));
                 if (id !== undefined) ids.push(id);
               }
               return ids;
@@ -136,6 +183,7 @@ export function collectionRetrieval(agent: object) {
           requested.includes('uploads');
         if (
           meta &&
+          (await checkAccess(meta, userId, sessionId, false)) &&
           meta.collectionKind !== 'agents' &&
           meta.collectionKind !== 'task-results' &&
           (uploads || collectionEnabled(registry, userId, sessionId, meta))
@@ -177,11 +225,18 @@ export function collectionRetrieval(agent: object) {
           for (const [key, store] of Object.entries(dynamicStores)) {
             const meta = await registry.getCollection(key);
             if (meta)
-              mergedStores[key] = trustedRetrievalStore(
-                new CollectionSearchRag(store),
-                () => resolverFor(registry),
-                meta,
-              );
+              mergedStores[key] = {
+                name: key,
+                owner: catalogOwner(meta),
+                rag: ownerBoundRetrievalRag(
+                  trustedRetrievalStore(
+                    new CollectionSearchRag(store),
+                    () => resolverFor(registry),
+                    meta,
+                  ),
+                  meta,
+                ),
+              };
           }
           deps.ragStores = mergedStores;
           log.info('Dynamic RAG collections injected', {

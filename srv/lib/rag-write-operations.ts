@@ -12,7 +12,7 @@ import {
   sessionCollectionTtlMs,
 } from '../rag-collections';
 import { isReadOnlyTools } from '../request-session';
-import { collectionAccessError } from './collection-access';
+import { checkAccess, collectionAccessError } from './collection-access';
 import { CollectionBackendError } from './collection-persistence';
 import { assertCollectionWrite } from './collection-write-scope';
 
@@ -78,22 +78,26 @@ export async function setRagTrust(
       false,
     ));
   const meta = id ? await registry.getCollection(id) : null;
-  const hidden =
-    meta &&
-    collectionAccessError(meta, identity.userId, identity.admin, 'read');
+  const hidden = meta && collectionAccessError(meta, identity.userId, 'read');
   if (
     !id ||
     !meta ||
     hidden ||
-    (meta.scope === 'session' && meta.sessionId !== identity.sessionId)
+    !(await checkAccess(
+      meta,
+      identity.userId,
+      identity.sessionId,
+      identity.admin,
+    ))
   )
     throw new RagWriteError('NOT_FOUND', 404, 'Collection not found');
-  const access = collectionAccessError(
-    meta,
-    identity.userId,
-    identity.admin,
-    'write',
-  );
+  if (meta.scope === 'global' && !identity.admin)
+    throw new RagWriteError(
+      'FORBIDDEN',
+      403,
+      'MCP_Admin role required for global collections',
+    );
+  const access = collectionAccessError(meta, identity.userId, 'write');
   if (access)
     throw new RagWriteError(
       access.status === 404 ? 'NOT_FOUND' : 'FORBIDDEN',
@@ -113,6 +117,20 @@ export async function setRagTrust(
   });
   if (refusal)
     throw new RagWriteError(refusal.code, refusal.status, refusal.code);
+  if (
+    !(await checkAccess(
+      meta,
+      identity.userId,
+      identity.sessionId,
+      identity.admin,
+      'write',
+    ))
+  )
+    throw new RagWriteError(
+      'TOOL_FORBIDDEN',
+      403,
+      'Collection write forbidden',
+    );
   if (input.record !== undefined) {
     const document = await registry.setRecordTrust(
       id,
@@ -156,13 +174,17 @@ export async function resolveRagWriteTarget(
   target: string,
   identity: RagWriteIdentity,
 ): Promise<string> {
-  const id = await resolveRouteId(
-    registry,
-    target,
-    identity.userId,
-    identity.sessionId,
-    false,
-  );
+  const exact = await registry.getCollection(target);
+  const id =
+    exact && target.includes('__')
+      ? exact.id
+      : await resolveRouteId(
+          registry,
+          target,
+          identity.userId,
+          identity.sessionId,
+          false,
+        );
   const meta = id ? await registry.getCollection(id) : null;
   if (!id || !meta)
     throw new RagWriteError(
@@ -170,14 +192,21 @@ export async function resolveRagWriteTarget(
       404,
       'Collection not found',
     );
-  const hidden = collectionAccessError(
-    meta,
-    identity.userId,
-    identity.admin,
-    'read',
-  );
-  if (hidden)
-    throw new RagWriteError('COLLECTION_NOT_FOUND', 404, hidden.message);
+  const hidden = collectionAccessError(meta, identity.userId, 'read');
+  if (
+    hidden ||
+    !(await checkAccess(
+      meta,
+      identity.userId,
+      identity.sessionId,
+      identity.admin,
+    ))
+  )
+    throw new RagWriteError(
+      'COLLECTION_NOT_FOUND',
+      404,
+      hidden?.message ?? 'Collection not found',
+    );
   if (meta.scope === 'global' && isReadOnlyTools())
     throw new RagWriteError(
       'TOOL_FORBIDDEN',
@@ -190,17 +219,32 @@ export async function resolveRagWriteTarget(
       403,
       'Agents collections are excluded',
     );
-  const refusal = collectionAccessError(
-    meta,
-    identity.userId,
-    identity.admin,
-    'write',
-  );
+  if (meta.scope === 'global' && !identity.admin)
+    throw new RagWriteError(
+      'FORBIDDEN',
+      403,
+      'MCP_Admin role required for global collections',
+    );
+  const refusal = collectionAccessError(meta, identity.userId, 'write');
   if (refusal)
     throw new RagWriteError(
       refusal.status === 404 ? 'COLLECTION_NOT_FOUND' : 'FORBIDDEN',
       refusal.status,
       refusal.message,
+    );
+  if (
+    !(await checkAccess(
+      meta,
+      identity.userId,
+      identity.sessionId,
+      identity.admin,
+      'write',
+    ))
+  )
+    throw new RagWriteError(
+      'TOOL_FORBIDDEN',
+      403,
+      'Collection write forbidden',
     );
   return id;
 }

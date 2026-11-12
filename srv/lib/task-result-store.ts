@@ -32,6 +32,17 @@ export function isTaskResultStoreWrite(
   );
 }
 
+/** Expose only the active write target to the hub access decision. */
+export function taskResultStoreWriteTarget(
+  collectionId: string,
+): StoreCapability | undefined {
+  const capability = storeWrites.getStore();
+  return capability?.collectionId === collectionId &&
+    capability.operation !== 'read'
+    ? capability
+    : undefined;
+}
+
 /** Foreign usage hooks, including derived recorders, never inherit a capability. */
 function unprivilegedUsage(usage: CallOptions['usage']): CallOptions['usage'] {
   if (!usage) return undefined;
