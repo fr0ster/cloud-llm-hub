@@ -1,9 +1,11 @@
+import { unwrapBuilderResult } from '@mcp-abap-adt/llm-agent-libs';
 import { loopReads, ReadDedup, readPage } from '../../srv/lib/read-dedup';
 import {
   createToolLoopWindow,
   digestRound,
 } from '../../srv/lib/tool-loop-window';
 import { withinToolResultBudget } from '../../srv/lib/tool-result-cap';
+import { testAccess } from './helpers/test-rag-access';
 
 test('pointers expire from the original round and reads are trace scoped', () => {
   const reads = new ReadDedup(2);
@@ -101,6 +103,12 @@ import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import { readLoopPage } from '../../srv/lib/read-dedup';
 import { toolLoopWindow } from '../../srv/lib/tool-loop-window';
 
+const ragCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+
 test('real agent loop advances reads with recorded rounds and isolates concurrent runs', async () => {
   const observed = new Map<string, Array<ReturnType<typeof readLoopPage>>>();
   const chats = new Map<string, number>();
@@ -154,19 +162,26 @@ test('real agent loop advances reads with recorded rounds and isolates concurren
       yield await chat(messages, tools, options);
     },
   };
-  const { agent } = await new SmartAgentBuilder({
-    skipModelValidation: true,
-    agent: { classificationEnabled: false, maxIterations: 8 },
-  })
-    .withMainLlm(llm)
-    .withMcpClients([client])
-    .withClassification(false)
-    .withMode('hard')
-    .withToolLoopContextStrategyFactory(() => createToolLoopWindow(2))
-    .build();
+  const { agent } = unwrapBuilderResult(
+    await new SmartAgentBuilder({
+      skipModelValidation: true,
+      agent: { classificationEnabled: false, maxIterations: 8 },
+    })
+      .withRagAccess(testAccess([ragCaller]))
+      .withMainLlm(llm)
+      .withMcpClients([client])
+      .withClassification(false)
+      .withMode('hard')
+      .withToolLoopContextStrategyFactory(() => createToolLoopWindow(2))
+      .build(),
+  );
   await Promise.all(
     ['one', 'two'].map((traceId) =>
-      agent.process('read', { trace: { traceId } }),
+      agent.process('read', {
+        sessionId: ragCaller.sessionId,
+        caller: ragCaller,
+        trace: { traceId },
+      }),
     ),
   );
   for (const trace of ['one', 'two']) {

@@ -24,6 +24,7 @@ import {
   resolveAgentModel,
   resolveRequestModel,
 } from './lib/model-policy';
+import { callOptionsFor } from './lib/rag-caller';
 import {
   allowedDialogueRoleModel,
   currentRoleModel,
@@ -104,6 +105,7 @@ import {
   QueryEmbedding,
   type RagMetadata,
   type RagResult,
+  stampRagOwner,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -117,6 +119,7 @@ import {
   SmartAgentBuilder,
   type SmartAgentHandle,
   SmartAgentSubAgent,
+  unwrapBuilderResult,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
   MCPClientWrapper,
@@ -133,6 +136,11 @@ import { runOutsideAdmission, trackCall } from './lib/admission-scope';
 import { boundHandlerExporter } from './lib/bound-handler-exporter';
 import { destinationRequiresCredentials } from './lib/destination-authentication';
 import { handlerBatchAvailability } from './lib/handler-batch-availability';
+import {
+  createHubRagAccess,
+  getHubRagAccess,
+  initHubRagAccess,
+} from './lib/rag-access';
 import { connectionSystemType } from './lib/system-identity-cache';
 import { createToolLoopWindow } from './lib/tool-loop-window';
 
@@ -380,7 +388,12 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     );
     const writer = target.writer?.() ?? this.inner.writer?.();
     if (!writer) throw new Error('Inner RAG is not editable');
-    const res = await writer.upsertRaw(id, text, rest, options);
+    const res = await writer.upsertRaw(
+      id,
+      text,
+      stampRagOwner(rest, { scope: 'global' }),
+      options,
+    );
     if (!res.ok) return res;
     return { ok: true as const, value: { id } };
   }
@@ -453,7 +466,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
         const res = await pick(id, metadata).upsertRaw(
           id,
           text,
-          metadata,
+          stampRagOwner(metadata ?? {}, { scope: 'global' }),
           options,
         );
         if (res.ok && id.startsWith('skill:')) seen.add(id);
@@ -500,7 +513,13 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
           const write =
             target.upsertPrecomputedRaw ?? inner.upsertPrecomputedRaw;
           if (!write) return { ok: true as const, value: undefined };
-          const res = await write(id, text, vector, metadata, options);
+          const res = await write(
+            id,
+            text,
+            vector,
+            stampRagOwner(metadata, { scope: 'global' }),
+            options,
+          );
           if (res.ok && id.startsWith('skill:')) seen.add(id);
           return res;
         },
@@ -976,7 +995,7 @@ import {
   logSkillsPool,
 } from './lib/skills-pool';
 import { systemToolTrust } from './lib/system-tool-trust';
-import { trustedSkillResults } from './lib/trusted-skill';
+import { skillDescriptionsRag, trustedSkillResults } from './lib/trusted-skill';
 import { CollectionRegistry } from './rag-collections';
 
 /**
@@ -1308,6 +1327,11 @@ let providers: Providers | null = null;
 
 /** Called once by server startup; components get instances, not config. */
 export function initProviders(p: Providers): void {
+  // Provider-only consumers do not need access stores. Validate the backend
+  // when an agent or caller first requests access, retaining real persistence.
+  initHubRagAccess(() =>
+    createHubRagAccess(p.collections ?? null, p.stores.backendOf('persistent')),
+  );
   providers = p;
 }
 
@@ -2979,6 +3003,7 @@ async function configureDestinationAgentBuilder(
       ].join('\n'),
     },
   })
+    .withRagAccess(getHubRagAccess().access)
     .withToolLoopContextStrategyFactory(() => createToolLoopWindow())
     .withToolTrust(builtInToolTrust(roleResolver))
     .withMainLlm(
@@ -3049,6 +3074,13 @@ async function configureDestinationAgentBuilder(
   // (which DOES run the tool-loop) keeps skills enabled.
   if (!opts?.skipSkills) {
     builder.withSkillManager(skillsPool.informationalSkills());
+    if (!opts?.skipRetrieval)
+      builder.addRagCollection({
+        name: 'skills',
+        rag: skillDescriptionsRag(toolsRag),
+        meta: { scope: 'global', displayName: 'Skill descriptions' },
+        idempotent: true,
+      });
   }
 
   // Share embedder across all RAG queries
@@ -3170,6 +3202,7 @@ export async function buildPlannerAgent(
       system,
     },
   })
+    .withRagAccess(getHubRagAccess().access)
     .withToolTrust(builtInToolTrust(roleResolver))
     .withMainLlm(plannerRecorder.trackOfferedTools(llm))
     .withMcpClients([plannerRecorder])
@@ -3184,7 +3217,7 @@ export async function buildPlannerAgent(
   // DialogueSession owns the coordinator history; authors use the tool window.
   if (authorClient)
     builder.withToolLoopContextStrategyFactory(() => createToolLoopWindow());
-  const handle = await builder.build();
+  const handle = unwrapBuilderResult(await builder.build());
   return handle.agent;
 }
 export function releasePlannerAgent(_agent: SmartAgent): void {}
@@ -3342,7 +3375,7 @@ function destinationProfileRunner(
         },
       );
       options?.signal?.throwIfAborted();
-      const handle = await builder.build();
+      const handle = unwrapBuilderResult(await builder.build());
       options?.signal?.throwIfAborted();
       return new SmartAgentSubAgent(
         profile.name,
@@ -3613,7 +3646,7 @@ export async function buildAgentForDestination(
   // actually matters — the one the executor worker's tool loop calls — is
   // wired inside `configureDestinationAgentBuilder`, which both this build and
   // `buildExecutorWorker` share.
-  const handle = await builder.build();
+  const handle = unwrapBuilderResult(await builder.build());
 
   // Expose recMcp on the handle so channel handlers can call
   // `recMcp.dropRequest(traceId)` in their `finally` block — nobody else
@@ -3678,7 +3711,7 @@ export async function buildExecutorWorker(
     toolsRag,
     config,
   );
-  const handle = await builder.build();
+  const handle = unwrapBuilderResult(await builder.build());
   const prepareDirect = (options?: CallOptions) =>
     prepareCompatibilityWorker(config, options, async (callOptions) => {
       const resolved = await resolve(callOptions);
@@ -3720,7 +3753,7 @@ export async function buildExecutorWorker(
         ),
       );
       callOptions.signal?.throwIfAborted();
-      const fresh = await freshBuilder.build();
+      const fresh = unwrapBuilderResult(await freshBuilder.build());
       callOptions?.signal?.throwIfAborted();
       return {
         agent: withConversationHistory(fresh.agent),
@@ -3737,6 +3770,7 @@ export async function buildExecutorWorker(
           const result = await prepared.scope(() =>
             prepared.agent.process(args[0], {
               ...args[1],
+              ...(args[1]?.caller ? callOptionsFor(args[1].caller) : {}),
               externalTools: [],
               externalResults: undefined,
             }),
@@ -3755,6 +3789,7 @@ export async function buildExecutorWorker(
           const iterator = prepared.agent
             .streamProcess(args[0], {
               ...args[1],
+              ...(args[1]?.caller ? callOptionsFor(args[1].caller) : {}),
               externalTools: [],
               externalResults: undefined,
             })
@@ -3894,6 +3929,7 @@ export async function buildLlmOnlyAgent(
       ),
     },
   })
+    .withRagAccess(getHubRagAccess().access)
     .withMcpClients([
       withToolResultCap(
         new DialogueRagMcpClient(emptyClient, undefined, false, true),
@@ -3922,7 +3958,7 @@ export async function buildLlmOnlyAgent(
   const e = getProviders().embedding;
   if (e) builder.withEmbedder(agentQueryEmbedder(e));
 
-  const handle = await builder.build();
+  const handle = unwrapBuilderResult(await builder.build());
   // `config.llm.classifierModel` defaults to the main model name, so only the
   // variable itself says that a classifier was chosen. Otherwise the decision
   // uses this request agent's immutable generation model.

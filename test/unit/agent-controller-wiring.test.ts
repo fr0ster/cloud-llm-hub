@@ -1,3 +1,11 @@
+import { bindTestCaller } from './helpers/bind-test-caller';
+
+const taskCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+
 import { HandlerExporter } from '@mcp-abap-adt/lib/handlers';
 import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
@@ -41,7 +49,11 @@ test.each(['waiting', 'unreachable'] as const)(
     ]);
     const spy = jest.spyOn(skillsPool, 'buildSkillsPool').mockReturnValue(pool);
     agentManager.initProviders(await startProviders(config));
-    buildMock.mockResolvedValue({ agent: workerAgent, ragStores: {} });
+    await bindTestCaller(taskCaller);
+    buildMock.mockResolvedValue({
+      ok: true,
+      value: { agent: workerAgent, ragStores: {} },
+    });
     try {
       await agentManager.buildLlmOnlyAgent(config, why);
       const clients = withMcpClients.mock.calls.at(-1)?.[0];
@@ -98,11 +110,13 @@ function makeChainableBuilder() {
       return builder;
     });
   builder.withToolTrust = chainable(jest.fn());
+  builder.withRagAccess = chainable(jest.fn());
   builder.withToolLoopContextStrategyFactory = chainable(jest.fn());
   builder.withMainLlm = chainable(jest.fn());
   builder.withClassifierLlm = chainable(jest.fn());
   builder.withMcpClients = chainable(withMcpClients);
   builder.setToolsRag = chainable(setToolsRag);
+  builder.addRagCollection = chainable(jest.fn());
   builder.setHistoryRag = chainable(setHistoryRag);
   builder.withSkillManager = chainable(withSkillManager);
   builder.withEmbedder = chainable(jest.fn());
@@ -149,6 +163,8 @@ import {
   DagPlanInterpreter,
   LlmAdaptiveController,
   SmartAgentBuilder,
+  type SmartAgentHandle,
+  unwrapBuilderResult,
 } from '@mcp-abap-adt/llm-agent-libs';
 import type { AgentConfig } from '../../srv/agent-config';
 // buildAgentForDestination is exported (like buildExecutorWorker) purely so
@@ -219,6 +235,7 @@ const config: AgentConfig = {
 describe('buildAgentForDestination — DAG coordinator wiring', () => {
   beforeAll(async () => {
     agentManager.initProviders(await startProviders(config));
+    await bindTestCaller(taskCaller);
     await agentManager
       .getCollectionRegistry()
       .seedAgentConfiguration('agents', 'coordinator');
@@ -230,9 +247,18 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     // First build() call is the executor worker (buildExecutorWorker), the
     // second is the top-level controller — matches call order in the wiring.
     buildMock
-      .mockResolvedValueOnce({ agent: workerAgent, ragStores: {} })
-      .mockResolvedValueOnce({ agent: controllerAgent, ragStores: {} })
-      .mockResolvedValue({ agent: workerAgent, ragStores: {} });
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { agent: workerAgent, ragStores: {} },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { agent: controllerAgent, ragStores: {} },
+      })
+      .mockResolvedValue({
+        ok: true,
+        value: { agent: workerAgent, ragStores: {} },
+      });
   });
 
   it.each([
@@ -407,9 +433,16 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
       (r) => r.value,
     );
     expect(instances[0].setToolsRag).toHaveBeenCalledWith(toolsRag);
+    expect(instances[0].addRagCollection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'skills',
+        meta: expect.objectContaining({ scope: 'global' }),
+      }),
+    );
     expect(instances[0].withSkillManager).toHaveBeenCalledTimes(1);
     expect(instances[0].withHistorySummarization).toHaveBeenCalledWith(20);
     expect(instances[1].setToolsRag).not.toHaveBeenCalled();
+    expect(instances[1].addRagCollection).not.toHaveBeenCalled();
     expect(instances[1].setHistoryRag).not.toHaveBeenCalled();
     expect(instances[1].withEmbedder).not.toHaveBeenCalled();
     expect(instances[1].withSkillManager).not.toHaveBeenCalled();
@@ -486,13 +519,16 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
       role: i % 2 ? ('assistant' as const) : ('user' as const),
       content: `Попереднє повідомлення ${i}`,
     }));
-    await handle.agent.process([
-      ...messages,
-      {
-        role: 'user',
-        content: 'Прочитай об’єкт ZTEST та поясни його призначення',
-      },
-    ]);
+    await handle.agent.process(
+      [
+        ...messages,
+        {
+          role: 'user',
+          content: 'Прочитай об’єкт ZTEST та поясни його призначення',
+        },
+      ],
+      { caller: taskCaller, sessionId: taskCaller.sessionId },
+    );
     expect(reachedCoordinator).toBe(true);
     expect(listTools).toHaveBeenCalledTimes(1);
     // Assert outside the planner too: the coordinator catches planner errors.
@@ -506,9 +542,10 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
   it('streams worker deltas through the real coordinator without duplicating the answer', async () => {
     const actual = jest.requireActual('@mcp-abap-adt/llm-agent-libs');
     const deltas = ['Hello', ' from', ' the executor.'];
-    buildMock
-      .mockReset()
-      .mockResolvedValue({ agent: workerAgent, ragStores: {} });
+    buildMock.mockReset().mockResolvedValue({
+      ok: true,
+      value: { agent: workerAgent, ragStores: {} },
+    });
     workerAgent.process.mockImplementationOnce(async (_prompt, options) => {
       for (const delta of deltas) {
         options.onPartial({ kind: 'content', delta });
@@ -527,7 +564,10 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
       config,
     );
     const chunks: string[] = [];
-    for await (const chunk of handle.agent.streamProcess('Hello')) {
+    for await (const chunk of handle.agent.streamProcess('Hello', {
+      caller: taskCaller,
+      sessionId: taskCaller.sessionId,
+    })) {
       expect(chunk.ok).toBe(true);
       if (chunk.ok && chunk.value.content) {
         chunks.push(chunk.value.content);
@@ -552,16 +592,15 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     const { InMemoryRag } = jest.requireActual('@mcp-abap-adt/llm-agent');
     const toolsRag = new InMemoryRag();
     const toolsQuery = jest.spyOn(toolsRag, 'query');
-    let workerHandle:
-      | Awaited<ReturnType<typeof agentManager.buildAgentForDestination>>
-      | undefined;
+    let workerHandle: SmartAgentHandle | undefined;
     let skillsConfigured = false;
     (SmartAgentBuilder as jest.Mock).mockImplementationOnce((options) => {
       const builder = new actual.SmartAgentBuilder(options);
       const build = builder.build.bind(builder);
       builder.build = async () => {
-        workerHandle = await build();
-        return workerHandle;
+        const result = await build();
+        workerHandle = unwrapBuilderResult(result);
+        return result;
       };
       const withSkills = builder.withSkillManager.bind(builder);
       builder.withSkillManager = (skills: unknown) => {
@@ -587,10 +626,15 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     expect(workerHandle).toBeDefined();
     if (!workerHandle) throw new Error('worker was not built');
     const handle = workerHandle;
-    expect(Object.keys(handle.ragStores).sort()).toEqual(['history', 'tools']);
-    const historyQuery = jest.spyOn(handle.ragStores.history, 'query');
+    expect(Object.keys(handle.ragStores).sort()).toEqual([
+      'history',
+      'skills',
+      'tools',
+    ]);
+    const historyQuery = jest.spyOn(handle.ragStores.history.rag, 'query');
     await handle.agent.process(
       'Прочитай об’єкт ZTEST та поясни його призначення',
+      { caller: taskCaller, sessionId: taskCaller.sessionId },
     );
     expect(toolsQuery).toHaveBeenCalled();
     expect(historyQuery).toHaveBeenCalled();
@@ -660,7 +704,10 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
 
   it('buildExecutorWorker alone still wires skills (worker keeps them enabled)', async () => {
     buildMock.mockReset();
-    buildMock.mockResolvedValueOnce({ agent: workerAgent, ragStores: {} });
+    buildMock.mockResolvedValueOnce({
+      ok: true,
+      value: { agent: workerAgent, ragStores: {} },
+    });
 
     await agentManager.buildExecutorWorker({} as never, {} as never, config);
 
@@ -680,7 +727,10 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
   // at all — is the one that actually proves the worker's builder gets it.
   it('buildExecutorWorker alone still wires the failure classifier', async () => {
     buildMock.mockReset();
-    buildMock.mockResolvedValueOnce({ agent: workerAgent, ragStores: {} });
+    buildMock.mockResolvedValueOnce({
+      ok: true,
+      value: { agent: workerAgent, ragStores: {} },
+    });
 
     await agentManager.buildExecutorWorker({} as never, {} as never, config);
 

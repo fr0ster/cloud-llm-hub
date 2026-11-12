@@ -1,9 +1,13 @@
 import type { UsageRecord } from '@mcp-abap-adt/llm-agent';
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  SmartAgentBuilder,
+  unwrapBuilderResult,
+} from '@mcp-abap-adt/llm-agent-libs';
 import { createUsageRecorder } from '@mcp-abap-adt/llm-usage';
 import { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
 import { observeLlmSpend } from '../../srv/lib/llm-failure';
 import { WaitAsNeeded } from '../../srv/lib/throttle-strategy';
+import { testAccess } from './helpers/test-rag-access';
 
 /**
  * Unit tests for the hub's LLM composition root (srv/lib/llm-factory.ts).
@@ -31,6 +35,12 @@ import {
   readAiCoreServiceKey,
   resetLlmCredentials,
 } from '../../srv/lib/llm-factory';
+
+const ragCaller = {
+  sessionId: 'author-session',
+  userId: 'alice',
+  isAdmin: false,
+};
 
 const key = (apiUrl: string) =>
   JSON.stringify({
@@ -180,12 +190,17 @@ test('real SmartAgent author calls retain their LLM component after the tool loo
       },
       0,
     );
-    const { agent } = await new SmartAgentBuilder({ skipModelValidation: true })
-      .withMainLlm(llm)
-      .withClassification(false)
-      .withMode('hard')
-      .build();
+    const { agent } = unwrapBuilderResult(
+      await new SmartAgentBuilder({ skipModelValidation: true })
+        .withRagAccess(testAccess([ragCaller]))
+        .withMainLlm(llm)
+        .withClassification(false)
+        .withMode('hard')
+        .build(),
+    );
     const result = await agent.process('Create a plan', {
+      sessionId: ragCaller.sessionId,
+      caller: ragCaller,
       usage: usage.with({ component: 'planner', sessionId: 'author-session' }),
     });
     expect(result).toMatchObject({ ok: true, value: { content: 'Plan' } });

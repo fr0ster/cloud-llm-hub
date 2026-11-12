@@ -389,11 +389,15 @@ export function canonicalMetadata(
  * Reserved metadata keys of a persistent document: the payload fields the
  * write path adds beside a document's own metadata — the point id (`id`),
  * `namespace`, documentPayload's fields and RecencyBoostedRag's
- * `_createdAtMs`. The hub's values always win in the backend, a document's
+ * `_createdAtMs`, plus library ownership tags and identity keys. The hub's values always win in the backend, a document's
  * own value under one of them is not kept (not in memory, not after a
  * restore), and restore strips them, so a document reads back as it was added.
  */
 export const PAYLOAD_BOOKKEEPING = [
+  'ownerScope',
+  'userId',
+  'sessionId',
+  'roleId',
   'id',
   'namespace',
   'collectionId',

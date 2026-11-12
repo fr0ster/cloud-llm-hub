@@ -1,3 +1,10 @@
+const taskCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+const sessionCaller1 = { ...taskCaller, sessionId: 'owned' };
+
 import type {
   DialoguePlan,
   IPlanAuthor,
@@ -135,6 +142,7 @@ beforeEach(async () => {
   jest.clearAllMocks();
   mockRun.mockImplementation(async () => ({ output: 'read done' }));
   mockSession = await DialogueSession.open({
+    caller: sessionCaller1,
     id: 'owned',
     planAuthor: { create: mockCreate, revise: mockRevise },
     planner: {
@@ -276,6 +284,7 @@ test('a busy shared dialogue refuses MCP tools and retains its plan', async () =
   });
   await mockSession.close();
   mockSession = await DialogueSession.open({
+    caller: sessionCaller1,
     id: 'owned',
     planAuthor: { create: mockCreate, revise: mockRevise },
     planner: {
@@ -377,6 +386,7 @@ test('callTool receives cancellation, trace and long session id', async () => {
       usage: undefined,
       trace: { traceId: expect.any(String) },
       sessionId: 'owned',
+      caller: { sessionId: 'owned', userId: 'alice', isAdmin: false },
     },
   );
 });
@@ -413,6 +423,7 @@ test('delegated profiles cannot execute tools beyond the caller grants', async (
     }),
   };
   mockSession = await DialogueSession.open({
+    caller: sessionCaller1,
     id: 'owned',
     planner: { process: async () => ({ ok: true, value: { content: '' } }) },
     board: { profileSource: source, profileRunner: runner },
@@ -626,6 +637,7 @@ test('delegate_task to the checker profile runs on the session checker model', a
     },
   });
   mockSession = await DialogueSession.open({
+    caller: sessionCaller1,
     id: 'owned',
     planner: { process: async () => ({ ok: true, value: { content: '' } }) },
     board: {

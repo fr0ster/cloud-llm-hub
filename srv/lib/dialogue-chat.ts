@@ -5,6 +5,7 @@ import type {
   Message,
   OrchestratorError,
   PlannerMessageUsage,
+  RagCaller,
   Result,
   SmartAgentResponse,
   ToolCallRecord,
@@ -33,6 +34,7 @@ import {
 import { failureMessage } from './llm-failure';
 import type { LongSession } from './long-session';
 import { NoMessageFilter, stripNoMessage } from './no-message';
+import { callOptionsFor } from './rag-caller';
 import { userTextOf } from './rag-context-marker';
 import { requestStart } from './request-start';
 import { extractText } from './session-turns';
@@ -116,8 +118,14 @@ export function dialogueChat(
     if (!response.writableFinished) disconnected = true;
     resolveResponseEnded();
   });
-  const open = async () => {
-    const handle = await dialogueFor(userId, session.key, destination, model);
+  const open = async (caller?: RagCaller) => {
+    const handle = await dialogueFor(
+      userId,
+      session.key,
+      destination,
+      model,
+      caller,
+    );
     await supersedeFollow(handle);
     const ack = req.headers['x-clh-ack'];
     if (typeof ack === 'string') {
@@ -179,7 +187,7 @@ export function dialogueChat(
     },
     async process(messages: Message[], opts: AgentCallOptions | undefined) {
       try {
-        const { handle, pending, complete, send } = await open();
+        const { handle, pending, complete, send } = await open(opts?.caller);
         const message = messages.filter((m) => m.role === 'user').at(-1);
         const trace = {
           ...opts?.trace,
@@ -205,6 +213,7 @@ export function dialogueChat(
                 }),
               }
             : {}),
+          ...(opts?.caller ? callOptionsFor(opts.caller) : {}),
           signal: opts?.signal,
           trace,
         })
@@ -249,7 +258,7 @@ export function dialogueChat(
       }
     },
     async *streamProcess(messages, opts) {
-      const { handle, pending, complete, send } = await open();
+      const { handle, pending, complete, send } = await open(opts?.caller);
       let hasContent = false;
       let replyUsage: PlannerMessageUsage | undefined;
       for (const message of pending) {
@@ -325,6 +334,7 @@ export function dialogueChat(
               }),
             }
           : {}),
+        ...(opts?.caller ? callOptionsFor(opts.caller) : {}),
         signal: opts?.signal,
         trace,
         onPartial(chunk) {

@@ -1670,6 +1670,10 @@ describe('Task 7 fix round 1', () => {
         collectionId: 'evil',
         createdAt: 'evil',
         _createdAtMs: 1,
+        ownerScope: 'session',
+        sessionId: 'evil',
+        userId: 'evil',
+        roleId: 'evil',
         keep: 'yes',
       },
     });

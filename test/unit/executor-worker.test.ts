@@ -1,3 +1,10 @@
+import { bindTestCaller } from './helpers/bind-test-caller';
+
+const taskCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
 /**
  * `buildExecutorWorker`: a coordinator-less tool-loop SmartAgent, built the
  * SAME way as `buildAgentForDestination` MINUS any coordinator, wrapped as an
@@ -28,11 +35,13 @@ function makeChainableBuilder() {
       return builder;
     });
   builder.withToolTrust = chainable(jest.fn());
+  builder.withRagAccess = chainable(jest.fn());
   builder.withToolLoopContextStrategyFactory = chainable(jest.fn());
   builder.withMainLlm = chainable(jest.fn());
   builder.withClassifierLlm = chainable(jest.fn());
   builder.withMcpClients = chainable(jest.fn());
   builder.setToolsRag = chainable(jest.fn());
+  builder.addRagCollection = chainable(jest.fn());
   builder.withSkillManager = chainable(jest.fn());
   builder.withEmbedder = chainable(jest.fn());
   builder.withClassification = chainable(jest.fn());
@@ -145,6 +154,7 @@ const config: AgentConfig = {
 describe('buildExecutorWorker', () => {
   beforeAll(async () => {
     initProviders(await startProviders(config));
+    await bindTestCaller(taskCaller);
     await getCollectionRegistry().seedAgentConfiguration(
       'agents',
       'coordinator',
@@ -153,7 +163,10 @@ describe('buildExecutorWorker', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    buildMock.mockResolvedValue({ agent: fakeAgent, ragStores: {} });
+    buildMock.mockResolvedValue({
+      ok: true,
+      value: { agent: fakeAgent, ragStores: {} },
+    });
   });
 
   it('wires the given mcpAdapter via withMcpClients (no separate recLogger param)', async () => {
@@ -200,7 +213,7 @@ describe('buildExecutorWorker', () => {
       expect(executor).not.toBe(fakeAgent);
       await runWithSessionId(
         'worker',
-        () => worker.run({ task: 'task', history: [] }),
+        () => worker.run({ caller: taskCaller, task: 'task', history: [] }),
         history,
       );
       expect(fakeAgent.process.mock.calls.at(-1)?.[0]).toEqual(
@@ -247,7 +260,10 @@ describe('compatibility profile cancellation', () => {
   test.each(['worker', 'checker', 'process', 'stream'] as const)(
     '%s forwards cancellation during profile resolution and rejects before construction',
     async (mode) => {
-      buildMock.mockResolvedValue({ agent: fakeAgent, ragStores: {} });
+      buildMock.mockResolvedValue({
+        ok: true,
+        value: { agent: fakeAgent, ragStores: {} },
+      });
       let direct: ISmartAgent | undefined;
       const worker = await buildExecutorWorker(
         cancellationMcp,
@@ -299,11 +315,23 @@ describe('compatibility profile cancellation', () => {
       const builds = buildMock.mock.calls.length;
       const pending =
         mode === 'worker' || mode === 'checker'
-          ? selectedWorker.run({ task: 'task', signal: controller.signal })
+          ? selectedWorker.run({
+              caller: taskCaller,
+              task: 'task',
+              signal: controller.signal,
+            })
           : mode === 'process'
-            ? executor.process('task', { signal: controller.signal })
+            ? executor.process('task', {
+                sessionId: taskCaller.sessionId,
+                caller: taskCaller,
+                signal: controller.signal,
+              })
             : executor
-                .streamProcess('task', { signal: controller.signal })
+                .streamProcess('task', {
+                  sessionId: taskCaller.sessionId,
+                  caller: taskCaller,
+                  signal: controller.signal,
+                })
                 [Symbol.asyncIterator]()
                 .next();
       const rejected = expect(pending).rejects.toThrow();
@@ -316,7 +344,10 @@ describe('compatibility profile cancellation', () => {
   );
 
   test('an already cancelled worker never resolves a profile', async () => {
-    buildMock.mockResolvedValue({ agent: fakeAgent, ragStores: {} });
+    buildMock.mockResolvedValue({
+      ok: true,
+      value: { agent: fakeAgent, ragStores: {} },
+    });
     const worker = await buildExecutorWorker(
       cancellationMcp,
       cancellationRag,
@@ -324,7 +355,11 @@ describe('compatibility profile cancellation', () => {
     );
     const read = jest.spyOn(AgentProfileSource.prototype, 'resolveWorker');
     await expect(
-      worker.run({ task: 'task', signal: AbortSignal.abort() }),
+      worker.run({
+        caller: taskCaller,
+        task: 'task',
+        signal: AbortSignal.abort(),
+      }),
     ).rejects.toThrow();
     expect(read).not.toHaveBeenCalled();
   });
@@ -332,7 +367,10 @@ describe('compatibility profile cancellation', () => {
   test.each(['worker', 'checker', 'process', 'stream'] as const)(
     '%s waits beyond the profile deadline and stops on caller abort',
     async (mode) => {
-      buildMock.mockResolvedValue({ agent: fakeAgent, ragStores: {} });
+      buildMock.mockResolvedValue({
+        ok: true,
+        value: { agent: fakeAgent, ragStores: {} },
+      });
       let direct: ISmartAgent | undefined;
       const worker = await buildExecutorWorker(
         cancellationMcp,
@@ -396,11 +434,23 @@ describe('compatibility profile cancellation', () => {
       const controller = new AbortController();
       const pending =
         mode === 'worker' || mode === 'checker'
-          ? selectedWorker.run({ task: 'task', signal: controller.signal })
+          ? selectedWorker.run({
+              caller: taskCaller,
+              task: 'task',
+              signal: controller.signal,
+            })
           : mode === 'process'
-            ? executor.process('task', { signal: controller.signal })
+            ? executor.process('task', {
+                sessionId: taskCaller.sessionId,
+                caller: taskCaller,
+                signal: controller.signal,
+              })
             : executor
-                .streamProcess('task', { signal: controller.signal })
+                .streamProcess('task', {
+                  sessionId: taskCaller.sessionId,
+                  caller: taskCaller,
+                  signal: controller.signal,
+                })
                 [Symbol.asyncIterator]()
                 .next();
       let settled = false;

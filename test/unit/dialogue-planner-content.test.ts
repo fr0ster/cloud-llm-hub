@@ -4,12 +4,25 @@ import {
   type PlannerAgent,
   PlannerToolsClient,
   SmartAgentBuilder,
+  unwrapBuilderResult,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
   plannerWithAttachments,
   plannerWithEnvironment,
   plannerWithParagraphs,
 } from '../../srv/lib/dialogue-planner-content';
+import { testAccess } from './helpers/test-rag-access';
+
+const ragCaller = {
+  sessionId: 'request-time',
+  userId: 'test-user',
+  isAdmin: false,
+};
+const sessionCaller1 = { ...ragCaller, sessionId: 'buffered' };
+const sessionCaller2 = { ...ragCaller, sessionId: 'final-only' };
+const sessionCaller3 = { ...ragCaller, sessionId: 'queued-context' };
+const sessionCaller4 = { ...ragCaller, sessionId: 'finished-context' };
+const sessionCaller5 = { ...ragCaller, sessionId: 'request-time' };
 
 test('wrappers preserve paragraph content when DialogueSession buffers content partials', async () => {
   const seen: StreamChunk[] = [];
@@ -26,6 +39,7 @@ test('wrappers preserve paragraph content when DialogueSession buffers content p
     },
   };
   const session = await DialogueSession.open({
+    caller: sessionCaller1,
     id: 'buffered',
     planner: plannerWithEnvironment(
       plannerWithParagraphs(planner),
@@ -70,6 +84,7 @@ test('paragraph wrapper keeps only the final iteration of the planner', async ()
   expect(result.ok && result.value.content).toBe('Final answer.');
 
   const session = await DialogueSession.open({
+    caller: sessionCaller2,
     id: 'final-only',
     planner: plannerWithParagraphs(planner),
     board: { workers: new Map(), maxConcurrent: 1 },
@@ -171,6 +186,7 @@ test('queued user context stays out of an active event and its corrections', asy
     trace: Parameters<PlannerAgent['process']>[1]['trace'];
   }> = [];
   const session = await DialogueSession.open({
+    caller: sessionCaller3,
     id: 'queued-context',
     maxCorrections: 1,
     planner: plannerWithAttachments(
@@ -251,6 +267,7 @@ test('event drained immediately after a user send has no attachment content', as
     associated: boolean;
   }> = [];
   const session = await DialogueSession.open({
+    caller: sessionCaller4,
     id: 'finished-context',
     maxCorrections: 0,
     planner: plannerWithAttachments(
@@ -395,16 +412,29 @@ test('dialogue planner receives exactly one session request-time line through co
       yield await chat(messages, tools, options);
     },
   };
-  const { agent: planner } = await new SmartAgentBuilder({
-    skipModelValidation: true,
-    agent: { timeZone: 'Asia/Tbilisi', classificationEnabled: false },
-  })
-    .withMainLlm(llm)
-    .withMcpClients([new PlannerToolsClient()])
-    .withClassification(false)
-    .withMode('hard')
-    .build();
+  const { agent: planner } = unwrapBuilderResult(
+    await new SmartAgentBuilder({
+      skipModelValidation: true,
+      agent: { timeZone: 'Asia/Tbilisi', classificationEnabled: false },
+    })
+      .withRagAccess(
+        testAccess([
+          ragCaller,
+          sessionCaller1,
+          sessionCaller2,
+          sessionCaller3,
+          sessionCaller4,
+          sessionCaller5,
+        ]),
+      )
+      .withMainLlm(llm)
+      .withMcpClients([new PlannerToolsClient()])
+      .withClassification(false)
+      .withMode('hard')
+      .build(),
+  );
   const session = await DialogueSession.open({
+    caller: sessionCaller5,
     id: 'request-time',
     timeZone: 'Asia/Tbilisi',
     planner: plannerWithEnvironment(

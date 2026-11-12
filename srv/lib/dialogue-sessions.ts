@@ -17,7 +17,12 @@ import type {
   ToolCallRecord,
   WorkerProfile,
 } from '@mcp-abap-adt/llm-agent';
-import { addTokenUsage } from '@mcp-abap-adt/llm-agent';
+import {
+  addTokenUsage,
+  type CallOptions,
+  RagAccessDeniedError,
+  type RagCaller,
+} from '@mcp-abap-adt/llm-agent';
 import {
   DialogueSession,
   PlannerToolsClient,
@@ -93,6 +98,7 @@ import {
   planAuthorContextNotes,
   plannerSessionOptions,
 } from './planner-memory';
+import { bindCaller, callOptionsFor } from './rag-caller';
 import { runWithRequestSystem } from './request-system-context';
 import { captureReviewProfile } from './review-scope';
 import { clearRoleModels, getRoleModels } from './role-model-settings';
@@ -129,6 +135,7 @@ import {
 type Plan = Exclude<DialogueState['plan'], string | undefined>;
 type PlanStep = Plan['steps'][number];
 interface TurnCaller {
+  ragCaller?: RagCaller;
   userId: string;
   identity: RagCallerIdentity;
 }
@@ -297,8 +304,9 @@ export async function headlessDialogueFor(
   userId: string,
   key: string,
   destination: string,
+  caller?: RagCaller,
 ): Promise<DialogueHandle> {
-  const handle = await dialogueFor(userId, key, destination);
+  const handle = await dialogueFor(userId, key, destination, undefined, caller);
   await handle.factory.refresh(
     { headers: req.headers, user: cds.context?.user },
     destination,
@@ -311,9 +319,10 @@ export function dialogueFor(
   key: string,
   destination: string,
   model?: string,
+  caller?: RagCaller,
 ): Promise<DialogueHandle> {
   return withModelCatalog(() =>
-    dialogueForWithCatalog(userId, key, destination, model),
+    dialogueForWithCatalog(userId, key, destination, model, caller),
   );
 }
 
@@ -322,7 +331,12 @@ function dialogueForWithCatalog(
   key: string,
   destination: string,
   model?: string,
+  caller?: RagCaller,
 ): Promise<DialogueHandle> {
+  if (caller && (caller.sessionId !== key || caller.userId !== userId))
+    return Promise.reject(
+      new RagAccessDeniedError('Caller does not match dialogue session'),
+    );
   const id = slot(userId, key);
   if (closing.has(id))
     return Promise.reject(new Error('dialogue session closing'));
@@ -346,7 +360,7 @@ function dialogueForWithCatalog(
   }
   const llms = longSessionLlms({ userId, key });
   const opening = llms
-    .run(() => open(userId, key, destination, selected, llms))
+    .run(() => open(userId, key, destination, selected, llms, caller))
     .catch((error: Error) => {
       disposeSessionLlms({ userId, key });
       throw error;
@@ -373,9 +387,19 @@ async function open(
   destination: string,
   model: string | undefined,
   llms: SessionLlms,
+  caller?: RagCaller,
 ): Promise<LiveHandle> {
+  const boundCaller = caller
+    ? { ok: true as const, value: caller }
+    : await bindCaller(
+        key,
+        userId,
+        cds.context?.user?.is('MCP_Admin') === true,
+      );
+  if (!boundCaller.ok) throw boundCaller.error;
   const coordinatorToolScope = captureToolScope();
   const turnCallers = new WeakMap<object, TurnCaller>();
+  const trustedCaller = new AsyncLocalStorage<RagCaller>();
   const config = getAgentConfig();
   const destinationHandle = await getSmartAgent(undefined, destination);
   if (
@@ -550,6 +574,7 @@ async function open(
     traceId: string;
     writeToolOffered: boolean;
     taskId: string;
+    ragCaller: RagCaller;
     userId: string;
     identity: RagCallerIdentity;
   }>();
@@ -611,6 +636,7 @@ async function open(
                             () =>
                               worker.run({
                                 ...input,
+                                ...callOptionsFor(ctx.ragCaller),
                                 trace: { traceId: ctx.traceId },
                                 signal: ctx.pipeline.signal,
                               }),
@@ -646,6 +672,7 @@ async function open(
                             () =>
                               worker.run({
                                 ...input,
+                                ...callOptionsFor(ctx.ragCaller),
                                 task:
                                   input.task +
                                   `\nYour previous answer had no valid verdict. Call ${submitVerdictTool.name} with {verdict:"pass"} or {verdict:"fail",claims:[{quote,evidence,reason}]}; fail requires at least one claim.`,
@@ -799,6 +826,7 @@ async function open(
       if (task.state === 'queued' && previous === undefined) {
         taskCallers.set(task.id, {
           userId: getRequestUserId() ?? userId,
+          ragCaller: trustedCaller.getStore() ?? boundCaller.value,
           identity: dialogueIdentity(),
         });
       }
@@ -1043,15 +1071,26 @@ async function open(
                     key,
                     () =>
                       recMcp.withSession(userId, key, () =>
-                        plannerTrace.run(turn, () =>
-                          decoratePlanner(planner).process(input, {
-                            ...options,
-                            onPartial(chunk) {
-                              if (chunk.kind === 'content' && chunk.delta)
-                                contentStreamed = true;
-                              options.onPartial?.(chunk);
-                            },
-                          }),
+                        trustedCaller.run(
+                          caller.ragCaller ??
+                            options.caller ??
+                            boundCaller.value,
+                          () =>
+                            plannerTrace.run(turn, () =>
+                              decoratePlanner(planner).process(input, {
+                                ...options,
+                                ...callOptionsFor(
+                                  caller.ragCaller ??
+                                    options.caller ??
+                                    boundCaller.value,
+                                ),
+                                onPartial(chunk) {
+                                  if (chunk.kind === 'content' && chunk.delta)
+                                    contentStreamed = true;
+                                  options.onPartial?.(chunk);
+                                },
+                              }),
+                            ),
                         ),
                       ),
                     undefined,
@@ -1183,6 +1222,7 @@ async function open(
     );
     let coordinatorToolResolver = await coordinatorResolver();
     session = await DialogueSession.open({
+      caller: boundCaller.value,
       resultStore: createTaskResultStore(() => getCollectionRegistry(), {
         userId,
         sessionKey: key,
@@ -1191,6 +1231,7 @@ async function open(
         destinationHandle.toolTrustFor?.(coordinatorToolResolver)(name),
       profileSource: source,
       planAuthor: new BriefPlanAuthor({
+        caller: boundCaller.value,
         source,
         runner: profileRunner,
         notes: async (options) => {
@@ -1383,6 +1424,7 @@ async function open(
           // TaskBoard starts execution in the scheduling planner scope; its
           // async context survives pool waits and later user turns.
           const caller = {
+            ragCaller: trustedCaller.getStore() ?? boundCaller.value,
             userId: getRequestUserId() ?? userId,
             identity: dialogueIdentity(),
           };
@@ -1414,6 +1456,7 @@ async function open(
                     writeToolOffered,
                     taskId: task.id,
                     ...caller,
+                    ragCaller: caller.ragCaller ?? boundCaller.value,
                   },
                   () =>
                     runWithContextCapture(
@@ -1522,7 +1565,10 @@ async function open(
         const reset = await callTool('plan_update', { steps });
         if (!reset.ok || reset.value.isError) return reset;
       }
-      return withDelegateBrief(args[0], args[1], () => callTool(...args));
+      const options: CallOptions | undefined = args[2];
+      return trustedCaller.run(options?.caller ?? boundCaller.value, () =>
+        withDelegateBrief(args[0], args[1], () => callTool(...args)),
+      );
     });
   const send = session.send.bind(session);
   session.send = (text, options = {}) => {
@@ -1544,6 +1590,7 @@ async function open(
     if (reply) replies.set(trace, reply);
     turnCallers.set(trace, {
       userId: getRequestUserId() ?? userId,
+      ragCaller: options.caller ?? boundCaller.value,
       identity: dialogueIdentity(),
     });
     return llms.run(() =>

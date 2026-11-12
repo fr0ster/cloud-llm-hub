@@ -6,6 +6,7 @@ import {
 import {
   SmartAgentBuilder,
   SmartAgentSubAgent,
+  unwrapBuilderResult,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { createSignalBus } from '@mcp-abap-adt/llm-signals';
 import { z } from 'zod';
@@ -28,6 +29,9 @@ import {
   ToolAuthorizationError,
 } from '../../srv/lib/tool-authorization';
 import { runWithReadOnlyTools } from '../../srv/request-session';
+import { testAccess } from './helpers/test-rag-access';
+
+const ragCaller = { sessionId: 'session', userId: 'test-user', isAdmin: false };
 
 const inner: IMcpClient = {
   listTools: async () => ({ ok: true, value: [] }),
@@ -102,25 +106,29 @@ test.each(['pass', 'retry'] as const)(
     };
     const client = new RecordingMcpClient(new LocalRagMcpClient(inner));
     await runWithVerdictTools(true, async () => {
-      const { agent } = await new SmartAgentBuilder({
-        skipModelValidation: true,
-        agent: {
-          maxIterations: 5,
-          classificationEnabled: false,
-          ragTranslateEnabled: false,
-        },
-      })
-        .withMainLlm({
-          model: 'scripted',
-          chat: async () => answer(),
-          streamChat: async function* () {
-            yield answer();
+      const { agent } = unwrapBuilderResult(
+        await new SmartAgentBuilder({
+          skipModelValidation: true,
+          agent: {
+            maxIterations: 5,
+            classificationEnabled: false,
+            ragTranslateEnabled: false,
           },
         })
-        .withMcpClients([client])
-        .build();
+          .withRagAccess(testAccess([ragCaller]))
+          .withMainLlm({
+            model: 'scripted',
+            chat: async () => answer(),
+            streamChat: async function* () {
+              yield answer();
+            },
+          })
+          .withMcpClients([client])
+          .build(),
+      );
       const worker = new SmartAgentSubAgent('checker', agent);
       const result = await worker.run({
+        caller: ragCaller,
         task: 'Check the report',
         dialogueTask,
         trace: { traceId: 'worker-run' },

@@ -1,5 +1,8 @@
 import type { WorkerProfile } from '@mcp-abap-adt/llm-agent';
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  SmartAgentBuilder,
+  unwrapBuilderResult,
+} from '@mcp-abap-adt/llm-agent-libs';
 import { AgentProfileRunner } from '../../srv/lib/agent-profile-runner';
 import { runExecutorStep } from '../../srv/lib/executor-step';
 import { NoticeFinalizer } from '../../srv/lib/notice-finalizer';
@@ -15,6 +18,13 @@ import {
   fixtureProfileSource,
   fixtureTrustResolver,
 } from './helpers/agent-profiles';
+import { testAccess } from './helpers/test-rag-access';
+
+const ragCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
 
 jest.mock('../../srv/lib/step-reviewer', () => ({
   ...jest.requireActual('../../srv/lib/step-reviewer'),
@@ -31,7 +41,12 @@ test('executor-step and finalizer do not invoke a critic for any worker profile'
     })),
     streamChat: async function* () {},
   };
-  const baseHandle = await new SmartAgentBuilder().withMainLlm(critic).build();
+  const baseHandle = unwrapBuilderResult(
+    await new SmartAgentBuilder()
+      .withRagAccess(testAccess([ragCaller]))
+      .withMainLlm(critic)
+      .build(),
+  );
   critic.chat.mockClear();
   const agent = baseHandle.agent;
   jest.spyOn(agent, 'process').mockImplementation(async () => {
@@ -98,7 +113,10 @@ test('executor-step and finalizer do not invoke a critic for any worker profile'
       }),
     } satisfies Parameters<typeof runExecutorStep>[1];
     const createSource = jest.fn(() => source);
-    await runExecutorStep(createSource, handle, 'user', 'read', name, {});
+    await runExecutorStep(createSource, handle, 'user', 'read', name, {
+      caller: ragCaller,
+      sessionId: ragCaller.sessionId,
+    });
     if (name === 'executor') expect(createSource).not.toHaveBeenCalled();
     else expect(createSource).toHaveBeenCalledWith('user');
     const finalizer = new NoticeFinalizer(recMcp);

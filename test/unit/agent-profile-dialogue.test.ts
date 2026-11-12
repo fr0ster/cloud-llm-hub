@@ -1,3 +1,11 @@
+const taskCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+const sessionCaller1 = { ...taskCaller, sessionId: 'profiles-dialogue' };
+const sessionCaller2 = { ...taskCaller, sessionId: 'slow-preparation' };
+
 import type {
   ISmartAgent,
   ToolTrace,
@@ -169,6 +177,7 @@ test('dialogue discovers arbitrary names, resolves planner variants and executes
     },
   });
   session = await DialogueSession.open({
+    caller: sessionCaller1,
     id: 'profiles-dialogue',
     store: {
       load: (id) => store.load('reader', id),
@@ -275,6 +284,7 @@ test('planner preparation beyond ten minutes has no default deadline', async () 
       },
     });
     session = await DialogueSession.open({
+      caller: sessionCaller2,
       id: 'slow-preparation',
       profileSource: new AgentProfileSource(registry, {
         userId: 'reader',

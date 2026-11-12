@@ -1,3 +1,5 @@
+import { bindTestCaller } from './helpers/bind-test-caller';
+
 /**
  * The admission's register reaches the real tool dispatch.
  *
@@ -173,6 +175,8 @@ describe('an admitted pipeline built by getSmartAgent', () => {
         realSetTimeout(...args).unref()) as typeof setTimeout);
     try {
       const handle = await manager.getSmartAgent(undefined, 'DEST');
+      const caller = { sessionId: 's-1', userId: 'alice', isAdmin: false };
+      await bindTestCaller(caller);
 
       const admission = await gatekeeper.admitPipeline('alice', 's-1');
       if (!('admitted' in admission)) throw new Error('not admitted');
@@ -200,11 +204,12 @@ describe('an admitted pipeline built by getSmartAgent', () => {
                     },
                   ],
                   {
-                    sessionId: 's-1',
+                    caller,
+                    sessionId: caller.sessionId,
                     trace: { traceId: 'trace-1' },
                     ragFilter: { exposition },
                     signal: session.signal,
-                  } as never,
+                  },
                 ),
             ),
           undefined,

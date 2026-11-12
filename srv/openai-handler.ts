@@ -16,6 +16,7 @@ import {
   parseModelAllowlist,
   usesModelCatalog,
 } from './lib/model-policy';
+import { bindCaller, callOptionsFor } from './lib/rag-caller';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
 import {
@@ -610,6 +611,15 @@ async function serveChatCompletions(
 
   // Resolve user identity early — needed for user-keyed session store lookups below.
   const userId = authenticatedCaller.userId;
+  const boundCaller = await bindCaller(
+    sessionId,
+    userId,
+    cds.context?.user?.is('MCP_Admin') === true,
+  );
+  if (!boundCaller.ok) {
+    res.status(403).json({ error: { message: boundCaller.error.message } });
+    return;
+  }
 
   const caller = authenticatedCaller.caller;
   log.info('MCP caller', caller);
@@ -1099,7 +1109,7 @@ async function serveChatCompletions(
       // External tools (attempt_completion, read_file, etc.) from client — passed to SmartAgent
       // for ClineClientAdapter detection and external tool_call routing.
       externalTools,
-      sessionId,
+      ...callOptionsFor(boundCaller.value),
       // The admission's signal, which only shutdown aborts. Not the caller's.
       signal: pipeline.signal,
       // RAG filtering: namespace isolates user/destination data, exposition filters tools by role.

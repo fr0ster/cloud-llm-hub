@@ -1,3 +1,11 @@
+const taskCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+const sessionCaller1 = { ...taskCaller, sessionId: 'trust-retrieval' };
+const sessionCaller2 = { ...taskCaller, sessionId: 'recall' };
+
 import {
   formatTrustTag,
   InMemoryRag,
@@ -196,6 +204,7 @@ test('coordinator retrieval and search_knowledge render the same derived label',
   let rendered = '';
   let searched = '';
   const session = await DialogueSession.open({
+    caller: sessionCaller1,
     id: 'trust-retrieval',
     plannerKnowledge: [source],
     maxCorrections: 0,
@@ -302,6 +311,7 @@ test('coordinator and plan author recall legacy planner memory with session trus
   };
   let rendered = '';
   const session = await DialogueSession.open({
+    caller: sessionCaller2,
     id: 'recall',
     plannerMemory: memory,
     maxCorrections: 0,

@@ -12,6 +12,7 @@ import { getExecutionLimits } from './lib/execution-limits';
 import { failureMessage, observeLlmSpend } from './lib/llm-failure';
 import { awaitModelCatalog } from './lib/model-catalog';
 import { ignoredModelHeader } from './lib/model-policy';
+import { bindCaller, callOptionsFor } from './lib/rag-caller';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
 import {
@@ -432,8 +433,18 @@ async function serveMessages(
   const requestedDestination = req.headers['x-sap-destination'] as
     | string
     | undefined;
+  const traceId = requestMeasurement(req)?.traceId ?? randomUUID();
   const sessionId = sessionIdOf(req);
   const userId = authenticatedCaller.userId;
+  const boundCaller = await bindCaller(
+    sessionId ?? traceId,
+    userId,
+    cds.context?.user?.is('MCP_Admin') === true,
+  );
+  if (!boundCaller.ok) {
+    res.status(403).json({ error: { message: boundCaller.error.message } });
+    return;
+  }
   const ragIdentity = {
     admin: authenticatedCaller.admin,
     channel: 'anthropic' as const,
@@ -601,7 +612,6 @@ async function serveMessages(
   // per-trace bucketing and the finalizer's `getSummary(traceId)` (Verified
   // fact 10). Merge into any `trace` the adapter already normalized from the
   // request rather than clobbering it.
-  const traceId = requestMeasurement(req)?.traceId ?? randomUUID();
 
   // The caller's permissions. This channel previously resolved none at all —
   // no role filtering on which tools were offered, and nothing to authorize a
@@ -666,7 +676,7 @@ async function serveMessages(
     requestStartedAt: requestStart(req),
     // After the spread: nothing in `options` may override the admission's signal.
     signal: pipeline.signal,
-    sessionId,
+    ...callOptionsFor(boundCaller.value),
     ragFilter: {
       ...(options as { ragFilter?: Record<string, unknown> })?.ragFilter,
       exposition: callerExposition,

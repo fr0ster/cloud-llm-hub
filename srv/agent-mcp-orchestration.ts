@@ -4,6 +4,7 @@ import {
   orchestrationDefinitions,
   orchestrationTools,
 } from './lib/orchestration-tool-definitions';
+import { bindCaller, callOptionsFor } from './lib/rag-caller';
 import { getRoleModels } from './lib/role-model-settings';
 import { withRoleModels } from './lib/role-models-scope';
 import { runWithRequestLlms } from './lib/session-llms';
@@ -144,6 +145,13 @@ export async function executeOrchestrationTool(
         traceId: requestMeasurement(req)?.traceId ?? randomUUID(),
       };
       const sessionId = s?.key ?? trace.traceId;
+      const boundCaller = await bindCaller(
+        sessionId,
+        caller.userId,
+        cds.context?.user?.is('MCP_Admin') === true,
+      );
+      if (!boundCaller.ok)
+        return ragTextResult(boundCaller.error.message, true);
       const usage = usageRuntime()
         ?.forSession({ sessionId, userId: caller.userId, destination })
         .with({ requestId: trace.traceId, traceId: trace.traceId });
@@ -162,8 +170,14 @@ export async function executeOrchestrationTool(
                 caller.userId,
                 s.key,
                 destination,
+                boundCaller.value,
               );
-              const options = { signal, usage, trace, sessionId };
+              const options = {
+                signal,
+                usage,
+                trace,
+                ...callOptionsFor(boundCaller.value),
+              };
               const result = await handle.session.callTool(
                 name,
                 name === 'plan_revise'
@@ -186,6 +200,7 @@ export async function executeOrchestrationTool(
               sessionId,
             );
             const author = new BriefPlanAuthor({
+              caller: boundCaller.value,
               source,
               runner: handle.profileRunner,
               notes: async (options) => {
@@ -203,7 +218,12 @@ export async function executeOrchestrationTool(
                 ];
               },
             });
-            const options = { signal, usage, trace, sessionId };
+            const options = {
+              signal,
+              usage,
+              trace,
+              ...callOptionsFor(boundCaller.value),
+            };
             const result = await runWithStatelessKnowledge(async () =>
               name === 'plan_create'
                 ? await author.create(

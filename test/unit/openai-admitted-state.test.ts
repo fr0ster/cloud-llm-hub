@@ -1,3 +1,7 @@
+import express from 'express';
+import { bindCaller } from '../../srv/lib/rag-caller';
+import { typedResponse } from './helpers/response-model';
+
 // Bootstrap logging is tested with real CAP in logging-config.test.ts.
 jest.mock('../../srv/lib/logging-config', () => ({
   applyLoggingConfig: jest.fn(),
@@ -427,7 +431,7 @@ describe('a destination switch', () => {
 });
 
 describe('the user a request is keyed by', () => {
-  it('keys an empty user id as itself, as the other channels and the middleware do', async () => {
+  it('refuses an empty user id before agent dispatch', async () => {
     configure();
     const before = harness.user.id;
     harness.user.id = '';
@@ -437,7 +441,8 @@ describe('the user a request is keyed by', () => {
         fakeRes() as unknown as Response,
       );
       await done;
-      expect(sessionStore.getSessionHistory('s-1', '')).toHaveLength(2);
+      expect(harness.seenOptions).toHaveLength(0);
+      expect(sessionStore.getSessionHistory('s-1', '')).toEqual([]);
       expect(sessionStore.getSessionHistory('s-1', 'anonymous')).toEqual([]);
     } finally {
       harness.user.id = before;
@@ -445,4 +450,22 @@ describe('the user a request is keyed by', () => {
       sessionStore.clearSession('s-1', 'anonymous');
     }
   });
+});
+
+test('refuses a conflicting caller with HTTP 403 before agent dispatch', async () => {
+  configure();
+  expect((await bindCaller('caller-refused-openai', 'bob', false)).ok).toBe(
+    true,
+  );
+  const req = Object.defineProperties(
+    express().request,
+    Object.getOwnPropertyDescriptors({
+      ...fakeReq(body()),
+      sessionId: 'caller-refused-openai',
+    }),
+  );
+  const res = fakeRes();
+  await handleChatCompletions(req, typedResponse(res));
+  expect(res.statusCode).toBe(403);
+  expect(harness.seenOptions).toHaveLength(0);
 });

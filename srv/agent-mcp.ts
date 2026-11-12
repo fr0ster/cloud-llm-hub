@@ -9,6 +9,7 @@ import {
 } from './lib/execution-limits';
 import { withModelCatalog } from './lib/model-catalog';
 import { parseModelAllowlist } from './lib/model-policy';
+import { bindCaller, callOptionsFor } from './lib/rag-caller';
 import {
   getRoleModels,
   roleModelSettingsSchema,
@@ -433,6 +434,12 @@ async function executeStepRun(
     // call, threaded below as `trace.traceId`, dropped in the `finally`.
     traceId = requestMeasurement(req)?.traceId ?? `agent-step-${randomUUID()}`;
     const sessionId = longSession?.key ?? traceId;
+    const boundCaller = await bindCaller(
+      sessionId,
+      userId,
+      cds.context?.user?.is('MCP_Admin') === true,
+    );
+    if (!boundCaller.ok) return textResult(boundCaller.error.message, true);
 
     // Admitted after the agent is resolved, like every channel, and before a
     // connection is built: a queued step holds no CSRF-fetched SAP session.
@@ -506,7 +513,7 @@ async function executeStepRun(
       requestStartedAt: requestStart(req),
       stream: false,
       externalTools: [],
-      sessionId,
+      ...callOptionsFor(boundCaller.value),
       ragFilter: {
         namespace: `${userId}:${targetDestination}`,
         exposition,

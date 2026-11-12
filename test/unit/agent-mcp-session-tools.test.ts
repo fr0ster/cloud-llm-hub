@@ -1,3 +1,7 @@
+import { unwrapBuilderResult } from '@mcp-abap-adt/llm-agent-libs';
+import { bindCaller } from '../../srv/lib/rag-caller';
+import { testAccess } from './helpers/test-rag-access';
+
 jest.mock(
   '@sap/cds',
   () => ({
@@ -901,7 +905,7 @@ test('execute_step honours a session executor maxIterations and another session 
   const defaults = await opened();
   setExecutionLimits('alice', limited, { executor: { maxIterations: 3 } });
   const rounds: number[] = [];
-  harness.process = async () => {
+  harness.process = async (_messages, options) => {
     let count = 0;
     const llm: import('@mcp-abap-adt/llm-agent').ILlm = {
       chat: async () => {
@@ -919,34 +923,45 @@ test('execute_step honours a session executor maxIterations and another session 
         yield await llm.chat(messages, tools, options);
       },
     };
-    const handle = await new SmartAgentBuilder({
-      skipModelValidation: true,
-      agent: {
-        ...runLimitOptions('executor', { maxIterations: 10 }),
-        classificationEnabled: false,
-        ragTranslateEnabled: false,
-      },
-    })
-      .withMainLlm(llm)
-      .withMcpClients([
-        {
-          listTools: async () => ({
-            ok: true,
-            value: [
-              {
-                name: 'tick',
-                description: '',
-                inputSchema: { type: 'object', properties: {} },
-              },
-            ],
-          }),
-          callTool: async () => ({ ok: true, value: { content: 'tick' } }),
+    const handle = unwrapBuilderResult(
+      await new SmartAgentBuilder({
+        skipModelValidation: true,
+        agent: {
+          ...runLimitOptions('executor', { maxIterations: 10 }),
+          classificationEnabled: false,
+          ragTranslateEnabled: false,
         },
-      ])
-      .withClassification(false)
-      .withMode('hard')
-      .build();
-    const result = await handle.agent.process('Run');
+      })
+        .withRagAccess(
+          testAccess(
+            [limited, defaults].map((sessionId) => ({
+              sessionId,
+              userId: caller.userId,
+              isAdmin: false,
+            })),
+          ),
+        )
+        .withMainLlm(llm)
+        .withMcpClients([
+          {
+            listTools: async () => ({
+              ok: true,
+              value: [
+                {
+                  name: 'tick',
+                  description: '',
+                  inputSchema: { type: 'object', properties: {} },
+                },
+              ],
+            }),
+            callTool: async () => ({ ok: true, value: { content: 'tick' } }),
+          },
+        ])
+        .withClassification(false)
+        .withMode('hard')
+        .build(),
+    );
+    const result = await handle.agent.process('Run', options);
     expect(result).toMatchObject({ ok: true });
     rounds.push(count);
     return result.ok
@@ -975,4 +990,25 @@ test('session_set_models accepts null to restore a default limit', async () => {
       },
     },
   });
+});
+
+it('execute_step forwards the bound caller and refuses another owner before dispatch', async () => {
+  const session = await opened();
+  await executeStep(req, caller, { session, task: 'first' });
+  const options = harness.seenOptions[0];
+  expect(options.caller).toEqual({
+    sessionId: session,
+    userId: 'alice',
+    isAdmin: true,
+  });
+  expect(options.sessionId).toBe(options.caller?.sessionId);
+  expect((await bindCaller(session, 'bob', false)).ok).toBe(false);
+});
+
+it('execute_step refuses a session bound to another owner before dispatch', async () => {
+  const session = await opened();
+  expect((await bindCaller(session, 'bob', false)).ok).toBe(true);
+  const result = await executeStep(req, caller, { session, task: 'first' });
+  expect(result.isError).toBe(true);
+  expect(harness.seenOptions).toHaveLength(0);
 });

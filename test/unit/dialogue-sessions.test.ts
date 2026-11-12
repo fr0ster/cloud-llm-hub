@@ -1,9 +1,15 @@
 import { AsyncLocalStorage, AsyncResource } from 'node:async_hooks';
+import type {
+  CallOptions,
+  DialoguePlan,
+  RagCaller,
+} from '@mcp-abap-adt/llm-agent';
 import {
   InMemoryRag,
   symmetricEmbedder,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
+import { unwrapBuilderResult } from '@mcp-abap-adt/llm-agent-libs';
 import {
   createUsageRecorder,
   directTransport,
@@ -23,6 +29,8 @@ import { clientTurnId, turnSource } from '../../srv/lib/dialogue-turn-source';
 import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import { parseModelAllowlist } from '../../srv/lib/model-policy';
 import * as plannerMemory from '../../srv/lib/planner-memory';
+import { getHubRagAccess } from '../../srv/lib/rag-access';
+import { bindCaller, callOptionsFor } from '../../srv/lib/rag-caller';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import {
   chatResponseModel,
@@ -37,6 +45,7 @@ import { reportWorkerActivity } from '../../srv/lib/worker-activity';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { fixtureTrustResolver } from './helpers/agent-profiles';
 import { liveSession } from './helpers/canonical-rag';
+import { testAccess } from './helpers/test-rag-access';
 
 jest.mock('../../srv/connections/destinationResolver', () => ({
   resolveDestinationSapConfig: jest.fn(async () => ({
@@ -123,7 +132,13 @@ import {
   runWithToolScope,
 } from '../../srv/request-session';
 
+const ragCaller = { sessionId: 'key', userId: 'alice', isAdmin: false };
+const isolationCallers = ['isolation-A', 'isolation-B', 'isolation-C'].map(
+  (sessionId) => ({ sessionId, userId: 'alice', isAdmin: false }),
+);
+
 let mockTaskResultRegistry = new CollectionRegistry();
+const mockPlannerCallers: (RagCaller | undefined)[] = [];
 const mockRun = jest.fn<Promise<ISubAgentResult>, [ISubAgentInput]>();
 const mockRelease = jest.fn();
 const mockDrain = jest.fn(async () => {});
@@ -135,6 +150,7 @@ const mockOpenSession = jest.fn();
 const mockWriteCapability = jest.fn((_traceId?: string) => false);
 const mockPlannerTurns: string[] = [];
 const mockAuthorTurns: string[] = [];
+const mockAuthorOptions: (CallOptions | undefined)[] = [];
 const mockEnvironments: string[] = [];
 let mockWorkerModel: string | undefined;
 let mockGoal = 'read';
@@ -226,14 +242,19 @@ jest.mock('../../srv/agent-manager', () => ({
         skipModelValidation: true,
         agent: { classificationEnabled: false, ragTranslateEnabled: false },
       })
+        .withRagAccess(testAccess([ragCaller, ...isolationCallers]))
         .withMainLlm(await mockCaptureLlm())
         .withMode('hard')
         .withClassification(false);
       if (mockIsolationHistory) builder.setHistoryRag(mockIsolationHistory);
-      return (await builder.build()).agent;
+      return unwrapBuilderResult(await builder.build()).agent;
     }
     return {
-      process: async (messages: { content: string }[]) => {
+      process: async (
+        messages: { content: string }[],
+        options?: CallOptions,
+      ) => {
+        mockPlannerCallers.push(options?.caller);
         mockEnvironments.push(
           messages.find((m) => m.content.startsWith('[environment]'))
             ?.content ?? '',
@@ -291,8 +312,9 @@ jest.mock('../../srv/agent-manager', () => ({
       preparePlanAuthor: async () => ({
         ok: true,
         value: {
-          process: async (input: string) => {
+          process: async (input: string, options?: CallOptions) => {
             mockAuthorTurns.push(input);
+            mockAuthorOptions.push(options);
             if (mockCaptureLlm)
               await (await mockCaptureLlm()).chat([
                 { role: 'user', content: input },
@@ -415,8 +437,14 @@ async function until(fn: () => boolean) {
   }
   throw new Error('timed out');
 }
-async function ready(user = 'alice') {
-  const h = await dialogueFor(user, 'key', 'TEST');
+async function ready(user = 'alice', caller?: RagCaller) {
+  const h = await dialogueFor(
+    user,
+    user === 'bob' ? 'bob-key' : 'key',
+    'TEST',
+    undefined,
+    caller,
+  );
   const connection = {
     close: jest.fn(),
     reset: jest.fn(),
@@ -440,6 +468,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockWriteCapability.mockReset().mockReturnValue(false);
   mockPlannerTurns.length = 0;
+  mockPlannerCallers.length = 0;
   mockEnvironments.length = 0;
   mockGoal = 'read';
   mockPlannerHook = undefined;
@@ -456,7 +485,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
   await closeDialogue('alice', 'key', 'ttl');
-  await closeDialogue('bob', 'key', 'ttl');
+  await closeDialogue('bob', 'bob-key', 'ttl');
   setLongSessionsForTest(undefined);
 });
 
@@ -681,7 +710,7 @@ test('isolates owners and shares concurrent opens', async () => {
   const [a, b, c] = await Promise.all([
     dialogueFor('alice', 'key', 'TEST'),
     dialogueFor('alice', 'key', 'TEST'),
-    dialogueFor('bob', 'key', 'TEST'),
+    dialogueFor('bob', 'bob-key', 'TEST'),
   ]);
   expect(a).toBe(b);
   expect(c).not.toBe(a);
@@ -1255,45 +1284,48 @@ test('close settles a real SmartAgent continuous tool loop within a few iteratio
       toolCalls: [{ id: `call-${calls}`, name: 'read', arguments: {} }],
     },
   });
-  const built = await new SmartAgentBuilder({
-    skipModelValidation: true,
-    agent: {
-      maxIterations: 100,
-      classificationEnabled: false,
-      ragTranslateEnabled: false,
-      heartbeatIntervalMs: 1,
-    },
-  })
-    .withMainLlm({
-      model: 'fake',
-      chat: async () => answer(),
-      streamChat: async function* () {
-        yield answer();
+  const built = unwrapBuilderResult(
+    await new SmartAgentBuilder({
+      skipModelValidation: true,
+      agent: {
+        maxIterations: 100,
+        classificationEnabled: false,
+        ragTranslateEnabled: false,
+        heartbeatIntervalMs: 1,
       },
     })
-    .withMcpClients([
-      {
-        listTools: async () => ({
-          ok: true,
-          value: [
-            {
-              name: 'read',
-              description: 'read',
-              inputSchema: { type: 'object', properties: {} },
-            },
-          ],
-        }),
-        callTool: async () => {
-          calls++;
-          await new Promise((r) => setTimeout(r, 15));
-          return {
-            ok: true,
-            value: { content: [{ type: 'text', text: 'read' }] },
-          };
+      .withRagAccess(testAccess([ragCaller]))
+      .withMainLlm({
+        model: 'fake',
+        chat: async () => answer(),
+        streamChat: async function* () {
+          yield answer();
         },
-      },
-    ])
-    .build();
+      })
+      .withMcpClients([
+        {
+          listTools: async () => ({
+            ok: true,
+            value: [
+              {
+                name: 'read',
+                description: 'read',
+                inputSchema: { type: 'object', properties: {} },
+              },
+            ],
+          }),
+          callTool: async () => {
+            calls++;
+            await new Promise((r) => setTimeout(r, 15));
+            return {
+              ok: true,
+              value: { content: [{ type: 'text', text: 'read' }] },
+            };
+          },
+        },
+      ])
+      .build(),
+  );
   const worker = new SmartAgentSubAgent('executor', built.agent);
   mockRun.mockImplementation((input) => worker.run(input));
   const { h } = await ready();
@@ -1934,7 +1966,10 @@ test('a corrective user turn publishes consumed task usage after its live reply'
       },
       'TEST',
       res,
-    ).process([{ role: 'user', content: 'go' }]);
+    ).process([{ role: 'user', content: 'go' }], {
+      caller: ragCaller,
+      sessionId: ragCaller.sessionId,
+    });
     res.json(result.ok ? { ok: true } : result);
   });
   const server = app.listen(0);
@@ -2268,7 +2303,10 @@ test.each(
         protocol: 'openai',
         model: 'test',
         agent,
-        source: agent.streamProcess([{ role: 'user', content: 'go' }]),
+        source: agent.streamProcess([{ role: 'user', content: 'go' }], {
+          caller: ragCaller,
+          sessionId: ragCaller.sessionId,
+        }),
         run: (fn) =>
           runWithSessionId('key', fn, [], 'alice', {
             admin: false,
@@ -2651,7 +2689,7 @@ test('same-user dialogues isolate every LLM call, clients, quota and retrieval a
       },
     }));
   const open = jest.spyOn(DialogueSession, 'open');
-  const keys = ['isolation-A', 'isolation-B', 'isolation-C'];
+  const keys = isolationCallers.map((caller) => caller.sessionId);
   try {
     const a = await dialogueFor('alice', keys[0], 'TEST');
     const aOwner = longSessionLlms({ userId: 'alice', key: keys[0] });
@@ -2744,9 +2782,13 @@ test('dialogue opens with a stateless profile plan author and environment notes'
     expect(mockAuthorTurns.at(-1)).toContain('Destination: TEST');
     expect(mockAuthorTurns.at(-1)).toContain('[worker profiles]');
     expect(mockAuthorTurns.at(-1)).toContain('executor');
+    const beforeCreate = mockAuthorOptions.length;
     await h.session.callTool('plan_create', {
       goal: 'External coordinator request',
     });
+    expect(mockAuthorOptions).toHaveLength(beforeCreate + 1);
+    expect(mockAuthorOptions.at(-1)?.caller).toBe(options?.caller);
+    expect(mockAuthorOptions.at(-1)?.sessionId).toBe(options?.caller.sessionId);
     expect(retrieval).toHaveBeenLastCalledWith(
       expect.anything(),
       'author-wiring',
@@ -2754,10 +2796,14 @@ test('dialogue opens with a stateless profile plan author and environment notes'
       expect.anything(),
     );
     expect(mockAuthorTurns.at(-1)).toContain('Headless planning guidance');
+    const beforeRevise = mockAuthorOptions.length;
     await h.session.callTool('plan_revise', {
       change: 'Revise external plan',
       context: 'Preserve scope',
     });
+    expect(mockAuthorOptions).toHaveLength(beforeRevise + 1);
+    expect(mockAuthorOptions.at(-1)?.caller).toBe(options?.caller);
+    expect(mockAuthorOptions.at(-1)?.sessionId).toBe(options?.caller.sessionId);
     expect(retrieval).toHaveBeenLastCalledWith(
       expect.anything(),
       'author-wiring',
@@ -2766,6 +2812,22 @@ test('dialogue opens with a stateless profile plan author and environment notes'
       }),
       expect.anything(),
     );
+    if (!options?.planAuthor) throw new Error('Missing plan author');
+    const author = options.planAuthor;
+    const plan: DialoguePlan = { version: 1, steps: [], status: 'active' };
+    const callsBefore = mockAuthorOptions.length;
+    for (const conflicting of [
+      { caller: { ...options.caller } },
+      { sessionId: 'another-session' },
+    ]) {
+      expect(() => author.create({ goal: 'Refused' }, conflicting)).toThrow(
+        'does not match the trusted caller',
+      );
+      expect(() =>
+        author.revise({ plan, change: 'Refused' }, conflicting),
+      ).toThrow('does not match the trusted caller');
+    }
+    expect(mockAuthorOptions).toHaveLength(callsBefore);
   } finally {
     retrieval.mockRestore();
     setup.mockRestore();
@@ -3434,7 +3496,7 @@ test('sessions have independent queues by default and publish queued activity', 
     await until(() =>
       h.session.snapshot().tasks.every((task) => task.state === 'done'),
     );
-    await closeDialogue('bob', 'key', 'explicit');
+    await closeDialogue('bob', 'bob-key', 'explicit');
   } finally {
     finishes.forEach((finish) => {
       finish();
@@ -3508,12 +3570,12 @@ test('hub queue labels update in snapshots without notifying the running-only bo
   }
 });
 
-test('closing one user with a shared key preserves the other user LLMs and signals', async () => {
+test('closing one user session preserves the other user LLMs and signals', async () => {
   const { longSessionLlms } = await import('../../srv/lib/session-llms');
   const { h: alice } = await ready('alice');
   const { h: bob } = await ready('bob');
   const aliceOwner = longSessionLlms({ userId: 'alice', key: 'key' });
-  const bobOwner = longSessionLlms({ userId: 'bob', key: 'key' });
+  const bobOwner = longSessionLlms({ userId: 'bob', key: 'bob-key' });
   const aliceDispose = jest.spyOn(aliceOwner, 'dispose');
   const bobDispose = jest.spyOn(bobOwner, 'dispose');
   const bobEvents: DialogueEvent[] = [];
@@ -3521,11 +3583,11 @@ test('closing one user with a shared key preserves the other user LLMs and signa
   await closeDialogue('alice', 'key', 'explicit');
   expect(aliceDispose).toHaveBeenCalled();
   expect(bobDispose).not.toHaveBeenCalled();
-  expect(longSessionLlms({ userId: 'bob', key: 'key' })).toBe(bobOwner);
+  expect(longSessionLlms({ userId: 'bob', key: 'bob-key' })).toBe(bobOwner);
   dialogueSignals().emit(
     'dialogue.wait',
     { tasks: [] },
-    JSON.stringify(['bob', 'key']),
+    JSON.stringify(['bob', 'bob-key']),
   );
   expect(bobEvents).toEqual([{ kind: 'wait', tasks: [] }]);
   await bob.session.send('go');
@@ -3843,9 +3905,24 @@ test('closing the session clears its settings', async () => {
   );
   setRoleModels('alice', 'key', { executor: { model: 'gpt-5' } });
   setExecutionLimits('alice', 'key', { historyTokenBudget: 'off' });
-  setRoleModels('bob', 'key', { checker: { model: 'gpt-5' } });
+  setRoleModels('bob', 'bob-key', { checker: { model: 'gpt-5' } });
   await closeDialogue('alice', 'key', 'explicit');
   expect(getRoleModels('alice', 'key')).toEqual({});
   expect(getExecutionLimits('alice', 'key')).toEqual({});
-  expect(getRoleModels('bob', 'key')).toEqual({ checker: { model: 'gpt-5' } });
+  expect(getRoleModels('bob', 'bob-key')).toEqual({
+    checker: { model: 'gpt-5' },
+  });
+});
+
+test('dialogue forwards the same request caller through planner and worker dispatch', async () => {
+  const bind = jest.spyOn(getHubRagAccess().access.bindings, 'bind');
+  const result = await bindCaller('key', 'alice', false);
+  if (!result.ok) throw result.error;
+  const { h } = await ready('alice', result.value);
+  expect(bind).toHaveBeenCalledTimes(1);
+  await h.session.send('go', callOptionsFor(result.value));
+  await until(() => mockRun.mock.calls.length > 0);
+  expect(mockPlannerCallers[0]).toBe(result.value);
+  expect(mockRun.mock.calls[0][0].caller).toBe(result.value);
+  expect(mockRun.mock.calls[0][0].sessionId).toBe(result.value.sessionId);
 });

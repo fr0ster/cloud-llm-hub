@@ -6,6 +6,7 @@ import {
   SmartAgentBuilder,
   SmartAgentSubAgent,
   TaskBoard,
+  unwrapBuilderResult,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { closeDialogue } from '../../srv/lib/dialogue-sessions';
 import {
@@ -21,6 +22,13 @@ import {
   withExecutionLimits,
 } from '../../srv/lib/execution-limits';
 import { withToolResultCap } from '../../srv/lib/tool-result-cap';
+import { testAccess } from './helpers/test-rag-access';
+
+const ragCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
 
 const client: IMcpClient = {
   listTools: async () => ({
@@ -67,20 +75,26 @@ async function loopingRun(
           yield await chat(messages, tools, opts);
         },
       };
-      const handle = await new SmartAgentBuilder({
-        skipModelValidation: true,
-        agent: {
-          ...runLimitOptions('executor', { maxIterations: 10 }),
-          classificationEnabled: false,
-          ragTranslateEnabled: false,
-        },
-      })
-        .withMainLlm(llm)
-        .withMcpClients([client])
-        .withClassification(false)
-        .withMode('hard')
-        .build();
-      const result = await handle.agent.process('Run the requested rounds');
+      const handle = unwrapBuilderResult(
+        await new SmartAgentBuilder({
+          skipModelValidation: true,
+          agent: {
+            ...runLimitOptions('executor', { maxIterations: 10 }),
+            classificationEnabled: false,
+            ragTranslateEnabled: false,
+          },
+        })
+          .withRagAccess(testAccess([ragCaller]))
+          .withMainLlm(llm)
+          .withMcpClients([client])
+          .withClassification(false)
+          .withMode('hard')
+          .build(),
+      );
+      const result = await handle.agent.process('Run the requested rounds', {
+        caller: ragCaller,
+        sessionId: ragCaller.sessionId,
+      });
       return { rounds, result };
     },
   );
@@ -230,24 +244,28 @@ test('a stopped task ends a run whose maxIterations is off', async () => {
           yield await chat(messages, tools, opts);
         },
       };
-      const handle = await new SmartAgentBuilder({
-        skipModelValidation: true,
-        agent: {
-          ...runLimitOptions('executor', { maxIterations: 10 }),
-          classificationEnabled: false,
-          ragTranslateEnabled: false,
-        },
-      })
-        .withMainLlm(llm)
-        .withMcpClients([client])
-        .withClassification(false)
-        .withMode('hard')
-        .build();
+      const handle = unwrapBuilderResult(
+        await new SmartAgentBuilder({
+          skipModelValidation: true,
+          agent: {
+            ...runLimitOptions('executor', { maxIterations: 10 }),
+            classificationEnabled: false,
+            ragTranslateEnabled: false,
+          },
+        })
+          .withRagAccess(testAccess([ragCaller]))
+          .withMainLlm(llm)
+          .withMcpClients([client])
+          .withClassification(false)
+          .withMode('hard')
+          .build(),
+      );
       let finish: () => void = () => {};
       const finished = new Promise<void>((resolve) => {
         finish = resolve;
       });
       board = new TaskBoard({
+        caller: ragCaller,
         workers: new Map([
           ['executor', new SmartAgentSubAgent('executor', handle.agent)],
         ]),

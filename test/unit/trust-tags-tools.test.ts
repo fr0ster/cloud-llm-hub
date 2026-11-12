@@ -3,6 +3,7 @@ import {
   type ISkill,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
+import { unwrapBuilderResult } from '@mcp-abap-adt/llm-agent-libs';
 import { systemToolTrust } from '../../srv/lib/system-tool-trust';
 import { parseTrustDefaults } from '../../srv/lib/trust';
 import { TrustResolver } from '../../srv/lib/trust-resolver';
@@ -11,6 +12,7 @@ import {
   trustedSkillResults,
   withSkillTrust,
 } from '../../srv/lib/trusted-skill';
+import { testAccess } from './helpers/test-rag-access';
 
 function fixtureSkill(name = 'info', kind = 'informational'): ISkill {
   return {
@@ -139,16 +141,21 @@ test.each(['chat', 'planner', 'executor', 'checker'])(
     const recording = new RecordingMcpClient(raw, undefined, 20);
     const toolTrust = systemToolTrust((n) => n === 'GetClass', resolver);
     const collector = new ToolTraceCollector();
-    const { agent } = await new SmartAgentBuilder({
-      skipModelValidation: true,
-      agent: { mode: 'hard', classificationEnabled: false, maxIterations: 4 },
-    })
-      .withMainLlm(llm)
-      .withClassification(false)
-      .withMcpClients([recording])
-      .withToolTrust(toolTrust)
-      .build();
+    const { agent } = unwrapBuilderResult(
+      await new SmartAgentBuilder({
+        skipModelValidation: true,
+        agent: { mode: 'hard', classificationEnabled: false, maxIterations: 4 },
+      })
+        .withRagAccess(testAccess([ragCaller, sessionCaller1]))
+        .withMainLlm(llm)
+        .withClassification(false)
+        .withMcpClients([recording])
+        .withToolTrust(toolTrust)
+        .build(),
+    );
     const result = await agent.process('read', {
+      sessionId: ragCaller.sessionId,
+      caller: ragCaller,
       trace: { traceId: 'raw' },
       onToolTrace: (entry) => collector.observe(entry),
     });
@@ -202,7 +209,11 @@ test('get_task projects embedded traces once without modifying board evidence', 
     complete: true,
     omittedCount: 0,
   };
-  const board = new TaskBoard({ workers: new Map(), onEvent: () => {} });
+  const board = new TaskBoard({
+    caller: ragCaller,
+    workers: new Map(),
+    onEvent: () => {},
+  });
   board.restore([
     {
       id: 't1',
@@ -246,6 +257,7 @@ import {
 import { RagOrchestrator } from '../../node_modules/@mcp-abap-adt/llm-agent-libs/dist/agent/rag-orchestrator';
 import { ToolAvailabilityRegistry } from '../../node_modules/@mcp-abap-adt/llm-agent-libs/dist/policy/tool-availability-registry';
 import { CompositeSkillManager } from '../../srv/lib/composite-skill-manager';
+import { skillDescriptionsRag } from '../../srv/lib/trusted-skill';
 
 test.each(['pipeline', 'rag-orchestrator'])(
   '%s selects informational skills semantically and resolves body and description trust live on an existing agent',
@@ -288,7 +300,11 @@ test.each(['pipeline', 'rag-orchestrator'])(
     );
     let selected = true;
     const rawRows = [
-      { text: 'description', score: 1, metadata: { id: 'skill:info' } },
+      {
+        text: 'description',
+        score: 1,
+        metadata: { id: 'skill:info', ownerScope: 'global' as const },
+      },
     ];
     const rag: IRag = {
       query: async () => ({
@@ -313,13 +329,20 @@ test.each(['pipeline', 'rag-orchestrator'])(
       skipModelValidation: true,
       agent: { mode: 'hard', classificationEnabled: false, ragQueryK: 5 },
     })
+      .withRagAccess(testAccess([ragCaller, sessionCaller1]))
       .withMainLlm(llm)
       .withClassification(false)
       .withSkillManager(manager.informationalSkills())
+      .addRagCollection({
+        name: 'skills',
+        rag: skillDescriptionsRag(rag),
+        meta: { scope: 'global', displayName: 'Skill descriptions' },
+      })
       .setToolsRag(rag);
-    const { agent } = await builder.build();
+    const { agent } = unwrapBuilderResult(await builder.build());
     const tracer = new NoopTracer();
     const orchestrator = new RagOrchestrator({
+      ragAccess: testAccess([ragCaller]),
       mainLlm: llm,
       helperLlm: undefined,
       classifier: {
@@ -341,7 +364,7 @@ test.each(['pipeline', 'rag-orchestrator'])(
         getActiveClients: () => [],
       },
       requestLogger: new NoopRequestLogger(),
-      ragStores: { facts: rag },
+      ragStores: { facts: { name: 'facts', rag, owner: { scope: 'global' } } },
       embedder: undefined,
       assembler: new ContextAssembler(),
       skillManager: manager.informationalSkills(),
@@ -349,14 +372,17 @@ test.each(['pipeline', 'rag-orchestrator'])(
     });
     const run = async () => {
       if (path === 'pipeline') {
-        const result = await agent.process('q');
+        const result = await agent.process('q', {
+          caller: ragCaller,
+          sessionId: ragCaller.sessionId,
+        });
         if (!result.ok) throw result.error;
       } else {
         const result = await orchestrator.orchestrate('q', {
           mode: 'hard',
-          opts: undefined,
+          opts: { caller: ragCaller, sessionId: ragCaller.sessionId },
           rootSpan: tracer.startSpan('test'),
-          sessionId: 'test',
+          sessionId: ragCaller.sessionId,
           externalTools: [],
         });
         if (!result.ok) throw result.error;
@@ -499,6 +525,13 @@ test('hub tools/skills store projects live trust using the querying role and lea
 import type { DialogueState } from '@mcp-abap-adt/llm-agent';
 import { DialogueSession } from '@mcp-abap-adt/llm-agent-libs';
 
+const ragCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+const sessionCaller1 = { ...ragCaller, sessionId: 'trust' };
+
 test('DialogueSession forwards coordinator trust to its internal get_task client without changing persisted traces', async () => {
   const trace: ToolTrace = {
     entries: [
@@ -529,6 +562,7 @@ test('DialogueSession forwards coordinator trust to its internal get_task client
     savedAt: 1,
   };
   const session = await DialogueSession.open({
+    caller: sessionCaller1,
     id: 'trust',
     toolTrust: systemToolTrust(
       (n) => n === 'GetClass',

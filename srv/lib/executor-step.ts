@@ -7,6 +7,7 @@ import type {
 import type { getSmartAgent } from '../agent-manager';
 import { runWithToolGateBypass } from '../request-session';
 import { renderNotice } from './notify-policy';
+import { callOptionsFor } from './rag-caller';
 import { captureReviewProfile, recordReviewProfile } from './review-scope';
 import { currentRoleModel, roleOfProfile } from './role-models-scope';
 import { evaluateGated } from './step-reviewer';
@@ -40,6 +41,14 @@ export async function runExecutorStep(
     model,
   ]: ExecutorStepArgs
 ) {
+  if (
+    !opts.caller ||
+    !opts.caller.sessionId ||
+    opts.sessionId !== opts.caller.sessionId
+  )
+    throw new Error('A bound caller with a matching session is required');
+  const caller = opts.caller;
+  opts = { ...opts, ...callOptionsFor(caller) };
   const traceId = opts.trace?.traceId ?? '';
   const { result } = await captureReviewProfile(() =>
     runWithToolGateBypass(async () => {
@@ -65,6 +74,7 @@ export async function runExecutorStep(
         const result = await prepared.value.run({
           task,
           ...opts,
+          ...callOptionsFor(caller),
           ...(history.length
             ? {
                 context: `Previous session conversation:\n${JSON.stringify(history)}`,

@@ -236,6 +236,9 @@ describe('loadToolCorpus', () => {
     expect(res.value.map((r) => r.metadata.id)).toEqual(
       expect.arrayContaining(['skill:creating-domain']),
     );
+    expect(res.value.every((row) => row.metadata.ownerScope === 'global')).toBe(
+      true,
+    );
   });
 
   it('uncached tools: explicit error, no LLM enrichment', async () => {

@@ -1,5 +1,6 @@
 import { LlmError } from '@mcp-abap-adt/llm-agent';
 import { reportLlmSpend } from '../../srv/lib/llm-failure';
+import { bindCaller } from '../../srv/lib/rag-caller';
 import { chatSessionBodyTests } from './helpers/chat-session-body';
 import { responseModelTests, typedResponse } from './helpers/response-model';
 
@@ -990,3 +991,21 @@ describe('stage 1 model response headers', () => {
 });
 
 responseModelTests(body, (b, session) => call(b, undefined, session));
+
+test('refuses a conflicting caller with HTTP 403 before agent dispatch', async () => {
+  configure();
+  expect((await bindCaller('caller-refused-anthropic', 'bob', false)).ok).toBe(
+    true,
+  );
+  const req = Object.defineProperties(
+    express().request,
+    Object.getOwnPropertyDescriptors({
+      ...fakeReq(body()),
+      sessionId: 'caller-refused-anthropic',
+    }),
+  );
+  const res = fakeRes();
+  await handleAnthropicMessages(req, typedResponse(res));
+  expect(res.statusCode).toBe(403);
+  expect(harness.seenOptions).toHaveLength(0);
+});

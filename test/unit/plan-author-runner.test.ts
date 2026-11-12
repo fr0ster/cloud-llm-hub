@@ -1,3 +1,11 @@
+import { bindTestCaller } from './helpers/bind-test-caller';
+
+const taskCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+
 import {
   type ILlm,
   type IMcpClient,
@@ -111,6 +119,7 @@ const model: ILlm = {
 beforeAll(async () => {
   jest.mocked(makeHubLlm).mockResolvedValue(model);
   initProviders(await startProviders(config));
+  await bindTestCaller(taskCaller);
 });
 
 test('destination author offers exactly four canonical read tools and inherits caller ceilings', async () => {
@@ -189,7 +198,11 @@ test('destination author offers exactly four canonical read tools and inherits c
   clients.mockRestore();
   await runWithSessionId(
     'author-session',
-    () => prepared.value.process('Create a plan'),
+    () =>
+      prepared.value.process('Create a plan', {
+        caller: taskCaller,
+        sessionId: taskCaller.sessionId,
+      }),
     undefined,
     'alice',
   );
@@ -210,7 +223,11 @@ test('destination author offers exactly four canonical read tools and inherits c
   if (!restricted.ok) throw new Error(restricted.error.message);
   await runWithSessionId(
     'author-session',
-    () => restricted.value.process('Revise a plan'),
+    () =>
+      restricted.value.process('Revise a plan', {
+        caller: taskCaller,
+        sessionId: taskCaller.sessionId,
+      }),
     undefined,
     'alice',
   );
@@ -322,7 +339,10 @@ test('coordinator defaults to planner model and an override selects a separate m
   expect(selected.mock.calls.at(-1)?.[0].model).toBe('planner-model');
   selected.mockRestore();
   // The cached planner LLM is reused; the coordinator override never replaces it.
-  await author.process('Plan');
+  await author.process('Plan', {
+    caller: taskCaller,
+    sessionId: taskCaller.sessionId,
+  });
 });
 
 test.each([

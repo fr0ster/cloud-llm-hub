@@ -1,10 +1,33 @@
 import {
   formatTrustTag,
+  type IRag,
   type ISkill,
   type ISkillManager,
   type RagResult,
 } from '@mcp-abap-adt/llm-agent';
 import type { TrustResolver } from './trust-resolver';
+
+/** v32 renders text collections separately from the reserved tools store. */
+export function skillDescriptionsRag(rag: IRag): IRag {
+  return {
+    async query(embedding, k, options) {
+      const result = await rag.query(embedding, k, options);
+      return result.ok
+        ? {
+            ...result,
+            value: result.value.filter((row) =>
+              row.metadata.id?.startsWith('skill:'),
+            ),
+          }
+        : result;
+    },
+    getById: (id, options) =>
+      id.startsWith('skill:')
+        ? rag.getById(id, options)
+        : Promise.resolve({ ok: true, value: null }),
+    healthCheck: (options) => rag.healthCheck(options),
+  };
+}
 
 /** Managers assign ids before composition; standalone legacy skills retain their external key. */
 export function skillId(skill: ISkill): string {
