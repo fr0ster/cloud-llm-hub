@@ -21,6 +21,7 @@ import {
   effectiveRoleModels,
   withRoleModels,
 } from './lib/role-models-scope';
+import { resolveSessionKey } from './session-id';
 
 export {
   EXECUTE_STEP_DESCRIPTION,
@@ -42,7 +43,6 @@ import {
 import { runExecutorStep } from './lib/executor-step';
 import { requestStart } from './lib/request-start';
 import type { LongSessionRequest } from './lib/session-connection';
-import { runWithRequestLlms } from './lib/session-llms';
 import {
   measureRequest,
   requestMeasurement,
@@ -112,7 +112,6 @@ import { type LongSession, longSessions } from './lib/long-session';
 import { describeCause, isOutageError } from './lib/mcp-outage';
 import type { DumpScope } from './lib/principal';
 
-import { safeStop } from './lib/request-connection';
 import {
   resolveRequestSystem,
   runWithRequestSystem,
@@ -215,7 +214,10 @@ function executeStepWithCatalog(
     req,
     {
       userId: caller.userId,
-      sessionId: input.session ?? '',
+      sessionId:
+        input.session ??
+        (req as LongSessionRequest).longSession?.key ??
+        resolveSessionKey(req).key,
       destination: input.destination,
     },
     'execute_step',
@@ -250,7 +252,14 @@ function measuredAgentCallback<
   return (args: T): Promise<R> =>
     measureAgentTool(
       req,
-      { userId, sessionId: args.session ?? '', destination: args.destination },
+      {
+        userId,
+        sessionId:
+          args.session ??
+          (req as LongSessionRequest).longSession?.key ??
+          resolveSessionKey(req).key,
+        destination: args.destination,
+      },
       tool,
       (): Promise<R> => run(args),
     );
@@ -258,7 +267,7 @@ function measuredAgentCallback<
 
 async function measureAgentTool<R extends ReturnType<typeof textResult>>(
   req: Request,
-  session: UsageSession,
+  session: Omit<UsageSession, 'sessionId'> & { sessionId?: string },
   tool:
     | 'execute_step'
     | 'session_open'
@@ -270,10 +279,11 @@ async function measureAgentTool<R extends ReturnType<typeof textResult>>(
   run: () => Promise<R>,
   signal?: AbortSignal,
 ) {
+  if (!session.sessionId) return run();
   const measurement = measureRequest(
     req,
     req.res,
-    session,
+    { ...session, sessionId: session.sessionId },
     'mcp-agent',
     false,
     tool,
@@ -309,12 +319,17 @@ async function executeStepMeasured(
   },
   callerSignal?: AbortSignal,
 ) {
-  if (args.session === undefined)
-    return runWithRequestLlms((req as LongSessionRequest).longSession, () =>
-      executeStepRun(req, caller, args, callerSignal),
+  const key =
+    args.session?.trim() ||
+    (req as LongSessionRequest).longSession?.key ||
+    resolveSessionKey(req).key;
+  if (!key)
+    return textResult(
+      'SESSION_REQUIRED: supply the x-clh-session header',
+      true,
     );
   try {
-    const s = await resolveSession(caller.userId, args.session);
+    const s = await resolveSession(caller.userId, key);
     if (!s) return textResult('SESSION_NOT_FOUND', true);
     const result = await longSessions().run(s, () =>
       withRoleModels(
@@ -363,8 +378,8 @@ async function executeStepRun(
     worker = 'executor',
     model,
   }: { destination?: string; task: string; worker?: string; model?: string },
-  callerSignal?: AbortSignal,
-  longSession?: LongSession,
+  callerSignal: AbortSignal | undefined,
+  longSession: LongSession,
 ) {
   const stepStartedAt = requestStart(req);
   const measurement = requestMeasurement(req);
@@ -390,7 +405,7 @@ async function executeStepRun(
   // (closeSession) while a tool call is still in flight, which is exactly
   // the orphaned-state failure we're trying to avoid. `callerSignal` is only
   // ever used to leave the queue; teardown is left entirely to the `finally`
-  // below, which always runs safeStop(connection) once the step completes.
+  // below, which releases the held connection once the step completes.
   try {
     // Destination from the arg, else the connection's default header.
     const headerDestination = (
@@ -429,11 +444,8 @@ async function executeStepRun(
     );
     const agentHandle = handle as ExecutorAgentHandle;
 
-    // Ephemeral session per call → the executor loads/saves no history.
-    // Doubles as the per-trace telemetry id (Verified fact 10): unique per
-    // call, threaded below as `trace.traceId`, dropped in the `finally`.
     traceId = requestMeasurement(req)?.traceId ?? `agent-step-${randomUUID()}`;
-    const sessionId = longSession?.key ?? traceId;
+    const sessionId = longSession.key;
     const boundCaller = await bindCaller(
       sessionId,
       userId,
@@ -498,7 +510,7 @@ async function executeStepRun(
 
     const usage = usageRuntime()
       ?.forSession({
-        sessionId: sessionId ?? traceId,
+        sessionId,
         userId,
         destination: targetDestination,
       })
@@ -655,13 +667,12 @@ async function executeStepRun(
     log.warn('execute_step failed', { destination, error: message });
     return textResult(`ERROR: ${message}`, true);
   } finally {
-    // Wait for the calls this step started, then end the ADT session, then
-    // release — the slot last, and the semaphore with it. Refused/closed
+    // Drain calls before releasing the connection, pipeline slot and semaphore.
+    // The long session keeps its connection until session close. Refused/closed
     // admission never ran the pipeline, so there is no per-trace bucket to
     // free — dropRequest only makes sense once the pipeline actually ran.
     await pipeline?.drain();
-    if (longSession) await releaseRequestConnection(connection, longSession);
-    else await safeStop(connection);
+    await releaseRequestConnection(connection, longSession);
     if (pipeline) {
       // Free the per-trace telemetry bucket — nobody else calls dropRequest,
       // so omitting this leaks memory per call (Verified fact 10). Guarded: a

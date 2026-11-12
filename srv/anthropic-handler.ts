@@ -133,13 +133,15 @@ async function handleAnthropicMessagesWithUsage(
   req: Request,
   res: Response,
 ): Promise<void> {
+  const sessionId = sessionIdOf(req);
+  if (!sessionId) return handleAnthropicMessagesMeasured(req, res);
   const body: { stream?: boolean } | undefined = req.body;
   const measurement = measureRequest(
     req,
     res,
     {
       userId: cds.context?.user?.id ?? 'anonymous',
-      sessionId: sessionIdOf(req) ?? '',
+      sessionId,
     },
     'anthropic',
     body?.stream === true,
@@ -435,9 +437,17 @@ async function serveMessages(
     | undefined;
   const traceId = requestMeasurement(req)?.traceId ?? randomUUID();
   const sessionId = sessionIdOf(req);
+  if (!sessionId) {
+    res.status(403).json({
+      error: {
+        message: 'SESSION_REQUIRED: session middleware must issue a session',
+      },
+    });
+    return;
+  }
   const userId = authenticatedCaller.userId;
   const boundCaller = await bindCaller(
-    sessionId ?? traceId,
+    sessionId,
     userId,
     cds.context?.user?.is('MCP_Admin') === true,
   );
@@ -626,7 +636,7 @@ async function serveMessages(
   try {
     const admission = await admitPipeline(
       userId,
-      sessionId ?? traceId,
+      sessionId,
       callerLeft.signal,
       {
         presented:
@@ -664,7 +674,7 @@ async function serveMessages(
 
   const usage = usageRuntime()
     ?.forSession({
-      sessionId: sessionId ?? traceId,
+      sessionId,
       userId,
       destination: destination,
     })

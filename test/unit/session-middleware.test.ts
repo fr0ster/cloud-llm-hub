@@ -13,7 +13,7 @@ import { SESSION_COOKIE, SESSION_HEADER } from '../../srv/session-id';
 
 type Stashed = Request & { sessionId?: string; sessionMinted?: boolean };
 
-function run(
+async function run(
   headers: Record<string, string>,
   deps?: Parameters<typeof sessionMiddleware>[0],
 ) {
@@ -28,39 +28,41 @@ function run(
   const next: NextFunction = () => {
     called = true;
   };
-  sessionMiddleware(deps)(req, res, next);
+  await sessionMiddleware(deps)(req, res, next);
   return { req, set, called };
 }
 
 describe('the /v1 session middleware', () => {
-  it('honours the cookie it issued', () => {
-    const { req, set, called } = run({ cookie: `${SESSION_COOKIE}=s-abc` });
+  it('honours the cookie it issued', async () => {
+    const { req, set, called } = await run({
+      cookie: `${SESSION_COOKIE}=s-abc`,
+    });
     expect(called).toBe(true);
     expect(req.sessionId).toBe('s-abc');
     expect(req.sessionMinted).toBe(false);
     expect(set['Set-Cookie']).toBeUndefined();
   });
 
-  it('does not let a request name its session', () => {
-    const { req, set } = run({ 'x-session-id': 'victim' });
+  it('does not let a request name its session', async () => {
+    const { req, set } = await run({ 'x-session-id': 'victim' });
     expect(req.sessionId).not.toBe('victim');
     expect(req.sessionId).toMatch(/^s-/);
     expect(req.sessionMinted).toBe(true);
     expect(set['Set-Cookie']).toContain(`${SESSION_COOKIE}=${req.sessionId}`);
   });
 
-  it('ignores mcp-session-id the same way', () => {
-    const { req } = run({ 'mcp-session-id': 'victim' });
+  it('ignores mcp-session-id the same way', async () => {
+    const { req } = await run({ 'mcp-session-id': 'victim' });
     expect(req.sessionId).not.toBe('victim');
   });
 
-  it('marks the cookie Secure behind https', () => {
-    const { set } = run({ 'x-forwarded-proto': 'https' });
+  it('marks the cookie Secure behind https', async () => {
+    const { set } = await run({ 'x-forwarded-proto': 'https' });
     expect(set['Set-Cookie']).toContain('Secure');
   });
 
-  it('mints a new session for a cookie that names no live one', () => {
-    const { req, set } = run(
+  it('mints a new session for a cookie that names no live one', async () => {
+    const { req, set } = await run(
       { cookie: `${SESSION_COOKIE}=s-retired` },
       { isLive: () => false, userIdOf: () => 'alice' },
     );
@@ -69,9 +71,9 @@ describe('the /v1 session middleware', () => {
     expect(set['Set-Cookie']).toContain(`${SESSION_COOKIE}=${req.sessionId}`);
   });
 
-  it('asks about liveness with the user from the token', () => {
+  it('asks about liveness with the user from the token', async () => {
     const seen: Array<[string, string]> = [];
-    run(
+    await run(
       { cookie: `${SESSION_COOKIE}=s-1` },
       {
         isLive: (u, s) => {
@@ -296,7 +298,7 @@ describe('requireLongSession — plain mode', () => {
     return out;
   }
 
-  it('off by default: a request without a session → 400 SESSION_REQUIRED naming both ways in', () => {
+  it('off by default: a request without a session → 400 SESSION_REQUIRED naming both ways in', async () => {
     clearSessionConfig();
     const out = guard('openai', false);
     expect(out.status).toBe(400);
@@ -306,7 +308,7 @@ describe('requireLongSession — plain mode', () => {
     expect(text).toContain('/mcp/agent/stream/http');
   });
 
-  it('Anthropic envelope on /v1/messages', () => {
+  it('Anthropic envelope on /v1/messages', async () => {
     clearSessionConfig();
     expect(guard('anthropic', false).body).toMatchObject({
       type: 'error',
@@ -314,12 +316,12 @@ describe('requireLongSession — plain mode', () => {
     });
   });
 
-  it('a request in a session passes', () => {
+  it('a request in a session passes', async () => {
     clearSessionConfig();
     expect(guard('openai', true).next).toBe(true);
   });
 
-  it('plain mode on → passes without a session', () => {
+  it('plain mode on → passes without a session', async () => {
     process.env.LLM_AGENT_PLAIN_API = 'true';
     clearSessionConfig();
     expect(guard('openai', false).next).toBe(true);

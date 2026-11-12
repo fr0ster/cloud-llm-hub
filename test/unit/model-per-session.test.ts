@@ -747,8 +747,8 @@ test.each(
       { onClose: async () => {} },
     );
     setLongSessionsForTest(registry);
-    const first = registry.open('llm-http', { key: 'configured' });
-    const second = registry.open('llm-http', { key: 'default' });
+    const first = registry.open('llm-http', { key: 'ls-llm-configured' });
+    const second = registry.open('llm-http', { key: 'ls-llm-default' });
     if ('refused' in first || 'refused' in second)
       throw new Error('Cannot open sessions');
     const builds: { iterations: number; calls?: number; history: boolean }[] =
@@ -779,10 +779,9 @@ test.each(
         roles: ['MCP_Admin'],
       });
       cds.context = context;
-      Object.assign(req, {
-        longSession:
-          req.headers['x-clh-session'] === 'configured' ? first : second,
-      });
+      const session =
+        req.headers['x-clh-session'] === 'ls-llm-configured' ? first : second;
+      Object.assign(req, { longSession: session, sessionId: session.key });
       next();
     });
     app.post('/v1/chat/completions', handleChatCompletions);
@@ -792,7 +791,11 @@ test.each(
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('No port');
     try {
-      for (const key of ['configured', 'configured', 'default']) {
+      for (const key of [
+        'ls-llm-configured',
+        'ls-llm-configured',
+        'ls-llm-default',
+      ]) {
         builds.length = 0;
         const response = await fetch(
           `http://127.0.0.1:${address.port}${path}`,
@@ -801,7 +804,7 @@ test.each(
             headers: {
               'content-type': 'application/json',
               'x-clh-session': key,
-              ...(key === 'configured'
+              ...(key === 'ls-llm-configured'
                 ? {
                     'x-clh-model-coordinator': 'A',
                     'x-clh-limits': JSON.stringify({
@@ -823,7 +826,7 @@ test.each(
         expect(builds.length).toBeGreaterThan(0);
         for (const built of builds)
           expect(built).toEqual(
-            key === 'configured'
+            key === 'ls-llm-configured'
               ? { iterations: 3, calls: undefined, history: false }
               : {
                   iterations: getAgentConfig().agent.maxIterations,
@@ -842,7 +845,7 @@ test.each(
             method: 'POST',
             headers: {
               'content-type': 'application/json',
-              'x-clh-session': 'configured',
+              'x-clh-session': 'ls-llm-configured',
             },
             body: JSON.stringify({
               stream,
@@ -857,7 +860,7 @@ test.each(
       }
     } finally {
       build.mockRestore();
-      for (const key of ['configured', 'default']) {
+      for (const key of ['ls-llm-configured', 'ls-llm-default']) {
         clearRoleModels('llm-http', key);
         clearExecutionLimits('llm-http', key);
       }
@@ -951,10 +954,9 @@ test.each(
         roles: ['MCP_Admin', 'MCP_Reader'],
       });
       cds.context = context;
-      Object.assign(req, {
-        longSession:
-          req.headers['x-clh-session'] === 'configured' ? configured : defaults,
-      });
+      const session =
+        req.headers['x-clh-session'] === 'configured' ? configured : defaults;
+      Object.assign(req, { longSession: session, sessionId: session.key });
       next();
     });
     app.post('/v1/chat/completions', handleChatCompletions);

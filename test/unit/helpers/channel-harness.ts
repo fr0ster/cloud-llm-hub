@@ -1,4 +1,7 @@
+import { IncomingMessage } from 'node:http';
+import { Socket } from 'node:net';
 import type { CallOptions, Message } from '@mcp-abap-adt/llm-agent';
+import type { Request, Response } from 'express';
 
 /**
  * Drive a chat channel in-process: a fake request and response, and the agent,
@@ -364,3 +367,19 @@ export function deferred<T = void>() {
 }
 
 export const tick = () => new Promise((r) => setImmediate(r));
+
+/** Typed request/response pair for driving the real session middleware. */
+export function sessionChannel(
+  body: Record<string, string | number | boolean | object> = {},
+  path = '/chat/completions',
+) {
+  const req = Object.assign(
+    new IncomingMessage(new Socket()) as Request,
+    fakeReq(body),
+    { path, method: 'POST' },
+  );
+  Reflect.deleteProperty(req.headers, 'cookie');
+  Reflect.deleteProperty(req, 'sessionId');
+  const res = fakeRes() as Response & ReturnType<typeof fakeRes>;
+  return { req, res };
+}

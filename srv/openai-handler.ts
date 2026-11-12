@@ -301,11 +301,13 @@ async function handleChatCompletionsWithUsage(
   req: Request,
   res: Response,
 ): Promise<void> {
+  const sessionId = sessionIdOf(req);
+  if (!sessionId) return handleChatCompletionsMeasured(req, res);
   const body: { stream?: boolean } | undefined = req.body;
   const measurement = measureRequest(
     req,
     res,
-    { userId: getUserId(), sessionId: sessionIdOf(req) ?? '' },
+    { userId: getUserId(), sessionId },
     'openai',
     body?.stream === true,
   );
@@ -596,8 +598,15 @@ async function serveChatCompletions(
   // explicit: a stateless API client sending its full history must never be
   // truncated to its last message.
   const explicitSessionId = honouredSessionId(req);
-  const sessionId =
-    sessionIdOf(req) ?? (requestMeasurement(req) ? traceId : randomUUID());
+  const sessionId = sessionIdOf(req);
+  if (!sessionId) {
+    res.status(403).json({
+      error: {
+        message: 'SESSION_REQUIRED: session middleware must issue a session',
+      },
+    });
+    return;
+  }
   const t0 = requestStart(req);
 
   // Two modes of history management:
@@ -1069,7 +1078,7 @@ async function serveChatCompletions(
 
     const usage = usageRuntime()
       ?.forSession({
-        sessionId: sessionId ?? traceId,
+        sessionId,
         userId,
         destination: destAfter,
       })

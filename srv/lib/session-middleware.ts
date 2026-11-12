@@ -8,6 +8,8 @@ import {
   type WithSession,
 } from '../session-id';
 import type { LongSession } from './long-session';
+import { getHubRagAccess } from './rag-access';
+import { bindCaller } from './rag-caller';
 import { sessionConfig } from './session-config';
 import {
   type LongSessionRequest,
@@ -80,14 +82,26 @@ function refuse(
   res.end(JSON.stringify(r.body));
 }
 
+function refuseBinding(
+  res: Response,
+  dialect: SessionDialect,
+  message: string,
+): void {
+  const error = { type: 'permission_error', message };
+  res
+    .status(403)
+    .json(dialect === 'anthropic' ? { type: 'error', error } : { error });
+}
+
 /**
  * Give every `/v1` request a session this service issued.
  *
  * An explicit long-session key binds the request to its caller-owned session,
  * live or revived. Chat body `session` takes precedence over the header.
- * A missing session is refused unless the route allows opening a new one.
+ * Authenticated requests bind the resolved or minted session before continuing.
  *
- * Without a key, the plain mode of before: the presented `clh_session` is kept
+ * A cookie bound to another user is refused before key resolution or liveness is
+ * checked. Otherwise the presented `clh_session` is kept
  * when it names a live session, and otherwise one is minted and the cookie set
  * — never a revival of the old id, so state a caller asked us to destroy
  * cannot be reattached through the cookie in their jar.
@@ -98,13 +112,42 @@ function isChatRoute(path: string): boolean {
 }
 
 export function sessionMiddleware(deps: SessionMiddlewareDeps = {}) {
-  return (
+  return async (
     req: Request,
     res: Response,
     next: NextFunction,
-  ): undefined | Promise<void> => {
+  ): Promise<void> => {
     const r = req as Request & WithSession & LongSessionRequest;
     const userId = deps.userIdOf?.() ?? 'anonymous';
+    if (deps.userIdOf) {
+      try {
+        const presented = resolveSessionId(r);
+        if (presented) {
+          const owner =
+            await getHubRagAccess().access.bindings.getUserId(presented);
+          if (
+            !owner.ok ||
+            (owner.value !== undefined && owner.value !== userId)
+          ) {
+            refuseBinding(
+              res,
+              dialectOf(req),
+              'Session belongs to another user or its binding is unavailable',
+            );
+            return;
+          }
+        }
+      } catch (error) {
+        refuseBinding(
+          res,
+          dialectOf(req),
+          error instanceof Error
+            ? error.message
+            : 'Session binding unavailable',
+        );
+        return;
+      }
+    }
     let bodySession: string | undefined;
     let hasBodySession = false;
     if (req.method === 'POST' && isChatRoute(req.path)) {
@@ -133,13 +176,37 @@ export function sessionMiddleware(deps: SessionMiddlewareDeps = {}) {
       : resolveSessionKey(r);
     const resolve = deps.resolveSession;
     if (key === undefined || !resolve) {
-      perRequest(r, res, userId, deps);
-      next();
-      return;
+      if (!deps.userIdOf) {
+        perRequest(r, res, userId, deps);
+        next();
+        return;
+      }
+      return (async () => {
+        const sessionId = perRequest(r, res, userId, deps);
+        const bound = await bindCaller(sessionId, userId, false);
+        if (!bound.ok) {
+          refuseBinding(res, dialectOf(req), bound.error.message);
+          return;
+        }
+        next();
+      })().catch((error) => {
+        refuseBinding(
+          res,
+          dialectOf(req),
+          error instanceof Error
+            ? error.message
+            : 'Session binding unavailable',
+        );
+      });
     }
     return resolve(userId, key).then(
-      (s) => {
+      async (s) => {
         if (s && s.userId === userId) {
+          const bound = await bindCaller(key, userId, false);
+          if (!bound.ok) {
+            refuseBinding(res, dialectOf(req), bound.error.message);
+            return;
+          }
           deps.touchSession?.(s);
           r.sessionId = key;
           r.sessionMinted = false;
@@ -154,7 +221,12 @@ export function sessionMiddleware(deps: SessionMiddlewareDeps = {}) {
         }
         if (deps.keyOptional?.(req)) {
           // The stale key is not a plain session either: mint.
-          mint(r, res);
+          const sessionId = mint(r, res);
+          const bound = await bindCaller(sessionId, userId, false);
+          if (!bound.ok) {
+            refuseBinding(res, dialectOf(req), bound.error.message);
+            return;
+          }
           next();
           return;
         }
@@ -185,22 +257,23 @@ function perRequest(
   res: Response,
   userId: string,
   deps: SessionMiddlewareDeps,
-): void {
+): string {
   const presented = resolveSessionId(r);
   if (presented !== undefined && (deps.isLive?.(userId, presented) ?? true)) {
     r.sessionId = presented;
     r.sessionMinted = false;
-    return;
+    return presented;
   }
-  mint(r, res);
+  return mint(r, res);
 }
 
-function mint(r: Request & WithSession, res: Response): void {
+function mint(r: Request & WithSession, res: Response): string {
   const sid = `s-${randomUUID()}`;
   const secure = !!(r.secure || r.headers['x-forwarded-proto'] === 'https');
   res.setHeader('Set-Cookie', buildSetCookie(sid, secure));
   r.sessionId = sid;
   r.sessionMinted = true;
+  return sid;
 }
 
 /**

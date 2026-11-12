@@ -218,10 +218,12 @@ it("execute_step with a session sees the previous step's turn in its messages", 
     { role: 'user', content: 'second' },
   ]);
 });
-it('execute_step without session keeps the throwaway session', async () => {
-  await executeStep(req, caller, { task: 'first' });
-  expect(harness.seenOptions[0].sessionId).toMatch(/^agent-step-/);
-  expect(harness.events).toContain('safeStop');
+it('execute_step without session refuses and names the header', async () => {
+  const result = await executeStep(req, caller, { task: 'first' });
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain('SESSION_REQUIRED');
+  expect(result.content[0].text).toContain('x-clh-session');
+  expect(harness.seenOptions).toHaveLength(0);
 });
 
 it('refuses missing or changed credentials as MCP errors without closing the held connection', async () => {
@@ -337,7 +339,10 @@ it('runs only the executor and passes its output through verbatim', async () => 
     value: { content: '  answer\n' },
   });
   try {
-    const result = await executeStep(req, caller, { task: 'hello' });
+    const result = await executeStep(req, caller, {
+      session: await opened(),
+      task: 'hello',
+    });
     expect(result.content[0].text).toBe('  answer\n');
     expect(executor.process).toHaveBeenCalledTimes(1);
     expect(coordinator).not.toHaveBeenCalled();
@@ -355,6 +360,7 @@ it('appends the canonical notice for a deterministic contradiction', async () =>
   const { renderNotice } = await import('../../srv/lib/notify-policy');
   try {
     const result = await executeStep(req, caller, {
+      session: await opened(),
       task: 'create the domain',
     });
     expect(result.content[0].text).toBe(
@@ -391,7 +397,10 @@ it('falls back to the agent for an LLM-only handle', async () => {
   const handle = await getSmartAgent(undefined, 'DEST');
   const process = jest.spyOn(handle.agent, 'process');
   try {
-    const result = await executeStep(req, caller, { task: 'hello' });
+    const result = await executeStep(req, caller, {
+      session: await opened(),
+      task: 'hello',
+    });
     expect(result.content[0].text).toBe('done');
     expect(process).toHaveBeenCalledTimes(1);
   } finally {
@@ -406,6 +415,7 @@ it('execute_step scopes the tool gate bypass to the executor call', async () => 
     return { ok: true, value: { content: 'done' } };
   };
   await executeStep(req, caller, {
+    session: await opened(),
     task: 'Read the class',
     destination: 'DEST',
   });
@@ -423,7 +433,10 @@ it('execute_step returns executor usage and ends with the footer with recording 
         usage: { promptTokens: 7, completionTokens: 4, totalTokens: 11 },
       },
     });
-    const result = await executeStep(req, caller, { task: 'work' });
+    const result = await executeStep(req, caller, {
+      session: await opened(),
+      task: 'work',
+    });
     expect(result).toMatchObject({
       structuredContent: {
         result: 'done',
@@ -454,7 +467,10 @@ it('execute_step reports only execution usage and makes no critic call', async (
     },
   });
   try {
-    const result = await executeStep(req, caller, { task: 'work' });
+    const result = await executeStep(req, caller, {
+      session: await opened(),
+      task: 'work',
+    });
     expect(result).toMatchObject({
       structuredContent: { result: 'done', usage: { total_tokens: 11 } },
     });
@@ -478,7 +494,10 @@ it.each(['', ' \n\t'])(
         usage: { promptTokens: 7, completionTokens: 4, totalTokens: 11 },
       },
     });
-    const result = await executeStep(req, caller, { task: 'work' });
+    const result = await executeStep(req, caller, {
+      session: await opened(),
+      task: 'work',
+    });
     const text = result.content[0]?.text;
     expect(result.isError).toBe(true);
     expect(text).toMatch(/^EMPTY_RESULT on destination "DEST":/);
@@ -498,7 +517,10 @@ it.each(['', ' \n\t'])(
 
 it('execute_step reports empty executor content without known usage', async () => {
   harness.process = async () => ({ ok: true, value: { content: '' } });
-  const result = await executeStep(req, caller, { task: 'work' });
+  const result = await executeStep(req, caller, {
+    session: await opened(),
+    task: 'work',
+  });
   expect(result.isError).toBe(true);
   expect(result.content[0]?.text).toMatch(
     /^EMPTY_RESULT on destination "DEST":/,
@@ -512,7 +534,8 @@ it('execute_step preserves HTTP arrival time while agent resolution waits', asyn
   harness.agentGate = gate.promise;
   const clock = jest.spyOn(Date, 'now').mockReturnValue(1793275200000);
   try {
-    const done = executeStep(request, caller, { task: 'first' });
+    const session = await opened();
+    const done = executeStep(request, caller, { session, task: 'first' });
     clock.mockReturnValue(1793275260000);
     gate.resolve();
     await done;
@@ -701,7 +724,11 @@ it.each(['checker', 'writer'])(
         profileRunner: runner,
       }));
     try {
-      const result = await executeStep(req, caller, { task: 'Check', worker });
+      const result = await executeStep(req, caller, {
+        session: await opened(),
+        task: 'Check',
+        worker,
+      });
       const { coordinatorToolsClient } = await import(
         '../../srv/lib/coordinator-tools-client'
       );

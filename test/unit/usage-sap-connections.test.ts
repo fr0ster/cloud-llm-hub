@@ -801,7 +801,11 @@ test('site audit pairs every owner registration with a release and preserves cha
       'establishRequestConnection',
       'releaseRequestConnection',
     ],
-    ['agent-mcp.ts', 'buildConnectionForDestination', 'safeStop'],
+    [
+      'agent-mcp.ts',
+      'buildConnectionForDestination',
+      'releaseRequestConnection',
+    ],
   ]) {
     const source = sources.get(file);
     if (!source) throw new Error(`missing owner ${file}`);

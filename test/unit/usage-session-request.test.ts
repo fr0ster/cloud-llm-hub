@@ -604,13 +604,23 @@ test.each([
   },
 );
 
+function openedMcpSession(): string {
+  const session = registry.open('alice', { destination: 'DEST' });
+  if ('refused' in session) throw new Error(session.refused);
+  return session.key;
+}
+
 test('agent MCP execute_step records its protocol and tool once', async (): Promise<void> => {
   await httpRun(async (req: Request, res: Response): Promise<void> => {
     res.json(
       await executeStep(
         req,
         { userId: 'alice', exposition: undefined },
-        { task: 'TASK_SENTINEL', destination: 'DEST' },
+        {
+          session: openedMcpSession(),
+          task: 'TASK_SENTINEL',
+          destination: 'DEST',
+        },
       ),
     );
   });
@@ -628,7 +638,9 @@ test('agent MCP execute_step records its protocol and tool once', async (): Prom
     harness.seenOptions[0]?.trace?.traceId,
   );
   expect(request.context.traceId).toBe(request.context.requestId);
-  expect(request.context.sessionId).toBe(request.context.traceId);
+  expect(request.context.sessionId).toBe(harness.seenOptions[0]?.sessionId);
+  expect(request.context.sessionId).toMatch(/^ls-/);
+  expect(request.context.sessionId).not.toBe(request.context.traceId);
   expect(JSON.stringify(await rows())).not.toContain('TASK_SENTINEL');
 });
 
@@ -648,7 +660,7 @@ test('disconnect ends the response before continuing work, with exactly one reco
     const running = executeStep(
       req,
       { userId: 'alice', exposition: undefined },
-      { task: 'run', destination: 'DEST' },
+      { session: openedMcpSession(), task: 'run', destination: 'DEST' },
       signal.signal,
     );
     await started.promise;
@@ -1233,7 +1245,7 @@ test.each(['openai', 'anthropic', 'mcp'])(
             await executeStep(
               req,
               { userId: 'alice', exposition: undefined },
-              { task: 'run', destination: 'DEST' },
+              { session: openedMcpSession(), task: 'run', destination: 'DEST' },
             ),
           );
         else
