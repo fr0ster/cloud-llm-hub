@@ -27,7 +27,14 @@ jest.mock('../../srv/agent-manager', () => ({
 }));
 jest.mock('../../srv/lib/dialogue-sessions', () => ({
   ...jest.requireActual('../../srv/lib/dialogue-sessions'),
-  headlessDialogueFor: async () => ({
+  headlessDialogueFor: async (
+    _req: object,
+    _userId: string,
+    _key: string,
+    _destination: string,
+    caller: NonNullable<CallOptions['caller']>,
+  ) => ({
+    caller,
     session: {
       callTool: async (_name: string, _args: object, options: CallOptions) => {
         require('./helpers/channel-harness').harness.seenOptions.push(options);

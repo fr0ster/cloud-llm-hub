@@ -202,7 +202,7 @@ it('restores a long 9.0.x legacy plan and persists normalized state and later pr
   };
   await store.save(id, legacy);
   const options = {
-    caller: taskCaller,
+    caller: { ...taskCaller, sessionId: id },
     id,
     store,
     board: { workers: new Map() },

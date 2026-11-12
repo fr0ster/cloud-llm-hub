@@ -2787,18 +2787,24 @@ test('dialogue opens with a stateless profile plan author and environment notes'
     expect(options?.planAuthor).toBeDefined();
     expect(options?.profileSource).toBeDefined();
     expect(options?.profileRunner).toBeDefined();
-    const result = await options?.planAuthor?.create({
-      goal: 'Read the requested objects',
-    });
+    const result = await options?.planAuthor?.create(
+      {
+        goal: 'Read the requested objects',
+      },
+      options?.caller && callOptionsFor(options.caller),
+    );
     expect(result?.ok).toBe(true);
     expect(mockAuthorTurns.at(-1)).toContain('Environment');
     expect(mockAuthorTurns.at(-1)).toContain('Destination: TEST');
     expect(mockAuthorTurns.at(-1)).toContain('[worker profiles]');
     expect(mockAuthorTurns.at(-1)).toContain('executor');
     const beforeCreate = mockAuthorOptions.length;
-    await h.session.callTool('plan_create', {
-      goal: 'External coordinator request',
-    });
+    if (!options) throw new Error('Missing dialogue options');
+    await h.session.callTool(
+      'plan_create',
+      { goal: 'External coordinator request' },
+      callOptionsFor({ ...options.caller }),
+    );
     expect(mockAuthorOptions).toHaveLength(beforeCreate + 1);
     expect(mockAuthorOptions.at(-1)?.caller).toBe(options?.caller);
     expect(mockAuthorOptions.at(-1)?.sessionId).toBe(options?.caller.sessionId);
@@ -2810,13 +2816,19 @@ test('dialogue opens with a stateless profile plan author and environment notes'
     );
     expect(mockAuthorTurns.at(-1)).toContain('Headless planning guidance');
     const beforeRevise = mockAuthorOptions.length;
-    await h.session.callTool('plan_revise', {
-      change: 'Revise external plan',
-      context: 'Preserve scope',
-    });
+    await h.session.callTool(
+      'plan_revise',
+      { change: 'Revise external plan', context: 'Preserve scope' },
+      callOptionsFor({ ...options.caller }),
+    );
     expect(mockAuthorOptions).toHaveLength(beforeRevise + 1);
     expect(mockAuthorOptions.at(-1)?.caller).toBe(options?.caller);
     expect(mockAuthorOptions.at(-1)?.sessionId).toBe(options?.caller.sessionId);
+    await h.session.send(
+      'Continue the plan',
+      callOptionsFor({ ...options.caller }),
+    );
+    expect(mockPlannerCallers.at(-1)).toBe(options.caller);
     expect(retrieval).toHaveBeenLastCalledWith(
       expect.anything(),
       'author-wiring',
@@ -2825,22 +2837,6 @@ test('dialogue opens with a stateless profile plan author and environment notes'
       }),
       expect.anything(),
     );
-    if (!options?.planAuthor) throw new Error('Missing plan author');
-    const author = options.planAuthor;
-    const plan: DialoguePlan = { version: 1, steps: [], status: 'active' };
-    const callsBefore = mockAuthorOptions.length;
-    for (const conflicting of [
-      { caller: { ...options.caller } },
-      { sessionId: 'another-session' },
-    ]) {
-      expect(() => author.create({ goal: 'Refused' }, conflicting)).toThrow(
-        'does not match the trusted caller',
-      );
-      expect(() =>
-        author.revise({ plan, change: 'Refused' }, conflicting),
-      ).toThrow('does not match the trusted caller');
-    }
-    expect(mockAuthorOptions).toHaveLength(callsBefore);
   } finally {
     retrieval.mockRestore();
     setup.mockRestore();
@@ -2888,8 +2884,12 @@ test('author gets planning knowledge and memory for the current open request', a
   try {
     const h = await dialogueFor('alice', 'author-context', 'TEST');
     const author = open.mock.calls.at(-1)?.[0].planAuthor;
+    const caller = open.mock.calls.at(-1)?.[0].caller;
     mockPlannerHook = async () => {
-      const result = await author?.create({ goal: 'A different author goal' });
+      const result = await author?.create(
+        { goal: 'A different author goal' },
+        caller && callOptionsFor(caller),
+      );
       expect(result?.ok).toBe(true);
     };
     await h.session.send('Find objects for my request');

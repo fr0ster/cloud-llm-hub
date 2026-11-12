@@ -169,7 +169,7 @@ export async function executeOrchestrationTool(
               signal,
               usage,
               trace,
-              ...callOptionsFor(boundCaller.value),
+              ...callOptionsFor(handle.caller),
             };
             const result = await handle.session.callTool(
               name,

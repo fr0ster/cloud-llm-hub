@@ -187,6 +187,7 @@ export function dialoguePlan(
         };
 }
 export interface DialogueHandle {
+  readonly caller: RagCaller;
   destination: string;
   session: DialogueSession;
   usage?: IUsageRecorder;
@@ -1343,7 +1344,7 @@ async function open(
       // do not invoke plan_create or plan_revise.
       ...retrieval,
       ...(usage ? { usage } : {}),
-      id: key,
+      id: boundCaller.value.sessionId,
       // Keep the library's memory/usage identity logical; only the hub bus
       // needs the user-scoped identity for routing and retirement.
       signals: {
@@ -1557,21 +1558,35 @@ async function open(
     };
   };
   lastPlan = dialoguePlan(session.snapshot());
+  // Requests may bind a new caller; the library session owns one caller object.
+  const sessionOptions = (options: CallOptions = {}): CallOptions => {
+    if (
+      (options.caller &&
+        (options.caller.sessionId !== key ||
+          options.caller.userId !== userId)) ||
+      (options.sessionId !== undefined && options.sessionId !== key)
+    )
+      throw new RagAccessDeniedError('Caller does not match dialogue session');
+    return { ...options, ...callOptionsFor(boundCaller.value) };
+  };
   const callTool = session.callTool.bind(session);
   session.callTool = (...args) =>
     llms.run(async () => {
+      const options = sessionOptions(args[2]);
       const steps = unusableCheckerPlanSteps(session.snapshot());
       if (steps) {
-        const reset = await callTool('plan_update', { steps });
+        const reset = await callTool('plan_update', { steps }, options);
         if (!reset.ok || reset.value.isError) return reset;
       }
-      const options: CallOptions | undefined = args[2];
-      return trustedCaller.run(options?.caller ?? boundCaller.value, () =>
-        withDelegateBrief(args[0], args[1], () => callTool(...args)),
+      return trustedCaller.run(boundCaller.value, () =>
+        withDelegateBrief(args[0], args[1], () =>
+          callTool(args[0], args[1], options),
+        ),
       );
     });
   const send = session.send.bind(session);
   session.send = (text, options = {}) => {
+    options = sessionOptions(options);
     emit({
       kind: 'turn',
       source: turnSource.getStore() ?? 'mcp',
@@ -1605,6 +1620,7 @@ async function open(
       await outbox.upsert([]);
     },
     destination,
+    caller: boundCaller.value,
     session,
     ...(usage ? { usage } : {}),
     attachments,

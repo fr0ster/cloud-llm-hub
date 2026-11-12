@@ -83,7 +83,10 @@ const mockAuthorAgent: ISmartAgent = {
   streamProcess: async function* () {},
 };
 let mockSession: DialogueSession;
-const mockHeadless = jest.fn(async () => ({ session: mockSession }));
+const mockHeadless = jest.fn(async () => ({
+  session: mockSession,
+  caller: sessionCaller1,
+}));
 const mockRelease = jest.fn();
 const mockLongSession = { userId: 'alice', key: 'owned', destination: 'TEST' };
 const mockRun = jest.fn(async (_input: ISubAgentInput) => ({
@@ -469,9 +472,10 @@ test('callTool receives cancellation, trace and long session id', async () => {
       usage: undefined,
       trace: { traceId: expect.any(String) },
       sessionId: 'owned',
-      caller: { sessionId: 'owned', userId: 'alice', isAdmin: false },
+      caller: sessionCaller1,
     },
   );
+  expect(spy.mock.calls[0]?.[2]?.caller).toBe(sessionCaller1);
 });
 
 test('delegated profiles cannot execute tools beyond the caller grants', async () => {
