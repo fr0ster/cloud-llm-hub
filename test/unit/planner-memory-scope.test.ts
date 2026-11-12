@@ -8,12 +8,12 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { PgVectorRag } from '@mcp-abap-adt/pg-vector-rag';
 import { QdrantRag } from '@mcp-abap-adt/qdrant-rag';
+import { turnOwner } from '../../srv/lib/history-turn';
 import { plannerMemoryStore } from '../../srv/lib/planner-context';
 import {
   forgetScopedPlannerMemory,
   scopedPlannerMemory,
 } from '../../srv/lib/planner-memory-scope';
-import { turnOwner } from '../../srv/lib/session-history-rag';
 
 const queryEmbedding = { text: 'memory', toVector: async () => [1, 0] };
 const embedding = symmetricEmbedder({

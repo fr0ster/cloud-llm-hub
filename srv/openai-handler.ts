@@ -1202,7 +1202,7 @@ async function serveChatCompletions(
               lastUser,
               ...(assistant ? [assistant] : []),
             );
-            if (!following) recordTurn(sessionId, userId, lastUser, text);
+            if (!following) recordTurn(boundCaller.value, lastUser, text);
           }
         },
         onEnd: (text) => {
@@ -1217,7 +1217,7 @@ async function serveChatCompletions(
             appendToSession(sessionId, userId, assistant);
           }
           if (following && lastUser)
-            recordTurn(sessionId, userId, lastUser, text);
+            recordTurn(boundCaller.value, lastUser, text);
         },
       });
     }
@@ -1573,7 +1573,7 @@ async function serveChatCompletions(
             role: 'assistant',
             content: accumulatedContent,
           } as Message);
-          recordTurn(sessionId, userId, lastUser, accumulatedContent);
+          recordTurn(boundCaller.value, lastUser, accumulatedContent);
           const updatedHistory = getSessionHistory(sessionId, userId);
           log.debug('Session updated', {
             sessionId,
@@ -1680,7 +1680,7 @@ async function serveChatCompletions(
           role: 'assistant',
           content: finalContent,
         } as Message);
-        recordTurn(sessionId, userId, lastUser, finalContent);
+        recordTurn(boundCaller.value, lastUser, finalContent);
       }
 
       // NOTE: state store upsert removed (non-streaming path) — same as streaming.

@@ -22,9 +22,10 @@ import {
 } from '@mcp-abap-adt/llm-agent-libs';
 import { ContextAssembler } from '../../node_modules/@mcp-abap-adt/llm-agent-libs/dist/context/context-assembler';
 import { userCollectionId } from '../../srv/collection-ids';
+import { turnOwner } from '../../srv/lib/history-turn';
 import { planAuthorContextNotes } from '../../srv/lib/planner-memory';
+import { createHubRagAccess, initHubRagAccess } from '../../srv/lib/rag-access';
 import { withCompactRagSearch } from '../../srv/lib/rag-search-context';
-import { SessionHistoryRag } from '../../srv/lib/session-history-rag';
 import { parseTrustDefaults } from '../../srv/lib/trust';
 import { TrustResolver } from '../../srv/lib/trust-resolver';
 import { TrustStore } from '../../srv/lib/trust-store';
@@ -32,6 +33,10 @@ import { trustedRetrievalStore } from '../../srv/lib/trusted-retrieval';
 import type { CollectionMeta } from '../../srv/rag-collections';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { callRag } from './helpers/canonical-rag';
+import {
+  historyTestProvider,
+  SessionHistoryFixture as SessionHistoryRag,
+} from './helpers/session-history-fixture';
 
 const meta: CollectionMeta = {
   id: 'notes',
@@ -231,13 +236,31 @@ test('coordinator retrieval and search_knowledge render the same derived label',
   }
 });
 test('session history overwrites spoofed provenance with role session defaults', async () => {
-  const historyRow = { ...row, metadata: { ...row.metadata, owner: 'alice' } };
+  initHubRagAccess(createHubRagAccess(null, 'in-memory'));
+  const historyRow: RagResult = {
+    ...row,
+    metadata: {
+      ...row.metadata,
+      ownerScope: 'session',
+      sessionId: 'trust-history',
+    },
+  };
   const inner: IRag = {
     ...rag,
     query: async () => ({ ok: true, value: [historyRow] }),
   };
-  const history = new SessionHistoryRag(inner, () => 'alice', undefined, {
-    trustResolver: () => resolver,
+  const history = new SessionHistoryRag(
+    historyTestProvider(inner),
+    () => turnOwner('alice', 'trust-history'),
+    undefined,
+    {
+      trustResolver: () => resolver,
+    },
+  );
+  await history.recordTurn({
+    owner: turnOwner('alice', 'trust-history'),
+    userText: 'q',
+    assistantText: 'a',
   });
   expect(await tag(history)).toBe('[source: session; trust 4]\ntext');
 });

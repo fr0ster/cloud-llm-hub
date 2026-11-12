@@ -41,6 +41,7 @@ function makeChainableBuilder() {
   builder.withClassifierLlm = chainable(jest.fn());
   builder.withMcpClients = chainable(jest.fn());
   builder.setToolsRag = chainable(jest.fn());
+  builder.setHistoryRag = chainable(jest.fn());
   builder.addRagCollection = chainable(jest.fn());
   builder.withSkillManager = chainable(jest.fn());
   builder.withEmbedder = chainable(jest.fn());

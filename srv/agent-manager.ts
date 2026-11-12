@@ -172,7 +172,10 @@ import {
 } from './lib/request-system-context';
 import { recordReviewProfile, recordToolScore } from './lib/review-scope';
 import { getRunRecordStore } from './lib/run-record-store';
-import { SessionHistoryRag, turnOwner } from './lib/session-history-rag';
+import {
+  initSessionHistoryRouter,
+  SessionHistoryRouter,
+} from './lib/session-history-collection';
 import {
   assertToolAllowed,
   isReadOnlyTool,
@@ -188,6 +191,7 @@ import {
   toolStoreName,
 } from './lib/tool-corpus';
 import { ToolQueryAnalyzer } from './lib/tool-query-analyzer';
+import { volatileHistoryProvider } from './lib/volatile-history-provider';
 
 export type { SharedCorpusDoc } from './lib/tool-corpus';
 export { collectionFor } from './lib/tool-corpus';
@@ -1560,54 +1564,24 @@ export function createToolQueryAnalyzer(): ToolQueryAnalyzer {
   );
 }
 
-/**
- * The `history` store, shared like the tool corpus and scoped per conversation.
- *
- * One store for the whole process: turns are keyed by owner, so a second store
- * per destination would only fragment recall for the same conversation. Built
- * lazily on first use and skipped entirely in in-memory mode, where there is no
- * embedder to place a turn in vector space.
- */
-let sharedHistoryRag: SessionHistoryRag | undefined;
+/** One router for the configured session backend; the trusted caller selects a collection. */
+let sharedHistoryRag: SessionHistoryRouter | undefined;
 
-export function getSharedHistoryRag(): SessionHistoryRag | undefined {
+export function getSharedHistoryRag(): SessionHistoryRouter {
   if (sharedHistoryRag) return sharedHistoryRag;
-  const stores = getProviders().stores;
-  const kind = stores.backendOf('session');
-  if (kind === 'in-memory') return undefined;
-  if (!isPersistentKind(kind)) {
-    sharedHistoryRag = new SessionHistoryRag(
-      stores.create('session', 'history'),
-      currentTurnOwner,
-      undefined,
-      {
-        storageBackend: kind,
-        trustResolver: () => resolverFor(getCollectionRegistry()),
-      },
-    );
-    return sharedHistoryRag;
-  }
-  // A persistent kind: the history is a cataloged store (`h_history`, spec
-  // §6), opened through the provider — never a bare store without a record.
-  // Forget and the cap then go to the store (deleteWhere, scan); every
-  // failure there is logged and never breaks a chat turn.
-  const log = cds.log('session-history');
-  sharedHistoryRag = new SessionHistoryRag(
-    new PersistentHistoryStore(
-      historyProvider(kind),
-      { warn: (m, d) => log.warn(m, d) },
-      {
-        storePrefix: storePrefixFor(kind, getAgentConfig().rag.qdrant?.prefix),
-      },
-    ),
-    currentTurnOwner,
-    undefined,
-    {
-      storageBackend: kind,
-      log,
-      trustResolver: () => resolverFor(getCollectionRegistry()),
-    },
-  );
+  const kind = getProviders().stores.backendOf('session');
+  const provider = isPersistentKind(kind)
+    ? historyProvider(kind)
+    : volatileHistoryProvider((name) =>
+        getProviders().stores.create('session', name),
+      );
+  sharedHistoryRag = new SessionHistoryRouter(provider, {
+    storageBackend: kind,
+    trustResolver: () => resolverFor(getCollectionRegistry()),
+    log: cds.log('session-history'),
+    storePrefix: storePrefixFor(kind, getAgentConfig().rag.qdrant?.prefix),
+  });
+  initSessionHistoryRouter(sharedHistoryRag);
   return sharedHistoryRag;
 }
 
@@ -1633,15 +1607,6 @@ export function historyProvider(kind: RagBackendKind): IRagProvider {
   if (!provider)
     throw new Error(`no history provider for session backend "${kind}"`);
   return provider;
-}
-
-/** Who is asking, for recall scoping — undefined outside a request. */
-export function currentTurnOwner(): string | undefined {
-  const sessionId = getRequestSessionId();
-  if (!sessionId) return undefined;
-  const userId = cds.context?.user?.id;
-  if (!userId) return undefined;
-  return turnOwner(userId, sessionId);
 }
 
 // ---------------------------------------------------------------------------
@@ -2943,7 +2908,7 @@ function getOrCreateSharedLlms(
  * the two build paths cannot drift. Deliberately stops short of `.build()` —
  * callers add any build-specific wiring (e.g. `withRequestLogger`) and build.
  */
-async function configureDestinationAgentBuilder(
+export async function configureDestinationAgentBuilder(
   mcpAdapter: IMcpClient,
   toolsRag: ExpositionFilteringRag,
   config: AgentConfig,
@@ -3943,6 +3908,7 @@ export async function buildLlmOnlyAgent(
     .withClassification(false)
     .withLlmCallStrategy(new FallbackLlmCallStrategy())
     .withMetrics(metrics)
+    .setHistoryRag(getSharedHistoryRag())
     .withHistorySummarization(20)
     .withClientAdapter(new ClineClientAdapter());
 

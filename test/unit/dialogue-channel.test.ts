@@ -243,8 +243,7 @@ for (const initial of ['', 'NO_MESSAGE', 'answer']) {
         ]);
         expect(record).toHaveBeenCalledTimes(1);
         expect(record).toHaveBeenCalledWith(
-          session.key,
-          'alice',
+          { sessionId: session.key, userId: 'alice', isAdmin: true },
           expect.objectContaining({ role: 'user', content: 'hi' }),
           answer,
         );

@@ -627,7 +627,7 @@ async function executeStepRun(
         role: 'assistant',
         content: rawContent,
       });
-      recordTurn(sessionId, userId, lastUser, rawContent);
+      recordTurn(boundCaller.value, lastUser, rawContent);
     }
     if (longSession && takeRevivalNotice(longSession)) notice = 'revived';
     const durationMs = Date.now() - stepStartedAt;

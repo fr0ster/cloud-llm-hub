@@ -6,6 +6,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   InMemoryRag,
+  InMemoryRagProvider,
   symmetricEmbedder,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
@@ -98,11 +99,9 @@ import {
   onDialogueCreated,
   sharedExecutorPool,
 } from '../../srv/lib/dialogue-sessions';
+import { turnOwner } from '../../srv/lib/history-turn';
 import { scopedPlannerMemory } from '../../srv/lib/planner-memory-scope';
-import {
-  SessionHistoryRag,
-  turnOwner,
-} from '../../srv/lib/session-history-rag';
+import { SessionHistoryRouter } from '../../srv/lib/session-history-collection';
 import { longSessionLlms, sessionLlms } from '../../srv/lib/session-llms';
 
 function requiredExecutorPool() {
@@ -158,7 +157,7 @@ let mockWorkerTrust: { target: number } | undefined;
 let mockPlannerHook: ((text: string) => Promise<void>) | undefined;
 let mockPlannerPreparationHook: (() => void) | undefined;
 let mockCaptureLlm: (() => Promise<ILlm>) | undefined;
-let mockIsolationHistory: SessionHistoryRag | undefined;
+let mockIsolationHistory: SessionHistoryRouter | undefined;
 let mockFinalAnswer: string | undefined;
 let mockBackgroundAnswer: string | undefined;
 let mockPlanUsage: TokenUsage | undefined;
@@ -2648,17 +2647,13 @@ test.each(['queued', 'running'] as const)(
 test('same-user dialogues isolate every LLM call, clients, quota and retrieval after close', async () => {
   const marker = 'SESSION_A_PRIVATE_CDS_MARKER';
   const memory = new InMemoryRag();
-  const histories = new InMemoryRag();
+  const histories = new InMemoryRagProvider({ name: 'history-isolation' });
   const embedding = symmetricEmbedder({
     embed: async () => ({ vector: [1, 0] }),
   });
   const calls = new Map<string, string[]>();
   const clients = new Map<string, ILlm>();
-  const history = new SessionHistoryRag(histories, () => {
-    const key = getRequestSessionId();
-    const user = getRequestUserId();
-    return key && user ? turnOwner(user, key) : undefined;
-  });
+  const history = new SessionHistoryRouter(histories);
   mockIsolationHistory = history;
   mockCaptureLlm = async () => {
     const owner = sessionLlms.getStore();
@@ -2696,7 +2691,7 @@ test('same-user dialogues isolate every LLM call, clients, quota and retrieval a
     await a.session.send(marker);
     expect(
       await history.recordTurn({
-        owner: turnOwner('alice', keys[0]),
+        caller: isolationCallers[0],
         userText: marker,
         assistantText: 'Done',
       }),
@@ -2713,7 +2708,16 @@ test('same-user dialogues isolate every LLM call, clients, quota and retrieval a
     ).toBe(true);
     const aHistory = await runWithSessionId(
       keys[0],
-      () => history.query(new TextOnlyEmbedding(marker), 100),
+      () =>
+        history.query(
+          new TextOnlyEmbedding(marker),
+          100,
+          callOptionsFor(
+            isolationCallers.find(
+              (caller) => caller.sessionId === getRequestSessionId(),
+            ) ?? ragCaller,
+          ),
+        ),
       [],
       'alice',
     );
@@ -2746,7 +2750,16 @@ test('same-user dialogues isolate every LLM call, clients, quota and retrieval a
       ).toBe(false);
       const recalledHistory = await runWithSessionId(
         key,
-        () => history.query(new TextOnlyEmbedding(marker), 100),
+        () =>
+          history.query(
+            new TextOnlyEmbedding(marker),
+            100,
+            callOptionsFor(
+              isolationCallers.find(
+                (caller) => caller.sessionId === getRequestSessionId(),
+              ) ?? ragCaller,
+            ),
+          ),
         [],
         'alice',
       );

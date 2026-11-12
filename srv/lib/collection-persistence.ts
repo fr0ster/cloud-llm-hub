@@ -1220,7 +1220,10 @@ export function isHistoryRecord(
   rec: RagCollectionRecord,
   storePrefix?: string,
 ): boolean {
-  return isHubStoreRecord(rec, historyStoreName(storePrefix));
+  return (
+    isHubStoreRecord(rec, historyStoreName(storePrefix)) ||
+    (rec.scope === 'session' && /^h_hist_[0-9a-f]{32}$/.test(rec.name))
+  );
 }
 
 /** The store name of the long-session records (session-record-store.ts). */

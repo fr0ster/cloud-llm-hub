@@ -45,14 +45,21 @@ import {
   WRITTEN_BY,
 } from '../../srv/lib/collection-persistence';
 import {
+  parseTurnOwner,
   renderTurn,
-  SessionHistoryRag,
   turnOwner,
-} from '../../srv/lib/session-history-rag';
-import { historyAggregateQuery } from '../../srv/lib/usage/storage-aggregates';
+} from '../../srv/lib/history-turn';
+import {
+  LongSessionRegistry,
+  setLongSessionsForTest,
+} from '../../srv/lib/long-session';
+import { createHubRagAccess, initHubRagAccess } from '../../srv/lib/rag-access';
+import { historyCollectionName } from '../../srv/lib/session-history-collection';
+import { collectionAggregateQuery } from '../../srv/lib/usage/storage-aggregates';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { appendToSession, sweepSessionHistory } from '../../srv/session-store';
 import { type PgliteHandle, startPglite } from './helpers/pglite';
+import { SessionHistoryFixture as SessionHistoryRag } from './helpers/session-history-fixture';
 
 jest.setTimeout(120_000);
 
@@ -161,8 +168,8 @@ async function historyRows(): Promise<
   { id: string; metadata: Record<string, unknown> }[]
 > {
   const { rows } = await real.query(
-    `SELECT "id", "metadata" FROM "${pgl.schema}"."rag_documents" WHERE "collection" = $1 ORDER BY "id"`,
-    [HISTORY_STORE],
+    `SELECT "id", "metadata" FROM "${pgl.schema}"."rag_documents" WHERE "collection" LIKE $1 ORDER BY "id"`,
+    ['h_hist_%'],
   );
   return rows.map((r) => ({
     id: String(r.id),
@@ -187,27 +194,28 @@ function history(
   owner: () => string | undefined,
   opts: {
     cap?: number;
-    warnings?: unknown[];
+    warnings?: { push(value: object): number };
     provider?: PgVectorRagProvider;
     clock?: () => number;
   } = {},
 ): SessionHistoryRag {
-  const log = {
-    warn: (m: string, d?: unknown) => opts.warnings?.push({ m, d }),
-  };
   return new SessionHistoryRag(
-    new PersistentHistoryStore(
-      opts.provider ?? newProvider(),
-      log,
-      opts.clock ? { now: opts.clock } : {},
-    ),
+    opts.provider ?? newProvider(),
     owner,
     opts.cap,
-    { log, now: steppingClock() },
+    {
+      now: steppingClock(),
+      clock: opts.clock,
+      log: {
+        warn: (m, d) => {
+          opts.warnings?.push({ m, d });
+        },
+      },
+    },
   );
 }
 
-async function recall(rag: SessionHistoryRag, text: string): Promise<string[]> {
+async function recall(rag: IRag, text: string): Promise<string[]> {
   const r = await rag.query(new TextOnlyEmbedding(text), 10);
   if (!r.ok) throw r.error;
   return r.value.map((x) => x.text);
@@ -230,13 +238,14 @@ afterAll(async () => {
 
 beforeEach(async () => {
   down = false;
+  initHubRagAccess(createHubRagAccess(null, 'in-memory'));
   await real.query(
     `TRUNCATE "${pgl.schema}"."rag_documents", "${pgl.schema}"."rag_collections"`,
   );
 });
 
-describe('the h_history catalog record', () => {
-  it('is created on first use: global scope, writtenBy marker; never an orphan', async () => {
+describe('the per-session history catalog record', () => {
+  it('is created on first write: session scope, writtenBy marker; never an orphan', async () => {
     const rag = history(() => ALICE);
     expect(
       await rag.recordTurn({
@@ -246,10 +255,10 @@ describe('the h_history catalog record', () => {
       }),
     ).toBe(true);
     const recs = (await records(newProvider())).filter(
-      (r) => r.storeName === HISTORY_STORE,
+      (r) => r.storeName === historyCollectionName('s-1'),
     );
     expect(recs).toHaveLength(1);
-    expect(recs[0].scope).toBe('global');
+    expect(recs[0]).toMatchObject({ scope: 'session', sessionId: 's-1' });
     expect(recs[0].attributes).toMatchObject({ writtenBy: WRITTEN_BY });
   });
 
@@ -265,20 +274,28 @@ describe('the h_history catalog record', () => {
     expect(await recall(again, 'ZDEMO_ONE')).toHaveLength(1);
     expect(
       (await records(newProvider())).filter(
-        (r) => r.storeName === HISTORY_STORE,
+        (r) => r.storeName === historyCollectionName('s-1'),
       ),
     ).toHaveLength(1);
 
     // Rows without a record (the record was lost): adopted, not refused.
     await real.query(
       `DELETE FROM "${pgl.schema}"."rag_collections" WHERE "store_name" = $1`,
-      [HISTORY_STORE],
+      [historyCollectionName('s-1')],
     );
     const adopted = history(() => ALICE);
-    expect(await recall(adopted, 'ZDEMO_ONE')).toHaveLength(1);
+    expect(
+      await adopted.recordTurn({
+        owner: ALICE,
+        id: 'adopt-check',
+        userText: 'q',
+        assistantText: 'ZDEMO_ADOPTED',
+      }),
+    ).toBe(true);
+    expect(await recall(adopted, 'ZDEMO_ONE')).toHaveLength(2);
     expect(
       (await records(newProvider())).filter(
-        (r) => r.storeName === HISTORY_STORE,
+        (r) => r.storeName === historyCollectionName('s-1'),
       ),
     ).toHaveLength(1);
   });
@@ -311,10 +328,10 @@ describe('a failed open is kept for a cool-down', () => {
     let now = 5_000_000;
     const provider = newProvider();
     let attempts = 0;
-    const create = provider.createCollection.bind(provider);
-    provider.createCollection = async (name, opts) => {
+    const describe = provider.describeCollections.bind(provider);
+    provider.describeCollections = async () => {
       attempts++;
-      return create(name, opts);
+      return describe();
     };
     const rag = history(() => ALICE, {
       warnings,
@@ -457,11 +474,10 @@ describe('ensureHistoryStore: create, then adopt, then open', () => {
   });
 
   it('pg shared layout: rows without a record are an orphan, then adopted', async () => {
-    await history(() => ALICE).recordTurn({
-      owner: ALICE,
-      userText: 'q',
-      assistantText: 'a',
-    });
+    const memory = new PersistentHistoryStore(newProvider());
+    expect((await memory.writer().upsertRaw('legacy', 'text', {})).ok).toBe(
+      true,
+    );
     await real.query(
       `DELETE FROM "${pgl.schema}"."rag_collections" WHERE "store_name" = $1`,
       [HISTORY_STORE],
@@ -487,7 +503,7 @@ describe('a foreign h_history record', () => {
     ['no writtenBy', { note: 'x' }],
   ])('(%s) is refused and left untouched', async (_label, attributes) => {
     const p = newProvider();
-    const made = await p.createCollection(HISTORY_STORE, {
+    const made = await p.createCollection(historyCollectionName('s-1'), {
       scope: 'global',
       collectionName: 'theirs',
       attributes,
@@ -500,7 +516,7 @@ describe('a foreign h_history record', () => {
     expect(
       await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' }),
     ).toBe(false);
-    expect(JSON.stringify(warnings)).toContain('was not written by');
+    expect(JSON.stringify(warnings)).toContain('Conflicting history owner');
     expect(await records(newProvider())).toEqual(before);
     expect(await historyRows()).toEqual([]);
   });
@@ -602,8 +618,7 @@ describe('persistent recall', () => {
     const rows = await historyRows();
     expect(rows).toHaveLength(2);
     for (const r of rows) {
-      expect(r.id.startsWith(`turn:${ALICE}:1700000000000:`)).toBe(true);
-      expect(r.id).toMatch(/:[0-9a-f]{8}$/);
+      expect(r.id).toMatch(/^turn:[0-9a-f-]{36}$/);
     }
   });
 
@@ -627,7 +642,7 @@ describe('persistent recall', () => {
     ).toEqual([]);
   });
 
-  it('a turn carries userId, sessionId and createdAt (ISO); owner stays', async () => {
+  it('a turn carries session ownership, authorUserId and createdAt (ISO); legacy owner is absent', async () => {
     const rag = history(() => ALICE);
     await rag.recordTurn({
       owner: ALICE,
@@ -638,10 +653,12 @@ describe('persistent recall', () => {
     const [row] = await historyRows();
     expect(row.id).toBe('turn:meta');
     expect(row.metadata).toMatchObject({
-      owner: ALICE,
-      userId: 'alice@example.com',
+      ownerScope: 'session',
+      authorUserId: 'alice@example.com',
       sessionId: 's-1',
     });
+    expect(row.metadata).not.toHaveProperty('owner');
+    expect(row.metadata).not.toHaveProperty('userId');
     const createdAt = row.metadata.createdAt as string;
     expect(new Date(createdAt).toISOString()).toBe(createdAt);
   });
@@ -702,13 +719,13 @@ describe('forget', () => {
 
     // A fresh instance holds no ids: forget must not rely on them.
     const fresh = history(() => ALICE);
-    expect(fresh.turnCount(ALICE)).toBe(0);
+    expect(await fresh.turnCount(ALICE)).toBe(2);
     await fresh.forgetOwner(ALICE);
     const left = await historyRows();
-    expect(left.map((r) => r.metadata.owner)).toEqual([BOB]);
+    expect(left.map((r) => r.metadata.sessionId)).toEqual(['s-2']);
   });
 
-  it('a failing deleteWhere is logged and does not throw', async () => {
+  it('a failing collection deletion is logged and does not throw', async () => {
     const warnings: unknown[] = [];
     const rag = history(() => ALICE, { warnings });
     await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' });
@@ -731,14 +748,14 @@ describe('the cap', () => {
       });
     await rag.recordTurn({ owner: BOB, userText: 'q', assistantText: 'a' });
     const rows = await historyRows();
-    const alice = rows.filter((r) => r.metadata.owner === ALICE);
+    const alice = rows.filter((r) => r.metadata.sessionId === 's-1');
     expect(alice.map((r) => r.id).sort()).toEqual([
       'turn:5',
       'turn:6',
       'turn:7',
     ]);
-    expect(rows.filter((r) => r.metadata.owner === BOB)).toHaveLength(1);
-    expect(rag.turnCount(ALICE)).toBe(3);
+    expect(rows.filter((r) => r.metadata.sessionId === 's-2')).toHaveLength(1);
+    expect(await rag.turnCount(ALICE)).toBe(3);
   });
 
   it('applies across a restart: turns written by an earlier process count', async () => {
@@ -750,12 +767,9 @@ describe('the cap', () => {
         assistantText: `a${i}`,
         id: `turn:old${i}`,
       });
-    const second = new SessionHistoryRag(
-      new PersistentHistoryStore(newProvider()),
-      () => ALICE,
-      2,
-      { now: () => new Date('2027-01-01T00:00:00.000Z') },
-    );
+    const second = new SessionHistoryRag(newProvider(), () => ALICE, 2, {
+      now: () => new Date('2027-01-01T00:00:00.000Z'),
+    });
     await second.recordTurn({
       owner: ALICE,
       userText: 'q',
@@ -771,15 +785,26 @@ describe('the cap', () => {
   it('a failing delete is logged and does not break the turn', async () => {
     const warnings: unknown[] = [];
     const log = { warn: (m: string, d?: unknown) => warnings.push({ m, d }) };
-    const store = new PersistentHistoryStore(newProvider(), log);
-    const realWriter = store.writer.bind(store);
-    store.writer = () => ({
-      ...realWriter(),
-      deleteByIdRaw: async () => {
-        throw new Error('delete refused');
-      },
-    });
-    const rag = new SessionHistoryRag(store, () => ALICE, 1, {
+    const provider = newProvider();
+    const create = provider.createCollection.bind(provider);
+    const open = provider.openCollection.bind(provider);
+    const failDelete = (result: Awaited<ReturnType<typeof open>>) => {
+      if (result.ok) {
+        const writer = result.value.rag.writer?.();
+        if (writer)
+          result.value.rag.writer = () => ({
+            ...writer,
+            deleteByIdRaw: async () => {
+              throw new Error('delete refused');
+            },
+          });
+      }
+      return result;
+    };
+    provider.createCollection = async (name, opts) =>
+      failDelete(await create(name, opts));
+    provider.openCollection = async (record) => failDelete(await open(record));
+    const rag = new SessionHistoryRag(provider, () => ALICE, 1, {
       log,
       now: steppingClock(),
     });
@@ -797,10 +822,7 @@ describe('the cap', () => {
   });
 
   it('defaults to 200', () => {
-    const rag = new SessionHistoryRag(
-      new PersistentHistoryStore(newProvider()),
-      () => ALICE,
-    );
+    const rag = new SessionHistoryRag(newProvider(), () => ALICE);
     expect(rag.maxTurns).toBe(200);
   });
 });
@@ -852,13 +874,21 @@ describe('restore and the catalog sweep leave the history record alone', () => {
     await reg.ready;
     await reg.sweepExpiredSessions(() => true);
     expect(
-      (await records(newProvider())).some((r) => r.storeName === HISTORY_STORE),
+      (await records(newProvider())).some(
+        (r) => r.storeName === historyCollectionName('s-1'),
+      ),
     ).toBe(true);
     expect(await historyRows()).toHaveLength(1);
   });
 });
 
 test('persisted history bytes survive window expiry and revival, and shrink with cap and owner deletion', async (): Promise<void> => {
+  const registry = new LongSessionRegistry(
+    { ttlMs: 1e15, maxSessions: 10, maxPerUser: 10, queueLength: 1 },
+    { onClose: async () => {} },
+  );
+  registry.open('alice@example.com', { key: 's-1' });
+  setLongSessionsForTest(registry);
   const first = history((): string => ALICE, { cap: 15 });
   const second = history((): string => BOB);
   const text = renderTurn('\u00e9\u{1f600}', 'answer');
@@ -886,13 +916,13 @@ test('persisted history bytes survive window expiry and revival, and shrink with
     });
   }
   const measure = async (
-    owner: string,
-    userId: string,
+    _owner: string,
+    _userId: string,
     sessionId: string,
   ): Promise<number> => {
-    const query = historyAggregateQuery(
+    const query = collectionAggregateQuery(
       'pg-vector',
-      { owner, userId, sessionId },
+      [historyCollectionName(sessionId)],
       pgl.schema,
     );
     return Number(
@@ -917,3 +947,5 @@ test('persisted history bytes survive window expiry and revival, and shrink with
   expect(await measure(ALICE, 'alice@example.com', 's-1')).toBe(0);
   expect(await measure(BOB, 'bob@example.com', 's-2')).toBe(bytes * 16);
 });
+
+afterEach(() => setLongSessionsForTest(undefined));
