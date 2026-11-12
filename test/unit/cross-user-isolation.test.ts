@@ -1,3 +1,5 @@
+import { bindTestCaller } from './helpers/bind-test-caller';
+
 // Bootstrap logging is tested with real CAP in logging-config.test.ts.
 jest.mock('../../srv/lib/logging-config', () => ({
   applyLoggingConfig: jest.fn(),
@@ -293,6 +295,12 @@ describe('A. Cross-user session-scoped RAG isolation', () => {
       owner: 'alice@example.com',
       sessionId: rawSessionId,
       expiresAt: Date.now() + 3_600_000,
+    });
+
+    await bindTestCaller({
+      sessionId: rawSessionId,
+      userId: 'alice@example.com',
+      isAdmin: false,
     });
 
     // Bob tries to access Alice's physical id directly

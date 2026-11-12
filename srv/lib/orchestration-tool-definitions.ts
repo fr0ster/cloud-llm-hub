@@ -19,6 +19,12 @@ export type OrchestrationTool = (typeof orchestrationTools)[number];
 // The library owns the schemas, including nested plan steps and descriptions.
 export async function orchestrationDefinitions(source?: IAgentProfileSource) {
   const board = new TaskBoard({
+    // Schema discovery never dispatches a worker or executes an agent call.
+    caller: {
+      sessionId: 'schema-discovery',
+      userId: 'schema-discovery',
+      isAdmin: false,
+    },
     onEvent() {},
     ...(source
       ? {

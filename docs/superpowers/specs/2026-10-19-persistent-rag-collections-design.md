@@ -1,5 +1,7 @@
 # Persistent RAG collections on a vector database (Plan B, revised)
 
+> Historical design: v32 supersedes the history and access model below. Current history uses session-owned `h_hist_<hash>` collections, deleted when the session ends, preserved on process shutdown. Sessions have stable bindings; trace IDs are request identifiers. Administrators have no read bypass. See [current configuration](../../llm-agent/CONFIG_USAGE.md).
+
 Status: design, for review.
 Branch `feat/persistent-rag-collections`, tested on a deployment branch against a test subaccount, then sent to cloud-llm-hub as a PR.
 Depends on **@mcp-abap-adt/llm-agent 30.3.0**: `IRagScanner`, `IRagFilteredDeleter` and `IRagCatalogUpdater`, plus the `shared` table layout from 30.2.0.

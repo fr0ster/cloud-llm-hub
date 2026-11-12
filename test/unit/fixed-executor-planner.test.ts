@@ -3,6 +3,7 @@ import { FixedExecutorPlanner } from '../../srv/lib/fixed-executor-planner';
 
 function baseInput(overrides: Partial<PlannerInput> = {}): PlannerInput {
   return {
+    caller: { sessionId: 's1', userId: 'test-user', isAdmin: false },
     prompt: 'do X',
     agents: [{ name: 'executor' }],
     sessionId: 's1',

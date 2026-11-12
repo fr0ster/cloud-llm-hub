@@ -14,9 +14,15 @@ import type { Message } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { getSharedHistoryRag, isProvidersReady } from './agent-manager';
 import { guardedTask } from './lib/guarded-task';
+import { turnOwner } from './lib/history-turn';
+import { longSessionsIfReady } from './lib/long-session';
+import { getHubRagAccess } from './lib/rag-access';
 import { getRunRecordStore } from './lib/run-record-store';
 import { sessionConfig } from './lib/session-config';
-import { turnOwner } from './lib/session-history-rag';
+import {
+  forgetSessionHistory,
+  historyCollectionName,
+} from './lib/session-history-collection';
 import { storageAggregates } from './lib/usage/storage-aggregates';
 
 /** Max messages kept in server session (before SmartAgent's own summarization) */
@@ -54,11 +60,12 @@ export function sweepSessionHistory(now: number = Date.now()): void {
   const ttlMs = sessionConfig().ttlMs;
   for (const [id, entry] of sessionStore) {
     if (now - entry.lastAccess > ttlMs) {
-      // Only this cache and the run record expire here. The recall store may
-      // hold a live long session's persisted history; its lifecycle owns that.
-      sessionStore.delete(id);
       const [userId, sessionId] = JSON.parse(id) as [string, string];
-      deleteRunRecord(userId, sessionId);
+      if (longSessionsIfReady()?.containsIdentity(userId, sessionId)) {
+        // A long session outlives its recent-message window.
+        sessionStore.delete(id);
+        deleteRunRecord(userId, sessionId);
+      } else clearSession(sessionId, userId);
     }
   }
 }
@@ -91,7 +98,8 @@ export async function sessionHistoryBytes(
   if (!isProvidersReady()) return undefined;
   const history = getSharedHistoryRag();
   if (!history) return 0;
-  const owner = turnOwner(userId, sessionId);
+  const binding = await getHubRagAccess().access.bindings.getUserId(sessionId);
+  if (!binding.ok || binding.value !== userId) return undefined;
   const backend = history.storageBackend;
   if (
     backend !== 'pg-vector' &&
@@ -103,9 +111,8 @@ export async function sessionHistoryBytes(
     try {
       const aggregate = await storageAggregates()?.measure(
         backend,
-        ['h_history'],
+        [historyCollectionName(sessionId)],
         signal,
-        { owner, userId, sessionId },
       );
       if (aggregate?.textBytes !== undefined) return aggregate.textBytes;
     } catch {
@@ -113,7 +120,7 @@ export async function sessionHistoryBytes(
     }
     if (backend === 'pg-vector') return undefined;
   }
-  return history.storageBytes(owner);
+  return history.storageBytes(sessionId);
 }
 
 /** Append messages to session history for a specific user, trimming to max size */
@@ -166,8 +173,13 @@ export function clearSession(sessionId: string, userId: string): void {
   // there is no recall store, so nothing to forget there.
   if (!isProvidersReady()) return;
   void forgetPlannerMemory(turnOwner(userId, sessionId)).catch(() => {});
-  void getSharedHistoryRag()
-    ?.forgetOwner(turnOwner(userId, sessionId))
+  getSharedHistoryRag();
+  void getHubRagAccess()
+    .access.bindings.getUserId(sessionId)
+    .then(async (binding) => {
+      if (binding.ok && binding.value === userId)
+        await forgetSessionHistory(sessionId);
+    })
     .catch(() => {});
 }
 

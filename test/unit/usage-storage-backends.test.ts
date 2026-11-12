@@ -12,7 +12,9 @@ jest.mock('@sap/hana-client', (): object => ({
       _options: object,
       callback: (error: Error | null) => void,
     ): void => callback(null),
-    exec: (): void => {},
+    exec: (): void => {
+      mockHanaExec();
+    },
     abort: (): void => mockHanaAbort(),
     disconnect: (callback: (error: Error | null) => void): void => {
       mockHanaDisconnect();
@@ -22,6 +24,7 @@ jest.mock('@sap/hana-client', (): object => ({
 }));
 const mockHanaAbort = jest.fn<void, []>();
 const mockHanaDisconnect = jest.fn<void, []>();
+const mockHanaExec = jest.fn<void, []>();
 
 jest.mock('@sap/cds', (): object => ({
   __esModule: true,
@@ -466,6 +469,9 @@ test('native HANA cancellation aborts the running statement before disconnect on
   mockHanaAbort.mockClear();
   mockHanaDisconnect.mockClear();
   const controller = new AbortController();
+  const started = new Promise<void>((resolve) => {
+    mockHanaExec.mockImplementationOnce(resolve);
+  });
   const reader = createCollectionAggregateReader(rag, {
     env: {
       VCAP_SERVICES: JSON.stringify({
@@ -486,7 +492,7 @@ test('native HANA cancellation aborts the running statement before disconnect on
   const pending = expect(
     reader.measure('hana-vector', ['owned'], controller.signal),
   ).rejects.toThrow('aborted');
-  for (let i = 0; i < 20; i++) await Promise.resolve();
+  await started;
   controller.abort();
   await pending;
   expect(mockHanaAbort).toHaveBeenCalledTimes(1);

@@ -53,6 +53,10 @@ beforeEach(async () => {
   });
   const app = express();
   app.use(express.json());
+  app.use((req, _res, next) => {
+    Object.assign(req, { sessionId: 'trust-rest-alice' });
+    next();
+  });
   registerRagRoutes(app, registry);
   server = createServer(app);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

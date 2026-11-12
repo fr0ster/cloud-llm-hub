@@ -1,3 +1,10 @@
+import { InMemoryRagProvider } from '@mcp-abap-adt/llm-agent';
+import { bindCaller } from '../../srv/lib/rag-caller';
+import {
+  historyCollectionName,
+  SessionHistoryRouter,
+} from '../../srv/lib/session-history-collection';
+
 const deleteDialogueState = jest.fn(async () => {});
 jest.mock('../../srv/lib/dialogue-store', () => ({
   deleteDialogueState: () => deleteDialogueState(),
@@ -46,8 +53,12 @@ type Turn = {
   assistantText: string;
   createdAt: string;
 };
-const listTurns = jest.fn(async (_owner: string): Promise<Turn[]> => []);
-const forgetOwner = jest.fn(async () => true);
+const listTurns = jest.fn(
+  async (
+    _owner: import('@mcp-abap-adt/llm-agent').RagCaller,
+  ): Promise<Turn[]> => [],
+);
+const forgetOwner = jest.fn(async (_sessionId: string) => true);
 const forgetPlannerMemory = jest.fn(async (_sessionId: string) => true);
 const setSessionDestination = jest.fn();
 let providersReady = true;
@@ -74,6 +85,13 @@ const readAgentCollection = jest.fn(
 jest.mock('../../srv/lib/planner-memory', () => ({
   forgetPlannerMemory: (sessionId: string) => forgetPlannerMemory(sessionId),
 }));
+jest.mock('../../srv/lib/session-history-collection', () => ({
+  ...jest.requireActual('../../srv/lib/session-history-collection'),
+  forgetSessionHistory: async (sessionId: string) => {
+    const result = await forgetOwner(sessionId);
+    if (result === false) throw new Error('Session history forget failed');
+  },
+}));
 jest.mock('../../srv/agent-manager', () => ({
   getCollectionRegistry: () => ({
     deleteSessionCollections: async () => {},
@@ -85,12 +103,12 @@ jest.mock('../../srv/agent-manager', () => ({
     setSessionDestination(u, s, d),
 }));
 
+import { turnOwner } from '../../srv/lib/history-turn';
 import {
   LongSessionRegistry,
   longSessions,
   setLongSessionsForTest,
 } from '../../srv/lib/long-session';
-import { turnOwner } from '../../srv/lib/session-history-rag';
 import {
   discardSession,
   lifecycleHooks,
@@ -286,14 +304,14 @@ describe('open', () => {
 });
 
 describe('close', () => {
-  it('clears planner memory with a history window removed by retention', () => {
+  it('clears planner memory with a history window removed by retention', async () => {
+    await bindCaller('retained-session', 'alice', false);
     clearSession('retained-session', 'alice');
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(forgetPlannerMemory).toHaveBeenCalledWith(
       turnOwner('alice', 'retained-session'),
     );
-    expect(forgetOwner).toHaveBeenCalledWith(
-      turnOwner('alice', 'retained-session'),
-    );
+    expect(forgetOwner).toHaveBeenCalledWith('retained-session');
   });
 
   it('keeps the closed record for retry when planner memory deletion fails', async () => {
@@ -324,7 +342,7 @@ describe('close', () => {
     // deleteSession is retention's close: history (memory and store),
     // destination and session collections.
     expect(deleteSession).toHaveBeenCalledWith('alice', s.key);
-    expect(forgetOwner).toHaveBeenCalledWith(turnOwner('alice', s.key));
+    expect(forgetOwner).toHaveBeenCalledWith(s.key);
     expect(forgetPlannerMemory).toHaveBeenCalledWith(turnOwner('alice', s.key));
     expect(records.store.delete).toHaveBeenCalledWith('alice', s.key);
     expect(records.rows.size).toBe(0);
@@ -376,6 +394,21 @@ describe('close', () => {
 
   it('shutdown keeps the record and the history', async () => {
     const s = await open('alice');
+    const provider = new InMemoryRagProvider({ name: 'shutdown-history' });
+    const history = new SessionHistoryRouter(provider);
+    const caller = await bindCaller(s.key, 'alice', false);
+    if (!caller.ok) throw caller.error;
+    expect(
+      await history.recordTurn({
+        caller: caller.value,
+        userText: 'hi',
+        assistantText: 'hello',
+      }),
+    ).toBe(true);
+    forgetOwner.mockImplementationOnce(async (sessionId) => {
+      await history.forgetSessionHistory(sessionId);
+      return true;
+    });
     appendToSession(s.key, 'alice', { role: 'user', content: 'hi' });
     await longSessions().closeAll('shutdown');
     expect(dropSessionConnection).toHaveBeenCalledWith(s);
@@ -383,6 +416,14 @@ describe('close', () => {
     expect(records.store.delete).not.toHaveBeenCalled();
     expect(records.rows.size).toBe(1);
     expect(getSessionHistory(s.key, 'alice')).toHaveLength(1);
+    const catalog = await provider.describeCollections();
+    if (!catalog.ok) throw catalog.error;
+    expect(catalog.value.records).toEqual([
+      expect.objectContaining({
+        sessionId: s.key,
+        name: historyCollectionName(s.key),
+      }),
+    ]);
     clearSession(s.key, 'alice');
   });
 
@@ -436,7 +477,11 @@ describe('revival', () => {
       destination: 'DEV',
       revived: true,
     });
-    expect(listTurns).toHaveBeenCalledWith(turnOwner('alice', 'ls-old'));
+    expect(listTurns).toHaveBeenCalledWith({
+      userId: 'alice',
+      sessionId: 'ls-old',
+      isAdmin: false,
+    });
     expect(setSessionDestination).toHaveBeenCalledWith(
       'alice',
       'ls-old',

@@ -44,6 +44,7 @@ import {
 import { deleteDialogueState, sweepDialogueStates } from './dialogue-store';
 import { deleteSession, maySweepSession } from './gatekeeper';
 import { guardedTask } from './guarded-task';
+import { type StoredTurn, turnOwner } from './history-turn';
 import {
   type LongSession,
   type LongSessionHooks,
@@ -54,7 +55,7 @@ import {
 import { forgetPlannerMemory } from './planner-memory';
 import { getRunRecordStore, sweepRunRecords } from './run-record-store';
 import { dropSessionConnection } from './session-connection';
-import { type StoredTurn, turnOwner } from './session-history-rag';
+import { forgetSessionHistory } from './session-history-collection';
 import type { SessionRecord, SessionRecordStore } from './session-record-store';
 import { usageRuntime } from './usage/runtime';
 import {
@@ -356,10 +357,9 @@ async function cleanupSession(userId: string, key: string): Promise<void> {
   }
   if (!isProvidersReady()) return;
   const memoryForgotten = await forgetPlannerMemory(turnOwner(userId, key));
-  const forgotten = await getSharedHistoryRag()?.forgetOwner(
-    turnOwner(userId, key),
-  );
-  if (forgotten === false) throw new Error('Session history forget failed');
+  // Initialize the active history router before its module-level cleanup hook.
+  getSharedHistoryRag();
+  await forgetSessionHistory(key);
   if (!memoryForgotten) throw new Error('Planner memory forget failed');
 }
 
@@ -437,7 +437,11 @@ async function readWindow(userId: string, key: string): Promise<StoredTurn[]> {
   const rag = getSharedHistoryRag();
   if (!rag) return [];
   try {
-    const turns = await rag.listTurns(turnOwner(userId, key));
+    const turns = await rag.listTurns({
+      userId,
+      sessionId: key,
+      isAdmin: false,
+    });
     return turns.slice(-SESSION_MAX_MESSAGES / 2);
   } catch (err) {
     log().warn('revived session history could not be read', {

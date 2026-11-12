@@ -25,7 +25,7 @@ jest.mock('../../srv/agent-manager', () => ({
   isProvidersReady: () => true,
 }));
 
-import { turnOwner } from '../../srv/lib/session-history-rag';
+import { turnOwner } from '../../srv/lib/history-turn';
 import {
   appendToSession,
   clearSession,

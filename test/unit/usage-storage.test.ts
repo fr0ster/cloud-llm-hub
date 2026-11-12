@@ -34,12 +34,13 @@ import {
   type HubDialogueState,
   initializeDialogueStore,
 } from '../../srv/lib/dialogue-store';
-import { loadSessionConfig } from '../../srv/lib/session-config';
+import { renderTurn, turnOwner } from '../../srv/lib/history-turn';
 import {
-  renderTurn,
-  SessionHistoryRag,
-  turnOwner,
-} from '../../srv/lib/session-history-rag';
+  LongSessionRegistry,
+  setLongSessionsForTest,
+} from '../../srv/lib/long-session';
+import { createHubRagAccess, initHubRagAccess } from '../../srv/lib/rag-access';
+import { loadSessionConfig } from '../../srv/lib/session-config';
 import { isRefusal, SessionRetention } from '../../srv/lib/session-retention';
 import { readUsageConfig } from '../../srv/lib/usage/config';
 import {
@@ -71,6 +72,10 @@ import {
   clearSession,
   sweepSessionHistory,
 } from '../../srv/session-store';
+import {
+  historyTestProvider,
+  SessionHistoryFixture as SessionHistoryRag,
+} from './helpers/session-history-fixture';
 
 let providersReady = false;
 let historyRag: SessionHistoryRag | undefined;
@@ -153,6 +158,7 @@ async function collection(
 beforeEach(async (): Promise<void> => {
   providersReady = false;
   historyRag = undefined;
+  initHubRagAccess(createHubRagAccess(null, 'in-memory'));
   ticks.length = 0;
   sink = memorySink({ limit: 1000 });
   control = createUsageRecorder({ transport: directTransport(sink) });
@@ -483,7 +489,7 @@ test.each(['off', 'session'])(
     });
     const owner = turnOwner(session.userId, session.sessionId);
     const rag = new SessionHistoryRag(
-      new InMemoryRag(),
+      historyTestProvider(),
       (): string => owner,
       1,
       {
@@ -499,8 +505,10 @@ test.each(['off', 'session'])(
       });
     await rag.listTurns(owner);
     await rag.forgetOwner(owner);
-    expect(rag['byteCounters']).toBeUndefined();
-    expect(rag['clearedOwners']).toBeUndefined();
+    // biome-ignore lint/complexity/useLiteralKeys: Bracket access preserves private cache assertions in tests.
+    expect(rag.router['measured']).toBeUndefined();
+    // biome-ignore lint/complexity/useLiteralKeys: Bracket access preserves private cache assertions in tests.
+    expect(rag.router['cleared']).toBeUndefined();
     await collection('user');
     expect(track).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
@@ -773,10 +781,12 @@ test('eligible user tracking is capped with oldest dropped and disabled with usa
 });
 
 test('persisted recall beyond ten turns stays Unknown through window expiry and revival without content reads', async (): Promise<void> => {
+  keepLongSession(session.userId, session.sessionId);
   const backend = new InMemoryRag();
+  const provider = historyTestProvider(backend);
   const owner = turnOwner(session.userId, session.sessionId);
   providersReady = true;
-  historyRag = new SessionHistoryRag(backend, (): string => owner, 12);
+  historyRag = new SessionHistoryRag(provider, (): string => owner, 12);
   for (let turn = 0; turn < 15; turn++) {
     expect(
       await historyRag.recordTurn({
@@ -809,7 +819,7 @@ test('persisted recall beyond ten turns stays Unknown through window expiry and 
   expect(storageSnapshots().cached(session)).toMatchObject({
     historyBytesUnknown: true,
   });
-  historyRag = new SessionHistoryRag(backend, (): string => owner, 12);
+  historyRag = new SessionHistoryRag(provider, (): string => owner, 12);
   const turns = await historyRag.listTurns(owner);
   expect(turns).toHaveLength(12);
   for (const turn of turns)
@@ -852,9 +862,10 @@ test.each(['in-memory', 'hana-vector'])(
   '%s recall counters count stored text through cap, expiry, revival and deletion',
   async (storageBackend: string): Promise<void> => {
     const backend = new InMemoryRag();
+    const provider = historyTestProvider(backend);
     const owner = turnOwner(session.userId, session.sessionId);
     providersReady = true;
-    historyRag = new SessionHistoryRag(backend, (): string => owner, 12, {
+    historyRag = new SessionHistoryRag(provider, (): string => owner, 12, {
       storageBackend,
     });
     const textBytes = Buffer.byteLength(
@@ -878,7 +889,7 @@ test.each(['in-memory', 'hana-vector'])(
     expect(
       await measureSession(session.sessionId, session.userId),
     ).toMatchObject({ historyBytes: textBytes * 12 });
-    historyRag = new SessionHistoryRag(backend, (): string => owner, 12, {
+    historyRag = new SessionHistoryRag(provider, (): string => owner, 12, {
       storageBackend,
     });
     await historyRag.listTurns(owner);
@@ -895,9 +906,10 @@ test.each(['in-memory', 'hana-vector'])(
 );
 
 test.each([true, false])(
-  'closing many distinct history owners releases counter storage (filtered deletion: %s)',
+  'closing many distinct history sessions releases counter storage (scanner available: %s)',
   async (filtered: boolean): Promise<void> => {
     const backend = new InMemoryRag();
+    const provider = historyTestProvider(backend);
     const inner: IRag = filtered
       ? backend
       : {
@@ -906,9 +918,14 @@ test.each([true, false])(
           healthCheck: backend.healthCheck.bind(backend),
           writer: backend.writer.bind(backend),
         };
-    const rag = new SessionHistoryRag(inner, (): undefined => undefined, 12, {
-      storageBackend: 'hana-vector',
-    });
+    const rag = new SessionHistoryRag(
+      historyTestProvider(inner),
+      (): undefined => undefined,
+      12,
+      {
+        storageBackend: 'hana-vector',
+      },
+    );
     for (let index = 0; index < 600; index++) {
       const owner = turnOwner('alice', `closed-${index}`);
       expect(
@@ -922,17 +939,20 @@ test.each([true, false])(
       expect(rag.storageBytes(owner)).toBeGreaterThan(0);
       expect(await rag.forgetOwner(owner)).toBe(true);
       expect(rag.storageBytes(owner)).toBe(0);
-      expect(rag['byteCounters']?.size).toBe(0);
+      // biome-ignore lint/complexity/useLiteralKeys: Bracket access preserves private cache assertions in tests.
+      expect(rag.router['measured']?.size).toBe(0);
     }
-    expect(rag['clearedOwners']?.size).toBeLessThanOrEqual(256);
+    // biome-ignore lint/complexity/useLiteralKeys: Bracket access preserves private cache assertions in tests.
+    expect(rag.router['cleared']?.size).toBeLessThanOrEqual(256);
   },
 );
 
 test('eviction immediately after a persisted-history write includes the new history bytes', async (): Promise<void> => {
   const backend = new InMemoryRag();
+  const provider = historyTestProvider(backend);
   const owner = turnOwner(session.userId, session.sessionId);
   providersReady = true;
-  historyRag = new SessionHistoryRag(backend, (): string => owner, 12, {
+  historyRag = new SessionHistoryRag(provider, (): string => owner, 12, {
     storageBackend: 'hana-vector',
   });
   expect(historyRag.storageBytes(owner)).toBeUndefined();
@@ -970,10 +990,16 @@ test.each(['result', 'throw'])(
   'repeated failed history cleanup releases owner counters without a zero marker (%s)',
   async (failure: string): Promise<void> => {
     const backend = new InMemoryRag();
-    const rag = new SessionHistoryRag(backend, (): undefined => undefined, 12, {
-      storageBackend: 'hana-vector',
-    });
-    const deletion = jest.spyOn(backend, 'deleteWhere');
+    const provider = historyTestProvider(backend);
+    const rag = new SessionHistoryRag(
+      provider,
+      (): undefined => undefined,
+      12,
+      {
+        storageBackend: 'hana-vector',
+      },
+    );
+    const deletion = jest.spyOn(provider, 'deleteCollection');
     if (failure === 'throw')
       deletion.mockRejectedValue(new Error('Database unavailable'));
     else
@@ -992,10 +1018,16 @@ test.each(['result', 'throw'])(
       expect(rag.storageBytes(owner)).toBeGreaterThan(0);
       expect(await rag.forgetOwner(owner)).toBe(false);
       expect(rag.storageBytes(owner)).toBeUndefined();
-      expect(rag['byteCounters']?.size).toBe(0);
-      expect(rag['clearedOwners']?.has(owner) ?? false).toBe(false);
-      expect(rag.turnCount(owner)).toBe(0);
-      expect(rag['pending'].size).toBe(0);
+      // biome-ignore lint/complexity/useLiteralKeys: Bracket access preserves private cache assertions in tests.
+      expect(rag.router['measured']?.size).toBe(0);
+      // biome-ignore lint/complexity/useLiteralKeys: Bracket access preserves private cache assertions in tests.
+      expect(rag.router['cleared']?.has(`failed-${index}`) ?? false).toBe(
+        false,
+      );
+      // biome-ignore lint/complexity/useLiteralKeys: Inspect production retention state after failed deletion.
+      expect(rag.router['liveIds'].size).toBe(0);
+      // biome-ignore lint/complexity/useLiteralKeys: Bracket access preserves private cache assertions in tests.
+      expect(rag.router['pending'].size).toBe(0);
     }
     const owner = turnOwner('alice', 'failed-599');
     await rag.listTurns(owner);
@@ -1003,13 +1035,15 @@ test.each(['result', 'throw'])(
     deletion.mockRestore();
     expect(await rag.forgetOwner(owner)).toBe(true);
     expect(rag.storageBytes(owner)).toBe(0);
-    expect(rag['byteCounters']?.size).toBe(0);
+    // biome-ignore lint/complexity/useLiteralKeys: Bracket access preserves private cache assertions in tests.
+    expect(rag.router['measured']?.size).toBe(0);
     jest
-      .spyOn(backend, 'deleteWhere')
+      .spyOn(provider, 'describeCollections')
       .mockRejectedValue(new Error('Database unavailable again'));
     expect(await rag.forgetOwner(owner)).toBe(false);
     expect(rag.storageBytes(owner)).toBeUndefined();
-    expect(rag['clearedOwners']?.has(owner)).toBe(false);
+    // biome-ignore lint/complexity/useLiteralKeys: Bracket access preserves private cache assertions in tests.
+    expect(rag.router['cleared']?.has('failed-599')).toBe(false);
   },
 );
 
@@ -1069,3 +1103,13 @@ test('failed async measurements report Unknown instead of reusing cached values 
   expect(measured).toMatchObject({ historyBytesUnknown: true });
   expect(measured).not.toHaveProperty('historyBytes');
 });
+
+function keepLongSession(userId: string, key: string): void {
+  const registry = new LongSessionRegistry(
+    { ttlMs: 1e15, maxSessions: 10, maxPerUser: 10, queueLength: 1 },
+    { onClose: async () => {} },
+  );
+  registry.open(userId, { key });
+  setLongSessionsForTest(registry);
+}
+afterEach(() => setLongSessionsForTest(undefined));

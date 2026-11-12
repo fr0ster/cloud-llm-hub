@@ -12,6 +12,7 @@ import { getExecutionLimits } from './lib/execution-limits';
 import { failureMessage, observeLlmSpend } from './lib/llm-failure';
 import { awaitModelCatalog } from './lib/model-catalog';
 import { ignoredModelHeader } from './lib/model-policy';
+import { bindCaller, callOptionsFor } from './lib/rag-caller';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
 import {
@@ -132,13 +133,15 @@ async function handleAnthropicMessagesWithUsage(
   req: Request,
   res: Response,
 ): Promise<void> {
+  const sessionId = sessionIdOf(req);
+  if (!sessionId) return handleAnthropicMessagesMeasured(req, res);
   const body: { stream?: boolean } | undefined = req.body;
   const measurement = measureRequest(
     req,
     res,
     {
       userId: cds.context?.user?.id ?? 'anonymous',
-      sessionId: sessionIdOf(req) ?? '',
+      sessionId,
     },
     'anthropic',
     body?.stream === true,
@@ -432,8 +435,26 @@ async function serveMessages(
   const requestedDestination = req.headers['x-sap-destination'] as
     | string
     | undefined;
+  const traceId = requestMeasurement(req)?.traceId ?? randomUUID();
   const sessionId = sessionIdOf(req);
+  if (!sessionId) {
+    res.status(403).json({
+      error: {
+        message: 'SESSION_REQUIRED: session middleware must issue a session',
+      },
+    });
+    return;
+  }
   const userId = authenticatedCaller.userId;
+  const boundCaller = await bindCaller(
+    sessionId,
+    userId,
+    cds.context?.user?.is('MCP_Admin') === true,
+  );
+  if (!boundCaller.ok) {
+    res.status(403).json({ error: { message: boundCaller.error.message } });
+    return;
+  }
   const ragIdentity = {
     admin: authenticatedCaller.admin,
     channel: 'anthropic' as const,
@@ -601,7 +622,6 @@ async function serveMessages(
   // per-trace bucketing and the finalizer's `getSummary(traceId)` (Verified
   // fact 10). Merge into any `trace` the adapter already normalized from the
   // request rather than clobbering it.
-  const traceId = requestMeasurement(req)?.traceId ?? randomUUID();
 
   // The caller's permissions. This channel previously resolved none at all —
   // no role filtering on which tools were offered, and nothing to authorize a
@@ -616,7 +636,7 @@ async function serveMessages(
   try {
     const admission = await admitPipeline(
       userId,
-      sessionId ?? traceId,
+      sessionId,
       callerLeft.signal,
       {
         presented:
@@ -654,7 +674,7 @@ async function serveMessages(
 
   const usage = usageRuntime()
     ?.forSession({
-      sessionId: sessionId ?? traceId,
+      sessionId,
       userId,
       destination: destination,
     })
@@ -666,7 +686,7 @@ async function serveMessages(
     requestStartedAt: requestStart(req),
     // After the spread: nothing in `options` may override the admission's signal.
     signal: pipeline.signal,
-    sessionId,
+    ...callOptionsFor(boundCaller.value),
     ragFilter: {
       ...(options as { ragFilter?: Record<string, unknown> })?.ragFilter,
       exposition: callerExposition,

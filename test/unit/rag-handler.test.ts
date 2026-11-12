@@ -609,7 +609,7 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
         params: { id: physId },
         method: 'PATCH',
         path: '/enabled',
-        headers: {},
+        headers: { 'x-clh-session': liveSession('alice@example.com') },
       });
       const res = await runWithMiddleware(
         routes,
@@ -641,7 +641,7 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
         params: { id: physId },
         method: 'PATCH',
         path: '/enabled',
-        headers: {},
+        headers: { 'x-clh-session': liveSession('alice@example.com') },
       });
       const res = await runWithMiddleware(
         routes,
@@ -661,7 +661,7 @@ describe('rag-handler — Task 6: create, :id routes, PATCH enabled, listing', (
         params: { id: 'nonexistent' },
         method: 'PATCH',
         path: '/enabled',
-        headers: {},
+        headers: { 'x-clh-session': liveSession('alice@example.com') },
       });
       const res = await runWithMiddleware(
         routes,

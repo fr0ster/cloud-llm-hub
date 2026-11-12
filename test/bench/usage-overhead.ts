@@ -14,13 +14,18 @@ import {
   PlannerToolsClient,
   SmartAgentBuilder,
   SmartAgentSubAgent,
+  unwrapBuilderResult,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
   createUsageRecorder,
   directTransport,
   memorySink,
 } from '@mcp-abap-adt/llm-usage';
+import { testAccess } from '../unit/helpers/test-rag-access';
 import { fakePipelineLlm } from '../unit/helpers/usage-pipeline';
+
+const ragCaller = { sessionId: 'bench', userId: 'test-user', isAdmin: false };
+const sessionCaller1 = { ...ragCaller, sessionId: 'bench' };
 
 const iterations = Number(process.argv[2] ?? 100);
 if (!Number.isSafeInteger(iterations) || iterations < 1)
@@ -82,91 +87,100 @@ async function scenario(usage?: IUsageRecorder): Promise<void> {
       };
     },
   };
-  const worker = await new SmartAgentBuilder({
-    skipModelValidation: true,
-    agent: {
-      classificationEnabled: false,
-      ragTranslateEnabled: false,
-      maxIterations: 5,
-    },
-  })
-    .withMainLlm(
-      fakePipelineLlm(
-        (messages: Message[]): LlmResponse =>
-          messages.some((message: Message): boolean => message.role === 'tool')
-            ? answer()
-            : {
-                content: '',
-                finishReason: 'tool_calls',
-                toolCalls: [{ id: 'read-call', name: 'read', arguments: {} }],
-              },
-      ),
-    )
-    .withMcpClients([mcp])
-    .build();
+  const worker = unwrapBuilderResult(
+    await new SmartAgentBuilder({
+      skipModelValidation: true,
+      agent: {
+        classificationEnabled: false,
+        ragTranslateEnabled: false,
+        maxIterations: 5,
+      },
+    })
+      .withRagAccess(testAccess([ragCaller, sessionCaller1]))
+      .withMainLlm(
+        fakePipelineLlm(
+          (messages: Message[]): LlmResponse =>
+            messages.some(
+              (message: Message): boolean => message.role === 'tool',
+            )
+              ? answer()
+              : {
+                  content: '',
+                  finishReason: 'tool_calls',
+                  toolCalls: [{ id: 'read-call', name: 'read', arguments: {} }],
+                },
+        ),
+      )
+      .withMcpClients([mcp])
+      .build(),
+  );
   const workers = new Map<string, ISubAgent>([
     ['executor', new SmartAgentSubAgent('executor', worker.agent)],
     ['checker', new SmartAgentSubAgent('checker', worker.agent)],
   ]);
   let delegated = 0;
-  const planner = await new SmartAgentBuilder({
-    skipModelValidation: true,
-    agent: { classificationEnabled: false, ragTranslateEnabled: false },
-  })
-    .withMainLlm(
-      fakePipelineLlm(
-        (
-          messages: Message[],
-          options?: CallOptions,
-        ):
-          | LlmResponse
-          | {
-              content: string;
-              finishReason: 'tool_calls';
-              toolCalls: {
-                id: string;
-                name: string;
-                arguments: { worker: string; goal: string; history: string };
-              }[];
-            } => {
-          const last = messages.at(-1);
-          if (
-            last?.role === 'tool' ||
-            last?.content?.includes('[task events]') ||
-            delegated >= 3
-          )
-            return answer();
-          const checker = options?.trace?.traceId === 'second';
-          return {
-            content: '',
-            finishReason: 'tool_calls',
-            toolCalls: Array.from(
-              { length: checker ? 1 : 2 },
-              (
-                _value: undefined,
-                index: number,
-              ): {
-                id: string;
-                name: string;
-                arguments: { worker: string; goal: string; history: string };
-              } => ({
-                id: `delegate-${delegated++}-${index}`,
-                name: 'delegate_task',
-                arguments: {
-                  worker: checker ? 'checker' : 'executor',
-                  goal: 'Read and verify',
-                  history: 'all',
-                },
-              }),
-            ),
-          };
-        },
-      ),
-    )
-    .withMcpClients([new PlannerToolsClient()])
-    .withMode('hard')
-    .build();
+  const planner = unwrapBuilderResult(
+    await new SmartAgentBuilder({
+      skipModelValidation: true,
+      agent: { classificationEnabled: false, ragTranslateEnabled: false },
+    })
+      .withRagAccess(testAccess([ragCaller, sessionCaller1]))
+      .withMainLlm(
+        fakePipelineLlm(
+          (
+            messages: Message[],
+            options?: CallOptions,
+          ):
+            | LlmResponse
+            | {
+                content: string;
+                finishReason: 'tool_calls';
+                toolCalls: {
+                  id: string;
+                  name: string;
+                  arguments: { worker: string; goal: string; history: string };
+                }[];
+              } => {
+            const last = messages.at(-1);
+            if (
+              last?.role === 'tool' ||
+              last?.content?.includes('[task events]') ||
+              delegated >= 3
+            )
+              return answer();
+            const checker = options?.trace?.traceId === 'second';
+            return {
+              content: '',
+              finishReason: 'tool_calls',
+              toolCalls: Array.from(
+                { length: checker ? 1 : 2 },
+                (
+                  _value: undefined,
+                  index: number,
+                ): {
+                  id: string;
+                  name: string;
+                  arguments: { worker: string; goal: string; history: string };
+                } => ({
+                  id: `delegate-${delegated++}-${index}`,
+                  name: 'delegate_task',
+                  arguments: {
+                    worker: checker ? 'checker' : 'executor',
+                    goal: 'Read and verify',
+                    history: 'all',
+                  },
+                }),
+              ),
+            };
+          },
+        ),
+      )
+      .withMcpClients([new PlannerToolsClient()])
+      .withMode('hard')
+      .build(),
+  );
   const session = await DialogueSession.open({
+    caller: sessionCaller1,
     id: 'bench',
     usage,
     planner: planner.agent,

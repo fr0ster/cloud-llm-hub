@@ -1,3 +1,9 @@
+const taskCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+
 import { Stream as AnthropicStream } from '@anthropic-ai/sdk/core/streaming';
 import { LlmError } from '@mcp-abap-adt/llm-agent';
 import express from 'express';
@@ -237,8 +243,7 @@ for (const initial of ['', 'NO_MESSAGE', 'answer']) {
         ]);
         expect(record).toHaveBeenCalledTimes(1);
         expect(record).toHaveBeenCalledWith(
-          session.key,
-          'alice',
+          { sessionId: session.key, userId: 'alice', isAdmin: true },
           expect.objectContaining({ role: 'user', content: 'hi' }),
           answer,
         );
@@ -564,7 +569,10 @@ it.each(['before', 'before\n'])(
       res as unknown as Response,
     );
     let text = '';
-    for await (const chunk of agent.streamProcess([]))
+    for await (const chunk of agent.streamProcess([], {
+      caller: taskCaller,
+      sessionId: taskCaller.sessionId,
+    }))
       if (chunk.ok) text += chunk.value.content || '';
     expect(text).toContain(
       // A tool boundary always yields a paragraph break (two newlines).
@@ -624,7 +632,10 @@ it.each([
     'SAP',
     fakeRes() as unknown as Response,
   );
-  const result = await agent.process([]);
+  const result = await agent.process([], {
+    caller: taskCaller,
+    sessionId: taskCaller.sessionId,
+  });
   expect(result.ok && result.value.content).toBe(expected);
 });
 
@@ -655,7 +666,10 @@ it.each([
   );
   const contents: string[] = [];
   let stopped = false;
-  for await (const chunk of agent.streamProcess([])) {
+  for await (const chunk of agent.streamProcess([], {
+    caller: taskCaller,
+    sessionId: taskCaller.sessionId,
+  })) {
     expect(chunk.ok).toBe(true);
     if (chunk.ok) {
       contents.push(chunk.value.content || '');
@@ -680,7 +694,10 @@ it.each(['NO_MESSAGE', 'NO_MESSAGE answer NO_MESSAGE'])(
       fakeRes() as unknown as Response,
     );
     let content = '';
-    for await (const chunk of agent.streamProcess([]))
+    for await (const chunk of agent.streamProcess([], {
+      caller: taskCaller,
+      sessionId: taskCaller.sessionId,
+    }))
       if (chunk.ok) content += chunk.value.content || '';
     expect(content).toBe(text === 'NO_MESSAGE' ? '' : 'answer');
   },
@@ -803,7 +820,10 @@ function directChat(ack?: string) {
 }
 async function chunksOf(agent: ReturnType<typeof dialogueChat>) {
   const chunks: DialogueStreamChunk[] = [];
-  for await (const chunk of agent.streamProcess([])) {
+  for await (const chunk of agent.streamProcess([], {
+    caller: taskCaller,
+    sessionId: taskCaller.sessionId,
+  })) {
     if (!chunk.ok) throw chunk.error;
     chunks.push(chunk.value);
   }
@@ -866,7 +886,10 @@ it.each(
     });
     if (mode === 'non-streaming') {
       const { agent, res } = directChat();
-      const result = await agent.process([]);
+      const result = await agent.process([], {
+        caller: taskCaller,
+        sessionId: taskCaller.sessionId,
+      });
       expect(result.ok && result.value.content).toBe('one\n\ntwo');
       expect(res.headers['x-clh-last-message']).toBe('two');
       expect(outbox.history()).toEqual([]);
@@ -896,7 +919,10 @@ it.each([
     const first = directChat();
     if (stream) await chunksOf(first.agent);
     else {
-      const result = await first.agent.process([]);
+      const result = await first.agent.process([], {
+        caller: taskCaller,
+        sessionId: taskCaller.sessionId,
+      });
       expect(result.ok).toBe(true);
     }
     const id = outbox.pending()[0].id;
@@ -904,7 +930,10 @@ it.each([
     if (cut) first.res.disconnect();
     first.res.end();
     const second = directChat();
-    const next = await second.agent.process([]);
+    const next = await second.agent.process([], {
+      caller: taskCaller,
+      sessionId: taskCaller.sessionId,
+    });
     expect(next.ok && next.value.content).toBe(
       cut ? 'answer\n\nanswer' : 'answer',
     );
@@ -916,13 +945,22 @@ it('x-clh-ack none enters ack mode; an id confirms up to it', async () => {
   jest.mocked(outbox.confirmUpTo).mockRestore();
   directAnswer();
   const first = directChat('none');
-  await first.agent.process([]);
+  await first.agent.process([], {
+    caller: taskCaller,
+    sessionId: taskCaller.sessionId,
+  });
   first.res.end();
   const id = outbox.pending()[0].id;
   expect(outbox.ackMode).toBe(true);
-  await directChat().agent.process([]);
+  await directChat().agent.process([], {
+    caller: taskCaller,
+    sessionId: taskCaller.sessionId,
+  });
   expect(outbox.pending().some((m) => m.id === id)).toBe(true);
-  await directChat(id).agent.process([]);
+  await directChat(id).agent.process([], {
+    caller: taskCaller,
+    sessionId: taskCaller.sessionId,
+  });
   expect(outbox.pending().some((m) => m.id === id)).toBe(false);
 });
 it('a new request supersedes an open follow before reading pending', async () => {
@@ -960,7 +998,10 @@ it('a new request supersedes an open follow before reading pending', async () =>
     expect(superseded).toBe(true);
     return [];
   });
-  await directChat().agent.process([]);
+  await directChat().agent.process([], {
+    caller: taskCaller,
+    sessionId: taskCaller.sessionId,
+  });
   await observed;
   expect(superseded).toBe(true);
   await iterator.return?.();
@@ -984,7 +1025,10 @@ it('follow is absent for a plain reply and for a non-streaming turn', async () =
     idle: false,
   });
   const nonStreaming = directChat().agent;
-  await nonStreaming.process([]);
+  await nonStreaming.process([], {
+    caller: taskCaller,
+    sessionId: taskCaller.sessionId,
+  });
   expect(
     nonStreaming.follow(new AbortController().signal, 100),
   ).toBeUndefined();
@@ -1689,7 +1733,10 @@ it('non-streaming duration includes queue wait and open setup while preserving r
     });
     const { agent } = directChat();
     now += 500;
-    const result = await agent.process([]);
+    const result = await agent.process([], {
+      caller: taskCaller,
+      sessionId: taskCaller.sessionId,
+    });
     if (!result.ok) throw new Error('Expected successful dialogue');
     expect(result.value.usage?.x_hub.duration_ms).toBe(1000);
     expect(upsert).toHaveBeenCalledWith([

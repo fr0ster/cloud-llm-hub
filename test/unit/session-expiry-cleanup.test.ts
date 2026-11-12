@@ -28,6 +28,10 @@ const forgetOwner = jest.fn(async (_owner: string) => {});
 const deleteSessionCollections = jest.fn();
 const forgetSessionDestination = jest.fn();
 let providersReady = true;
+jest.mock('../../srv/lib/session-history-collection', () => ({
+  ...jest.requireActual('../../srv/lib/session-history-collection'),
+  forgetSessionHistory: (sessionId: string) => forgetOwner(sessionId),
+}));
 jest.mock('../../srv/agent-manager', () => ({
   isProvidersReady: () => providersReady,
   getSharedHistoryRag: () => ({ forgetOwner, listTurns: async () => [] }),
@@ -41,11 +45,11 @@ jest.mock('../../srv/agent-manager', () => ({
 }));
 
 import { resetGatekeeperForTest } from '../../srv/lib/gatekeeper';
+import { turnOwner } from '../../srv/lib/history-turn';
 import {
   LongSessionRegistry,
   setLongSessionsForTest,
 } from '../../srv/lib/long-session';
-import { turnOwner } from '../../srv/lib/session-history-rag';
 import {
   lifecycleHooks,
   resolveSession,
@@ -110,7 +114,7 @@ afterEach(() => {
 });
 
 function expectCleanedUp() {
-  expect(forgetOwner).toHaveBeenCalledWith(turnOwner('alice', 'ls-expired'));
+  expect(forgetOwner).toHaveBeenCalledWith('ls-expired');
   expect(deleteSessionCollections).toHaveBeenCalledWith('alice', 'ls-expired');
   expect(forgetSessionDestination).toHaveBeenCalledWith('alice', 'ls-expired');
   expect(records.s.delete).toHaveBeenCalledWith('alice', 'ls-expired');

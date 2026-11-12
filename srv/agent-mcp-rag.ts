@@ -14,7 +14,11 @@ import {
   sessionCollectionId,
   userCollectionId,
 } from './collection-ids';
-import { collectionAccessError } from './lib/collection-access';
+import {
+  checkAccess,
+  collectionAccessError,
+  visibleCollections,
+} from './lib/collection-access';
 import { restoredDocument } from './lib/collection-persistence';
 import {
   collectionDefault,
@@ -23,6 +27,7 @@ import {
 } from './lib/collection-toggle';
 import { withCollectionToolScope } from './lib/collection-write-scope';
 import { longSessions, longSessionsIfReady } from './lib/long-session';
+import { bindCaller } from './lib/rag-caller';
 import { readRagDocuments } from './lib/rag-read';
 import { compactRagSearch } from './lib/rag-search-context';
 import {
@@ -318,6 +323,8 @@ async function executeRagMcpToolImpl(
     context.readOnly &&
     ragToolEffect(name) !== 'read' &&
     !(ragToolEffect(name) === 'knowledge' && context.dialogueRole === 'worker');
+  if (readOnlyForbidden)
+    return fail('TOOL_FORBIDDEN', 403, `TOOL_FORBIDDEN: ${name}`);
   // Inspect mutation targets independently of role argument schemas. A refusal
   // must not suggest that retrying with different arguments grants permission.
   if (ragToolEffect(name) !== 'read' && name !== 'rag_persist') {
@@ -369,13 +376,21 @@ async function executeRagMcpToolImpl(
           typeof target === 'string' ? target : target.collection;
         // Only reveal reserved metadata for the caller's own session.
         const exact = await registry.getCollection(collection);
+        if (
+          context.sessionKey &&
+          longSessionsIfReady()?.get(userId, context.sessionKey)
+        )
+          await bindCaller(context.sessionKey, userId, context.admin);
         const reserved =
           collection === 'task-results'
             ? true
             : exact?.collectionKind === 'task-results' &&
-              exact.scope === 'session' &&
-              exact.owner === userId &&
-              exact.sessionId === context.sessionKey;
+              (await checkAccess(
+                exact,
+                userId,
+                context.sessionKey,
+                context.admin,
+              ));
         if (reserved)
           return fail(
             'TOOL_FORBIDDEN',
@@ -458,6 +473,24 @@ async function executeRagMcpToolImpl(
       parsed.error.message,
     );
   try {
+    const accessSession = context.internal
+      ? context.sessionKey
+      : (parsed.data.session ?? context.sessionKey);
+    const statelessRead =
+      context.internal &&
+      context.statelessRead &&
+      context.readOnly &&
+      ragToolEffect(name) === 'read';
+    const admittedSession =
+      accessSession && !statelessRead
+        ? context.internal
+          ? longSessionsIfReady()?.get(userId, accessSession)
+          : await externalSession(userId, accessSession)
+        : undefined;
+    if (accessSession && (admittedSession || statelessRead)) {
+      const caller = await bindCaller(accessSession, userId, context.admin);
+      if (!caller.ok) return fail('FORBIDDEN', 403, caller.error.message);
+    }
     const registry = context.registry ?? ragHost().getCollectionRegistry();
     const resolvedCollections = new Set<string>();
     const resolveAddress = async (address: CollectionAddress) => {
@@ -486,12 +519,16 @@ async function executeRagMcpToolImpl(
         (global.logicalId ?? global.id) === address.collection
       )
         return resolved(global.id);
-      const candidates = (await registry.listCollections(userId)).filter(
-        (c) =>
-          c.scope === address.scope &&
-          (c.scope === 'global' || c.owner === userId) &&
-          (c.scope !== 'session' || c.sessionId === context.sessionKey),
-      );
+      const candidates = (
+        await visibleCollections(
+          await registry.listCollections(userId),
+          userId,
+          context.internal
+            ? context.sessionKey
+            : (parsed.data.session ?? context.sessionKey),
+          context.admin,
+        )
+      ).filter((c) => c.scope === address.scope);
       const found = candidates.find(
         (c) => (c.logicalId ?? c.id) === address.collection,
       );
@@ -566,7 +603,7 @@ async function executeRagMcpToolImpl(
         : target
           ? await resolveRouteId(registry, target, userId, targetSession, false)
           : undefined;
-    // Trust mutations can resolve exact physical ids with admin privileges.
+    // Trust mutations can resolve exact physical ids before the access check.
     // Inspect that target too, even when ordinary routing hides its owner/session.
     const targetMeta = targetId
       ? await registry.getCollection(targetId)
@@ -575,9 +612,7 @@ async function executeRagMcpToolImpl(
         : null;
     const ownTaskResults =
       targetMeta?.collectionKind === 'task-results' &&
-      targetMeta.scope === 'session' &&
-      targetMeta.owner === userId &&
-      targetMeta.sessionId === context.sessionKey;
+      (await checkAccess(targetMeta, userId, accessSession, context.admin));
     if (
       targetMeta?.collectionKind === 'task-results' &&
       !ownTaskResults &&
@@ -624,8 +659,13 @@ async function executeRagMcpToolImpl(
       ) {
         if (
           targetMeta?.scope !== 'session' ||
-          targetMeta.owner !== userId ||
-          targetMeta.sessionId !== context.sessionKey
+          !(await checkAccess(
+            targetMeta,
+            userId,
+            context.sessionKey,
+            context.admin,
+            'write',
+          ))
         )
           return fail(
             'TOOL_FORBIDDEN',
@@ -676,9 +716,7 @@ async function executeRagMcpToolImpl(
         context.dialogueRole,
         resolvedCollections,
       );
-    const s = context.internal
-      ? longSessionsIfReady()?.get(userId, key)
-      : await externalSession(userId, key);
+    const s = admittedSession;
     if (!s)
       return context.internal
         ? fail(
@@ -915,10 +953,11 @@ async function runRagTool(
     );
   const resolve = async (entry: string) => {
     if (role === 'coordinator' && entry === '@skills') return entry;
-    const exact =
-      role === 'coordinator' ? await registry.getCollection(entry) : null;
+    const exact = await registry.getCollection(entry);
     const id =
-      resolvedCollections.has(entry) || exact?.scope === 'global'
+      resolvedCollections.has(entry) ||
+      (exact && entry.includes('__')) ||
+      (role === 'coordinator' && exact?.scope === 'global')
         ? entry
         : await resolveRouteId(registry, entry, userId, sid, false);
     if (!id) throw new Error('Collection not found');
@@ -931,12 +970,11 @@ async function runRagTool(
         name === 'collection_set_enabled')
     )
       throw new Error('TOOL_FORBIDDEN: agents configuration is REST-only');
-    if (meta.scope === 'session' && meta.sessionId !== sid)
+    if (!(await checkAccess(meta, userId, sid, admin)))
       throw new Error('Collection not found');
     const refusal = collectionAccessError(
       meta,
       userId,
-      admin,
       name === 'record_set_enabled' ? 'write' : 'read',
     );
     if (refusal) throw new Error(refusal.message);
@@ -994,16 +1032,17 @@ async function runRagTool(
     });
   }
   if (name === 'collections_list') {
-    const collections = await registry.listCollections(
-      userId && userId !== 'anonymous' ? userId : undefined,
+    const collections = await visibleCollections(
+      await registry.listCollections(
+        userId && userId !== 'anonymous' ? userId : undefined,
+      ),
+      userId,
+      sid,
+      admin,
     );
     return respond({
       collections: collections
-        .filter(
-          (c) =>
-            (!hideAgents || c.collectionKind !== 'agents') &&
-            (c.scope !== 'session' || c.sessionId === sid),
-        )
+        .filter((c) => !hideAgents || c.collectionKind !== 'agents')
         .map((c) =>
           role === 'coordinator'
             ? {
@@ -1049,12 +1088,18 @@ async function runRagTool(
   if (name === 'rag_search') {
     const entries =
       args.collections ??
-      (await registry.listCollections(userId))
+      (
+        await visibleCollections(
+          await registry.listCollections(userId),
+          userId,
+          sid,
+          admin,
+        )
+      )
         .filter(
           (c) =>
             c.collectionKind !== 'agents' &&
-            c.collectionKind !== 'task-results' &&
-            (c.scope !== 'session' || c.sessionId === sid),
+            c.collectionKind !== 'task-results',
         )
         .map((c) => c.id);
     const ids = [...new Set(await Promise.all(entries.map(resolve)))];

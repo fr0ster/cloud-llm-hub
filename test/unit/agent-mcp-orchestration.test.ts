@@ -1,3 +1,22 @@
+import { ragTextResult } from '../../srv/agent-mcp-rag';
+import {
+  BriefPlanAuthor,
+  planAuthorBriefRequest,
+} from '../../srv/lib/brief-plan-author';
+import { revisionPlanSchema } from '../../srv/lib/dialogue-store';
+import { bindCaller, callOptionsFor } from '../../srv/lib/rag-caller';
+import {
+  runWithSessionId,
+  runWithStatelessKnowledge,
+} from '../../srv/request-session';
+
+const taskCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+const sessionCaller1 = { ...taskCaller, sessionId: 'owned' };
+
 import type {
   DialoguePlan,
   IPlanAuthor,
@@ -64,7 +83,10 @@ const mockAuthorAgent: ISmartAgent = {
   streamProcess: async function* () {},
 };
 let mockSession: DialogueSession;
-const mockHeadless = jest.fn(async () => ({ session: mockSession }));
+const mockHeadless = jest.fn(async () => ({
+  session: mockSession,
+  caller: sessionCaller1,
+}));
 const mockRelease = jest.fn();
 const mockLongSession = { userId: 'alice', key: 'owned', destination: 'TEST' };
 const mockRun = jest.fn(async (_input: ISubAgentInput) => ({
@@ -130,11 +152,79 @@ const call = (
   name: (typeof orchestrationTools)[number],
   args: Parameters<typeof executeOrchestrationTool>[3] = {},
 ) => executeOrchestrationTool(req, caller, name, args);
+// Component coverage formerly exercised through the removed sessionless MCP path.
+// The author now receives a real, bound session rather than a random trace session.
+async function callBoundPlanAuthor(
+  name: 'plan_create' | 'plan_revise',
+  args: Parameters<typeof executeOrchestrationTool>[3],
+) {
+  const bound = await bindCaller('owned', 'alice', false);
+  if (!bound.ok) throw bound.error;
+  const retrieval = await plannerMemory.plannerSessionOptions('alice', 'owned');
+  const author = new BriefPlanAuthor({
+    source: mockSource,
+    runner: {
+      preparePlanAuthor: async () => ({ ok: true, value: mockAuthorAgent }),
+      createWorker: async () => {
+        throw new Error('Unexpected worker');
+      },
+      preparePlanner: async () => {
+        throw new Error('Unexpected planner');
+      },
+    },
+    notes: async (options) =>
+      plannerMemory.planAuthorContextNotes(
+        retrieval,
+        'owned',
+        planAuthorBriefRequest(),
+        options,
+      ),
+  });
+  return runWithSessionId(
+    'owned',
+    () =>
+      runWithStatelessKnowledge(async () => {
+        try {
+          const options = callOptionsFor(bound.value);
+          const result =
+            name === 'plan_create'
+              ? await author.create(
+                  z
+                    .object({
+                      goal: z.string(),
+                      context: z.string().optional(),
+                    })
+                    .parse(args),
+                  options,
+                )
+              : await author.revise(
+                  z
+                    .object({ change: z.string(), plan: revisionPlanSchema })
+                    .parse(args),
+                  options,
+                );
+          return result.ok
+            ? ragTextResult(JSON.stringify(result.value))
+            : ragTextResult(result.error.message, true);
+        } catch (error) {
+          return ragTextResult(
+            error instanceof Error ? error.message : String(error),
+            true,
+          );
+        }
+      }),
+    undefined,
+    'alice',
+    { admin: false, channel: 'mcp-agent' },
+  );
+}
+
 beforeEach(async () => {
   longSessionLlms({ userId: 'alice', key: 'owned' });
   jest.clearAllMocks();
   mockRun.mockImplementation(async () => ({ output: 'read done' }));
   mockSession = await DialogueSession.open({
+    caller: sessionCaller1,
     id: 'owned',
     planAuthor: { create: mockCreate, revise: mockRevise },
     planner: {
@@ -157,7 +247,7 @@ test.each(
 )('%s requires an owned session', async (name) => {
   expect(await call(name)).toMatchObject({
     isError: true,
-    content: [{ text: 'SESSION_REQUIRED' }],
+    content: [{ text: expect.stringContaining('SESSION_REQUIRED') }],
   });
   expect(await call(name, { session: 'foreign' })).toMatchObject({
     isError: true,
@@ -174,8 +264,8 @@ test.each(['plan_create', 'plan_revise'] as const)(
     });
   },
 );
-test('stateless author returns a plan without opening or storing a dialogue', async () => {
-  const result = await call('plan_create', { goal: 'Read' });
+test('bound author returns a plan without opening or storing a dialogue', async () => {
+  const result = await callBoundPlanAuthor('plan_create', { goal: 'Read' });
   expect(result).not.toMatchObject({ isError: true });
   expect(JSON.parse(result.content[0].text)).toMatchObject({
     version: 1,
@@ -184,8 +274,8 @@ test('stateless author returns a plan without opening or storing a dialogue', as
   expect(mockHeadless).not.toHaveBeenCalled();
   expect(mockSession.snapshot().plan).toBeUndefined();
 });
-test('stateless revise accepts an explicit current plan and stores nothing', async () => {
-  const result = await call('plan_revise', {
+test('bound revise accepts an explicit current plan and stores nothing', async () => {
+  const result = await callBoundPlanAuthor('plan_revise', {
     change: 'Keep the goal',
     plan: z.json().parse(mockPlan),
     context: 'Keep completed work',
@@ -194,15 +284,15 @@ test('stateless revise accepts an explicit current plan and stores nothing', asy
   expect(mockHeadless).not.toHaveBeenCalled();
   expect(mockSession.snapshot().plan).toBeUndefined();
 });
-test('stateless revise requires an explicit plan', async () => {
+test('bound revise requires an explicit plan', async () => {
   expect(
-    await call('plan_revise', {
+    await callBoundPlanAuthor('plan_revise', {
       change: 'Read',
       context: JSON.stringify(mockPlan),
     }),
   ).toMatchObject({
     isError: true,
-    content: [{ text: expect.stringContaining('requires plan') }],
+    content: [{ text: expect.stringContaining('plan') }],
   });
 });
 
@@ -210,9 +300,12 @@ test.each([
   { ...mockPlan, version: 2 },
   { ...mockPlan, steps: Array.from({ length: 1001 }, () => mockPlan.steps[0]) },
   { ...mockPlan, steps: [{ ...mockPlan.steps[0], goal: 'x'.repeat(20001) }] },
-])('stateless revise rejects invalid or oversized plans', async (plan) => {
+])('bound revise rejects invalid or oversized plans', async (plan) => {
   expect(
-    await call('plan_revise', { change: 'Read', plan: z.json().parse(plan) }),
+    await callBoundPlanAuthor('plan_revise', {
+      change: 'Read',
+      plan: z.json().parse(plan),
+    }),
   ).toMatchObject({
     isError: true,
   });
@@ -276,6 +369,7 @@ test('a busy shared dialogue refuses MCP tools and retains its plan', async () =
   });
   await mockSession.close();
   mockSession = await DialogueSession.open({
+    caller: sessionCaller1,
     id: 'owned',
     planAuthor: { create: mockCreate, revise: mockRevise },
     planner: {
@@ -318,7 +412,7 @@ test('wire schemas reuse library definitions and accept delegation', async () =>
         expect(wire?.inputSchema.properties?.plan).toMatchObject({
           type: 'object',
         });
-        expect(wire?.description).toContain('required without a session');
+        expect(wire?.description).toContain('current session plan is used');
       }
       const {
         plan: _plan,
@@ -377,8 +471,10 @@ test('callTool receives cancellation, trace and long session id', async () => {
       usage: undefined,
       trace: { traceId: expect.any(String) },
       sessionId: 'owned',
+      caller: sessionCaller1,
     },
   );
+  expect(spy.mock.calls[0]?.[2]?.caller).toBe(sessionCaller1);
 });
 
 test('delegated profiles cannot execute tools beyond the caller grants', async () => {
@@ -413,6 +509,7 @@ test('delegated profiles cannot execute tools beyond the caller grants', async (
     }),
   };
   mockSession = await DialogueSession.open({
+    caller: sessionCaller1,
     id: 'owned',
     planner: { process: async () => ({ ok: true, value: { content: '' } }) },
     board: { profileSource: source, profileRunner: runner },
@@ -435,7 +532,7 @@ test('delegated profiles cannot execute tools beyond the caller grants', async (
   });
 });
 
-test('stateless author reads caller knowledge while agents stay hidden and blocked', async () => {
+test('bound author reads caller knowledge while agents stay hidden and blocked', async () => {
   const registry = new CollectionRegistry();
   for (const [id, owner, collectionKind] of [
     ['knowledge', 'alice', 'knowledge'],
@@ -507,7 +604,7 @@ test('stateless author reads caller knowledge while agents stay hidden and block
     });
   try {
     expect(
-      await call('plan_create', { goal: 'Read guidance' }),
+      await callBoundPlanAuthor('plan_create', { goal: 'Read guidance' }),
     ).not.toMatchObject({ isError: true });
     expect(process).toHaveBeenCalled();
   } finally {
@@ -516,7 +613,7 @@ test('stateless author reads caller knowledge while agents stay hidden and block
 });
 
 test.each(['plan_create', 'plan_revise'] as const)(
-  '%s retrieves configured stateless planning guidance from its brief',
+  '%s retrieves configured planning guidance for a bound author from its brief',
   async (name) => {
     const search = jest.fn(async () => [
       { collection: 'planning', id: 'rule', text: 'Configured planning rule' },
@@ -532,7 +629,7 @@ test.each(['plan_create', 'plan_revise'] as const)(
         return original(...args);
       });
     try {
-      const result = await call(
+      const result = await callBoundPlanAuthor(
         name,
         name === 'plan_create'
           ? { goal: 'Read objects', context: 'Use configured rules' }
@@ -626,6 +723,7 @@ test('delegate_task to the checker profile runs on the session checker model', a
     },
   });
   mockSession = await DialogueSession.open({
+    caller: sessionCaller1,
     id: 'owned',
     planner: { process: async () => ({ ok: true, value: { content: '' } }) },
     board: {

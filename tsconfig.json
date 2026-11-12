@@ -13,6 +13,9 @@
     "outDir": "./dist",
     "rootDir": "./",
     "paths": {
+      "@mcp-abap-adt/llm-agent/testing/rag-access-testing": [
+        "./node_modules/@mcp-abap-adt/llm-agent/dist/testing/rag-access-testing"
+      ],
       "@sap/cds": [
         "./node_modules/@cap-js/cds-types"
       ],

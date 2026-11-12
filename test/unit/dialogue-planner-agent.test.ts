@@ -1,3 +1,11 @@
+import { bindTestCaller } from './helpers/bind-test-caller';
+
+const taskCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+
 import {
   type ILlm,
   InMemoryRag,
@@ -157,6 +165,7 @@ test.each([false, true])(
     const fake = llm('planner');
     jest.mocked(makeHubLlm).mockResolvedValue(fake.agent);
     initProviders(await startProviders(config));
+    await bindTestCaller(taskCaller);
     const client = author
       ? {
           listTools: async () => ({ ok: true as const, value: [] }),
@@ -164,9 +173,10 @@ test.each([false, true])(
         }
       : undefined;
     const planner = await buildPlannerAgent(config, plannerText, client);
-    const result = await planner.process([
-      { role: 'user', content: 'Проаналізуй джерело CDS '.repeat(1000) },
-    ]);
+    const result = await planner.process(
+      [{ role: 'user', content: 'Проаналізуй джерело CDS '.repeat(1000) }],
+      { caller: taskCaller, sessionId: taskCaller.sessionId },
+    );
     expect(result.ok).toBe(true);
     expect(fake.messages).toHaveLength(1);
     expect(fake.messages[0]).toContain('Проаналізуй');
@@ -179,9 +189,13 @@ test('hard planner retains library turn tools and hub control tools, hub prompt,
   const second = llm('second');
   jest.mocked(makeHubLlm).mockResolvedValue(first.agent);
   initProviders(await startProviders(config));
+  await bindTestCaller(taskCaller);
   const planner = await buildPlannerAgent(config, plannerText);
   try {
-    const result = await planner.process([{ role: 'user', content: 'hello' }]);
+    const result = await planner.process([{ role: 'user', content: 'hello' }], {
+      caller: taskCaller,
+      sessionId: taskCaller.sessionId,
+    });
     expect(result.ok && result.value.content).toBe('first');
     expect(first.tools.flat().sort()).toEqual(
       [
@@ -209,7 +223,10 @@ test('hard planner retains library turn tools and hub control tools, hub prompt,
     expect(plannerText).not.toContain('(default: 3');
     jest.mocked(makeHubLlm).mockResolvedValue(second.agent);
     await getSmartAgent('second');
-    const swapped = await planner.process([{ role: 'user', content: 'again' }]);
+    const swapped = await planner.process(
+      [{ role: 'user', content: 'again' }],
+      { caller: taskCaller, sessionId: taskCaller.sessionId },
+    );
     expect(swapped.ok && swapped.value.content).toBe('first');
     expect(first.tools.flat()).toContain('delegate_task');
     expect(getCurrentPlannerModel()).toBe(
@@ -258,6 +275,7 @@ test.each([false, true])(
     };
     jest.mocked(makeHubLlm).mockResolvedValue(model);
     initProviders(await startProviders(config));
+    await bindTestCaller(taskCaller);
     await getSmartAgent(model.model);
     const planner = await buildPlannerAgent(
       { ...config, llm: { ...config.llm, coordinatorModel: model.model } },
@@ -287,7 +305,11 @@ test.each([false, true])(
       );
       await runWithSessionId(
         liveSession('alice', `planner-write-${invalid}`),
-        () => planner.process([{ role: 'user', content: 'save this' }]),
+        () =>
+          planner.process([{ role: 'user', content: 'save this' }], {
+            caller: taskCaller,
+            sessionId: taskCaller.sessionId,
+          }),
         [],
         'alice',
         {
@@ -313,6 +335,8 @@ test.each([false, true])(
             liveSession('alice', `planner-write-${invalid}`),
             () =>
               planner.process([{ role: 'user', content: 'save again' }], {
+                sessionId: taskCaller.sessionId,
+                caller: taskCaller,
                 trace: { traceId: `turn-${turn}` },
               }),
             [],
@@ -358,6 +382,7 @@ test('dialogue tool-loop offers hub storage to executor and only readback to che
     agent: { ...config.agent, chatCoordinator: 'dialogue', skillRagK: 0 },
   };
   initProviders(await startProviders(dialogueConfig));
+  await bindTestCaller(taskCaller);
   await getCollectionRegistry().seedAgentConfiguration('agents', 'coordinator');
   await getSmartAgent('worker');
   const handle = await buildAgentForDestination(
@@ -380,6 +405,7 @@ test('dialogue tool-loop offers hub storage to executor and only readback to che
       () =>
         runWithDialogueRagTools(() =>
           workers.get(name)?.run({
+            caller: taskCaller,
             task: 'Read stored analysis from the hub collection',
             history: [],
           }),
@@ -487,6 +513,7 @@ test.each(['adaptive', 'dialogue'] as const)(
       },
     };
     initProviders(await startProviders(cappedConfig));
+    await bindTestCaller(taskCaller);
     await getCollectionRegistry().seedAgentConfiguration(
       'agents',
       'coordinator',
@@ -529,6 +556,7 @@ test.each(['adaptive', 'dialogue'] as const)(
             text: 'x'.repeat(1000),
           });
           await worker.run({
+            caller: taskCaller,
             task: `Use ${name} to read the result`,
             history: [],
           });
@@ -552,6 +580,7 @@ test.each([undefined, 7])(
       agent: { ...config.agent, maxToolCalls },
     };
     initProviders(await startProviders(budgetConfig));
+    await bindTestCaller(taskCaller);
     const apply = jest.spyOn(SmartAgentBuilder.prototype, 'withMaxToolCalls');
     const planner = await buildPlannerAgent(budgetConfig, plannerText);
     try {
@@ -609,7 +638,10 @@ test('independent planner model survives request hot-swap and rebuilds', async (
       config.llm.temperature,
     );
     expect(getCurrentPlannerModel()).toBe('independent-planner');
-    const first = await planner.process([{ role: 'user', content: 'hello' }]);
+    const first = await planner.process([{ role: 'user', content: 'hello' }], {
+      caller: taskCaller,
+      sessionId: taskCaller.sessionId,
+    });
     expect(first.ok && first.value.content).toBe('independent-planner');
 
     jest.mocked(makeHubLlm).mockResolvedValue(mainModel.agent);
@@ -617,17 +649,19 @@ test('independent planner model survives request hot-swap and rebuilds', async (
     await getSmartAgent('independent-main');
     expect(makeHubLlm).toHaveBeenCalledTimes(callsBeforeRequest);
     expect(getCurrentPlannerModel()).toBe('independent-planner');
-    const afterSwap = await planner.process([
-      { role: 'user', content: 'again' },
-    ]);
+    const afterSwap = await planner.process(
+      [{ role: 'user', content: 'again' }],
+      { caller: taskCaller, sessionId: taskCaller.sessionId },
+    );
     expect(afterSwap.ok && afterSwap.value.content).toBe('independent-planner');
 
     const calls = jest.mocked(makeHubLlm).mock.calls.length;
     rebuilt = await buildPlannerAgent(independentConfig, plannerText);
     expect(jest.mocked(makeHubLlm).mock.calls).toHaveLength(calls);
-    const afterRebuild = await rebuilt.process([
-      { role: 'user', content: 'hello' },
-    ]);
+    const afterRebuild = await rebuilt.process(
+      [{ role: 'user', content: 'hello' }],
+      { caller: taskCaller, sessionId: taskCaller.sessionId },
+    );
     expect(afterRebuild.ok && afterRebuild.value.content).toBe(
       'independent-planner',
     );
@@ -646,6 +680,7 @@ test('fresh arbitrary worker composes base, profile, then one invariant library 
     agent: { ...config.agent, mode: 'hard', chatCoordinator: 'dialogue' },
   };
   initProviders(await startProviders(selectedConfig));
+  await bindTestCaller(taskCaller);
   await getSmartAgent('composition');
   const client = new MCPClientWrapper({
     transport: 'embedded',
@@ -675,6 +710,7 @@ test('fresh arbitrary worker composes base, profile, then one invariant library 
   if (!created.ok) throw new Error(created.error.message);
   model.messages.length = 0;
   await created.value.run({
+    caller: taskCaller,
     task: 'Review evidence',
     requestStartedAt: Date.UTC(2026, 9, 30),
   });
@@ -712,7 +748,10 @@ test('per-call SAP authors skip validation for repeated and switched models', as
     );
     try {
       expect(chat).not.toHaveBeenCalled();
-      const result = await author.process('Create a plan');
+      const result = await author.process('Create a plan', {
+        caller: taskCaller,
+        sessionId: taskCaller.sessionId,
+      });
       expect(result.ok && result.value.content).toBe(modelName);
       expect(model.messages.join('\n')).not.toContain('Reply with OK');
     } finally {
@@ -760,6 +799,7 @@ test('every profile role appends plugin base skills after its prompt and exclude
     agent: { ...config.agent, mode: 'hard', chatCoordinator: 'dialogue' },
   };
   initProviders(await startProviders(selectedConfig));
+  await bindTestCaller(taskCaller);
   await getSmartAgent(model.agent.model);
   const client = new McpClientAdapter(
     new MCPClientWrapper({
@@ -809,7 +849,10 @@ test('every profile role appends plugin base skills after its prompt and exclude
           },
         });
         if (!worker.ok) throw new Error(worker.error.message);
-        await worker.value.run({ task: 'An unrelated question' });
+        await worker.value.run({
+          caller: taskCaller,
+          task: 'An unrelated question',
+        });
       } else {
         const agent =
           role === 'coordinator'
@@ -823,7 +866,10 @@ test('every profile role appends plugin base skills after its prompt and exclude
                 trust: roleTrust,
               });
         if (!agent.ok) throw new Error(agent.error.message);
-        await agent.value.process('An unrelated question');
+        await agent.value.process('An unrelated question', {
+          caller: taskCaller,
+          sessionId: taskCaller.sessionId,
+        });
       }
       const trust = trustSpy.mock.calls[0]?.[0];
       expect(trust?.('GetClass')).toEqual({
@@ -880,6 +926,7 @@ test.each(['direct', 'rag', 'auto'])(
     const model = llm(`docs-${mode}`);
     jest.mocked(makeHubLlm).mockResolvedValue(model.agent);
     initProviders(await startProviders(config));
+    await bindTestCaller(taskCaller);
     jest
       .spyOn(docsMcp(), 'clients')
       .mockImplementation(docs.clients.bind(docs));
@@ -891,7 +938,10 @@ test.each(['direct', 'rag', 'auto'])(
       plannerText,
     );
     try {
-      await planner.process([{ role: 'user', content: 'cds' }]);
+      await planner.process([{ role: 'user', content: 'cds' }], {
+        caller: taskCaller,
+        sessionId: taskCaller.sessionId,
+      });
       expect(model.tools[0]).toContain('cds');
       expect(model.tools[0].includes('ui')).toBe(mode === 'direct');
       expect(model.tools[0]).toContain('delegate_task');
@@ -927,6 +977,7 @@ test('coordinator agents apply session limits without mutating shared configurat
   };
   jest.mocked(makeHubLlm).mockResolvedValue(model);
   initProviders(await startProviders(config));
+  await bindTestCaller(taskCaller);
   const original = structuredClone(config.agent);
   const client: import('@mcp-abap-adt/llm-agent').IMcpClient = {
     listTools: async () => ({
@@ -951,7 +1002,10 @@ test('coordinator agents apply session limits without mutating shared configurat
           'Run twelve rounds',
           client,
         );
-        const result = await planner.process('Run twelve rounds');
+        const result = await planner.process('Run twelve rounds', {
+          caller: taskCaller,
+          sessionId: taskCaller.sessionId,
+        });
         expect(rounds).toBe(
           maxIterations === 'off'
             ? 13
@@ -971,6 +1025,7 @@ test('LLM-only agents omit the history manager for off and honor numeric session
   const model = llm('history-limits');
   jest.mocked(makeHubLlm).mockResolvedValue(model.agent);
   initProviders(await startProviders(config));
+  await bindTestCaller(taskCaller);
   const install = jest.spyOn(SmartAgentBuilder.prototype, 'withSessionManager');
   await withRoleModels(
     {},

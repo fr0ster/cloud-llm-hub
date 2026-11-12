@@ -179,7 +179,9 @@ export function createCollectionAggregateReader(
                 collectionName: 'hub-usage-storage',
                 connectTimeout: 5000,
               });
-        close =
+        // Keep the native HANA disconnect: v32 queues client.close behind the
+        // active query, which cancellation must be able to interrupt.
+        close ??=
           'end' in client
             ? (): Promise<void> => client.end()
             : (): Promise<void> => client.close();

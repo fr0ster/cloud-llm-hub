@@ -1,3 +1,12 @@
+const taskCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+const sessionCaller1 = { ...taskCaller, sessionId: 'legacy-check' };
+const sessionCaller2 = { ...taskCaller, sessionId: 'large-context' };
+const sessionCaller3 = { ...taskCaller, sessionId: 'migration' };
+
 import {
   plannerWithAttachments,
   plannerWithEnvironment,
@@ -193,6 +202,7 @@ it('restores a long 9.0.x legacy plan and persists normalized state and later pr
   };
   await store.save(id, legacy);
   const options = {
+    caller: { ...taskCaller, sessionId: id },
     id,
     store,
     board: { workers: new Map() },
@@ -276,6 +286,7 @@ it.each([undefined, 'Previous note'])(
     const normalized = { ...state, plan };
     expect(await store.load('legacy-check')).toEqual(normalized);
     const session = await DialogueSession.open({
+      caller: sessionCaller1,
       id: 'legacy-check',
       store,
       board: { workers: new Map() },
@@ -615,6 +626,7 @@ it('saves dialogue state when temporary attachment content exceeds the message l
   const inputs: string[] = [];
   const store = createDialogueStateStore('alice', 'large-context');
   const session = await DialogueSession.open({
+    caller: sessionCaller2,
     id: 'large-context',
     store,
     planner: plannerWithEnvironment(
@@ -808,6 +820,7 @@ it.each(['rag_list', 'rag_add', 'rag_correct', 'rag_deprecate'])(
     expect(migrateDialogueToolContract(migrated)).toBe(migrated);
     const run = jest.fn(async () => ({ output: 'must not run' }));
     const session = await DialogueSession.open({
+      caller: sessionCaller3,
       id: 'migration',
       store: {
         load: async () => migrated,

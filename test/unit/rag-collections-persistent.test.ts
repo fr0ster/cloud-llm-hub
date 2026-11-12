@@ -549,6 +549,10 @@ describe('routes over the persistent registry', () => {
       'POST',
       '/rag/collections/:id/documents',
       makeReq({
+        sessionId: liveSession(
+          mockCdsContext.user?.id ?? 'alice',
+          `persistent-${mockCdsContext.user?.id ?? 'alice'}`,
+        ),
         method: 'POST',
         path: '/documents',
         params: { id },
@@ -984,25 +988,49 @@ describe('restore at startup (Task 7)', () => {
       routes,
       'GET',
       '/rag/collections/:id',
-      makeReq({ params: { id } }),
+      makeReq({
+        sessionId: liveSession(
+          mockCdsContext.user?.id ?? 'alice',
+          `persistent-${mockCdsContext.user?.id ?? 'alice'}`,
+        ),
+        params: { id },
+      }),
     );
     const docs = await runIdRoute(
       routes,
       'GET',
       '/rag/collections/:id/documents',
-      makeReq({ params: { id }, path: '/documents' }),
+      makeReq({
+        sessionId: liveSession(
+          mockCdsContext.user?.id ?? 'alice',
+          `persistent-${mockCdsContext.user?.id ?? 'alice'}`,
+        ),
+        params: { id },
+        path: '/documents',
+      }),
     );
     const doc = await runIdRoute(
       routes,
       'GET',
       '/rag/collections/:id/documents/:did',
-      makeReq({ params: { id, did: 'd1' }, path: '/documents/d1' }),
+      makeReq({
+        sessionId: liveSession(
+          mockCdsContext.user?.id ?? 'alice',
+          `persistent-${mockCdsContext.user?.id ?? 'alice'}`,
+        ),
+        params: { id, did: 'd1' },
+        path: '/documents/d1',
+      }),
     );
     const query = await runIdRoute(
       routes,
       'POST',
       '/rag/collections/:id/query',
       makeReq({
+        sessionId: liveSession(
+          mockCdsContext.user?.id ?? 'alice',
+          `persistent-${mockCdsContext.user?.id ?? 'alice'}`,
+        ),
         method: 'POST',
         params: { id },
         path: '/query',
@@ -1116,6 +1144,10 @@ describe('restore at startup (Task 7)', () => {
           method,
           path,
           makeReq({
+            sessionId: liveSession(
+              mockCdsContext.user?.id ?? 'alice',
+              `persistent-${mockCdsContext.user?.id ?? 'alice'}`,
+            ),
             method,
             params: { id },
             path: suffix,
@@ -1301,6 +1333,10 @@ describe('restore at startup (Task 7)', () => {
       'POST',
       '/rag/collections/:id/query',
       makeReq({
+        sessionId: liveSession(
+          mockCdsContext.user?.id ?? 'alice',
+          `persistent-${mockCdsContext.user?.id ?? 'alice'}`,
+        ),
         method: 'POST',
         params: { id: meta.id },
         path: '/query',
@@ -1436,7 +1472,13 @@ describe('restore at startup (Task 7)', () => {
       routes,
       'GET',
       '/rag/collections/:id',
-      makeReq({ params: { id: meta.id } }),
+      makeReq({
+        sessionId: liveSession(
+          mockCdsContext.user?.id ?? 'alice',
+          `persistent-${mockCdsContext.user?.id ?? 'alice'}`,
+        ),
+        params: { id: meta.id },
+      }),
     );
     expect(get._status).toBe(503);
 
@@ -1670,6 +1712,10 @@ describe('Task 7 fix round 1', () => {
         collectionId: 'evil',
         createdAt: 'evil',
         _createdAtMs: 1,
+        ownerScope: 'session',
+        sessionId: 'evil',
+        userId: 'evil',
+        roleId: 'evil',
         keep: 'yes',
       },
     });

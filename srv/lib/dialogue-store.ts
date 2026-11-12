@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type {
   DialogueState,
   IDialogueStateStore,
+  IRag,
   IRagBackendWriter,
   IRagProvider,
   IRagScanner,
@@ -573,6 +574,7 @@ export class MemoryDialogueStore implements DialogueStoreBackend {
 }
 type Opened = {
   scanner: IRagScanner;
+  rag: IRag;
   writer: IRagBackendWriter &
     Required<Pick<IRagBackendWriter, 'upsertPrecomputedRaw'>>;
 };
@@ -594,7 +596,11 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
       });
       if (!page.ok) throw page.error;
       for (const row of page.value.records) {
-        const { userId, sessionId, savedAt } = row.metadata;
+        const {
+          authorUserId: userId,
+          hubSessionId: sessionId,
+          savedAt,
+        } = row.metadata;
         try {
           if (
             typeof userId !== 'string' ||
@@ -671,7 +677,11 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
       );
     if (!isRagScanner(r.value))
       throw new Error('dialogue state store cannot be scanned');
-    return { scanner: r.value, writer: writer as Opened['writer'] };
+    return {
+      scanner: r.value,
+      rag: r.value,
+      writer: writer as Opened['writer'],
+    };
   }
   async save(
     userId: string,
@@ -688,7 +698,7 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
       dialogueId(userId, sessionId),
       text,
       this.zeroVector,
-      { userId, sessionId, savedAt },
+      { authorUserId: userId, hubSessionId: sessionId, savedAt },
     );
     if (!r.ok) throw r.error;
     this.hasDialogueState(userId, sessionId);
@@ -704,53 +714,43 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
     userId: string,
     sessionId: string,
   ): Promise<HubDialogueState | undefined> {
-    const { scanner } = await this.store();
-    let cursor: string | undefined;
-    do {
-      const page = await scanner.scan({
-        filter: { userId, sessionId },
-        ...(cursor !== undefined ? { cursor } : {}),
-      });
-      if (!page.ok) throw page.error;
-      for (const row of page.value.records) {
-        if (row.id !== dialogueId(userId, sessionId)) continue;
-        if (
-          row.metadata.userId !== userId ||
-          row.metadata.sessionId !== sessionId
-        )
-          continue;
-        if (
-          typeof row.metadata.savedAt !== 'number' ||
-          !Number.isFinite(row.metadata.savedAt)
-        ) {
-          this.log.warn('Skipped a malformed dialogue state', { id: row.id });
-          this.index.delete(row.id);
-          this.byteCounters?.delete(row.id);
-          return undefined;
-        }
-        if (Date.now() - row.metadata.savedAt > this.ttlMs) {
-          await this.delete(userId, sessionId);
-          return undefined;
-        }
-        try {
-          checkDialogueBytes(row.text);
-          const record = stored(JSON.parse(row.text));
-          this.index.set(row.id, row.metadata.savedAt);
-          if (storageEnabled()) {
-            this.byteCounters ??= new Map<string, DialogueBytes>();
-            this.byteCounters.set(row.id, dialogueBytes(record, true));
-          }
-          return record;
-        } catch {
-          this.index.delete(row.id);
-          this.byteCounters?.delete(row.id);
-          this.log.warn('Skipped a malformed dialogue state', { id: row.id });
-        }
+    const { rag } = await this.store();
+    const result = await rag.getById(dialogueId(userId, sessionId));
+    if (!result.ok) throw result.error;
+    if (!result.value) return undefined;
+    const row = { ...result.value, id: dialogueId(userId, sessionId) };
+    if (
+      row.metadata.authorUserId !== userId ||
+      row.metadata.hubSessionId !== sessionId
+    )
+      return undefined;
+    if (
+      typeof row.metadata.savedAt !== 'number' ||
+      !Number.isFinite(row.metadata.savedAt)
+    ) {
+      this.log.warn('Skipped a malformed dialogue state', { id: row.id });
+      this.index.delete(row.id);
+      this.byteCounters?.delete(row.id);
+      return undefined;
+    }
+    if (Date.now() - row.metadata.savedAt > this.ttlMs) {
+      await this.delete(userId, sessionId);
+      return undefined;
+    }
+    try {
+      checkDialogueBytes(row.text);
+      const record = stored(JSON.parse(row.text));
+      this.index.set(row.id, row.metadata.savedAt);
+      if (storageEnabled()) {
+        this.byteCounters ??= new Map<string, DialogueBytes>();
+        this.byteCounters.set(row.id, dialogueBytes(record, true));
       }
-      if (page.value.cursor !== undefined && page.value.cursor === cursor)
-        throw new Error('dialogue state store scan did not advance');
-      cursor = page.value.cursor;
-    } while (cursor !== undefined);
+      return record;
+    } catch {
+      this.index.delete(row.id);
+      this.byteCounters?.delete(row.id);
+      this.log.warn('Skipped a malformed dialogue state', { id: row.id });
+    }
     return undefined;
   }
   async delete(userId: string, sessionId: string): Promise<void> {

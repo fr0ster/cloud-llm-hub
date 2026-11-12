@@ -1,3 +1,10 @@
+import {
+  LongSessionRegistry,
+  longSessions,
+  setLongSessionsForTest,
+} from '../../srv/lib/long-session';
+import { lifecycleHooks } from '../../srv/lib/session-lifecycle';
+
 const mockCreateWorker = jest.fn();
 jest.mock(
   '@sap/cds',
@@ -115,10 +122,28 @@ function configure(live?: number, queue?: number) {
 
 const req = { headers: { 'x-sap-destination': 'DEST' } } as unknown as Request;
 const caller = { userId: 'alice', exposition: undefined };
-const step = () => executeStep(req, caller, { task: 'read class ZCL_X' });
+function opened() {
+  const session = longSessions().open('alice', { destination: 'DEST' });
+  if ('refused' in session) throw new Error(session.refused);
+  return session.key;
+}
+const step = () =>
+  executeStep(req, caller, { session: opened(), task: 'read class ZCL_X' });
 
-beforeEach(() => harness.reset());
-afterEach(() => configure());
+beforeEach(() => {
+  harness.reset();
+  setLongSessionsForTest(
+    new LongSessionRegistry(
+      { ttlMs: 3600000, maxSessions: 10, maxPerUser: 10, queueLength: 3 },
+      lifecycleHooks(),
+    ),
+  );
+});
+afterEach(async () => {
+  await longSessions().closeAll('shutdown');
+  setLongSessionsForTest(undefined);
+  configure();
+});
 
 test.each([undefined, 'executor'])(
   'executor %s retains HEAD result metadata with a profile runner',
@@ -132,7 +157,11 @@ test.each([undefined, 'executor'])(
         stopReason: 'stop',
       },
     });
-    const result = await executeStep(req, caller, { task: 'read', worker });
+    const result = await executeStep(req, caller, {
+      session: opened(),
+      task: 'read',
+      worker,
+    });
     expect(result.content[0].text).toContain(
       'iterations=3 toolCallCount=2 stopReason=stop',
     );
@@ -164,7 +193,10 @@ describe('execute_step at the door', () => {
     await expect(step()).resolves.toMatchObject({
       content: [{ text: 'done' }],
     });
-    expect(harness.events.slice(-2)).toEqual(['safeStop', 'dropRequest']);
+    expect(harness.events.at(-1)).toBe('dropRequest');
+    expect(harness.events).not.toContain('safeStop');
+    await longSessions().closeAll('explicit');
+    expect(harness.events.at(-1)).toBe('safeStop');
     expect(gatekeeper.theDoor()?.snapshot().live).toBe(0);
   });
 
@@ -214,7 +246,7 @@ describe('execute_step at the door', () => {
     // timeout fired and it went away.
     const transportClosed = new AbortController();
     const running = tool(
-      { task: 'create class ZCL_X' },
+      { session: opened(), task: 'create class ZCL_X' },
       { signal: transportClosed.signal },
     );
     await tick();
@@ -253,7 +285,7 @@ describe('execute_step at the door', () => {
     await Promise.all(running);
   });
 
-  it('tears down in order: calls, then safeStop, then the slot', async () => {
+  it('drains calls and releases the slot, retaining the connection until session close', async () => {
     configure(1);
     const tool = deferred();
     harness.process = async () => {
@@ -267,11 +299,10 @@ describe('execute_step at the door', () => {
     expect(harness.events).not.toContain('safeStop');
     tool.resolve();
     await running;
-    expect(harness.events.slice(-3)).toEqual([
-      'tool settled',
-      'safeStop',
-      'dropRequest',
-    ]);
+    expect(harness.events.slice(-2)).toEqual(['tool settled', 'dropRequest']);
+    expect(harness.events).not.toContain('safeStop');
+    await longSessions().closeAll('explicit');
+    expect(harness.events.at(-1)).toBe('safeStop');
     expect(gatekeeper.theDoor()?.snapshot().live).toBe(0);
   });
 });

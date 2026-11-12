@@ -303,12 +303,10 @@ export async function buildQdrantStores(
     // QdrantRag creates the collection on the first write.
     for (const d of roles[role]) {
       const vector = await embedWithRetry(embedder, d.text);
-      const res = await write(
-        d.id,
-        d.text,
-        vector,
-        d.exposition ? { exposition: d.exposition } : {},
-      );
+      const res = await write(d.id, d.text, vector, {
+        ownerScope: 'global',
+        ...(d.exposition ? { exposition: d.exposition } : {}),
+      });
       if (!res.ok)
         throw new Error(
           `${role}: writing ${d.id} to ${collection} failed: ${res.error.message}`,

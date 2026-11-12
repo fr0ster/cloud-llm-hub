@@ -1,6 +1,17 @@
+import { bindTestCaller } from './helpers/bind-test-caller';
+
+const taskCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+
 import { createServer } from 'node:http';
 import type { ILlm } from '@mcp-abap-adt/llm-agent';
-import { DialogueSession } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  DialogueSession,
+  unwrapBuilderResult,
+} from '@mcp-abap-adt/llm-agent-libs';
 import {
   MCPClientWrapper,
   McpClientAdapter,
@@ -142,7 +153,10 @@ test.each(['smart', 'hard', 'pass'] as const)(
       'waiting',
     );
     mockOfferedTools.length = 0;
-    await handle.agent.process('Що в моїй колекції про ZMTO28?');
+    await handle.agent.process('Що в моїй колекції про ZMTO28?', {
+      caller: taskCaller,
+      sessionId: taskCaller.sessionId,
+    });
     expect(mockOfferedTools).toHaveLength(1);
     expect(mockOfferedTools[0].sort()).toEqual(
       buildRagToolSchemas(false)
@@ -160,6 +174,7 @@ beforeAll(async () => {
   process.env.LLM_AGENT_MODELS = 'A,B';
   clearAgentConfig();
   initProviders(await startProviders(getAgentConfig()));
+  await bindTestCaller(taskCaller);
   await getCollectionRegistry().seedAgentConfiguration('agents', 'coordinator');
   await initSmartAgents();
 });
@@ -188,8 +203,11 @@ test('concurrent coordinators keep their models while executor keeps the deploy 
   });
   const sessions = await Promise.all(
     [a, b].map(async (agent, index) => {
+      const caller = { ...taskCaller, sessionId: `session-${index}` };
+      await bindTestCaller(caller);
       const store = new MemoryDialogueStore();
       return DialogueSession.open({
+        caller,
         id: `session-${index}`,
         board: {},
         store: {
@@ -219,7 +237,7 @@ test('concurrent coordinators keep their models while executor keeps the deploy 
     new ExpositionFilteringRag(new InMemoryRag()),
     config,
   );
-  await worker.run({ task: 'Answer briefly' });
+  await worker.run({ caller: taskCaller, task: 'Answer briefly' });
   expect(mockCalls.at(-1)).toBe('worker-default');
   await sessions[0].send('Again');
   expect(mockCalls.at(-1)).toBe('A');
@@ -318,32 +336,24 @@ test('execute_step uses executor profile default, main fallback, and a call-only
     metadata: { ...record.metadata, model: 'B' },
   });
   try {
+    await runExecutorStep(() => source, handle, 'reader', 'Read', 'executor', {
+      caller: taskCaller,
+      sessionId: taskCaller.sessionId,
+    });
     await runExecutorStep(
       () => source,
       handle,
       'reader',
       'Read',
       'executor',
-      {},
-    );
-    await runExecutorStep(
-      () => source,
-      handle,
-      'reader',
-      'Read',
-      'executor',
-      {},
+      { caller: taskCaller, sessionId: taskCaller.sessionId },
       [],
       'A',
     );
-    await runExecutorStep(
-      () => source,
-      handle,
-      'reader',
-      'Read',
-      'executor',
-      {},
-    );
+    await runExecutorStep(() => source, handle, 'reader', 'Read', 'executor', {
+      caller: taskCaller,
+      sessionId: taskCaller.sessionId,
+    });
     await expect(
       runExecutorStep(
         () => source,
@@ -351,7 +361,7 @@ test('execute_step uses executor profile default, main fallback, and a call-only
         'reader',
         'Read',
         'executor',
-        {},
+        { caller: taskCaller, sessionId: taskCaller.sessionId },
         [],
         'foreign',
       ),
@@ -362,7 +372,10 @@ test('execute_step uses executor profile default, main fallback, and a call-only
       metadata: record.metadata,
     });
   }
-  await runExecutorStep(() => source, handle, 'reader', 'Read', 'executor', {});
+  await runExecutorStep(() => source, handle, 'reader', 'Read', 'executor', {
+    caller: taskCaller,
+    sessionId: taskCaller.sessionId,
+  });
   expect(seen.at(-1)).toBe('worker-default');
 });
 
@@ -395,7 +408,10 @@ test.each(
     await Promise.all(
       agents.map(async (agent, index) => {
         const options = {
-          sessionId: `request-${coordinator}-${stream}-${index}`,
+          ...(await bindTestCaller({
+            ...taskCaller,
+            sessionId: `request-${coordinator}-${stream}-${index}`,
+          })),
         };
         if (stream) {
           const chunks: string[] = [];
@@ -421,7 +437,10 @@ test.each(
     );
     if (coordinator === 'adaptive') expect(mockCalls).toHaveLength(3);
     mockCalls.length = 0;
-    await base.agent.process('Hello again');
+    await base.agent.process('Hello again', {
+      caller: taskCaller,
+      sessionId: taskCaller.sessionId,
+    });
     expect(mockCalls).toContain('worker-default');
     expect(mockCalls).not.toContain('A');
     expect(mockCalls).not.toContain('B');
@@ -454,7 +473,10 @@ test('the plan author runs on the user planner model, else LLM_AGENT_PLANNER_MOD
           mode: 'create',
         });
         if (!prepared.ok) throw new Error(prepared.error.message);
-        await prepared.value.process('Hello');
+        await prepared.value.process('Hello', {
+          caller: taskCaller,
+          sessionId: taskCaller.sessionId,
+        });
         expect(mockCalls.at(-1)).toBe(
           model ?? plannerModel ?? 'worker-default',
         );
@@ -507,13 +529,19 @@ test('shared destination executor applies scoped model and maxIterations without
     await withRoleModels(
       { executor: { model: 'A' } },
       () =>
-        runExecutorStep(() => source, shared, 'reader', 'Run', 'executor', {}),
+        runExecutorStep(() => source, shared, 'reader', 'Run', 'executor', {
+          caller: taskCaller,
+          sessionId: taskCaller.sessionId,
+        }),
       { executor: { maxIterations: 3, maxToolCalls: 'off' } },
     );
     expect(mockCalls).toEqual(['A', 'A', 'A']);
     mockCalls.length = 0;
     await withRoleModels({}, () =>
-      runExecutorStep(() => source, shared, 'reader', 'Run', 'executor', {}),
+      runExecutorStep(() => source, shared, 'reader', 'Run', 'executor', {
+        caller: taskCaller,
+        sessionId: taskCaller.sessionId,
+      }),
     );
     expect(mockCalls).toHaveLength(10);
     expect(new Set(mockCalls)).toEqual(new Set(['worker-default']));
@@ -585,7 +613,7 @@ test.each(['/v1/chat/completions', '/v1/messages'])(
         roles: ['MCP_Admin', 'MCP_Reader'],
       });
       cds.context = context;
-      Object.assign(req, { longSession: session });
+      Object.assign(req, { longSession: session, sessionId: session.key });
       next();
     });
     app.post('/v1/chat/completions', handleChatCompletions);
@@ -719,8 +747,8 @@ test.each(
       { onClose: async () => {} },
     );
     setLongSessionsForTest(registry);
-    const first = registry.open('llm-http', { key: 'configured' });
-    const second = registry.open('llm-http', { key: 'default' });
+    const first = registry.open('llm-http', { key: 'ls-llm-configured' });
+    const second = registry.open('llm-http', { key: 'ls-llm-default' });
     if ('refused' in first || 'refused' in second)
       throw new Error('Cannot open sessions');
     const builds: { iterations: number; calls?: number; history: boolean }[] =
@@ -731,14 +759,15 @@ test.each(
       .mockImplementation(async function (
         this: InstanceType<typeof SmartAgentBuilder>,
       ) {
-        const handle = await original.call(this);
+        const result = await original.call(this);
+        const handle = unwrapBuilderResult(result);
         const config = handle.agent.getAgentConfig();
         builds.push({
           iterations: config.maxIterations,
           calls: config.maxToolCalls,
           history: handle.agent['deps'].sessionManager !== undefined,
         });
-        return handle;
+        return result;
       });
     const app = express();
     app.use(express.json());
@@ -750,10 +779,9 @@ test.each(
         roles: ['MCP_Admin'],
       });
       cds.context = context;
-      Object.assign(req, {
-        longSession:
-          req.headers['x-clh-session'] === 'configured' ? first : second,
-      });
+      const session =
+        req.headers['x-clh-session'] === 'ls-llm-configured' ? first : second;
+      Object.assign(req, { longSession: session, sessionId: session.key });
       next();
     });
     app.post('/v1/chat/completions', handleChatCompletions);
@@ -763,7 +791,11 @@ test.each(
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('No port');
     try {
-      for (const key of ['configured', 'configured', 'default']) {
+      for (const key of [
+        'ls-llm-configured',
+        'ls-llm-configured',
+        'ls-llm-default',
+      ]) {
         builds.length = 0;
         const response = await fetch(
           `http://127.0.0.1:${address.port}${path}`,
@@ -772,7 +804,7 @@ test.each(
             headers: {
               'content-type': 'application/json',
               'x-clh-session': key,
-              ...(key === 'configured'
+              ...(key === 'ls-llm-configured'
                 ? {
                     'x-clh-model-coordinator': 'A',
                     'x-clh-limits': JSON.stringify({
@@ -794,7 +826,7 @@ test.each(
         expect(builds.length).toBeGreaterThan(0);
         for (const built of builds)
           expect(built).toEqual(
-            key === 'configured'
+            key === 'ls-llm-configured'
               ? { iterations: 3, calls: undefined, history: false }
               : {
                   iterations: getAgentConfig().agent.maxIterations,
@@ -813,7 +845,7 @@ test.each(
             method: 'POST',
             headers: {
               'content-type': 'application/json',
-              'x-clh-session': 'configured',
+              'x-clh-session': 'ls-llm-configured',
             },
             body: JSON.stringify({
               stream,
@@ -828,7 +860,7 @@ test.each(
       }
     } finally {
       build.mockRestore();
-      for (const key of ['configured', 'default']) {
+      for (const key of ['ls-llm-configured', 'ls-llm-default']) {
         clearRoleModels('llm-http', key);
         clearExecutionLimits('llm-http', key);
       }
@@ -922,10 +954,9 @@ test.each(
         roles: ['MCP_Admin', 'MCP_Reader'],
       });
       cds.context = context;
-      Object.assign(req, {
-        longSession:
-          req.headers['x-clh-session'] === 'configured' ? configured : defaults,
-      });
+      const session =
+        req.headers['x-clh-session'] === 'configured' ? configured : defaults;
+      Object.assign(req, { longSession: session, sessionId: session.key });
       next();
     });
     app.post('/v1/chat/completions', handleChatCompletions);

@@ -25,7 +25,7 @@ import {
   userCollectionId,
 } from './collection-ids';
 import { validateAgentProfileRecordWithCatalog } from './lib/agent-profile-records';
-import { collectionAccessError } from './lib/collection-access';
+import { checkAccess, collectionAccessError } from './lib/collection-access';
 import { CollectionBackendError } from './lib/collection-persistence';
 import {
   collectionDefault,
@@ -37,6 +37,7 @@ import {
   withCollectionRestScope,
 } from './lib/collection-write-scope';
 import { leaseSession } from './lib/gatekeeper';
+import { bindCaller } from './lib/rag-caller';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import {
   addRagRecord,
@@ -59,7 +60,7 @@ import {
 import { requestMeasurement } from './lib/usage/request-records';
 import { usageRuntime } from './lib/usage/runtime';
 import { ensurePresets } from './presets';
-import type { CollectionRegistry } from './rag-collections';
+import type { CollectionMeta, CollectionRegistry } from './rag-collections';
 import { sessionCollectionTtlMs } from './rag-collections';
 import { isReadOnlyTools, profileToolAllowed } from './request-session';
 import {
@@ -233,6 +234,16 @@ export function registerRagRoutes(
       return;
     }
     try {
+      const userId = getUserId();
+      const admin = isAdmin();
+      const sessionId = resolveSessionKey(req).key ?? sessionIdOf(req);
+      const caller = sessionId
+        ? await bindCaller(sessionId, userId, admin)
+        : undefined;
+      if (!caller?.ok) {
+        error(res, 404, 'Collection not found');
+        return;
+      }
       const result = await setRagTrust(
         registry,
         String(req.params.id),
@@ -241,9 +252,9 @@ export function registerRagRoutes(
           ...(record === undefined ? {} : { record }),
         },
         {
-          userId: getUserId(),
-          admin: isAdmin(),
-          sessionId: honouredSessionId(req),
+          userId,
+          admin,
+          sessionId,
         },
         {
           ...('displayName' in parsed.data &&
@@ -391,7 +402,9 @@ export function registerRagRoutes(
       id: c.id,
       logicalId: c.logicalId,
       collectionKind: c.collectionKind,
-      writable: !collectionAccessError(c, getUserId(), isAdmin(), 'write'),
+      writable:
+        (c.scope !== 'global' || isAdmin()) &&
+        !collectionAccessError(c, getUserId(), 'write'),
       scope: c.scope,
       displayName: c.displayName,
       description: c.description,
@@ -629,16 +642,42 @@ export function registerRagRoutes(
 
   // Visibility/mutation guard.
   // Global: read open, write requires MCP_Admin.
-  // User-scoped: only owner (or MCP_Admin) sees and mutates it.
+  // Visibility follows the library's owner and role checks.
   // Returns null if the caller is allowed; otherwise sends a response and
   // returns a sentinel so the caller can early-return.
-  const canAccess = (
-    meta: { scope?: string; owner?: string; collectionKind?: string },
+  const canAccess = async (
+    meta: CollectionMeta,
     mode: 'read' | 'write',
     res: Response,
-  ): boolean => {
-    const refusal = collectionAccessError(meta, getUserId(), isAdmin(), mode);
-    if (!refusal) return true;
+    sessionId: string | undefined,
+    userId: string,
+    admin: boolean,
+  ): Promise<boolean> => {
+    const caller = sessionId
+      ? await bindCaller(sessionId, userId, admin)
+      : undefined;
+    if (!caller?.ok) {
+      error(res, 404, 'Collection not found');
+      return false;
+    }
+    if (!(await checkAccess(meta, userId, sessionId, admin))) {
+      error(res, 404, 'Collection not found');
+      return false;
+    }
+    if (mode === 'write' && meta.scope === 'global' && !admin) {
+      error(res, 403, 'MCP_Admin role required for global collections');
+      return false;
+    }
+    const refusal = collectionAccessError(meta, userId, mode);
+    if (!refusal) {
+      if (
+        mode === 'read' ||
+        (await checkAccess(meta, userId, sessionId, admin, 'write'))
+      )
+        return true;
+      error(res, 403, 'Collection write forbidden');
+      return false;
+    }
     error(res, refusal.status, refusal.message);
     return false;
   };
@@ -704,8 +743,8 @@ export function registerRagRoutes(
     };
 
   // Gate all /rag/collections/:id* sub-paths (collection by id, documents,
-  // upload, query). resolveRouteId performs ownership + session checks so
-  // callers cannot access another user's collection even if they know the id.
+  // upload, query). Physical ids go through the library's owner/role check;
+  // logical names retain the caller's private namespace resolution.
   // forWrite=false (no auto-create via resolveByName) for GET / /query / /enabled.
   // forWrite=true (may create via resolveByName on logical ids) for everything else.
   // canAccess is a separate guard: for user-scoped collections only the owner passes;
@@ -713,6 +752,8 @@ export function registerRagRoutes(
   router.use(
     '/rag/collections/:id',
     async (req: Request<{ id: string }>, res: Response, next) => {
+      const userId = getUserId();
+      const admin = isAdmin();
       // PATCH /enabled must use read-mode so it never creates a new collection.
       const isContentWrite =
         req.method !== 'GET' &&
@@ -724,13 +765,18 @@ export function registerRagRoutes(
       let physical: string | undefined;
       let meta: Awaited<ReturnType<typeof registry.getCollection>>;
       try {
-        physical = await resolveRouteId(
-          registry,
-          req.params.id,
-          getUserId(),
-          sessionIdOf(req),
-          isContentWrite,
-        );
+        const exact = req.params.id.includes('__')
+          ? await registry.getCollection(req.params.id)
+          : null;
+        physical =
+          exact?.id ??
+          (await resolveRouteId(
+            registry,
+            req.params.id,
+            userId,
+            resolveSessionKey(req).key ?? sessionIdOf(req),
+            isContentWrite,
+          ));
         meta = physical ? await registry.getCollection(physical) : null;
       } catch (err) {
         failure(res, err, 500);
@@ -753,6 +799,17 @@ export function registerRagRoutes(
         req.method !== 'GET' &&
         !req.path.endsWith('/query')
       ) {
+        if (
+          !(await canAccess(
+            meta,
+            'read',
+            res,
+            resolveSessionKey(req).key ?? sessionIdOf(req),
+            userId,
+            admin,
+          ))
+        )
+          return;
         try {
           assertCollectionWrite(meta);
         } catch (err) {
@@ -770,7 +827,17 @@ export function registerRagRoutes(
           req.body?.scope !== 'default')
           ? 'read'
           : 'write';
-      if (!canAccess(meta, mode, res)) return;
+      if (
+        !(await canAccess(
+          meta,
+          mode,
+          res,
+          resolveSessionKey(req).key ?? sessionIdOf(req),
+          userId,
+          admin,
+        ))
+      )
+        return;
       if (
         meta.collectionKind === 'agents' &&
         (req.path === '/upload' ||

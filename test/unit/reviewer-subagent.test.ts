@@ -1,3 +1,9 @@
+const taskCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+
 import type { ToolCallRecord } from '@mcp-abap-adt/llm-agent';
 import { ReviewerSubAgent } from '../../srv/lib/reviewer-subagent';
 
@@ -24,6 +30,7 @@ describe('ReviewerSubAgent', () => {
       ],
     });
     const result = await agent.run({
+      caller: taskCaller,
       task: 'Create domain ZDEMO_D_MATNR then activate it',
       context: 'The domain has been created and activated successfully.',
       trace: { traceId: 't-1' },
@@ -49,6 +56,7 @@ describe('ReviewerSubAgent', () => {
       ],
     });
     const result = await agent.run({
+      caller: taskCaller,
       task: 'Create domain ZDEMO_D_MATNR then activate it',
       context: 'The domain has been created and activated successfully.',
       trace: { traceId: 't-2' },
@@ -62,6 +70,7 @@ describe('ReviewerSubAgent', () => {
       getToolRecords: () => [],
     });
     const result = await agent.run({
+      caller: taskCaller,
       task: 'Nothing to report, no writes attempted.',
     });
     expect(result.errorClass).toBeUndefined();
@@ -75,6 +84,7 @@ describe('ReviewerSubAgent', () => {
       hadWriteCapability: () => true,
     });
     const result = await agent.run({
+      caller: taskCaller,
       task: 'Delete domain ZDEMO_D_MATNR',
       context: 'The domain has been deleted.',
     });

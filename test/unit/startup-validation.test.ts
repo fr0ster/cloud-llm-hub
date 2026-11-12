@@ -1,3 +1,6 @@
+import { createServer } from 'node:http';
+import express from 'express';
+
 /**
  * A malformed gatekeeper variable stops the service before it takes traffic.
  *
@@ -44,11 +47,22 @@ const restoreStatus: { value: { state: string; error?: string } } = {
 // Set by a test to make the provider startup reject.
 const providersFailure: { error?: Error } = {};
 const agentsFailure: { error?: Error } = {};
+const migrationFailure = { failed: false };
+jest.mock('../../srv/lib/rag-migration', () => ({
+  isRagMigrationReady: () =>
+    order.includes('migrateRagData') && !migrationFailure.failed,
+  migrateHubRagProviders: async () => {
+    order.push('migrateRagData');
+    return migrationFailure.failed
+      ? { ok: false, error: new Error('RAG migration reported findings') }
+      : { ok: true, value: undefined };
+  },
+}));
 jest.mock('../../srv/lib/providers', () => ({
   startProviders: async () => {
     order.push('startProviders');
     if (providersFailure.error) throw providersFailure.error;
-    return {};
+    return { stores: { backendOf: () => 'in-memory' } };
   },
 }));
 jest.mock('../../srv/agent-manager', () => ({
@@ -120,6 +134,56 @@ describe("server.ts's bootstrap listener", () => {
   });
 });
 
+it('mounts the migration guard before every bootstrap route and middleware', async () => {
+  order.length = 0;
+  const app = express();
+  const originalUse = app.use.bind(app);
+  // Keep the first middleware real; later handlers are mocked in this suite.
+  const use = jest
+    .spyOn(app, 'use')
+    .mockReturnValue(app)
+    .mockImplementationOnce(originalUse);
+  const get = jest.spyOn(app, 'get').mockReturnValue(app);
+  const post = jest.spyOn(app, 'post').mockReturnValue(app);
+  const options = jest.spyOn(app, 'options').mockReturnValue(app);
+  handlers.bootstrap(app);
+  expect(use.mock.calls[0]).toHaveLength(1);
+  expect(typeof use.mock.calls[0][0]).toBe('function');
+  const firstUse = use.mock.invocationCallOrder[0];
+  for (const calls of [get, post, options]) {
+    expect(calls.mock.invocationCallOrder[0]).toBeGreaterThan(firstUse);
+  }
+  use.mockRestore();
+  get.mockRestore();
+  post.mockRestore();
+  options.mockRestore();
+  const server = createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === 'string')
+      throw new Error('Missing address');
+    for (const route of [
+      '/mcp/stream/http',
+      '/V1/session',
+      '/HEALTH',
+      '/missing',
+    ]) {
+      expect(
+        (
+          await fetch(`http://127.0.0.1:${address.port}${route}`, {
+            method: 'POST',
+          })
+        ).status,
+      ).toBe(503);
+    }
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+});
 describe("CAP's cds_server", () => {
   it('rejects, without listening, when a bootstrap listener throws', async () => {
     const realCds = jest.requireActual('@sap/cds');
@@ -347,11 +411,26 @@ describe("server.ts's served listener", () => {
     expect(order).toEqual([
       'startProviders',
       'initProviders',
+      'migrateRagData',
       'registerRagRoutes',
       'startCollectionRestore',
       'initSmartAgents',
     ]);
     expect(exits).toEqual([]);
+  });
+
+  it('exits non-zero on migration findings before routes, restore or agents', async () => {
+    migrationFailure.failed = true;
+    try {
+      expect(await runServed()).toEqual([1]);
+      expect(order).toEqual([
+        'startProviders',
+        'initProviders',
+        'migrateRagData',
+      ]);
+    } finally {
+      migrationFailure.failed = false;
+    }
   });
 
   it('exits non-zero when the providers cannot be built, and warms nothing', async () => {

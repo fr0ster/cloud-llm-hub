@@ -11,12 +11,12 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import {
+  type IRag,
   type IRagBackendWriter,
   type IRagProvider,
   type IRagScanner,
   type IRetrievalEmbedder,
   isRagScanner,
-  type RagScanFilter,
   type RagScanRecord,
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
@@ -281,6 +281,7 @@ type PrecomputedWriter = IRagBackendWriter &
   Required<Pick<IRagBackendWriter, 'upsertPrecomputedRaw'>>;
 
 interface OpenedRecordStore {
+  rag: IRag;
   scanner: IRagScanner;
   writer: PrecomputedWriter;
 }
@@ -346,17 +347,16 @@ export class ProviderSessionRecordStore extends SerialSessionRecordStore {
       throw new Error(
         `the session record store of provider "${name}" cannot be scanned`,
       );
-    return { scanner: rag, writer: writer as PrecomputedWriter };
+    return { rag, scanner: rag, writer: writer as PrecomputedWriter };
   }
 
-  /** Every row matching `filter`, across all scan pages. */
-  private async scanAll(filter?: RagScanFilter): Promise<RagScanRecord[]> {
+  /** Enumerate all rows for startup restoration and expiry maintenance. */
+  private async scanAll(): Promise<RagScanRecord[]> {
     const { scanner } = await this.store();
     const rows: RagScanRecord[] = [];
     let cursor: string | undefined;
     do {
       const page = await scanner.scan({
-        ...(filter ? { filter } : {}),
         ...(cursor !== undefined ? { cursor } : {}),
       });
       if (!page.ok) throw page.error;
@@ -379,9 +379,13 @@ export class ProviderSessionRecordStore extends SerialSessionRecordStore {
 
   /** The record row of `key`, of any owner. */
   private async recordOf(key: string): Promise<SessionRecord | undefined> {
-    const rows = await this.scanAll({ sessionId: key });
-    const row = rows.find((x) => x.id === recordId(key));
-    return row && this.decodeRow(row);
+    const { rag } = await this.store();
+    const result = await rag.getById(recordId(key));
+    if (!result.ok) throw result.error;
+    const row = result.value;
+    if (!row || row.metadata.hubSessionId !== key) return undefined;
+    const rec = this.decodeRow({ id: recordId(key), ...row });
+    return rec && row.metadata.authorUserId === rec.userId ? rec : undefined;
   }
 
   protected async ownerOf(key: string): Promise<string | undefined> {
@@ -394,15 +398,13 @@ export class ProviderSessionRecordStore extends SerialSessionRecordStore {
       recordId(r.key),
       JSON.stringify(stored(r)),
       this.zeroVector,
-      { userId: r.userId, sessionId: r.key },
+      { authorUserId: r.userId, hubSessionId: r.key },
     );
     if (!w.ok) throw w.error;
   }
 
   async get(userId: string, key: string): Promise<SessionRecord | undefined> {
-    const rows = await this.scanAll({ userId, sessionId: key });
-    const row = rows.find((x) => x.id === recordId(key));
-    const rec = row && this.decodeRow(row);
+    const rec = await this.recordOf(key);
     return rec?.userId === userId ? rec : undefined;
   }
 

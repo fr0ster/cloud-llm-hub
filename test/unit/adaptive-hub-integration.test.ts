@@ -1,3 +1,12 @@
+import { bindTestCaller } from './helpers/bind-test-caller';
+
+const taskCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+const sessionCaller1 = { ...taskCaller, sessionId: 'dialogue-checker' };
+
 import type { ILlm, ISubAgent, Message } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
 import type { AgentConfig } from '../../srv/agent-config';
@@ -163,6 +172,7 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
   beforeAll(async () => {
     jest.mocked(makeHubLlm).mockResolvedValue(llm);
     initProviders(await startProviders(config));
+    await bindTestCaller(taskCaller);
     await getCollectionRegistry().seedAgentConfiguration(
       'agents',
       'coordinator',
@@ -201,6 +211,8 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       hasState: hasSessionState,
       deleteAll: deleteSessionState,
     });
+    const caller = { sessionId, userId, isAdmin: false };
+    await bindTestCaller(caller);
     const lease = retention.lease(userId, sessionId, 'pipeline');
     if (isRefusal(lease)) throw new Error('unexpected refusal');
     const chunks: string[] = [];
@@ -208,6 +220,7 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       sessionId,
       async () => {
         for await (const chunk of handle.agent.streamProcess(prompt, {
+          caller,
           sessionId,
           trace: { traceId: sessionId },
         })) {
@@ -310,10 +323,12 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     expect([...handle.workers.keys()]).toEqual(['executor', 'checker']);
     const checker = handle.workers.get('checker');
     if (!checker) throw new Error('checker missing');
+    await bindTestCaller(sessionCaller1);
     await runWithSessionId(
       'dialogue-checker',
       () =>
         checker.run({
+          caller: sessionCaller1,
           task: 'Verify the class',
           sessionId: 'dialogue-checker',
           externalTools: [
@@ -355,10 +370,13 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       expect(result.record?.steps.some((s) => s.kind === 'work')).toBe(true);
     },
   );
-  it('real adaptive pipeline never passes Alice previousRun to Bob with the same session ID', async () => {
+  it('real adaptive pipeline refuses Bob on Alice session and isolates their runs', async () => {
     scenario = 'hello';
     await run('shared-id', 'Alice private request', 'alice');
-    await run('shared-id', 'Bob request', 'bob');
+    await expect(run('shared-id', 'Bob request', 'bob')).rejects.toThrow(
+      'Session is already bound',
+    );
+    await run('bob-id', 'Bob request', 'bob');
     expect(controllerPrompts.at(-1)).toContain('Previous run:\nnull');
     expect(controllerPrompts.at(-1)).not.toContain('Alice private request');
     await run('other-id', 'Alice other session', 'alice');

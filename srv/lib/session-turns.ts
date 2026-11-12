@@ -1,6 +1,5 @@
-import type { Message } from '@mcp-abap-adt/llm-agent';
+import type { Message, RagCaller } from '@mcp-abap-adt/llm-agent';
 import { getSharedHistoryRag } from '../agent-manager';
-import { turnOwner } from './session-history-rag';
 
 /** Extract plain text from OpenAI content (string | content-block array) */
 export function extractText(c: unknown): string {
@@ -31,8 +30,7 @@ export function extractText(c: unknown): string {
  * remember it must not surface as an error on a request that succeeded.
  */
 export function recordTurn(
-  sessionId: string,
-  userId: string,
+  caller: RagCaller,
   lastUser: Message,
   answer: string,
 ): void {
@@ -42,7 +40,7 @@ export function recordTurn(
   if (!question || !answer) return;
   void rag
     .recordTurn({
-      owner: turnOwner(userId, sessionId),
+      caller,
       userText: question,
       assistantText: answer,
     })

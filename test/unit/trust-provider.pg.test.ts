@@ -1,3 +1,5 @@
+import { bindTestCaller } from './helpers/bind-test-caller';
+
 jest.mock(
   '@sap/cds',
   () => ({
@@ -92,7 +94,16 @@ function newRegistry(provider = newProvider()) {
 test('admin setters persist bounded history and clearing across registry restarts', async () => {
   let registry = newRegistry();
   const id = 'trust-setters-global';
-  const identity = { userId: 'alice', admin: true };
+  const identity = {
+    userId: 'alice',
+    admin: true,
+    sessionId: 'trust-provider-alice',
+  };
+  await bindTestCaller({
+    sessionId: identity.sessionId,
+    userId: identity.userId,
+    isAdmin: identity.admin,
+  });
   await registry.createCollection({
     id,
     logicalId: id,

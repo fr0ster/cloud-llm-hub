@@ -1,3 +1,9 @@
+const taskCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+
 import { withConversationHistory } from '../../srv/agent-manager';
 import { getRequestHistory, runWithSessionId } from '../../srv/request-session';
 
@@ -32,7 +38,11 @@ describe('withConversationHistory', () => {
 
     await runWithSessionId(
       's-1',
-      () => wrapped.process('Task: make a data element from that domain'),
+      () =>
+        wrapped.process('Task: make a data element from that domain', {
+          caller: taskCaller,
+          sessionId: taskCaller.sessionId,
+        }),
       prior,
     );
 
@@ -47,7 +57,15 @@ describe('withConversationHistory', () => {
     const wrapped = withConversationHistory(f.agent);
     const messages = [{ role: 'user' as const, content: 'hello' }];
 
-    await runWithSessionId('s-1', () => wrapped.process(messages), prior);
+    await runWithSessionId(
+      's-1',
+      () =>
+        wrapped.process(messages, {
+          caller: taskCaller,
+          sessionId: taskCaller.sessionId,
+        }),
+      prior,
+    );
 
     expect(f.seen[0]).toBe(messages);
   });
@@ -57,7 +75,10 @@ describe('withConversationHistory', () => {
     const wrapped = withConversationHistory(f.agent);
 
     // A worker running outside any request — startup warm-up — sees no turns.
-    await wrapped.process('Task: something');
+    await wrapped.process('Task: something', {
+      caller: taskCaller,
+      sessionId: taskCaller.sessionId,
+    });
 
     expect(f.seen[0]).toBe('Task: something');
   });

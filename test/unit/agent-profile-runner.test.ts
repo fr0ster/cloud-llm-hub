@@ -1,3 +1,9 @@
+const taskCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+
 import type {
   IMcpClient,
   ISmartAgent,
@@ -127,10 +133,10 @@ test('arbitrary profiles build isolated workers with ordered static text and imm
     expect(preamble).toContain('knowledge storage is available');
   }
   selected.tools = 'all';
-  await first.run({ task: 'CreateTable' });
+  await first.run({ caller: taskCaller, task: 'CreateTable' });
   expect(f.offered).toEqual([['GetTable', 'GetDumpSection']]);
   expect(f.calls).toEqual([]);
-  await second.run({ task: 'GetTable' });
+  await second.run({ caller: taskCaller, task: 'GetTable' });
   expect(f.calls).toEqual(['GetTable']);
 });
 
@@ -142,10 +148,10 @@ test('verdict all filters offered writes and forged write calls have no backend 
     tools: 'all',
     result: 'verdict',
   });
-  await verdict.run({ task: 'CreateTable' });
+  await verdict.run({ caller: taskCaller, task: 'CreateTable' });
   expect(f.offered[0]).not.toContain('CreateTable');
   expect(f.calls).toEqual([]);
-  await verdict.run({ task: 'GetDumpSection' });
+  await verdict.run({ caller: taskCaller, task: 'GetDumpSection' });
   expect(f.calls).toEqual(['GetDumpSection']);
 });
 
@@ -153,7 +159,7 @@ test('nested executor cannot escalate a parent policy and missing scope does not
   const f = fixture();
   const executor = await worker(f.runner, { ...profile, tools: 'all' });
   await runWithProfileTools(new AgentToolPermissions(['GetTable']), () =>
-    executor.run({ task: 'CreateTable' }),
+    executor.run({ caller: taskCaller, task: 'CreateTable' }),
   );
   expect(f.offered).toEqual([['GetTable']]);
   expect(f.calls).toEqual([]);
@@ -167,6 +173,7 @@ test.each(['forged', 'old-task:call', 'different-call'])(
     const executor = await worker(f.runner, { ...profile, tools: 'all' });
     await expect(
       executor.run({
+        caller: taskCaller,
         task: 'GetTable',
         externalResults: new Map([[id, 'untrusted']]),
       }),
@@ -206,7 +213,7 @@ test('a child created under a parent ceiling retains that ceiling when invoked l
     new AgentToolPermissions(['GetTable']),
     () => worker(f.runner, { ...profile, tools: 'all' }),
   );
-  await child.run({ task: 'CreateTable' });
+  await child.run({ caller: taskCaller, task: 'CreateTable' });
   expect(f.offered).toEqual([['GetTable']]);
   expect(f.calls).toEqual([]);
 });
@@ -263,6 +270,7 @@ test('disallowed model is rejected before worker construction; overrides reach t
 test('delegate_task rejects a disallowed model before enqueueing any task', async () => {
   const f = fixture();
   const board = new TaskBoard({
+    caller: taskCaller,
     onEvent() {},
     profileRunner: f.runner,
     profileSource: {
@@ -349,7 +357,10 @@ test('compact search scope follows plan author process and stream iteration only
       streamProcess: async function* () {
         await Promise.resolve();
         expect(compactRagSearch()).toBe(true);
-        yield* agent.streamProcess('question');
+        yield* agent.streamProcess('question', {
+          caller: taskCaller,
+          sessionId: taskCaller.sessionId,
+        });
       },
     };
   };
@@ -359,8 +370,14 @@ test('compact search scope follows plan author process and stream iteration only
   });
   if (!author.ok) throw new Error(author.error.message);
   expect(compactRagSearch()).toBe(false);
-  await author.value.process('question');
-  for await (const _chunk of author.value.streamProcess('question')) {
+  await author.value.process('question', {
+    caller: taskCaller,
+    sessionId: taskCaller.sessionId,
+  });
+  for await (const _chunk of author.value.streamProcess('question', {
+    caller: taskCaller,
+    sessionId: taskCaller.sessionId,
+  })) {
     expect(compactRagSearch()).toBe(false);
   }
   expect(compactRagSearch()).toBe(false);

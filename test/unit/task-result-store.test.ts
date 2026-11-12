@@ -479,7 +479,7 @@ test.each([
   const fetchMock = jest
     .spyOn(globalThis, 'fetch')
     .mockImplementation(async (input, init) => {
-      const path = String(input);
+      const path = new URL(String(input)).pathname;
       const catalog = path.includes('/collections/test-collections-catalog');
       if (path.endsWith('/collections')) {
         listCalls++;
@@ -512,6 +512,13 @@ test.each([
         });
       if (init?.method === 'PUT') {
         if (typeof init.body !== 'string') throw new Error('Missing JSON body');
+        if (path.endsWith('/index')) {
+          expect(JSON.parse(init.body)).toEqual({
+            field_name: 'ownerScope',
+            field_schema: 'keyword',
+          });
+          return Response.json({ result: { status: 'completed' } });
+        }
         if (path.includes('/points')) {
           const body = points.parse(JSON.parse(init.body));
           if (catalog) catalogPoints = body.points;

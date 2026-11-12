@@ -142,6 +142,8 @@ export function guardLlmOnlyAgent<T extends ISmartAgent>(
               {
                 signal: controller.signal,
                 trace: opts?.trace,
+                caller: opts?.caller,
+                sessionId: opts?.sessionId,
                 ...(opts?.usage
                   ? {
                       usage: opts.usage.with({

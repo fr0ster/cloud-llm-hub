@@ -434,7 +434,7 @@ describe('a retired cookie', () => {
       sessionId?: string;
     };
     const set: Record<string, string> = {};
-    sessionMiddleware({
+    await sessionMiddleware({
       isLive: gatekeeper.sessionIsLive,
       userIdOf: () => 'alice',
     })(

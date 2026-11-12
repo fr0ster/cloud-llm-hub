@@ -30,7 +30,9 @@ import {
 import {
   PlannerToolsClient,
   SmartAgentBuilder,
+  type SmartAgentHandle,
   SmartAgentSubAgent,
+  unwrapBuilderResult,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
   createUsageRecorder,
@@ -89,7 +91,41 @@ import {
   fixtureProfileRunner,
   fixtureProfileSource,
 } from './helpers/agent-profiles';
+import { testAccess } from './helpers/test-rag-access';
 import { fakePipelineLlm } from './helpers/usage-pipeline';
+
+const ragCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+const usageCaller = {
+  sessionId: 'usage-session',
+  userId: 'alice',
+  isAdmin: false,
+};
+const bobCaller = { sessionId: 'bob-session', userId: 'bob', isAdmin: false };
+const helperCaller = { sessionId: 'helpers', userId: 'alice', isAdmin: false };
+const handlerCaller = {
+  sessionId: 'handler-long-session',
+  userId: 'alice',
+  isAdmin: false,
+};
+const concurrentAliceCaller = {
+  sessionId: 'concurrent-alice',
+  userId: 'alice',
+  isAdmin: false,
+};
+const concurrentBobCaller = {
+  sessionId: 'concurrent-bob',
+  userId: 'bob',
+  isAdmin: false,
+};
+const mcpCaller = {
+  sessionId: 'mcp-correlation',
+  userId: 'alice',
+  isAdmin: false,
+};
 
 jest.mock('@mcp-abap-adt/llm-agent', (): typeof llmAgent => {
   const actual = jest.requireActual<typeof llmAgent>('@mcp-abap-adt/llm-agent');
@@ -102,10 +138,8 @@ jest.mock('@mcp-abap-adt/llm-agent', (): typeof llmAgent => {
 
 const mockAuthenticatedUser = new AsyncLocalStorage<string>();
 const mockWorkers = new Map<string, ISubAgent>();
-let mockStepAgent:
-  | Awaited<ReturnType<SmartAgentBuilder['build']>>['agent']
-  | undefined;
-let mockPlanner: Awaited<ReturnType<SmartAgentBuilder['build']>>['agent'];
+let mockStepAgent: SmartAgentHandle['agent'] | undefined;
+let mockPlanner: SmartAgentHandle['agent'];
 const mockQuery = jest.fn(
   async (embedding: {
     toVector(): Promise<number[]>;
@@ -236,7 +270,7 @@ jest.mock('../../srv/agent-manager', (): object => ({
     .agentManagerMock(),
   getSmartAgent: async (): Promise<{
     agent:
-      | Awaited<ReturnType<SmartAgentBuilder['build']>>['agent']
+      | SmartAgentHandle['agent']
       | { deps: { ragStores: Record<string, never> } };
     workers: Map<string, ISubAgent>;
     profileRunner: IAgentProfileRunner;
@@ -274,9 +308,8 @@ jest.mock('../../srv/agent-manager', (): object => ({
     },
     criticLlm: {},
   }),
-  buildPlannerAgent: async (): Promise<
-    Awaited<ReturnType<SmartAgentBuilder['build']>>['agent']
-  > => mockPlanner,
+  buildPlannerAgent: async (): Promise<SmartAgentHandle['agent']> =>
+    mockPlanner,
   releasePlannerAgent(): void {},
   setSessionDestination(): void {},
   runWithRequestConnection: <T>(_connection: object, fn: () => T): T => fn(),
@@ -312,7 +345,7 @@ jest.mock('../../srv/agent-manager', (): object => ({
             displayName: id,
             description: '',
             scope: 'user',
-            owner: 'alice',
+            owner: id.endsWith('-bob') ? 'bob' : 'alice',
             createdAt: new Date(0).toISOString(),
             documentCount: 1,
             sourceCount: 1,
@@ -335,7 +368,11 @@ jest.mock('../../srv/collection-ids', (): object => ({
   ...jest.requireActual<typeof import('../../srv/collection-ids')>(
     '../../srv/collection-ids',
   ),
-  resolveRouteId: async (): Promise<string> => 'selected',
+  resolveRouteId: async (
+    _registry: object,
+    entry: string,
+    userId: string,
+  ): Promise<string> => `${entry}-${userId}`,
 }));
 jest.mock('../../srv/lib/session-connection-pool', (): object => ({
   SessionConnectionFactory: class {
@@ -576,17 +613,20 @@ test('real hub dialogue pipeline retains background context, two successive requ
             },
     );
   for (const name of ['executor', 'checker']) {
-    const worker = await new SmartAgentBuilder({
-      skipModelValidation: true,
-      agent: {
-        classificationEnabled: false,
-        ragTranslateEnabled: false,
-        maxIterations: 5,
-      },
-    })
-      .withMainLlm(workerLlm(name === 'checker'))
-      .withMcpClients([mcp])
-      .build();
+    const worker = unwrapBuilderResult(
+      await new SmartAgentBuilder({
+        skipModelValidation: true,
+        agent: {
+          classificationEnabled: false,
+          ragTranslateEnabled: false,
+          maxIterations: 5,
+        },
+      })
+        .withRagAccess(testAccess([usageCaller, bobCaller]))
+        .withMainLlm(workerLlm(name === 'checker'))
+        .withMcpClients([mcp])
+        .build(),
+    );
     mockWorkers.set(name, new SmartAgentSubAgent(name, worker.agent));
   }
   let delegates = 0;
@@ -640,14 +680,17 @@ test('real hub dialogue pipeline retains background context, two successive requ
       };
     },
   );
-  const builtPlanner = await new SmartAgentBuilder({
-    skipModelValidation: true,
-    agent: { classificationEnabled: false, ragTranslateEnabled: false },
-  })
-    .withMainLlm(plannerLlm)
-    .withMcpClients([new PlannerToolsClient()])
-    .withMode('hard')
-    .build();
+  const builtPlanner = unwrapBuilderResult(
+    await new SmartAgentBuilder({
+      skipModelValidation: true,
+      agent: { classificationEnabled: false, ragTranslateEnabled: false },
+    })
+      .withRagAccess(testAccess([usageCaller, bobCaller]))
+      .withMainLlm(plannerLlm)
+      .withMcpClients([new PlannerToolsClient()])
+      .withMode('hard')
+      .build(),
+  );
   mockPlanner = builtPlanner.agent;
   const alice = await dialogueFor('alice', 'usage-session', 'TEST');
   const bob = await dialogueFor('bob', 'bob-session', 'TEST');
@@ -711,7 +754,11 @@ test('real hub dialogue pipeline retains background context, two successive requ
         session,
         'TEST',
         res,
-      ).process(retrieved.messages, { trace: { traceId: id } });
+      ).process(retrieved.messages, {
+        sessionId: session.key,
+        caller: userId === 'alice' ? usageCaller : bobCaller,
+        trace: { traceId: id },
+      });
       if (id === 'request-2') res.destroy();
       else res.json(result);
     },
@@ -883,9 +930,12 @@ test('guard passes helper labels and preserve request shape', async (): Promise<
     content: '{"possiblyFake":false,"confidence":"high","reasons":"ok"}',
     finishReason: 'stop',
   }));
-  const agent = await new SmartAgentBuilder({ skipModelValidation: true })
-    .withMainLlm(llm)
-    .build();
+  const agent = unwrapBuilderResult(
+    await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testAccess([helperCaller]))
+      .withMainLlm(llm)
+      .build(),
+  );
   const guarded = guardLlmOnlyAgent(agent.agent, {
     decide: fakeLlm((): { content: string; finishReason: 'stop' } => ({
       content: '{"action":true}',
@@ -894,6 +944,8 @@ test('guard passes helper labels and preserve request shape', async (): Promise<
     why: 'waiting',
   });
   await guarded.process([{ role: 'user', content: 'PROMPT_SENTINEL' }], {
+    sessionId: helperCaller.sessionId,
+    caller: helperCaller,
     usage,
   });
   const calls = (await rows()).filter(
@@ -987,16 +1039,22 @@ test('usage off passes no recorder to helper LLMs and leaves answers unchanged',
     content: '{"possiblyFake":false,"confidence":"high","reasons":"ok"}',
     finishReason: 'stop',
   }));
-  const agent = await new SmartAgentBuilder({ skipModelValidation: true })
-    .withMainLlm(llm)
-    .build();
+  const agent = unwrapBuilderResult(
+    await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testAccess([ragCaller]))
+      .withMainLlm(llm)
+      .build(),
+  );
   await guardLlmOnlyAgent(agent.agent, {
     decide: fakeLlm((): { content: string; finishReason: 'stop' } => ({
       content: '{"action":true}',
       finishReason: 'stop',
     })),
     why: 'waiting',
-  }).process('PROMPT_SENTINEL');
+  }).process('PROMPT_SENTINEL', {
+    caller: ragCaller,
+    sessionId: ragCaller.sessionId,
+  });
   expect(physical).toHaveLength(1);
   for (const call of physical) expect(call.options?.usage).toBeUndefined();
 });
@@ -1044,13 +1102,14 @@ test('query embedding labels concurrent calls without binding mutable provider c
 });
 
 test('revived dialogues bind a new session recorder and usage off passes none to the real pipeline', async (): Promise<void> => {
-  mockPlanner = (
+  mockPlanner = unwrapBuilderResult(
     await new SmartAgentBuilder({
       skipModelValidation: true,
       agent: { classificationEnabled: false, ragTranslateEnabled: false },
     })
+      .withRagAccess(testAccess([usageCaller]))
       .withMainLlm(fakeLlm(plainAnswer))
-      .build()
+      .build(),
   ).agent;
   const opened = await dialogueFor('alice', 'usage-session', 'TEST');
   await opened.session.send('first');
@@ -1111,12 +1170,15 @@ test.each([
     | string
     | boolean): Promise<void> => {
     const before = (await rows()).length;
-    const built = await new SmartAgentBuilder({
-      skipModelValidation: true,
-      agent: { classificationEnabled: false, ragTranslateEnabled: false },
-    })
-      .withMainLlm(fakeLlm(plainAnswer))
-      .build();
+    const built = unwrapBuilderResult(
+      await new SmartAgentBuilder({
+        skipModelValidation: true,
+        agent: { classificationEnabled: false, ragTranslateEnabled: false },
+      })
+        .withRagAccess(testAccess([handlerCaller]))
+        .withMainLlm(fakeLlm(plainAnswer))
+        .build(),
+    );
     mockPlanner = guardLlmOnlyAgent(built.agent, {
       decide: fakeLlm((): { content: string; finishReason: 'stop' } => ({
         content: '{"action":false}',
@@ -1317,57 +1379,66 @@ test('concurrent long-session OpenAI requests isolate all foreground and backgro
       };
     },
   };
-  const worker = await new SmartAgentBuilder({
-    skipModelValidation: true,
-    agent: {
-      classificationEnabled: false,
-      ragTranslateEnabled: false,
-      maxIterations: 5,
-    },
-  })
-    .withMainLlm(
-      fakeLlm(
-        (messages: Message[]): LlmResponse =>
-          messages.some((message: Message): boolean => message.role === 'tool')
+  const worker = unwrapBuilderResult(
+    await new SmartAgentBuilder({
+      skipModelValidation: true,
+      agent: {
+        classificationEnabled: false,
+        ragTranslateEnabled: false,
+        maxIterations: 5,
+      },
+    })
+      .withRagAccess(testAccess([concurrentAliceCaller, concurrentBobCaller]))
+      .withMainLlm(
+        fakeLlm(
+          (messages: Message[]): LlmResponse =>
+            messages.some(
+              (message: Message): boolean => message.role === 'tool',
+            )
+              ? plainAnswer()
+              : {
+                  content: '',
+                  finishReason: 'tool_calls',
+                  toolCalls: [{ id: 'read-call', name: 'read', arguments: {} }],
+                },
+        ),
+      )
+      .withMcpClients([mcp])
+      .build(),
+  );
+  mockWorkers.set('executor', new SmartAgentSubAgent('executor', worker.agent));
+  const planner = unwrapBuilderResult(
+    await new SmartAgentBuilder({
+      skipModelValidation: true,
+      agent: { classificationEnabled: false, ragTranslateEnabled: false },
+    })
+      .withRagAccess(testAccess([concurrentAliceCaller, concurrentBobCaller]))
+      .withMainLlm(
+        fakeLlm((messages: Message[]): LlmResponse => {
+          const last = messages.at(-1);
+          return last?.role === 'tool' ||
+            last?.content?.includes('[task events]')
             ? plainAnswer()
             : {
                 content: '',
                 finishReason: 'tool_calls',
-                toolCalls: [{ id: 'read-call', name: 'read', arguments: {} }],
-              },
-      ),
-    )
-    .withMcpClients([mcp])
-    .build();
-  mockWorkers.set('executor', new SmartAgentSubAgent('executor', worker.agent));
-  const planner = await new SmartAgentBuilder({
-    skipModelValidation: true,
-    agent: { classificationEnabled: false, ragTranslateEnabled: false },
-  })
-    .withMainLlm(
-      fakeLlm((messages: Message[]): LlmResponse => {
-        const last = messages.at(-1);
-        return last?.role === 'tool' || last?.content?.includes('[task events]')
-          ? plainAnswer()
-          : {
-              content: '',
-              finishReason: 'tool_calls',
-              toolCalls: [
-                {
-                  id: 'delegate',
-                  name: 'delegate_task',
-                  arguments: {
-                    worker: 'executor',
-                    goal: 'PROMPT_SENTINEL',
+                toolCalls: [
+                  {
+                    id: 'delegate',
+                    name: 'delegate_task',
+                    arguments: {
+                      worker: 'executor',
+                      goal: 'PROMPT_SENTINEL',
+                    },
                   },
-                },
-              ],
-            };
-      }),
-    )
-    .withMcpClients([new PlannerToolsClient()])
-    .withMode('hard')
-    .build();
+                ],
+              };
+        }),
+      )
+      .withMcpClients([new PlannerToolsClient()])
+      .withMode('hard')
+      .build(),
+  );
   const requestIds = new Map<string, string>();
   mockPlanner = guardLlmOnlyAgent(planner.agent, {
     decide: fakeLlm(
@@ -1641,30 +1712,36 @@ test('real MCP agent tool loop correlates request, LLM and dispatched MCP record
       };
     },
   };
-  const built = await new SmartAgentBuilder({
-    skipModelValidation: true,
-    agent: { classificationEnabled: false, ragTranslateEnabled: false },
-  })
-    .withMainLlm(
-      fakeLlm(
-        (messages: Message[]): LlmResponse =>
-          messages.some((message: Message): boolean => message.role === 'tool')
-            ? plainAnswer()
-            : {
-                content: '',
-                finishReason: 'tool_calls',
-                toolCalls: [{ id: 'read-call', name: 'read', arguments: {} }],
-              },
-      ),
-    )
-    .withMcpClients([mcp])
-    .build();
+  const built = unwrapBuilderResult(
+    await new SmartAgentBuilder({
+      skipModelValidation: true,
+      agent: { classificationEnabled: false, ragTranslateEnabled: false },
+    })
+      .withRagAccess(testAccess([mcpCaller]))
+      .withMainLlm(
+        fakeLlm(
+          (messages: Message[]): LlmResponse =>
+            messages.some(
+              (message: Message): boolean => message.role === 'tool',
+            )
+              ? plainAnswer()
+              : {
+                  content: '',
+                  finishReason: 'tool_calls',
+                  toolCalls: [{ id: 'read-call', name: 'read', arguments: {} }],
+                },
+        ),
+      )
+      .withMcpClients([mcp])
+      .build(),
+  );
   mockStepAgent = built.agent;
   mockWorkers.set('executor', {
     name: 'executor',
     capabilities: { contextPolicy: 'optional' },
     run: async (input) => {
       const result = await built.agent.process(input.task, {
+        caller: input.caller,
         usage: input.usage,
         signal: input.signal,
         trace: input.trace,

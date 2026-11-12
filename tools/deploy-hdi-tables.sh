@@ -22,14 +22,15 @@ POLL_STEP=10
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMPLATE="$ROOT/tools/hdi-deployer"
 DDL="$ROOT/node_modules/@mcp-abap-adt/hana-vector-rag/ddl"
-FILES=(RAG_DOCUMENTS.hdbtable RAG_COLLECTIONS.hdbtable)
-USAGE_FILES=(.hdiconfig USAGE_RECORDS.hdbtable USAGE_RECORDS_AT_IDX.hdbindex USAGE_RECORDS_SESSION_ID_IDX.hdbindex USAGE_RECORDS_KIND_IDX.hdbindex)
+FILES=(RAG_DOCUMENTS.hdbtable RAG_COLLECTIONS.hdbtable rag_roles.hdbtable rag_role_assignments.hdbtable rag_collection_roles.hdbtable rag_session_bindings.hdbtable)
+USAGE_FILES=(USAGE_RECORDS.hdbtable USAGE_RECORDS_AT_IDX.hdbindex USAGE_RECORDS_SESSION_ID_IDX.hdbindex USAGE_RECORDS_KIND_IDX.hdbindex)
 
 run() {
   if [ "$DRY_RUN" = 1 ]; then echo "[dry-run] $*"; else "$@"; fi
 }
 
 if [ "$DRY_RUN" = 0 ]; then
+  [ -f "$DDL/.hdiconfig" ] || { echo "Missing $DDL/.hdiconfig - run npm ci first" >&2; exit 1; }
   for f in "${FILES[@]}"; do
     [ -f "$DDL/$f" ] || { echo "Missing $DDL/$f - run npm ci first" >&2; exit 1; }
   done
@@ -70,6 +71,23 @@ for f in "${USAGE_FILES[@]}"; do
     cp "$TEMPLATE/src/$f" "$WORK/src/$f"
   fi
 done
+
+# Preserve the shipped RAG table plugin and the usage index plugin.
+if [ "$DRY_RUN" = 1 ]; then
+  echo "[dry-run] merge $DDL/.hdiconfig + $TEMPLATE/src/.hdiconfig -> src/.hdiconfig"
+else
+  node - "$DDL/.hdiconfig" "$TEMPLATE/src/.hdiconfig" "$WORK/src/.hdiconfig" <<'NODE'
+const fs = require('node:fs');
+const [ragPath, usagePath, outputPath] = process.argv.slice(2);
+const rag = JSON.parse(fs.readFileSync(ragPath, 'utf8'));
+const usage = JSON.parse(fs.readFileSync(usagePath, 'utf8'));
+fs.writeFileSync(outputPath, JSON.stringify({
+  ...usage,
+  ...rag,
+  file_suffixes: { ...usage.file_suffixes, ...rag.file_suffixes },
+}, null, 2));
+NODE
+fi
 
 delete_app() {
   pushed=0

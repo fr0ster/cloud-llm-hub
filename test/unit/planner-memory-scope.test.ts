@@ -8,12 +8,12 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { PgVectorRag } from '@mcp-abap-adt/pg-vector-rag';
 import { QdrantRag } from '@mcp-abap-adt/qdrant-rag';
+import { turnOwner } from '../../srv/lib/history-turn';
 import { plannerMemoryStore } from '../../srv/lib/planner-context';
 import {
   forgetScopedPlannerMemory,
   scopedPlannerMemory,
 } from '../../srv/lib/planner-memory-scope';
-import { turnOwner } from '../../srv/lib/session-history-rag';
 
 const queryEmbedding = { text: 'memory', toVector: async () => [1, 0] };
 const embedding = symmetricEmbedder({
@@ -117,11 +117,15 @@ it('keeps query filters and scopes cleanup independently of the supplied filter'
     ragFilter: { sessionId: 'key', namespace: 'n', userId: 'u' },
   });
   expect(query).toHaveBeenCalledWith(queryEmbedding, 2, {
-    ragFilter: { sessionId: 'owner', namespace: 'n', userId: 'u' },
+    ragFilter: {
+      sessionId: undefined,
+      namespace: 'owner',
+      userId: undefined,
+    },
   });
   const remove = jest.spyOn(rag, 'deleteWhere');
   await forgetScopedPlannerMemory(rag, 'owner');
-  expect(remove).toHaveBeenCalledWith({ sessionId: 'owner' });
+  expect(remove).toHaveBeenCalledWith({ namespace: 'owner' });
 });
 
 it('deletes tracked ids without filtered delete, preserving other owners', async () => {

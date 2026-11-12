@@ -1,3 +1,7 @@
+import express from 'express';
+import { bindCaller } from '../../srv/lib/rag-caller';
+import { typedResponse } from './helpers/response-model';
+
 // Bootstrap logging is tested with real CAP in logging-config.test.ts.
 jest.mock('../../srv/lib/logging-config', () => ({
   applyLoggingConfig: jest.fn(),
@@ -49,7 +53,11 @@ jest.mock('../../srv/collection-ids', () => ({
   resolveRouteId: (_registry: unknown, id: string) => id,
 }));
 
-import { type Message, RagError } from '@mcp-abap-adt/llm-agent';
+import {
+  type Message,
+  RagError,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import type { Request, Response } from 'express';
 import * as manager from '../../srv/agent-manager';
 import {
@@ -88,6 +96,7 @@ const body = () => ({
 beforeEach(async () => {
   harness.reset();
   const registry = manager.getCollectionRegistry();
+  // Exercise retrieval for the caller's own collections without an admin bypass.
   for (const id of ['col-1', 'col-2']) {
     if (!(await registry.getCollection(id))) {
       await registry.createCollection({
@@ -96,10 +105,10 @@ beforeEach(async () => {
         displayName: id,
         description: '',
         scope: 'user',
-        owner: 'bob',
+        owner: harness.user.id,
       });
     }
-    await registry.setEnabled('bob', id, true);
+    await registry.setEnabled(harness.user.id, id, true);
   }
 });
 afterEach(() => {
@@ -201,7 +210,7 @@ describe('the RAG stores a request names', () => {
         deps: {
           ragStores: Record<
             string,
-            { query(e: unknown, k: number, o: unknown): Promise<unknown> }
+            { rag: import('@mcp-abap-adt/llm-agent').IRag }
           >;
         };
       };
@@ -211,9 +220,13 @@ describe('the RAG stores a request names', () => {
     harness.process = async (m: unknown) => {
       const msgs = m as Message[];
       prompt = String(msgs[msgs.length - 1].content);
-      agentSearch = await handle.agent.deps.ragStores['col-1'].query({}, 3, {
-        ragFilter: { namespace: 'bob:DEST', exposition: ['readonly'] },
-      });
+      agentSearch = await handle.agent.deps.ragStores['col-1'].rag.query(
+        new TextOnlyEmbedding('hi'),
+        3,
+        {
+          ragFilter: { namespace: 'bob:DEST', exposition: ['readonly'] },
+        },
+      );
       return { ok: true, value: { content: 'done', stopReason: 'stop' } };
     };
 
@@ -227,7 +240,13 @@ describe('the RAG stores a request names', () => {
       value: [
         {
           ...doc,
-          metadata: { ...doc.metadata, source: 'user:col-1/d1', trust: 3.5 },
+          metadata: {
+            ...doc.metadata,
+            source: 'user:col-1/d1',
+            trust: 3.5,
+            ownerScope: 'user',
+            userId: harness.user.id,
+          },
         },
       ],
     });
@@ -427,7 +446,7 @@ describe('a destination switch', () => {
 });
 
 describe('the user a request is keyed by', () => {
-  it('keys an empty user id as itself, as the other channels and the middleware do', async () => {
+  it('refuses an empty user id before agent dispatch', async () => {
     configure();
     const before = harness.user.id;
     harness.user.id = '';
@@ -437,7 +456,8 @@ describe('the user a request is keyed by', () => {
         fakeRes() as unknown as Response,
       );
       await done;
-      expect(sessionStore.getSessionHistory('s-1', '')).toHaveLength(2);
+      expect(harness.seenOptions).toHaveLength(0);
+      expect(sessionStore.getSessionHistory('s-1', '')).toEqual([]);
       expect(sessionStore.getSessionHistory('s-1', 'anonymous')).toEqual([]);
     } finally {
       harness.user.id = before;
@@ -445,4 +465,22 @@ describe('the user a request is keyed by', () => {
       sessionStore.clearSession('s-1', 'anonymous');
     }
   });
+});
+
+test('refuses a conflicting caller with HTTP 403 before agent dispatch', async () => {
+  configure();
+  expect((await bindCaller('caller-refused-openai', 'bob', false)).ok).toBe(
+    true,
+  );
+  const req = Object.defineProperties(
+    express().request,
+    Object.getOwnPropertyDescriptors({
+      ...fakeReq(body()),
+      sessionId: 'caller-refused-openai',
+    }),
+  );
+  const res = fakeRes();
+  await handleChatCompletions(req, typedResponse(res));
+  expect(res.statusCode).toBe(403);
+  expect(harness.seenOptions).toHaveLength(0);
 });

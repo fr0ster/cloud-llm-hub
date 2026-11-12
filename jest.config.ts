@@ -2,6 +2,7 @@ import type { Config } from 'jest';
 
 const config: Config = {
   testEnvironment: 'node',
+  setupFilesAfterEnv: ['<rootDir>/test/unit/helpers/init-rag-access.ts'],
   roots: ['<rootDir>/test'],
   testMatch: ['**/test/unit/**/*.test.ts'],
   moduleNameMapper: {
@@ -11,9 +12,7 @@ const config: Config = {
     '^.+\\.tsx?$': ['ts-jest', { tsconfig: 'tsconfig.test.json' }],
     '^.+\\.js$': ['ts-jest', { tsconfig: 'tsconfig.test.json' }],
   },
-  transformIgnorePatterns: [
-    'node_modules/(?!(@mcp-abap-adt|@sap-ai-sdk)/)',
-  ],
+  transformIgnorePatterns: ['node_modules/(?!(@mcp-abap-adt|@sap-ai-sdk)/)'],
 };
 
 export default config;

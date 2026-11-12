@@ -1,3 +1,9 @@
+const taskCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+
 import type { ISmartAgent, WorkerProfile } from '@mcp-abap-adt/llm-agent';
 import { formatTrustTag, InMemoryRag } from '@mcp-abap-adt/llm-agent';
 import { AgentProfileRunner } from '../../srv/lib/agent-profile-runner';
@@ -181,7 +187,10 @@ test('five role maps remain bound through coordinator, author, executor and chec
   });
   for (const result of [coordinator, create, revise]) {
     if (!result.ok) throw new Error(result.error.message);
-    await result.value.process('test');
+    await result.value.process('test', {
+      caller: taskCaller,
+      sessionId: taskCaller.sessionId,
+    });
   }
   for (const [name, value] of [
     ['executor', 4],
@@ -193,7 +202,7 @@ test('five role maps remain bound through coordinator, author, executor and chec
     expect(profile.trust?.user).toBe(value);
     const worker = await runner.createWorker({ profile });
     if (!worker.ok) throw new Error(worker.error.message);
-    await worker.value.run({ task: 'test' });
+    await worker.value.run({ caller: taskCaller, task: 'test' });
   }
   expect(observed).toEqual(
     [1, 2, 3, 4, 5].map((value) => `[source: user:Notes/r; trust ${value}]`),

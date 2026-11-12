@@ -78,7 +78,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await closeDialogue('alice', key, 'ttl');
-  await closeDialogue('bob', key, 'ttl');
+  await closeDialogue('bob', `${key}-bob`, 'ttl');
   setDialogueSignalsForTest(undefined);
 });
 
@@ -154,12 +154,12 @@ test('closing retires the source', async () => {
   expect(dialogueSignals().lastAll(source)).toEqual([]);
 });
 
-test('closing one user does not retire another user with the same logical key', async () => {
+test('closing one user session does not retire another user session', async () => {
   const alice = await dialogueFor('alice', key, 'TEST');
-  const bob = await dialogueFor('bob', key, 'TEST');
+  const bob = await dialogueFor('bob', `${key}-bob`, 'TEST');
   await alice.session.send('Hello');
   await bob.session.send('Hello');
-  const bobSource = JSON.stringify(['bob', key]);
+  const bobSource = JSON.stringify(['bob', `${key}-bob`]);
   expect(dialogueSignals().lastAll(bobSource).length).toBeGreaterThan(0);
   await closeDialogue('alice', key, 'explicit');
   expect(dialogueSignals().lastAll(source)).toEqual([]);

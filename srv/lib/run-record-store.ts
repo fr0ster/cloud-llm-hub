@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type {
+  IRag,
   IRagBackendWriter,
   IRagProvider,
   IRagScanner,
@@ -183,6 +184,7 @@ export class MemoryRunRecordStore implements DeletableRunRecordStore {
 }
 type Opened = {
   scanner: IRagScanner;
+  rag: IRag;
   writer: IRagBackendWriter &
     Required<Pick<IRagBackendWriter, 'upsertPrecomputedRaw'>>;
 };
@@ -196,7 +198,11 @@ export class ProviderRunRecordStore implements DeletableRunRecordStore {
       });
       if (!page.ok) throw page.error;
       for (const row of page.value.records) {
-        const { userId, sessionId, savedAt } = row.metadata;
+        const {
+          authorUserId: userId,
+          hubSessionId: sessionId,
+          savedAt,
+        } = row.metadata;
         try {
           if (
             typeof userId !== 'string' ||
@@ -264,7 +270,11 @@ export class ProviderRunRecordStore implements DeletableRunRecordStore {
       );
     if (!isRagScanner(r.value))
       throw new Error('run record store cannot be scanned');
-    return { scanner: r.value, writer: writer as Opened['writer'] };
+    return {
+      scanner: r.value,
+      rag: r.value,
+      writer: writer as Opened['writer'],
+    };
   }
   async save(sessionId: string, record: RunRecord): Promise<void> {
     const userId = owner(sessionId);
@@ -276,7 +286,7 @@ export class ProviderRunRecordStore implements DeletableRunRecordStore {
       runRecordId(userId, sessionId),
       text,
       this.zeroVector,
-      { userId, sessionId, savedAt },
+      { authorUserId: userId, hubSessionId: sessionId, savedAt },
     );
     if (!r.ok) throw r.error;
     this.hasRunRecord(userId, sessionId);
@@ -285,40 +295,30 @@ export class ProviderRunRecordStore implements DeletableRunRecordStore {
   async load(sessionId: string): Promise<RunRecord | undefined> {
     const userId = owner(sessionId);
     if (!userId) return undefined;
-    const { scanner } = await this.store();
-    let cursor: string | undefined;
-    do {
-      const page = await scanner.scan({
-        filter: { userId, sessionId },
-        ...(cursor !== undefined ? { cursor } : {}),
-      });
-      if (!page.ok) throw page.error;
-      for (const row of page.value.records) {
-        if (row.id !== runRecordId(userId, sessionId)) continue;
-        if (
-          row.metadata.userId !== userId ||
-          row.metadata.sessionId !== sessionId
-        )
-          continue;
-        if (
-          typeof row.metadata.savedAt !== 'number' ||
-          Date.now() - row.metadata.savedAt > this.ttlMs
-        ) {
-          await this.delete(userId, sessionId);
-          return undefined;
-        }
-        try {
-          const record = stored(schema.parse(JSON.parse(row.text)));
-          this.index.set(row.id, row.metadata.savedAt);
-          return record;
-        } catch {
-          this.log.warn('Skipped a malformed run record', { id: row.id });
-        }
-      }
-      if (page.value.cursor !== undefined && page.value.cursor === cursor)
-        throw new Error('run record store scan did not advance');
-      cursor = page.value.cursor;
-    } while (cursor !== undefined);
+    const { rag } = await this.store();
+    const result = await rag.getById(runRecordId(userId, sessionId));
+    if (!result.ok) throw result.error;
+    if (!result.value) return undefined;
+    const row = { ...result.value, id: runRecordId(userId, sessionId) };
+    if (
+      row.metadata.authorUserId !== userId ||
+      row.metadata.hubSessionId !== sessionId
+    )
+      return undefined;
+    if (
+      typeof row.metadata.savedAt !== 'number' ||
+      Date.now() - row.metadata.savedAt > this.ttlMs
+    ) {
+      await this.delete(userId, sessionId);
+      return undefined;
+    }
+    try {
+      const record = stored(schema.parse(JSON.parse(row.text)));
+      this.index.set(row.id, row.metadata.savedAt);
+      return record;
+    } catch {
+      this.log.warn('Skipped a malformed run record', { id: row.id });
+    }
     return undefined;
   }
   async delete(userId: string, sessionId: string): Promise<void> {

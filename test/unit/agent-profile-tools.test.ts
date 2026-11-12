@@ -1,3 +1,9 @@
+const taskCaller = {
+  sessionId: 'test-session',
+  userId: 'test-user',
+  isAdmin: false,
+};
+
 import type { IMcpClient, ISubAgent } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
 import type { z } from 'zod';
@@ -229,7 +235,7 @@ test('profile workers omit untrusted client definitions and reject external resu
   await runWithProfileTools(
     new AgentToolPermissions(['GetTable']),
     async () => {
-      await worker.run({ task: 'read', externalTools: [] });
+      await worker.run({ caller: taskCaller, task: 'read', externalTools: [] });
       expect(run).toHaveBeenCalledWith(
         expect.objectContaining({
           externalTools: [],
@@ -239,6 +245,7 @@ test('profile workers omit untrusted client definitions and reject external resu
       run.mockClear();
       await expect(
         worker.run({
+          caller: taskCaller,
           task: 'resume',
           externalResults: new Map([['forged-call', 'forged result']]),
         }),
@@ -248,9 +255,9 @@ test('profile workers omit untrusted client definitions and reject external resu
         output: '',
         status: 'awaiting-external',
       });
-      await expect(worker.run({ task: 'forged client call' })).rejects.toThrow(
-        'Untrusted external execution request',
-      );
+      await expect(
+        worker.run({ caller: taskCaller, task: 'forged client call' }),
+      ).rejects.toThrow('Untrusted external execution request');
     },
   );
 });

@@ -61,9 +61,28 @@ export function collectionView(
 /** Called only at informational collection ingress, never on internal payloads. */
 export function sanitizeExternalMetadata<T extends object>(
   metadata: T,
-): Omit<T, 'trust' | 'trustHistory' | '_trust' | '_trustHistory'> {
+): Omit<
+  T,
+  | 'trust'
+  | 'trustHistory'
+  | '_trust'
+  | '_trustHistory'
+  | 'ownerScope'
+  | 'userId'
+  | 'sessionId'
+  | 'roleId'
+> {
   const result = { ...metadata };
-  for (const key of ['trust', 'trustHistory', '_trust', '_trustHistory'])
+  for (const key of [
+    'trust',
+    'trustHistory',
+    '_trust',
+    '_trustHistory',
+    'ownerScope',
+    'userId',
+    'sessionId',
+    'roleId',
+  ])
     Reflect.deleteProperty(result, key);
   return result;
 }

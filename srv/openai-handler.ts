@@ -16,6 +16,7 @@ import {
   parseModelAllowlist,
   usesModelCatalog,
 } from './lib/model-policy';
+import { bindCaller, callOptionsFor } from './lib/rag-caller';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
 import {
@@ -300,11 +301,13 @@ async function handleChatCompletionsWithUsage(
   req: Request,
   res: Response,
 ): Promise<void> {
+  const sessionId = sessionIdOf(req);
+  if (!sessionId) return handleChatCompletionsMeasured(req, res);
   const body: { stream?: boolean } | undefined = req.body;
   const measurement = measureRequest(
     req,
     res,
-    { userId: getUserId(), sessionId: sessionIdOf(req) ?? '' },
+    { userId: getUserId(), sessionId },
     'openai',
     body?.stream === true,
   );
@@ -595,8 +598,15 @@ async function serveChatCompletions(
   // explicit: a stateless API client sending its full history must never be
   // truncated to its last message.
   const explicitSessionId = honouredSessionId(req);
-  const sessionId =
-    sessionIdOf(req) ?? (requestMeasurement(req) ? traceId : randomUUID());
+  const sessionId = sessionIdOf(req);
+  if (!sessionId) {
+    res.status(403).json({
+      error: {
+        message: 'SESSION_REQUIRED: session middleware must issue a session',
+      },
+    });
+    return;
+  }
   const t0 = requestStart(req);
 
   // Two modes of history management:
@@ -610,6 +620,15 @@ async function serveChatCompletions(
 
   // Resolve user identity early — needed for user-keyed session store lookups below.
   const userId = authenticatedCaller.userId;
+  const boundCaller = await bindCaller(
+    sessionId,
+    userId,
+    cds.context?.user?.is('MCP_Admin') === true,
+  );
+  if (!boundCaller.ok) {
+    res.status(403).json({ error: { message: boundCaller.error.message } });
+    return;
+  }
 
   const caller = authenticatedCaller.caller;
   log.info('MCP caller', caller);
@@ -1059,7 +1078,7 @@ async function serveChatCompletions(
 
     const usage = usageRuntime()
       ?.forSession({
-        sessionId: sessionId ?? traceId,
+        sessionId,
         userId,
         destination: destAfter,
       })
@@ -1099,7 +1118,7 @@ async function serveChatCompletions(
       // External tools (attempt_completion, read_file, etc.) from client — passed to SmartAgent
       // for ClineClientAdapter detection and external tool_call routing.
       externalTools,
-      sessionId,
+      ...callOptionsFor(boundCaller.value),
       // The admission's signal, which only shutdown aborts. Not the caller's.
       signal: pipeline.signal,
       // RAG filtering: namespace isolates user/destination data, exposition filters tools by role.
@@ -1183,7 +1202,7 @@ async function serveChatCompletions(
               lastUser,
               ...(assistant ? [assistant] : []),
             );
-            if (!following) recordTurn(sessionId, userId, lastUser, text);
+            if (!following) recordTurn(boundCaller.value, lastUser, text);
           }
         },
         onEnd: (text) => {
@@ -1198,7 +1217,7 @@ async function serveChatCompletions(
             appendToSession(sessionId, userId, assistant);
           }
           if (following && lastUser)
-            recordTurn(sessionId, userId, lastUser, text);
+            recordTurn(boundCaller.value, lastUser, text);
         },
       });
     }
@@ -1554,7 +1573,7 @@ async function serveChatCompletions(
             role: 'assistant',
             content: accumulatedContent,
           } as Message);
-          recordTurn(sessionId, userId, lastUser, accumulatedContent);
+          recordTurn(boundCaller.value, lastUser, accumulatedContent);
           const updatedHistory = getSessionHistory(sessionId, userId);
           log.debug('Session updated', {
             sessionId,
@@ -1661,7 +1680,7 @@ async function serveChatCompletions(
           role: 'assistant',
           content: finalContent,
         } as Message);
-        recordTurn(sessionId, userId, lastUser, finalContent);
+        recordTurn(boundCaller.value, lastUser, finalContent);
       }
 
       // NOTE: state store upsert removed (non-streaming path) — same as streaming.

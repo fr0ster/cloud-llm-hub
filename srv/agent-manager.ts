@@ -24,6 +24,8 @@ import {
   resolveAgentModel,
   resolveRequestModel,
 } from './lib/model-policy';
+import { callOptionsFor } from './lib/rag-caller';
+import { isRagMigrationReady } from './lib/rag-readiness';
 import {
   allowedDialogueRoleModel,
   currentRoleModel,
@@ -104,6 +106,7 @@ import {
   QueryEmbedding,
   type RagMetadata,
   type RagResult,
+  stampRagOwner,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -117,6 +120,7 @@ import {
   SmartAgentBuilder,
   type SmartAgentHandle,
   SmartAgentSubAgent,
+  unwrapBuilderResult,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
   MCPClientWrapper,
@@ -134,6 +138,11 @@ import { runOutsideAdmission, trackCall } from './lib/admission-scope';
 import { boundHandlerExporter } from './lib/bound-handler-exporter';
 import { destinationRequiresCredentials } from './lib/destination-authentication';
 import { handlerBatchAvailability } from './lib/handler-batch-availability';
+import {
+  createHubRagAccess,
+  getHubRagAccess,
+  initHubRagAccess,
+} from './lib/rag-access';
 import { connectionSystemType } from './lib/system-identity-cache';
 import { createToolLoopWindow } from './lib/tool-loop-window';
 
@@ -165,7 +174,10 @@ import {
 } from './lib/request-system-context';
 import { recordReviewProfile, recordToolScore } from './lib/review-scope';
 import { getRunRecordStore } from './lib/run-record-store';
-import { SessionHistoryRag, turnOwner } from './lib/session-history-rag';
+import {
+  initSessionHistoryRouter,
+  SessionHistoryRouter,
+} from './lib/session-history-collection';
 import {
   assertToolAllowed,
   isReadOnlyTool,
@@ -181,6 +193,7 @@ import {
   toolStoreName,
 } from './lib/tool-corpus';
 import { ToolQueryAnalyzer } from './lib/tool-query-analyzer';
+import { volatileHistoryProvider } from './lib/volatile-history-provider';
 
 export type { SharedCorpusDoc } from './lib/tool-corpus';
 export { collectionFor } from './lib/tool-corpus';
@@ -383,7 +396,12 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     );
     const writer = target.writer?.() ?? this.inner.writer?.();
     if (!writer) throw new Error('Inner RAG is not editable');
-    const res = await writer.upsertRaw(id, text, rest, options);
+    const res = await writer.upsertRaw(
+      id,
+      text,
+      stampRagOwner(rest, { scope: 'global' }),
+      options,
+    );
     if (!res.ok) return res;
     return { ok: true as const, value: { id } };
   }
@@ -456,7 +474,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
         const res = await pick(id, metadata).upsertRaw(
           id,
           text,
-          metadata,
+          stampRagOwner(metadata ?? {}, { scope: 'global' }),
           options,
         );
         if (res.ok && id.startsWith('skill:')) seen.add(id);
@@ -503,7 +521,13 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
           const write =
             target.upsertPrecomputedRaw ?? inner.upsertPrecomputedRaw;
           if (!write) return { ok: true as const, value: undefined };
-          const res = await write(id, text, vector, metadata, options);
+          const res = await write(
+            id,
+            text,
+            vector,
+            stampRagOwner(metadata, { scope: 'global' }),
+            options,
+          );
           if (res.ok && id.startsWith('skill:')) seen.add(id);
           return res;
         },
@@ -991,7 +1015,7 @@ import {
   logSkillsPool,
 } from './lib/skills-pool';
 import { systemToolTrust } from './lib/system-tool-trust';
-import { trustedSkillResults } from './lib/trusted-skill';
+import { skillDescriptionsRag, trustedSkillResults } from './lib/trusted-skill';
 import { CollectionRegistry } from './rag-collections';
 
 /**
@@ -1323,6 +1347,12 @@ let providers: Providers | null = null;
 
 /** Called once by server startup; components get instances, not config. */
 export function initProviders(p: Providers): void {
+  historyProviders.clear();
+  // Provider-only consumers do not need access stores. Validate the backend
+  // when an agent or caller first requests access, retaining real persistence.
+  initHubRagAccess(() =>
+    createHubRagAccess(p.collections ?? null, p.stores.backendOf('persistent')),
+  );
   providers = p;
 }
 
@@ -1344,9 +1374,9 @@ export function getQueryEmbedder(): IQueryEmbedder | undefined {
   return e ? agentQueryEmbedder(e, 'collection-retrieval') : undefined;
 }
 
-/** False until server startup has built the providers; requests wait for it. */
+/** False until startup has built and migrated every hub provider. */
 export function isProvidersReady(): boolean {
-  return providers !== null;
+  return providers !== null && isRagMigrationReady();
 }
 
 // ---------------------------------------------------------------------------
@@ -1551,54 +1581,24 @@ export function createToolQueryAnalyzer(): ToolQueryAnalyzer {
   );
 }
 
-/**
- * The `history` store, shared like the tool corpus and scoped per conversation.
- *
- * One store for the whole process: turns are keyed by owner, so a second store
- * per destination would only fragment recall for the same conversation. Built
- * lazily on first use and skipped entirely in in-memory mode, where there is no
- * embedder to place a turn in vector space.
- */
-let sharedHistoryRag: SessionHistoryRag | undefined;
+/** One router for the configured session backend; the trusted caller selects a collection. */
+let sharedHistoryRag: SessionHistoryRouter | undefined;
 
-export function getSharedHistoryRag(): SessionHistoryRag | undefined {
+export function getSharedHistoryRag(): SessionHistoryRouter {
   if (sharedHistoryRag) return sharedHistoryRag;
-  const stores = getProviders().stores;
-  const kind = stores.backendOf('session');
-  if (kind === 'in-memory') return undefined;
-  if (!isPersistentKind(kind)) {
-    sharedHistoryRag = new SessionHistoryRag(
-      stores.create('session', 'history'),
-      currentTurnOwner,
-      undefined,
-      {
-        storageBackend: kind,
-        trustResolver: () => resolverFor(getCollectionRegistry()),
-      },
-    );
-    return sharedHistoryRag;
-  }
-  // A persistent kind: the history is a cataloged store (`h_history`, spec
-  // §6), opened through the provider — never a bare store without a record.
-  // Forget and the cap then go to the store (deleteWhere, scan); every
-  // failure there is logged and never breaks a chat turn.
-  const log = cds.log('session-history');
-  sharedHistoryRag = new SessionHistoryRag(
-    new PersistentHistoryStore(
-      historyProvider(kind),
-      { warn: (m, d) => log.warn(m, d) },
-      {
-        storePrefix: storePrefixFor(kind, getAgentConfig().rag.qdrant?.prefix),
-      },
-    ),
-    currentTurnOwner,
-    undefined,
-    {
-      storageBackend: kind,
-      log,
-      trustResolver: () => resolverFor(getCollectionRegistry()),
-    },
-  );
+  const kind = getProviders().stores.backendOf('session');
+  const provider = isPersistentKind(kind)
+    ? historyProvider(kind)
+    : volatileHistoryProvider((name) =>
+        getProviders().stores.create('session', name),
+      );
+  sharedHistoryRag = new SessionHistoryRouter(provider, {
+    storageBackend: kind,
+    trustResolver: () => resolverFor(getCollectionRegistry()),
+    log: cds.log('session-history'),
+    storePrefix: storePrefixFor(kind, getAgentConfig().rag.qdrant?.prefix),
+  });
+  initSessionHistoryRouter(sharedHistoryRag);
   return sharedHistoryRag;
 }
 
@@ -1606,7 +1606,11 @@ export function getSharedHistoryRag(): SessionHistoryRag | undefined {
  * The provider of the `session` class's backend: the collections' provider
  * when both classes are on the same backend, else one of its own.
  */
+const historyProviders = new Map<RagBackendKind, IRagProvider>();
+
 export function historyProvider(kind: RagBackendKind): IRagProvider {
+  const cached = historyProviders.get(kind);
+  if (cached) return cached;
   const p = getProviders();
   if (p.stores.backendOf('persistent') === kind && p.collections)
     return p.collections;
@@ -1623,16 +1627,8 @@ export function historyProvider(kind: RagBackendKind): IRagProvider {
   );
   if (!provider)
     throw new Error(`no history provider for session backend "${kind}"`);
+  historyProviders.set(kind, provider);
   return provider;
-}
-
-/** Who is asking, for recall scoping — undefined outside a request. */
-export function currentTurnOwner(): string | undefined {
-  const sessionId = getRequestSessionId();
-  if (!sessionId) return undefined;
-  const userId = cds.context?.user?.id;
-  if (!userId) return undefined;
-  return turnOwner(userId, sessionId);
 }
 
 // ---------------------------------------------------------------------------
@@ -2934,7 +2930,7 @@ function getOrCreateSharedLlms(
  * the two build paths cannot drift. Deliberately stops short of `.build()` —
  * callers add any build-specific wiring (e.g. `withRequestLogger`) and build.
  */
-async function configureDestinationAgentBuilder(
+export async function configureDestinationAgentBuilder(
   mcpAdapter: IMcpClient,
   toolsRag: ExpositionFilteringRag,
   config: AgentConfig,
@@ -2994,6 +2990,7 @@ async function configureDestinationAgentBuilder(
       ].join('\n'),
     },
   })
+    .withRagAccess(getHubRagAccess().access)
     .withToolLoopContextStrategyFactory(() => createToolLoopWindow())
     .withToolTrust(builtInToolTrust(roleResolver))
     .withMainLlm(
@@ -3064,6 +3061,13 @@ async function configureDestinationAgentBuilder(
   // (which DOES run the tool-loop) keeps skills enabled.
   if (!opts?.skipSkills) {
     builder.withSkillManager(skillsPool.informationalSkills());
+    if (!opts?.skipRetrieval)
+      builder.addRagCollection({
+        name: 'skills',
+        rag: skillDescriptionsRag(toolsRag),
+        meta: { scope: 'global', displayName: 'Skill descriptions' },
+        idempotent: true,
+      });
   }
 
   // Share embedder across all RAG queries
@@ -3185,6 +3189,7 @@ export async function buildPlannerAgent(
       system,
     },
   })
+    .withRagAccess(getHubRagAccess().access)
     .withToolTrust(builtInToolTrust(roleResolver))
     .withMainLlm(plannerRecorder.trackOfferedTools(llm))
     .withMcpClients([plannerRecorder])
@@ -3199,7 +3204,7 @@ export async function buildPlannerAgent(
   // DialogueSession owns the coordinator history; authors use the tool window.
   if (authorClient)
     builder.withToolLoopContextStrategyFactory(() => createToolLoopWindow());
-  const handle = await builder.build();
+  const handle = unwrapBuilderResult(await builder.build());
   return handle.agent;
 }
 export function releasePlannerAgent(_agent: SmartAgent): void {}
@@ -3357,7 +3362,7 @@ function destinationProfileRunner(
         },
       );
       options?.signal?.throwIfAborted();
-      const handle = await builder.build();
+      const handle = unwrapBuilderResult(await builder.build());
       options?.signal?.throwIfAborted();
       return new SmartAgentSubAgent(
         profile.name,
@@ -3628,7 +3633,7 @@ export async function buildAgentForDestination(
   // actually matters — the one the executor worker's tool loop calls — is
   // wired inside `configureDestinationAgentBuilder`, which both this build and
   // `buildExecutorWorker` share.
-  const handle = await builder.build();
+  const handle = unwrapBuilderResult(await builder.build());
 
   // Expose recMcp on the handle so channel handlers can call
   // `recMcp.dropRequest(traceId)` in their `finally` block — nobody else
@@ -3693,7 +3698,7 @@ export async function buildExecutorWorker(
     toolsRag,
     config,
   );
-  const handle = await builder.build();
+  const handle = unwrapBuilderResult(await builder.build());
   const prepareDirect = (options?: CallOptions) =>
     prepareCompatibilityWorker(config, options, async (callOptions) => {
       const resolved = await resolve(callOptions);
@@ -3735,7 +3740,7 @@ export async function buildExecutorWorker(
         ),
       );
       callOptions.signal?.throwIfAborted();
-      const fresh = await freshBuilder.build();
+      const fresh = unwrapBuilderResult(await freshBuilder.build());
       callOptions?.signal?.throwIfAborted();
       return {
         agent: withConversationHistory(fresh.agent),
@@ -3752,6 +3757,7 @@ export async function buildExecutorWorker(
           const result = await prepared.scope(() =>
             prepared.agent.process(args[0], {
               ...args[1],
+              ...(args[1]?.caller ? callOptionsFor(args[1].caller) : {}),
               externalTools: [],
               externalResults: undefined,
             }),
@@ -3770,6 +3776,7 @@ export async function buildExecutorWorker(
           const iterator = prepared.agent
             .streamProcess(args[0], {
               ...args[1],
+              ...(args[1]?.caller ? callOptionsFor(args[1].caller) : {}),
               externalTools: [],
               externalResults: undefined,
             })
@@ -3909,6 +3916,7 @@ export async function buildLlmOnlyAgent(
       ),
     },
   })
+    .withRagAccess(getHubRagAccess().access)
     .withMcpClients([
       withToolResultCap(
         new DialogueRagMcpClient(emptyClient, undefined, false, true),
@@ -3922,6 +3930,7 @@ export async function buildLlmOnlyAgent(
     .withClassification(false)
     .withLlmCallStrategy(new FallbackLlmCallStrategy())
     .withMetrics(metrics)
+    .setHistoryRag(getSharedHistoryRag())
     .withHistorySummarization(20)
     .withClientAdapter(new ClineClientAdapter());
 
@@ -3937,7 +3946,7 @@ export async function buildLlmOnlyAgent(
   const e = getProviders().embedding;
   if (e) builder.withEmbedder(agentQueryEmbedder(e));
 
-  const handle = await builder.build();
+  const handle = unwrapBuilderResult(await builder.build());
   // `config.llm.classifierModel` defaults to the main model name, so only the
   // variable itself says that a classifier was chosen. Otherwise the decision
   // uses this request agent's immutable generation model.

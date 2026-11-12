@@ -165,7 +165,7 @@ it.each([
     runRecordId('alice', 'bad'),
     text,
     Array(DIM).fill(0),
-    { userId: 'alice', sessionId: 'bad', savedAt: Date.now() },
+    { authorUserId: 'alice', hubSessionId: 'bad', savedAt: Date.now() },
   );
   if (!w.ok) throw w.error;
   expect(await store.load('bad')).toBeUndefined();

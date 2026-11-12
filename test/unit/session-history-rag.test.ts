@@ -1,11 +1,15 @@
+import { type RagResult, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+import { createHubRagAccess, initHubRagAccess } from '../../srv/lib/rag-access';
 import {
-  objectNames,
-  renderTurn,
-  SessionHistoryRag,
-  turnOwner,
-} from '../../srv/lib/session-history-rag';
+  historyTestProvider,
+  SessionHistoryFixture as SessionHistoryRag,
+} from './helpers/session-history-fixture';
 
-type Row = { score: number; text: string; metadata: Record<string, unknown> };
+beforeEach(() => initHubRagAccess(createHubRagAccess(null, 'in-memory')));
+
+import { objectNames, renderTurn, turnOwner } from '../../srv/lib/history-turn';
+
+type Row = RagResult;
 
 function fakeInner(rows: Row[] = []) {
   const written: Row[] = [];
@@ -21,12 +25,20 @@ function fakeInner(rows: Row[] = []) {
       upsertRaw: async (
         id: string,
         text: string,
-        metadata: Record<string, unknown>,
+        metadata: RagResult['metadata'],
       ) => {
         written.push({ score: 1, text, metadata: { id, ...metadata } });
         return { ok: true as const, value: undefined };
       },
-      deleteByIdRaw: async () => ({ ok: true as const, value: true }),
+      deleteByIdRaw: async (id: string) => {
+        const at = written.findIndex((row) => row.metadata.id === id);
+        if (at !== -1) written.splice(at, 1);
+        return { ok: true as const, value: at !== -1 };
+      },
+      clearAll: async () => {
+        written.length = 0;
+        return { ok: true as const, value: undefined };
+      },
     }),
   };
 }
@@ -61,34 +73,48 @@ describe('what a stored turn carries', () => {
   });
 });
 
-// Upstream registers `history` with scope `global`, and the query handler adds a
-// session filter only for scope `session`. Without the filter below one
-// person's turns would surface in another's context.
+// The router selects a session collection and verifies the returned record ownership.
 describe('recall is scoped to the conversation asking', () => {
   const rows: Row[] = [
-    { score: 0.9, text: 'alice turn', metadata: { id: 'a', owner: ALICE } },
-    { score: 0.8, text: 'bob turn', metadata: { id: 'b', owner: BOB } },
+    {
+      score: 0.9,
+      text: 'alice turn',
+      metadata: { id: 'a', ownerScope: 'session', sessionId: 's-1' },
+    },
+    {
+      score: 0.8,
+      text: 'bob turn',
+      metadata: { id: 'b', ownerScope: 'session', sessionId: 's-2' },
+    },
   ];
 
   it('returns only the asking conversation’s turns', async () => {
-    const rag = new SessionHistoryRag(fakeInner(rows) as never, () => ALICE);
-    const res = await rag.query({} as never, 10);
+    const rag = new SessionHistoryRag(
+      historyTestProvider(fakeInner(rows)),
+      () => ALICE,
+    );
+    await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' });
+    const res = await rag.query(new TextOnlyEmbedding('q'), 10);
     if (!res.ok) throw new Error('query failed');
     expect(res.value.map((r) => r.text)).toEqual(['alice turn']);
   });
 
   it('returns nothing when there is no conversation to recall for', async () => {
     const rag = new SessionHistoryRag(
-      fakeInner(rows) as never,
+      historyTestProvider(fakeInner(rows)),
       () => undefined,
     );
-    const res = await rag.query({} as never, 10);
+    const res = await rag.query(new TextOnlyEmbedding('q'), 10);
     if (!res.ok) throw new Error('query failed');
     expect(res.value).toEqual([]);
   });
 
   it('scopes getById the same way', async () => {
-    const rag = new SessionHistoryRag(fakeInner(rows) as never, () => ALICE);
+    const rag = new SessionHistoryRag(
+      historyTestProvider(fakeInner(rows)),
+      () => ALICE,
+    );
+    await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' });
     const mine = await rag.getById('a');
     const theirs = await rag.getById('b');
     if (!mine.ok || !theirs.ok) throw new Error('getById failed');
@@ -100,7 +126,11 @@ describe('recall is scoped to the conversation asking', () => {
 describe('the store stays bounded', () => {
   it('forgets the oldest turns beyond the cap', async () => {
     const inner = fakeInner();
-    const rag = new SessionHistoryRag(inner as never, () => ALICE, 3);
+    const rag = new SessionHistoryRag(
+      historyTestProvider(inner),
+      () => ALICE,
+      3,
+    );
     for (let i = 0; i < 5; i++) {
       await rag.recordTurn({
         owner: ALICE,
@@ -109,39 +139,40 @@ describe('the store stays bounded', () => {
         id: `turn:${i}`,
       });
     }
-    expect(rag.turnCount(ALICE)).toBe(3);
+    expect(await rag.turnCount(ALICE)).toBe(3);
+    expect(inner.written).toHaveLength(3);
   });
 
   it('forgets a whole conversation when its session is cleared', async () => {
     const inner = fakeInner();
-    const rag = new SessionHistoryRag(inner as never, () => ALICE);
+    const rag = new SessionHistoryRag(historyTestProvider(inner), () => ALICE);
     await rag.recordTurn({
       owner: ALICE,
       userText: 'q',
       assistantText: 'a',
       id: 'turn:x',
     });
-    expect(rag.turnCount(ALICE)).toBe(1);
+    expect(await rag.turnCount(ALICE)).toBe(1);
 
     await rag.forgetOwner(ALICE);
-    expect(rag.turnCount(ALICE)).toBe(0);
+    expect(await rag.turnCount(ALICE)).toBe(0);
   });
 
   it('counts each conversation separately', async () => {
     const inner = fakeInner();
-    const rag = new SessionHistoryRag(inner as never, () => ALICE);
+    const rag = new SessionHistoryRag(historyTestProvider(inner), () => ALICE);
     await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' });
     await rag.recordTurn({ owner: BOB, userText: 'q', assistantText: 'a' });
     await rag.forgetOwner(ALICE);
-    expect(rag.turnCount(ALICE)).toBe(0);
-    expect(rag.turnCount(BOB)).toBe(1);
+    expect(await rag.turnCount(ALICE)).toBe(0);
+    expect(await rag.turnCount(BOB)).toBe(1);
   });
 });
 
 describe('recording a turn', () => {
   it('stores it under its owner', async () => {
     const inner = fakeInner();
-    const rag = new SessionHistoryRag(inner as never, () => ALICE);
+    const rag = new SessionHistoryRag(historyTestProvider(inner), () => ALICE);
     const ok = await rag.recordTurn({
       owner: ALICE,
       userText: 'make a domain',
@@ -150,7 +181,15 @@ describe('recording a turn', () => {
     });
     expect(ok).toBe(true);
     expect(inner.written).toHaveLength(1);
-    expect(inner.written[0].metadata).toEqual({ id: 'turn:1', owner: ALICE });
+    expect(inner.written[0].metadata).toMatchObject({
+      id: 'turn:1',
+      ownerScope: 'session',
+      sessionId: 's-1',
+      authorUserId: 'alice@example.com',
+    });
+    expect(inner.written[0].metadata).not.toHaveProperty('owner');
+    expect(inner.written[0].metadata).not.toHaveProperty('userId');
+    expect(typeof inner.written[0].metadata.createdAt).toBe('string');
     expect(inner.written[0].text).toContain('ZDEMO_TEST_9');
   });
 
@@ -160,7 +199,10 @@ describe('recording a turn', () => {
       getById: async () => ({ ok: true as const, value: null }),
       healthCheck: async () => ({ ok: true as const, value: undefined }),
     };
-    const rag = new SessionHistoryRag(noWriter as never, () => ALICE);
+    const rag = new SessionHistoryRag(
+      historyTestProvider(noWriter),
+      () => ALICE,
+    );
     await expect(
       rag.recordTurn({ owner: ALICE, userText: 'a', assistantText: 'b' }),
     ).resolves.toBe(false);
@@ -169,7 +211,10 @@ describe('recording a turn', () => {
 
 describe('listTurns', () => {
   it('is empty for a store that cannot enumerate its turns', async () => {
-    const rag = new SessionHistoryRag(fakeInner() as never, () => ALICE);
+    const rag = new SessionHistoryRag(
+      historyTestProvider(fakeInner()),
+      () => ALICE,
+    );
     await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' });
     await expect(rag.listTurns(ALICE)).resolves.toEqual([]);
   });
@@ -195,7 +240,7 @@ it('close waits for a late turn write before deleting its owner', async () => {
       return { ok: true as const, value: 0 };
     },
   };
-  const rag = new SessionHistoryRag(backend as never, () => ALICE);
+  const rag = new SessionHistoryRag(historyTestProvider(backend), () => ALICE);
   const writing = rag.recordTurn({
     owner: ALICE,
     userText: 'hi',
@@ -207,13 +252,10 @@ it('close waits for a late turn write before deleting its owner', async () => {
   expect(inner.written).toHaveLength(0);
 });
 
-it('forget reports a failed persistent delete without throwing', async () => {
-  const inner = {
-    ...fakeInner(),
-    deleteWhere: async () => {
-      throw new Error('down');
-    },
-  };
-  const rag = new SessionHistoryRag(inner as never, () => ALICE);
+it('forget reports a failed collection delete without throwing', async () => {
+  const provider = historyTestProvider(fakeInner());
+  const rag = new SessionHistoryRag(provider, () => ALICE);
+  await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' });
+  jest.spyOn(provider, 'deleteCollection').mockRejectedValue(new Error('down'));
   expect(await rag.forgetOwner(ALICE)).toBe(false);
 });
