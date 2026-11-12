@@ -3,6 +3,7 @@ import {
   type IRag,
   type IRagBackendWriter,
   isRagFilteredDeleter,
+  isRagScanner,
   type RagMetadata,
   type RagResult,
 } from '@mcp-abap-adt/llm-agent';
@@ -21,14 +22,25 @@ export function scopedPlannerMemory(
   // HANA NVARCHAR(255) and PG VARCHAR(255). Preserve long logical ids in metadata.
   const storageId = (id: string) =>
     prefix + (prefix.length + id.length <= 255 ? id : hash(id));
-  const metadata = (id: string, meta: RagMetadata): RagMetadata => ({
-    ...meta,
-    id: storageId(id),
-    sessionId: owner,
-    [originalId]: id,
-  });
+  const metadata = (id: string, meta: RagMetadata): RagMetadata => {
+    const {
+      sessionId,
+      userId,
+      roleId,
+      ownerScope,
+      hubSessionId,
+      namespace,
+      ...rest
+    } = meta;
+    return {
+      ...rest,
+      id: storageId(id),
+      namespace: owner,
+      [originalId]: id,
+    };
+  };
   const restore = (row: RagResult): RagResult => {
-    const { [originalId]: id, ...meta } = row.metadata;
+    const { [originalId]: id, namespace, ownerScope, ...meta } = row.metadata;
     return {
       ...row,
       metadata: {
@@ -39,7 +51,7 @@ export function scopedPlannerMemory(
     };
   };
   const remember = (id: string) => {
-    if (isRagFilteredDeleter(rag)) return;
+    if (isRagScanner(rag)) return;
     let owners = written.get(rag);
     if (!owners) {
       owners = new Map();
@@ -56,13 +68,19 @@ export function scopedPlannerMemory(
     async query(embedding, k, options) {
       const result = await rag.query(embedding, k, {
         ...options,
-        ragFilter: { ...options?.ragFilter, sessionId: owner },
+        ragFilter: {
+          ...options?.ragFilter,
+          sessionId: undefined,
+          userId: undefined,
+          namespace: owner,
+        },
       });
       return result.ok
         ? {
             ok: true,
             value: result.value
-              .filter((r) => r.metadata.sessionId === owner)
+              .filter((r) => r.metadata.namespace === owner)
+              .slice(0, k)
               .map(restore),
           }
         : result;
@@ -73,7 +91,7 @@ export function scopedPlannerMemory(
         ? {
             ok: true,
             value:
-              result.value?.metadata.sessionId === owner
+              result.value?.metadata.namespace === owner
                 ? restore(result.value)
                 : null,
           }
@@ -131,8 +149,29 @@ export async function forgetScopedPlannerMemory(
   owner: string,
 ): Promise<boolean> {
   if (isRagFilteredDeleter(rag)) {
-    const result = await rag.deleteWhere({ sessionId: owner });
+    const result = await rag.deleteWhere({ namespace: owner });
     if (!result.ok) throw result.error;
+    return true;
+  }
+  if (isRagScanner(rag)) {
+    const writer = rag.writer?.();
+    if (!writer) return false;
+    let cursor: string | undefined;
+    do {
+      const page = await rag.scan({
+        filter: { namespace: owner },
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
+      if (!page.ok) throw page.error;
+      for (const row of page.value.records) {
+        if (row.metadata.namespace !== owner) continue;
+        const result = await writer.deleteByIdRaw(row.id);
+        if (!result.ok) throw result.error;
+      }
+      if (page.value.cursor !== undefined && page.value.cursor === cursor)
+        throw new Error('planner memory scan did not advance');
+      cursor = page.value.cursor;
+    } while (cursor !== undefined);
     return true;
   }
   // Like executor history, stores without filtered delete use process-local ids.

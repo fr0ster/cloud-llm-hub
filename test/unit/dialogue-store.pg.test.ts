@@ -164,7 +164,7 @@ it('loads legacy persisted archives and saves only current request fields', asyn
       },
     }),
     Array(DIM).fill(0),
-    { userId: 'alice', sessionId: 'legacy', savedAt: Date.now() },
+    { authorUserId: 'alice', hubSessionId: 'legacy', savedAt: Date.now() },
   );
   if (!written.ok) throw written.error;
   const restored = await store.load('alice', 'legacy');
@@ -234,7 +234,7 @@ it.each([
     dialogueId('alice', 'bad'),
     text,
     Array(DIM).fill(0),
-    { userId: 'alice', sessionId: 'bad', savedAt: Date.now() },
+    { authorUserId: 'alice', hubSessionId: 'bad', savedAt: Date.now() },
   );
   if (!w.ok) throw w.error;
   expect(await store.load('bad')).toBeUndefined();

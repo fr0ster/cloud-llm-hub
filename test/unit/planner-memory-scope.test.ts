@@ -117,11 +117,15 @@ it('keeps query filters and scopes cleanup independently of the supplied filter'
     ragFilter: { sessionId: 'key', namespace: 'n', userId: 'u' },
   });
   expect(query).toHaveBeenCalledWith(queryEmbedding, 2, {
-    ragFilter: { sessionId: 'owner', namespace: 'n', userId: 'u' },
+    ragFilter: {
+      sessionId: undefined,
+      namespace: 'owner',
+      userId: undefined,
+    },
   });
   const remove = jest.spyOn(rag, 'deleteWhere');
   await forgetScopedPlannerMemory(rag, 'owner');
-  expect(remove).toHaveBeenCalledWith({ sessionId: 'owner' });
+  expect(remove).toHaveBeenCalledWith({ namespace: 'owner' });
 });
 
 it('deletes tracked ids without filtered delete, preserving other owners', async () => {

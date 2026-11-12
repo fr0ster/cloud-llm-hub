@@ -133,7 +133,7 @@ describe('ProviderSessionRecordStore on PG', () => {
       typeof rows[0].metadata === 'string'
         ? JSON.parse(rows[0].metadata)
         : rows[0].metadata;
-    expect(meta).toMatchObject({ userId: r.userId, sessionId: r.key });
+    expect(meta).toMatchObject({ authorUserId: r.userId, hubSessionId: r.key });
   });
 });
 
