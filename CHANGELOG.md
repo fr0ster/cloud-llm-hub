@@ -8,9 +8,9 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Breaking
 
-- MCP agent calls (`execute_step`, `plan_create`, `plan_revise`) need a long session in the `x-clh-session` header. Without one they return `SESSION_REQUIRED`; the hub no longer creates a session per call.
+- MCP agent calls (`execute_step`, `plan_create`, `plan_revise`) need a long session, given either as the tool's `session` argument or in the `x-clh-session` header. Without one they return `SESSION_REQUIRED`; the hub no longer creates a session per call.
 - `MCP_Admin` no longer reads other users' collections. It sees its own, role-bound and global collections; writing global collections still needs `MCP_Admin`.
-- The first start runs a data migration before any traffic. Until it succeeds, every request gets 503. Any conflict it finds stops the process.
+- The first start runs a data migration before any traffic. Until it succeeds, every request gets 503, except the static `/chat/webapp/vendor/jszip.min.js` file. Any conflict it finds stops the process.
 - HANA (HDI) deployments must deploy all six `hana-vector-rag` table artifacts with `tools/deploy-hdi-tables.sh` before that start.
 
 ### Changed
