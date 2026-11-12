@@ -1165,7 +1165,8 @@ graph TB
 | `LLM_AGENT_RAG_TYPE` | `agent-config.ts`, `agent-manager.ts` | Selects the tool-intent RAG mode. `in-memory` (the default) is keyword-only and builds **no** embedder (`agent-manager.ts`: `if (ragType === 'in-memory') return null`). **Any other value** — every deployment template sets `vector` — takes the vector path, with the embedder chosen by `LLM_AGENT_PROVIDER`. There is no separate Ollama backend, despite the `RagType` union in `agent-config.ts` still naming `ollama` |
 | `LLM_AGENT_RAG_QUERY_K` | `agent-config.ts` | Legacy budget for other RAG stores; tool search uses separate reader/writer budgets |
 | `LLM_AGENT_TOOLS_K_READER` | `agent-config.ts` | Reader collection seed budget, default `2`; positive integer |
-| `LLM_AGENT_TOOLS_K_WRITER` | `agent-config.ts` | Writer collection seed budget, default `5`; positive integer. Write roles expand found object clusters within their allowed tools |
+| `LLM_AGENT_TOOLS_K_WRITER` | `agent-config.ts` | Writer collection seed budget, default `1`; positive integer. Write roles expand found object clusters within their allowed tools |
+| `LLM_AGENT_TOOLS_CLUSTER_STRATEGY` | `agent-config.ts` | Write-role cluster expansion: `all-seeds` (default) uses every found tool; `top-writer` uses only the highest-scoring writer tool with an object. Found tools and role filtering are preserved |
 | `LLM_AGENT_CLASSIFIER_MODEL` | `agent-config.ts` (`llm.classifierModel`) | Model for helper calls (classification, query translation); falls back to `LLM_AGENT_MODEL` |
 | `LLM_AGENT_SKILL_RAG_K` | `agent-config.ts` (`agent.skillRagK`) | Most `skill:*` entries one tool-RAG query surfaces (default `3`; `0` disables skills). Skills and tools compete for one top-K |
 | `LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK` | `agent-config.ts` (`agent.allowLlmOnlyFallback`) | `true`: a request naming no destination may fall back to the LLM-only agent when the default destination is not ready |
@@ -1176,6 +1177,16 @@ graph TB
 | `LLM_AGENT_STEP_REVIEW_ENABLED` | `lib/step-gate.ts` | Default on; `false` disables deterministic claim notices. Journal-based failed/unanswered write safeguards remain. |
 | `LLM_AGENT_STEP_REVIEW_TIMEOUT_MS` | deprecated | Ignored; no automatic critic or review deadline. |
 | `LLM_AGENT_SAP_RELEVANCE_SCORE` | deprecated | Ignored, including invalid values; automatic suspicion-based review was removed. |
+
+Offline measurement on 91 RW prompts with the Developer role:
+
+| Strategy | kWriter | Target cluster complete | Average tools | Average foreign tools |
+| --- | --- | --- | --- | --- |
+| all-seeds | 1 | 91/91 | 11.5 | 4.5 |
+| all-seeds (previous default) | 5 | 91/91 | 20.7 | 13.6 |
+| top-writer | 1 | 78/91 | 9.2 | 3.3 |
+
+The default is `all-seeds` with `LLM_AGENT_TOOLS_K_WRITER=1`: it preserved complete target clusters in this sample while reducing tool count and foreign tools. Consumers can override either environment variable.
 
 ### Key HTTP Headers (Per-Request)
 

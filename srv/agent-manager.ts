@@ -128,6 +128,7 @@ import {
   type AgentConfig,
   getAgentConfig,
   type RagBackendKind,
+  type ToolClusterStrategy,
 } from './agent-config';
 import { runOutsideAdmission, trackCall } from './lib/admission-scope';
 import { boundHandlerExporter } from './lib/bound-handler-exporter';
@@ -334,7 +335,9 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       .toolGate ?? 'classifier',
     private readonly agentMode = getAgentConfig().agent.mode,
     private readonly kReader = getAgentConfig().agent.kReader ?? 2,
-    private readonly kWriter = getAgentConfig().agent.kWriter ?? 5,
+    private readonly kWriter = getAgentConfig().agent.kWriter ?? 1,
+    private readonly toolClusterStrategy: ToolClusterStrategy = getAgentConfig()
+      .agent.toolClusterStrategy ?? 'all-seeds',
   ) {}
 
   /** The store a given exposition's entries live in. */
@@ -631,9 +634,20 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
       );
       const expanded: RagResult[] = [];
       if (grantsWriteLevel) {
-        const objects = new Set(
-          [...names].map((name) => toolObjects[name]).filter(Boolean),
-        );
+        const objectOf = (row: RagResult) =>
+          toolObjects[String(row.metadata.id).replace(/^tool:/, '')];
+        const seeds =
+          this.toolClusterStrategy === 'all-seeds'
+            ? found
+            : found
+                .filter(
+                  (row) =>
+                    typeof row.metadata.exposition === 'string' &&
+                    collectionFor(row.metadata.exposition) === 'writer' &&
+                    objectOf(row),
+                )
+                .slice(0, 1);
+        const objects = new Set(seeds.map(objectOf).filter(Boolean));
         for (const doc of getSharedCorpusDocs()) {
           if (
             !toolObjects[doc.name] ||
@@ -673,6 +687,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
         overFetchK,
         kReader: this.kReader,
         kWriter: this.kWriter,
+        toolClusterStrategy: this.toolClusterStrategy,
         totalResults: result.value.length,
         // The EFFECTIVE value, not the requested one: with no role the filter
         // falls back to reader level, and logging 'all' there would describe
