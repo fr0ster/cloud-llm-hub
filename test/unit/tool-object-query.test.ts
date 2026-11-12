@@ -1,4 +1,5 @@
 import { InMemoryRag, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+import type { ToolClusterStrategy } from '../../srv/agent-config';
 import {
   ExpositionFilteringRag,
   getSharedCorpusDocs,
@@ -123,3 +124,53 @@ it('caps both collections independently even when the caller requests a larger K
   expect(readerQuery.mock.calls[0][1]).toBe(3);
   expect(writerQuery.mock.calls[0][1]).toBe(6);
 });
+
+it.each<ToolClusterStrategy>(['all-seeds', 'top-writer'])(
+  'expands only the selected clusters with %s',
+  async (strategy) => {
+    const reader = new InMemoryRag();
+    const writer = new InMemoryRag();
+    for (const [store, name] of [
+      [reader, 'GetClass'],
+      [writer, 'UpdateUnitTest'],
+    ] as const) {
+      const doc = getSharedCorpusDocs().find((item) => item.name === name);
+      if (!doc) throw new Error(`Missing ${name}`);
+      await store.writer().upsertRaw(doc.id, 'query', {
+        id: doc.id,
+        name,
+        exposition: doc.exposition,
+      });
+    }
+    const rag = new ExpositionFilteringRag(
+      reader,
+      writer,
+      undefined,
+      0,
+      undefined,
+      undefined,
+      'off',
+      'hard',
+      1,
+      1,
+      strategy,
+    );
+    const result = await rag.query(new TextOnlyEmbedding('query'), 100, {
+      ragFilter: { exposition: resolveExposition(['MCP_Developer']) },
+    });
+    if (!result.ok) throw new Error('Query failed');
+    const names = result.value.map((row) => row.metadata.id);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'tool:GetClass',
+        'tool:UpdateUnitTest',
+        'tool:GetUnitTestResult',
+      ]),
+    );
+    if (strategy === 'all-seeds') {
+      expect(names).toContain('tool:UpdateClass');
+    } else {
+      expect(names).not.toContain('tool:UpdateClass');
+    }
+  },
+);

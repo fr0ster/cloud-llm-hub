@@ -150,7 +150,18 @@ parameter out. Add one only when you actually need to change the behaviour:
 | `DESTINATION_MAPPING` | empty | Only for CALM or other external callers that address systems as `DEV.100` instead of a destination name |
 | `LLM_AGENT_RAG_QUERY_K` | `15` in `mta.yaml` (code fallback is `5`) | Legacy budget for other RAG stores |
 | `LLM_AGENT_TOOLS_K_READER` | `2` | Reader seed tools per query; positive integer |
-| `LLM_AGENT_TOOLS_K_WRITER` | `5` | Writer seed tools per query; positive integer. Write roles expand object clusters within their allowed tools |
+| `LLM_AGENT_TOOLS_K_WRITER` | `1` | Writer seed tools per query; positive integer. Write roles expand object clusters within their allowed tools |
+| `LLM_AGENT_TOOLS_CLUSTER_STRATEGY` | `all-seeds` | Write-role cluster expansion: `all-seeds` (default) uses every found tool; `top-writer` uses only the highest-scoring writer tool with an object. Found tools and role filtering are preserved |
+
+Offline measurement on 91 RW prompts with the Developer role:
+
+| Strategy | kWriter | Target cluster complete | Average tools | Average foreign tools |
+| --- | --- | --- | --- | --- |
+| all-seeds | 1 | 91/91 | 11.5 | 4.5 |
+| all-seeds (previous default) | 5 | 91/91 | 20.7 | 13.6 |
+| top-writer | 1 | 78/91 | 9.2 | 3.3 |
+
+The default is `all-seeds` with `LLM_AGENT_TOOLS_K_WRITER=1`: it preserved complete target clusters in this sample while reducing tool count and foreign tools. Consumers can override either environment variable.
 
 For Scenario B, replace the AI Core block with `LLM_AGENT_PROVIDER`, `LLM_AGENT_API_KEY` and
 `LLM_AGENT_BASE_URL`, and leave the AI Core resource inactive.
