@@ -687,11 +687,9 @@ it('real SQLite runtime snapshots open locally and contain written records', asy
       throw new Error('Expected SQLite snapshot capability');
     active.recorder.record(record('snapshot-record'));
     // The recorder drains asynchronously; snapshot operations serialize with sink writes.
-    for (
-      let attempt = 0;
-      active.status().delivered < 1 && attempt < 100;
-      attempt++
-    ) {
+    // Wait for the delivery itself, not a fixed number of polls: a slow CI runner
+    // drained after the former 1 s cap and failed the test.
+    while (active.status().delivered < 1) {
       await new Promise<void>((resolve: () => void): void => {
         setTimeout(resolve, 10);
       });
