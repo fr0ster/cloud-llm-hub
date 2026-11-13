@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [11.0.2] - 2026-11-13
+
 ### Fixed
 
 - Anthropic: tool use works with `anthropic-llm` 30.11.3, and the hub no longer sends temperature 0.7 by default (Claude 5.x rejects temperature).
