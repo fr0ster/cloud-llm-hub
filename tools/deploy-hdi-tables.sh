@@ -22,7 +22,7 @@ POLL_STEP=10
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMPLATE="$ROOT/tools/hdi-deployer"
 DDL="$ROOT/node_modules/@mcp-abap-adt/hana-vector-rag/ddl"
-FILES=(RAG_DOCUMENTS.hdbtable RAG_COLLECTIONS.hdbtable rag_roles.hdbtable rag_role_assignments.hdbtable rag_collection_roles.hdbtable rag_session_bindings.hdbtable)
+FILES=(RAG_DOCUMENTS.hdbtable RAG_COLLECTIONS.hdbtable rag_roles.hdbtable rag_role_assignments.hdbtable rag_collection_roles.hdbtable rag_session_bindings.hdbtable rag_role_assignments_role_fk.hdbconstraint rag_collection_roles_role_fk.hdbconstraint)
 USAGE_FILES=(USAGE_RECORDS.hdbtable USAGE_RECORDS_AT_IDX.hdbindex USAGE_RECORDS_SESSION_ID_IDX.hdbindex USAGE_RECORDS_KIND_IDX.hdbindex)
 
 run() {

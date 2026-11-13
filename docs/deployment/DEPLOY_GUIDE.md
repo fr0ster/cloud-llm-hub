@@ -105,8 +105,14 @@ User and session RAG collections (and session history) can live in SAP HANA Clou
 it once, for example `cf create-service hana hdi-shared hdi-llm`. The MTA binds this existing container
 (step 3); it does not create one.
 
-**2. Tables.** The shared layout needs two tables, `RAG_DOCUMENTS` and `RAG_COLLECTIONS`, shipped as
-`.hdbtable` files by `@mcp-abap-adt/hana-vector-rag`. Deploy them into the container:
+**2. Tables.** `@mcp-abap-adt/hana-vector-rag` ships eight HDI artifacts:
+- six `.hdbtable` files: `RAG_DOCUMENTS`, `RAG_COLLECTIONS`, `rag_roles`, `rag_role_assignments`,
+  `rag_collection_roles`, `rag_session_bindings`;
+- two `.hdbconstraint` files with their foreign keys: `rag_role_assignments_role_fk`,
+  `rag_collection_roles_role_fk`.
+
+Deploy them into the container before the hub starts. Its startup migration needs the access tables.
+Deploy with:
 
 ```bash
 npm ci

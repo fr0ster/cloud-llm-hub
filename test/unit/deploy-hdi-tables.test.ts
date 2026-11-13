@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-test('deploy-hdi-tables dry run lists all six artifacts', () => {
+test('deploy-hdi-tables dry run lists all eight artifacts', () => {
   const output = execFileSync(
     'bash',
     ['tools/deploy-hdi-tables.sh', '--dry-run'],
@@ -18,6 +18,11 @@ test('deploy-hdi-tables dry run lists all six artifacts', () => {
     'rag_session_bindings',
   ])
     expect(output).toContain(`${name}.hdbtable`);
+  for (const name of [
+    'rag_role_assignments_role_fk',
+    'rag_collection_roles_role_fk',
+  ])
+    expect(output).toContain(`${name}.hdbconstraint`);
   expect(output).toContain('merge');
   expect(output).toContain('hana-vector-rag/ddl/.hdiconfig');
   expect(output).toContain('up to 300 s');
@@ -45,6 +50,7 @@ test('HDI config merge retains shipped table and usage index plugins', () => {
     const output = readFileSync(target, 'utf8');
     expect(output).toContain('com.sap.hana.di.table');
     expect(output).toContain('com.sap.hana.di.index');
+    expect(output).toContain('com.sap.hana.di.constraint');
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
