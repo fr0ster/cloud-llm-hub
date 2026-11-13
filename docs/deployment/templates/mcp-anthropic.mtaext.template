@@ -35,7 +35,8 @@ parameters:
 
   # LLM Model Configuration
   LLM_AGENT_MODEL: "claude-sonnet-4-20250514"
-  LLM_AGENT_TEMPERATURE: "0.7"
+  # Unset uses the provider/model default; set a number to override; off explicitly omits.
+  LLM_AGENT_TEMPERATURE: ""
   LLM_AGENT_MAX_TOKENS: "32000"
 
   # MCP Configuration — SAP system destination(s)

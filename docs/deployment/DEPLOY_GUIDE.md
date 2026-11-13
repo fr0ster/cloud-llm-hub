@@ -23,7 +23,7 @@ cp docs/deployment/templates/mcp-sap-ai-core.mtaext.template .mtaext
 Edit `.mtaext` and set:
 
 - **LLM_AGENT_MODEL**: Your LLM model name (e.g., `gpt-4o-mini`, `claude-3-5-sonnet`, `deepseek-chat`)
-- **LLM_AGENT_TEMPERATURE**: Temperature (0.0 - 2.0, default: `0.7`)
+- **LLM_AGENT_TEMPERATURE**: Unset uses the provider/model default; set a number to override; `off` explicitly omits the parameter.
 - **LLM_AGENT_MAX_TOKENS**: Max tokens (default: `2000`)
 - **LLM_AGENT_MCP_DESTINATION**: BTP Destination name for ABAP connection
 
@@ -33,7 +33,8 @@ modules:
   - name: cloud-llm-hub-srv
     properties:
       LLM_AGENT_MODEL: "gpt-4o-mini"
-      LLM_AGENT_TEMPERATURE: "0.7"
+      # Unset uses the provider/model default; set a number to override; off explicitly omits.
+      LLM_AGENT_TEMPERATURE: ""
       LLM_AGENT_MAX_TOKENS: "2000"
       LLM_AGENT_MCP_DESTINATION: "DEV_ABAP_SYSTEM"
 ```

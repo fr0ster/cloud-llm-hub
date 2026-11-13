@@ -20,7 +20,7 @@ test.each([true, false])(
           executor: {
             model: null,
             params: {
-              temperature: { value: 0.7, source: 'default' },
+              temperature: { value: 'off', source: 'default' },
               maxOutputTokens: { value: 4096, source: 'config' },
             },
           },
@@ -39,7 +39,7 @@ test.each([true, false])(
       },
     });
     expect(target.innerHTML).toContain(
-      'readonly value="0.7 (source: default)"',
+      'readonly value="off (source: default)"',
     );
     expect(target.innerHTML).toContain(
       'readonly value="4096 (source: config)"',

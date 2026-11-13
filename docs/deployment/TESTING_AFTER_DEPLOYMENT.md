@@ -324,7 +324,8 @@ from its environment.
 
 ```bash
 cf set-env cloud-llm-hub-srv LLM_AGENT_MODEL       anthropic--claude-4.5-sonnet
-cf set-env cloud-llm-hub-srv LLM_AGENT_TEMPERATURE 0.7
+# Unset uses the provider/model default; set a number to override; off explicitly omits.
+cf unset-env cloud-llm-hub-srv LLM_AGENT_TEMPERATURE
 cf set-env cloud-llm-hub-srv LLM_AGENT_MAX_TOKENS  32000
 
 # Restart to apply changes

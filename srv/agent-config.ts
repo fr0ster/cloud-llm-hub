@@ -26,7 +26,7 @@ import { parseTrustDefaults, type TrustDefaults } from './lib/trust';
  *
  * Configuration variables:
  * - LLM_AGENT_MODEL: Model name (e.g., 'gpt-4o-mini', 'claude-3-5-sonnet')
- * - LLM_AGENT_TEMPERATURE: Temperature (default: 0.7; off omits the parameter)
+ * - LLM_AGENT_TEMPERATURE: Temperature (unset uses the provider/model default; a number overrides it; off explicitly omits the parameter)
  * - LLM_AGENT_MAX_TOKENS: Max tokens (default: 2000)
  * - LLM_AGENT_MCP_DESTINATION: Destination name for MCP/ABAP connection (required)
  * - LLM_AGENT_MCP_ENDPOINT: MCP proxy endpoint URL (optional, defaults to local)
