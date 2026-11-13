@@ -50,6 +50,7 @@ test('HDI config merge retains shipped table and usage index plugins', () => {
     const output = readFileSync(target, 'utf8');
     expect(output).toContain('com.sap.hana.di.table');
     expect(output).toContain('com.sap.hana.di.index');
+    expect(output).toContain('com.sap.hana.di.constraint');
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
