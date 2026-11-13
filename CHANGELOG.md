@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [11.0.0] - 2026-11-13
+
+### Breaking
+
+- MCP agent calls (`execute_step`, `plan_create`, `plan_revise`) need a long session, given either as the tool's `session` argument or in the `x-clh-session` header. Without one they return `SESSION_REQUIRED`; the hub no longer creates a session per call.
+- `MCP_Admin` no longer reads other users' collections. It sees its own, role-bound and global collections; writing global collections still needs `MCP_Admin`.
+- The first start runs a data migration before any traffic. Until it succeeds, every request gets 503, except the static `/chat/webapp/vendor/jszip.min.js` file. Any conflict it finds stops the process.
+- HANA (HDI) deployments must deploy all six `hana-vector-rag` table artifacts with `tools/deploy-hdi-tables.sh` before that start.
+
+### Changed
+
+- Moved to llm-agent 32.0.1: the library isolates every collection by owner and session.
+- Every agent call carries a trusted caller bound to its session. A `clh_session` cookie of another user is refused with 403.
+- `/v1` requests without a session get one minted and bound.
+- Each session's history lives in its own collection and is deleted when the session ends. Long sessions keep their history across restarts.
+- Hub dialogue, run, session and planner-memory records no longer carry library identity keys. Existing rows are rewritten once at startup; rows whose owner is ambiguous are reported, not moved.
+- Shared `h_history` turns are moved into per-session collections at startup.
+- RW tool search is a selectable strategy (`LLM_AGENT_TOOLS_CLUSTER_STRATEGY`: `all-seeds` or `top-writer`). The default stays `all-seeds`, and `LLM_AGENT_TOOLS_K_WRITER` now defaults to 1 instead of 5: on 91 measured write prompts the target cluster was still always found, with about 11.5 tools in context instead of 20.7.
+
+### Added
+
+- Skill descriptions reach the context through a global `skills` collection.
+
 ## [10.10.0] - 2026-11-11
 
 ### Added
