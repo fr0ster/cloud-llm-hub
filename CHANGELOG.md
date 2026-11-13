@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [11.0.1] - 2026-11-13
+
+### Fixed
+
+- HANA (HDI) deployments failed: `hana-vector-rag` 32.0.0 put foreign keys inside two `.hdbtable` artifacts, which HDI refuses. Moved to `hana-vector-rag` 32.0.1, which ships them as two `.hdbconstraint` files; `tools/deploy-hdi-tables.sh` now deploys all eight artifacts.
+
 ## [11.0.0] - 2026-11-13
 
 ### Breaking
