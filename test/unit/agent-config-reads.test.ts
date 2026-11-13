@@ -89,8 +89,8 @@ describe('agent config: settings read at the point of use before', () => {
       expect(() => loadAgentConfig()).toThrow('LLM_AGENT_TIME_ZONE');
     });
 
-    it('keeps the temperature default and supports off over the legacy fallback', () => {
-      expect(loadAgentConfig().llm.temperature).toBe(0.7);
+    it('uses the model temperature default and supports off over the legacy fallback', () => {
+      expect(loadAgentConfig().llm.temperature).toBeUndefined();
       process.env.SAP_CORE_AI_TEMPERATURE = '0.3';
       expect(loadAgentConfig().llm.temperature).toBe(0.3);
       process.env.LLM_AGENT_TEMPERATURE = 'off';

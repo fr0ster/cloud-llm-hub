@@ -52,15 +52,25 @@ it.each<HubLlmConfig['component']>([
   },
 );
 
-it('keeps the unset temperature default in provider options', async () => {
+it('omits unset temperature from provider and LLM call options', async () => {
   delete process.env.LLM_AGENT_TEMPERATURE;
   delete process.env.SAP_CORE_AI_TEMPERATURE;
-  await makeHubLlm(
+  const temperature = loadAgentConfig().llm.temperature;
+  expect(temperature).toBeUndefined();
+  const llm = await makeHubLlm(
     { provider: 'openai', apiKey: 'test', model: 'test' },
-    loadAgentConfig().llm.temperature,
+    temperature,
   );
-  expect(jest.mocked(OpenAIProvider).mock.calls[0]?.[0]).toHaveProperty(
+  expect(jest.mocked(OpenAIProvider).mock.calls[0]?.[0]).not.toHaveProperty(
     'temperature',
-    0.7,
   );
+  const actual = jest.requireActual<typeof import('@mcp-abap-adt/openai-llm')>(
+    '@mcp-abap-adt/openai-llm',
+  );
+  const chat = jest
+    .spyOn(actual.OpenAIProvider.prototype, 'chat')
+    .mockResolvedValue({ content: 'ok' });
+  await llm.chat([{ role: 'user', content: 'hello' }]);
+  expect(chat).toHaveBeenCalledTimes(1);
+  expect(chat.mock.calls[0]?.[2] ?? {}).not.toHaveProperty('temperature');
 });

@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- Anthropic: tool use works with `anthropic-llm` 30.11.3, and the hub no longer sends temperature 0.7 by default (Claude 5.x rejects temperature).
+
+### Changed
+
+- Unset `LLM_AGENT_TEMPERATURE` now means the provider/model default instead of 0.7; set a number to override, or `off` to omit explicitly.
+
 ## [11.0.1] - 2026-11-13
 
 ### Fixed

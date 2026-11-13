@@ -16,6 +16,7 @@ parameters:
   LLM_AGENT_LOG_LEVELS: ""
   LLM_AGENT_PROVIDER: "sap-ai-sdk"
   LLM_AGENT_MODEL:
+  # Unset uses the provider/model default; set a number to override; off explicitly omits.
   LLM_AGENT_TEMPERATURE:
   # For openai provider: API key and base URL — set via cf set-env (secrets!)
   # cf set-env cloud-llm-hub-srv LLM_AGENT_API_KEY "sk-..."
