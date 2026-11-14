@@ -14,6 +14,29 @@ import { toolDefinitionAnnotations } from '../../srv/lib/tool-definition-effects
 import { ToolQueryAnalyzer } from '../../srv/lib/tool-query-analyzer';
 import { selectStepTools } from '../../srv/lib/tool-selection';
 
+it('defaults to step-kind with five reader seeds and two writer seeds', () => {
+  const readers = Array.from({ length: 6 }, (_, index) => ({
+    text: `reader-${index}`,
+    score: 6 - index,
+    metadata: { id: `tool:reader-${index}`, readOnlyHint: true },
+  }));
+  const writers = Array.from({ length: 3 }, (_, index) => ({
+    text: `writer-${index}`,
+    score: 3 - index,
+    metadata: { id: `tool:writer-${index}`, readOnlyHint: false },
+  }));
+  const rows = readers.concat(writers);
+  expect(selectStepTools(rows, [], false, true, () => true)).toEqual(
+    readers.slice(0, 5),
+  );
+  expect(selectStepTools(rows, [], true, true, () => true)).toEqual(
+    writers.slice(0, 2),
+  );
+  expect(selectStepTools(rows, [], undefined, true, () => true)).toEqual(
+    readers.slice(0, 5).concat(writers.slice(0, 2)),
+  );
+});
+
 it('expands every writer seed within its own budget without comparing reader scores', () => {
   const docs = getSharedCorpusDocs();
   const rows = [

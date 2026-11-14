@@ -12,9 +12,9 @@ export function selectStepTools(
   writes: boolean | undefined,
   grantsWriteLevel: boolean,
   isAllowed: (row: RagResult) => boolean,
-  kReader = 2,
-  kWriter = 1,
-  strategy: ToolSelection = 'per-collection',
+  kReader = 5,
+  kWriter = 2,
+  strategy: ToolSelection = 'step-kind',
 ): RagResult[] {
   if (strategy === 'per-collection') writes = undefined;
   const byName = new Map(docs.map((doc) => [doc.name, doc]));

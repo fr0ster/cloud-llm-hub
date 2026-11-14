@@ -754,8 +754,8 @@ export function loadAgentConfig(): AgentConfig {
       historyRecencyWindow,
       ragQueryK,
       toolSelection: parseToolSelection(process.env.LLM_AGENT_TOOLS_SELECTION),
-      kReader: parseToolSearchK(process.env.LLM_AGENT_TOOLS_K_READER, 2),
-      kWriter: parseToolSearchK(process.env.LLM_AGENT_TOOLS_K_WRITER, 1),
+      kReader: parseToolSearchK(process.env.LLM_AGENT_TOOLS_K_READER, 5),
+      kWriter: parseToolSearchK(process.env.LLM_AGENT_TOOLS_K_WRITER, 2),
       toolGate: parseToolGate(process.env.LLM_AGENT_TOOL_GATE),
       toolGateTimeoutMs: parseToolGateTimeoutMs(
         process.env.LLM_AGENT_TOOL_GATE_TIMEOUT_MS,
@@ -996,7 +996,7 @@ export function parseToolSearchK(
 export function parseToolSelection(
   value: string | undefined,
 ): 'per-collection' | 'step-kind' {
-  if (value === undefined) return 'per-collection';
+  if (value === undefined) return 'step-kind';
   if (value === 'per-collection' || value === 'step-kind') return value;
   throw new Error(
     'LLM_AGENT_TOOLS_SELECTION must be one of: per-collection, step-kind',

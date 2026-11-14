@@ -18,15 +18,15 @@ afterEach(() => {
   else process.env.LLM_AGENT_TOOLS_SELECTION = originalStrategy;
   clearAgentConfig();
 });
-it('defaults to 2/1 and reads independent environment overrides', () => {
+it('defaults to step-kind/5/2 with unset environment and reads independent overrides', () => {
   delete process.env.LLM_AGENT_TOOLS_K_READER;
   delete process.env.LLM_AGENT_TOOLS_K_WRITER;
   clearAgentConfig();
   delete process.env.LLM_AGENT_TOOLS_SELECTION;
   expect(loadAgentConfig().agent).toMatchObject({
-    kReader: 2,
-    kWriter: 1,
-    toolSelection: 'per-collection',
+    kReader: 5,
+    kWriter: 2,
+    toolSelection: 'step-kind',
   });
   process.env.LLM_AGENT_TOOLS_K_READER = '3';
   process.env.LLM_AGENT_TOOLS_K_WRITER = '7';

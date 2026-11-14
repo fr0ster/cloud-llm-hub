@@ -58,9 +58,9 @@ goal sizes, states, durations and hashed session keys. They never contain goal t
 | `LLM_AGENT_MCP_DESTINATION` | empty | Default BTP destination; empty means LLM-only mode |
 | `LLM_AGENT_RAG_TYPE` | `in-memory` | Legacy switch: `in-memory` is keyword-only; any other value takes the vector path. Still read — it is the default the per-class variables below fall back to |
 | `LLM_AGENT_RAG_QUERY_K` | `5` in code, **`15` in `mta.yaml`** | Legacy RAG budget for other stores; tool collections use the budgets below |
-| `LLM_AGENT_TOOLS_K_READER` | `2` | Reader collection seed tools per query; positive integer |
-| `LLM_AGENT_TOOLS_K_WRITER` | `1` | Writer collection seed tools per query; positive integer. Write roles expand found object clusters within their allowed tools |
-| `LLM_AGENT_TOOLS_SELECTION` | `per-collection` | `per-collection`: reader top-k plus writer clusters; `step-kind`: RO reader top-k, RW writer clusters, UNKNOWN union. Invalid values refuse startup. |
+| `LLM_AGENT_TOOLS_K_READER` | `5` | Reader collection seed tools per query; positive integer |
+| `LLM_AGENT_TOOLS_K_WRITER` | `2` | Writer collection seed tools per query; positive integer. Write roles expand found object clusters within their allowed tools |
+| `LLM_AGENT_TOOLS_SELECTION` | `step-kind` | `per-collection`: reader top-k plus writer clusters; `step-kind`: RO reader top-k, RW writer clusters, UNKNOWN union. Invalid values refuse startup. |
 | `LLM_AGENT_EMBEDDER` | `sap-ai-core` if `LLM_AGENT_PROVIDER=sap-ai-sdk`, else `openai` | `sap-ai-core` \| `openai` \| `ollama`. Only accepted when at least one RAG class below is not `in-memory` |
 | `LLM_AGENT_EMBEDDING_MODEL` | `text-embedding-3-small` (`ollama`: none — required) | Embedding model id |
 | `LLM_AGENT_EMBEDDING_DIMENSION` | ? | Optional positive integer for Qdrant task-result vectors. Otherwise resolved once per provider/embedder from existing hub collections with the same embedder (dimensions must agree), then from one constant-text embedding probe. Target collection 404 is expected for a new session. HANA/Postgres retain 1536. |
@@ -101,13 +101,13 @@ goal sizes, states, durations and hashed session keys. They never contain goal t
 | `LLM_AGENT_HISTORY_RECENCY_WINDOW` | see `agent-config.ts` | How much history reaches the model |
 | `LLM_AGENT_MCP_ENDPOINT` | — | **Inert.** Read and logged, consumed by nothing |
 
-Tool selection uses explicit read-only effects, independently of exposition permissions and retrieval backend. Defaults: reader k=2, writer k=1. Only writer seeds expand object clusters; cluster members retain permission filtering. Without write rights both strategies return readers only. The analyzer returns strict `writes` in its existing call; missing or invalid responses mean UNKNOWN. `per-collection` ignores step kind; `step-kind` uses it and adds no independent reader seeds to RW.
+Tool selection uses explicit read-only effects, independently of exposition permissions and retrieval backend. Defaults: `step-kind`, reader k=5, writer k=2. Only writer seeds expand object clusters; cluster members retain permission filtering. Without write rights both strategies return readers only. The analyzer returns strict `writes` in its existing call; missing or invalid responses mean UNKNOWN. `per-collection` ignores step kind; `step-kind` uses it and adds no independent reader seeds to RW.
 
 `per-collection` always returns reader top-k plus writer top-k expanded into their object clusters. `step-kind` returns reader top-k without clusters for RO, writer top-k with clusters for RW, and their union for UNKNOWN. Scores only order results within each effect collection; the selection does not depend on the store, embedder, retrieval method or score scale.
 
 The installed Core 23.1 definitions declare read-only effects with the literal `[read-only]` metadata tag. The hub normalizes this explicit declaration into MCP `annotations.readOnlyHint` before exposing tools through `listTools` and building the corpus; native annotations take precedence. A definition without either declaration is a writer. Older bundles reuse their unchanged text/vectors while receiving current effect and exposition metadata from definitions.
 
-Oracle evaluation on 91 cases (29 RO, 62 RW), with bge-m3 precomputed document vectors:
+Baseline oracle evaluation on 91 cases (29 RO, 62 RW), with reader k=2 / writer k=1 and bge-m3 precomputed document vectors:
 
 | Retrieval | Strategy | RO hits | RW hits | Total | RO avg/max tools | RW avg/max tools |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -116,11 +116,11 @@ Oracle evaluation on 91 cases (29 RO, 62 RW), with bge-m3 precomputed document v
 | keyword only | per-collection | 28/29 | 50/62 | 78/91 | 11.66 / 22 | 9.73 / 21 |
 | keyword only | step-kind | 27/29 | 50/62 | 77/91 | 2.00 / 2 | 9.08 / 21 |
 
-The default `per-collection` wins by total bge-m3 hits (87 versus 85). Consumers can select `step-kind` for smaller read contexts. These are oracle step-kind measurements: the harness uses expected tool effects, without an LLM classification call.
+The default is `step-kind` with reader k=5 and writer k=2, chosen from the 91-case bge-m3 vector evaluation: RO 29/29 with 5 tools; RW 61/62 with an average of 11.89 tools (90/91 total). Writer k=1 gives only 58/62 RW hits. The table above records the earlier reader k=2 / writer k=1 baseline. These are oracle step-kind measurements: the harness uses expected tool effects, without an LLM classification call.
 
-Across all 91 cases, average/maximum tools are 9.25/22 versus 6.34/21 with bge-m3, and 10.34/22 versus 6.82/21 with keywords (`per-collection` versus `step-kind`). All 233 bge-m3 document vectors were reused; only queries were embedded. Object ownership coverage is 191 mapped / 45 unmapped out of 236 tools (previously 163 / 73); the local include mappings already existed and the table type key is normalized to `tableType`.
+For that 2/1 baseline across all 91 cases, average/maximum tools are 9.25/22 versus 6.34/21 with bge-m3, and 10.34/22 versus 6.82/21 with keywords (`per-collection` versus `step-kind`). All 233 bge-m3 document vectors were reused; only queries were embedded. Object ownership coverage is 191 mapped / 45 unmapped out of 236 tools (previously 163 / 73); the local include mappings already existed and the table type key is normalized to `tableType`.
 
-Run `npm run eval:tools -- --bundle srv/tool-embeddings.879dc890b222.json --store vector --embedder ollama` or `npm run eval:tools -- --store in-memory --embedder none` (`--keyword` alias). The harness uses hub factories and real selection code, prints both strategies and misses, and supports `--store in-memory|vector|qdrant`, `--url` for Qdrant, `--embedder none|ollama|openai|sap-ai-core`, `--model` and `--embedder-url`. `--bundle` defaults to the committed bundle and supplies vectors only on fingerprint match; otherwise the selected embedder vectorizes documents. It never rewrites bundles.
+Run `npm run eval:tools -- --bundle srv/tool-embeddings.879dc890b222.json --store vector --embedder ollama` or `npm run eval:tools -- --store in-memory --embedder none` (`--keyword` alias). The harness defaults to `--k-reader 5 --k-writer 2`, matching the hub; pass `--k-reader 2 --k-writer 1` to reproduce the baseline. It uses hub factories and real selection code, prints both strategies and misses, and supports `--store in-memory|vector|qdrant`, `--url` for Qdrant, `--embedder none|ollama|openai|sap-ai-core`, `--model` and `--embedder-url`. `--bundle` defaults to the committed bundle and supplies vectors only on fingerprint match; otherwise the selected embedder vectorizes documents. It never rewrites bundles.
 
 Precomputed vectors also require matching document text. Qdrant evaluations use a unique temporary collection prefix and delete their collections afterwards; `QDRANT_API_KEY` is optional. Removing the former cluster strategy setting is recommended: a leftover setting produces one startup warning and has no effect.
 

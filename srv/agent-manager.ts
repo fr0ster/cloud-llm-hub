@@ -344,10 +344,10 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     private readonly toolGate: 'classifier' | 'off' = getAgentConfig().agent
       .toolGate ?? 'classifier',
     private readonly agentMode = getAgentConfig().agent.mode,
-    private readonly kReader = getAgentConfig().agent.kReader ?? 2,
-    private readonly kWriter = getAgentConfig().agent.kWriter ?? 1,
+    private readonly kReader = getAgentConfig().agent.kReader ?? 5,
+    private readonly kWriter = getAgentConfig().agent.kWriter ?? 2,
     private readonly toolSelection: ToolSelection = getAgentConfig().agent
-      .toolSelection ?? 'per-collection',
+      .toolSelection ?? 'step-kind',
   ) {}
 
   /** The store selected by a tool's read-only effect. */

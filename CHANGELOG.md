@@ -7,8 +7,8 @@ All notable changes to this project will be documented in this file. The format 
 ### Changed
 
 - Tool retrieval splits by explicit read-only effect, preserving exposition permissions. Version/local include tools and table types now have object clusters. The existing analyzer call returns strict step `writes`, with UNKNOWN fallback.
-- Consumers choose `LLM_AGENT_TOOLS_SELECTION=per-collection|step-kind`; deprecated cluster strategy settings are ignored with one startup warning. Reader/writer budgets remain 2/1. Selection works through generic retrieval metadata across keyword and vector backends.
-- Default `per-collection` wins the 91-case bge-m3 oracle evaluation: 87/91 versus 85/91 for `step-kind` (RO 29/29 versus 27/29; RW both 58/62). Keyword-only: 78/91 versus 77/91 (RO 28/29 versus 27/29; RW both 50/62). See CONFIG_USAGE for average/maximum context sizes and the factory-based `eval:tools` harness. Step-kind measurements use oracle effects without an LLM.
+- Consumers choose `LLM_AGENT_TOOLS_SELECTION=per-collection|step-kind`; deprecated cluster strategy settings are ignored with one startup warning. Defaults are now `step-kind`, reader k=5 and writer k=2. Selection works through generic retrieval metadata across keyword and vector backends.
+- The 91-case bge-m3 vector oracle evaluation selects `step-kind` with reader k=5 / writer k=2: RO 29/29 with 5 tools, RW 61/62 with an average of 11.89 tools (90/91 total); writer k=1 gives RW 58/62. The `eval:tools` harness defaults match the hub. See CONFIG_USAGE for the earlier 2/1 baseline. Step-kind measurements use oracle effects without an LLM.
 
 ## [11.0.3] - 2026-11-14
 

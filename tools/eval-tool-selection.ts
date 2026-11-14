@@ -34,8 +34,8 @@ async function main() {
     return value;
   };
   // Same defaults as the hub (LLM_AGENT_TOOLS_K_READER / _K_WRITER).
-  const kReader = positive('--k-reader', 2);
-  const kWriter = positive('--k-writer', 1);
+  const kReader = positive('--k-reader', 5);
+  const kWriter = positive('--k-writer', 2);
   const file = option('--bundle') ?? 'srv/tool-embeddings.json';
   const bundle: ToolEmbeddingBundle = JSON.parse(
     readFileSync(resolve(file), 'utf8'),
