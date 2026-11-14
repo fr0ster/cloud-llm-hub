@@ -142,7 +142,7 @@ import {
 } from './lib/throttle-surfacing';
 import { usageRuntime } from './lib/usage/runtime';
 import { runWithSessionId } from './request-session';
-import { appendToSession, getSessionHistory } from './session-store';
+import { appendToSession } from './session-store';
 
 /**
  * The cap on concurrent `execute_step` runs when no door is configured.
@@ -548,7 +548,8 @@ async function executeStepRun(
       signal: admitted.signal,
     };
 
-    const history = longSession ? getSessionHistory(sessionId, userId) : [];
+    // Prior session turns enter only through the pipeline history RAG stage.
+    const history: Message[] = [];
     const conn = connection;
     const r = await admitted.run(() => {
       // Admitted, right before the run: this step's responsible person and
@@ -621,7 +622,7 @@ async function executeStepRun(
       totalTokens: r.value.usage?.totalTokens,
       stopReason: r.value.stopReason,
     });
-    if (longSession) {
+    if (longSession && !callerSignal?.aborted && !admitted.signal?.aborted) {
       const lastUser: Message = { role: 'user', content: task };
       appendToSession(sessionId, userId, lastUser, {
         role: 'assistant',

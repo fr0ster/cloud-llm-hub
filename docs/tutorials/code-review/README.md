@@ -72,7 +72,7 @@ The skills are small (frontmatter-heavy). Upload them once per tutorial run; the
 - Stage 1 is sequential and gates everything below it. Stages 2-5 are independent — fan out, then merge.
 - Fresh chat per check (each check has its own rule set; cross-talk leaks rules). Two ways to deliver Stage 0's source to each fresh per-category chat:
   - **Chat-UI flow** — upload [analyzing-an-abap-report](skills/analyzing-an-abap-report.md) to a RAG collection once. Every fresh chat then runs Stage 0 in its own first turn (one Stage 0 call per per-category chat). The skill ensures the read happens before the per-category prompt.
-  - **Curl-batch flow** — Stage 0 fires ONCE up front and extracts the source verbatim into a local `source.txt`. Each per-category call is then stateless and inlines `source.txt` in the user message. Justified by the server-side chat-history trim policy: the assistant text of a previous turn is cut to a few hundred chars before the next turn sees it (`srv/openai-handler.ts:trimHistoryForContext`), so source can't be staged via session history in a multi-turn batch.
+  - **Curl-batch flow** — Stage 0 fires ONCE up front and extracts the source verbatim into a local `source.txt`. Each per-category call is then stateless and inlines `source.txt` in the user message. Server-managed sessions retain full answers but recall previous turns by semantic search, so source needed for every review category is supplied explicitly. Client-managed history retains its existing trimming (`srv/openai-handler.ts:trimHistoryForContext`).
 - Severity scale fixed at Stage 1, applied consistently across checks. CRITICAL → HIGH → MEDIUM → LOW → INFO.
 
 ## Things AI does wrong in this kind of review

@@ -1,4 +1,15 @@
-import type { CallOptions } from '@mcp-abap-adt/llm-agent';
+import {
+  type CallOptions,
+  type ILlm,
+  InMemoryRag,
+  type Message,
+} from '@mcp-abap-adt/llm-agent';
+import { unwrapBuilderResult } from '@mcp-abap-adt/llm-agent-libs';
+
+jest.mock('../../srv/lib/llm-factory', () => ({
+  ...jest.requireActual('../../srv/lib/llm-factory'),
+  makeHubLlm: async () => historyLlm,
+}));
 
 jest.mock(
   '@sap/cds',
@@ -16,7 +27,10 @@ jest.mock(
 jest.mock('../../srv/env-setup', () => ({}));
 jest.mock('../../srv/lib/logging-config', () => ({ applyLoggingConfig() {} }));
 jest.mock('../../srv/agent-manager', () => ({
+  ...jest.requireActual('../../srv/agent-manager'),
   ...require('./helpers/channel-harness').agentManagerMock(),
+  getSharedHistoryRag: jest.requireActual('../../srv/agent-manager')
+    .getSharedHistoryRag,
   createAgentProfileSource: () => ({
     list: async () => ({ ok: true, value: [] }),
   }),
@@ -47,8 +61,15 @@ jest.mock('../../srv/agent-config', () => ({
   parseToolResultMaxChars: jest.requireActual('../../srv/agent-config')
     .parseToolResultMaxChars,
   getAgentConfig: () => ({
-    ...require('./helpers/channel-harness').agentConfigMock().getAgentConfig(),
-    rag: { backends: { session: 'in-memory' } },
+    ...jest.requireActual('../../srv/agent-config').getAgentConfig(),
+    rag: {
+      embedder: null,
+      backends: {
+        tools: 'in-memory',
+        session: 'in-memory',
+        persistent: 'in-memory',
+      },
+    },
   }),
 }));
 jest.mock('../../srv/lib/request-connection', () =>
@@ -61,7 +82,15 @@ jest.mock('../../srv/lib/ai-core-models', () => ({
   getAvailableModels: async () => [],
 }));
 
-import { getCollectionRegistry } from '../../srv/agent-manager';
+import { getAgentConfig } from '../../srv/agent-config';
+import {
+  configureDestinationAgentBuilder,
+  ExpositionFilteringRag,
+  getCollectionRegistry,
+  getProviders,
+  getSharedHistoryRag,
+  initProviders,
+} from '../../srv/agent-manager';
 import { executeStep } from '../../srv/agent-mcp';
 import { executeOrchestrationTool } from '../../srv/agent-mcp-orchestration';
 import { handleAnthropicMessages } from '../../srv/anthropic-handler';
@@ -82,8 +111,22 @@ import { handleChatCompletions } from '../../srv/openai-handler';
 import { harness, sessionChannel } from './helpers/channel-harness';
 
 const caller = { userId: 'u1', exposition: undefined };
+const recalledMessages: Message[][] = [];
+const historyLlm: ILlm = {
+  chat: async (messages) => {
+    recalledMessages.push(messages);
+    return {
+      ok: true,
+      value: { content: 'Recall complete', finishReason: 'stop' },
+    };
+  },
+  async *streamChat(messages, tools, options) {
+    yield await this.chat(messages, tools, options);
+  },
+};
 beforeEach(() => {
   harness.reset();
+  initProviders(getProviders());
   harness.user.id = 'u1';
   initHubRagAccess(createHubRagAccess(null, 'in-memory'));
   setLongSessionsForTest(
@@ -93,7 +136,10 @@ beforeEach(() => {
     ),
   );
 });
-afterEach(() => setLongSessionsForTest(undefined));
+afterEach(() => {
+  jest.restoreAllMocks();
+  setLongSessionsForTest(undefined);
+});
 
 test('MCP call without x-clh-session is refused naming the header', async () => {
   const { req } = sessionChannel();
@@ -204,6 +250,35 @@ test('two MCP sessions of one user do not share session collections or history',
   const b = longSessions().open('u1', { destination: 'DEST', key: 'ls-b' });
   if ('refused' in a || 'refused' in b) throw new Error('Session open refused');
   const registry = getCollectionRegistry();
+  const history = getSharedHistoryRag();
+  const writes: Promise<boolean>[] = [];
+  const write = history.recordTurn.bind(history);
+  const record = jest
+    .spyOn(history, 'recordTurn')
+    .mockImplementation((input) => {
+      const pending = write(input);
+      writes.push(pending);
+      return pending;
+    });
+  const queries: ReturnType<typeof history.query>[] = [];
+  const retrieve = history.query.bind(history);
+  const query = jest.spyOn(history, 'query').mockImplementation((...args) => {
+    const pending = retrieve(...args);
+    queries.push(pending);
+    return pending;
+  });
+  const builder = await configureDestinationAgentBuilder(
+    {
+      listTools: async () => ({ ok: true, value: [] }),
+      callTool: async () => {
+        throw new Error('Unexpected external tool');
+      },
+    },
+    new ExpositionFilteringRag(new InMemoryRag()),
+    getAgentConfig(),
+    { skipSkills: true },
+  );
+  const recall = unwrapBuilderResult(await builder.build());
   const tools = new LocalRagMcpClient(
     {
       listTools: async () => ({ ok: true, value: [] }),
@@ -251,7 +326,30 @@ test('two MCP sessions of one user do not share session collections or history',
     if (!records.ok) throw records.error;
     if (options.sessionId === a.key) {
       if (messages.some((message) => message.content === 'Recall A')) {
-        expect(JSON.stringify(messages)).toContain('Only session A history');
+        // The MCP input has no prepended history; only the production builder
+        // can supply the recorded turn to the LLM through its history stage.
+        expect(JSON.stringify(messages)).not.toContain(
+          'Only session A history',
+        );
+        recalledMessages.length = 0;
+        const result = await recall.agent.process(messages, options);
+        if (!result.ok) throw result.error;
+        expect(JSON.stringify(recalledMessages)).toContain(
+          'Only session A history',
+        );
+        expect(query).toHaveBeenLastCalledWith(
+          expect.anything(),
+          expect.any(Number),
+          expect.objectContaining({ caller: options.caller }),
+        );
+        expect(await queries.at(-1)).toEqual({
+          ok: true,
+          value: expect.arrayContaining([
+            expect.objectContaining({
+              text: expect.stringContaining('Only session A history'),
+            }),
+          ]),
+        });
       }
       expect(records.value.isError).not.toBe(true);
       expect(records.value.content).toContain('Only session A');
@@ -261,12 +359,44 @@ test('two MCP sessions of one user do not share session collections or history',
     expect(records.value.content).not.toContain('Only session A');
     expect(records.value.content).toContain('not found');
     expect(JSON.stringify(messages)).not.toContain('Only session A');
+    recalledMessages.length = 0;
+    const result = await recall.agent.process(messages, options);
+    if (!result.ok) throw result.error;
+    expect(query).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.any(Number),
+      expect.objectContaining({ caller: options.caller }),
+    );
+    expect(await queries.at(-1)).toEqual({
+      ok: true,
+      value: [],
+    });
+    expect(JSON.stringify(recalledMessages)).not.toContain('Only session A');
     return { ok: true, value: { content: 'Session B' } };
   };
   const { req } = sessionChannel();
   req.headers['x-clh-session'] = a.key;
   const first = await executeStep(req, caller, { task: 'Write private turn' });
   expect(first.isError).not.toBe(true);
+  expect(await Promise.all(writes)).toEqual([true]);
+  expect(record).toHaveBeenCalledWith(
+    expect.objectContaining({
+      caller: expect.objectContaining({ sessionId: a.key }),
+      userText: 'Write private turn',
+      assistantText: 'Only session A history',
+    }),
+  );
+  expect(
+    await history.listTurns({ ...caller, sessionId: a.key, isAdmin: false }),
+  ).toEqual([
+    expect.objectContaining({
+      userText: 'Write private turn',
+      assistantText: 'Only session A history',
+    }),
+  ]);
+  expect(
+    await history.listTurns({ ...caller, sessionId: b.key, isAdmin: false }),
+  ).toEqual([]);
   req.headers['x-clh-session'] = b.key;
   expect((await executeStep(req, caller, { task: 'Recall' })).isError).not.toBe(
     true,
@@ -280,6 +410,8 @@ test('two MCP sessions of one user do not share session collections or history',
     b.key,
     a.key,
   ]);
+  await Promise.all(writes);
+  expect(query).toHaveBeenCalledTimes(2);
 });
 
 test('no channel passes an empty sessionId to the agent', async () => {

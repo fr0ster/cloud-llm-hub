@@ -41,6 +41,10 @@ afterEach(() => {
   setLongSessionsForTest(undefined);
 });
 const seen: Message[][] = [];
+const items = Array.from(
+  { length: 9 },
+  (_, i) => `Named_Item_${i + 1}: ${'detail '.repeat(100)}`,
+).join('\n');
 const llm: ILlm = {
   chat: async (messages) => {
     seen.push(messages);
@@ -154,6 +158,7 @@ test.each([false, true])(
       router['provider'],
     );
     const writes: Promise<boolean>[] = [];
+    const query = jest.spyOn(router, 'query');
     const write = router.recordTurn.bind(router);
     jest.spyOn(router, 'recordTurn').mockImplementation((input) => {
       const pending = write(input);
@@ -164,10 +169,20 @@ test.each([false, true])(
       recordTurn(
         caller,
         { role: 'user', content: 'session fact' },
-        `PRIVATE_${caller.sessionId.toUpperCase()}`,
+        `PRIVATE_${caller.sessionId.toUpperCase()}\n${items}`,
       );
     }
     expect(await Promise.all(writes)).toEqual([true, true]);
+    for (const caller of callers) {
+      const stored = await router.listTurns(caller);
+      expect(stored).toContainEqual(
+        expect.objectContaining({
+          userText: 'session fact',
+          assistantText: `PRIVATE_${caller.sessionId.toUpperCase()}\n${items}`,
+        }),
+      );
+    }
+
     const checkRecall = async (afterMigration: boolean) => {
       // A fresh agent has no recent-action memory: recall must read the store.
       const recallBuilder = await configureDestinationAgentBuilder(
@@ -191,6 +206,15 @@ test.each([false, true])(
         const own = caller.sessionId.toUpperCase();
         const other = own === 'S1' ? 'S2' : 'S1';
         expect(context).toContain(`PRIVATE_${own}`);
+        for (let i = 1; i <= 9; i++)
+          expect(context).toContain(`Named_Item_${i}`);
+        expect(query).toHaveBeenLastCalledWith(
+          expect.anything(),
+          5,
+          expect.objectContaining({
+            caller: expect.objectContaining({ sessionId: caller.sessionId }),
+          }),
+        );
         expect(context).not.toContain(`PRIVATE_${other}`);
         if (migrated && afterMigration) {
           expect(context).toContain(`MIGRATED_${own}`);

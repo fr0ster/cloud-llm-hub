@@ -24,6 +24,7 @@ import {
   WRITTEN_BY,
 } from './collection-persistence';
 import {
+  chunkTurn,
   parseTurn,
   parseTurnOwner,
   renderTurn,
@@ -138,6 +139,7 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
 
   private readonly liveIds = new Map<string, string[]>();
   private cleared?: Set<string>;
+  private readonly measuredTotals = new Map<string, number>();
   private measured?: Map<string, Map<string, number>>;
 
   constructor(
@@ -349,12 +351,15 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
       this.scoped(caller, options),
     );
     if (!result.ok) return result;
-    if (isRagScanner(rag)) {
+    if (isRagScanner(rag) && Number.isFinite(this.options.maxTurns)) {
       try {
         const rows = await this.rows(caller.sessionId, rag);
         const overflow = rows.slice(
           0,
-          Math.max(0, rows.length - (this.options.maxTurns ?? 200)),
+          Math.max(
+            0,
+            rows.length - (this.options.maxTurns ?? Number.POSITIVE_INFINITY),
+          ),
         );
         const removedIds = new Set<string>();
         for (const row of overflow) {
@@ -374,24 +379,42 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
       }
     } else {
       const ids = this.liveIds.get(caller.sessionId) ?? [];
-      if (!ids.includes(id)) ids.push(id);
+      if (Number.isFinite(this.options.maxTurns) && !ids.includes(id))
+        ids.push(id);
       this.liveIds.set(caller.sessionId, ids);
       if (storageEnabled()) {
         this.measured ??= new Map();
         const measured =
           this.measured.get(caller.sessionId) ?? new Map<string, number>();
-        measured.set(id, Buffer.byteLength(text, 'utf8'));
+        const bytes = Buffer.byteLength(text, 'utf8');
+        this.measuredTotals.set(
+          caller.sessionId,
+          (this.measuredTotals.get(caller.sessionId) ?? 0) +
+            bytes -
+            (measured.get(id) ?? 0),
+        );
+        measured.set(id, bytes);
         this.measured.set(caller.sessionId, measured);
         this.cleared?.delete(caller.sessionId);
       }
       const overflow = ids.splice(
         0,
-        Math.max(0, ids.length - (this.options.maxTurns ?? 200)),
+        Math.max(
+          0,
+          ids.length - (this.options.maxTurns ?? Number.POSITIVE_INFINITY),
+        ),
       );
       for (const old of overflow) {
         const removed = await writer.deleteByIdRaw(old);
-        if (removed.ok && removed.value)
-          this.measured?.get(caller.sessionId)?.delete(old);
+        if (removed.ok && removed.value) {
+          const measured = this.measured?.get(caller.sessionId);
+          this.measuredTotals.set(
+            caller.sessionId,
+            (this.measuredTotals.get(caller.sessionId) ?? 0) -
+              (measured?.get(old) ?? 0),
+          );
+          measured?.delete(old);
+        }
       }
       const historyBytes = this.storageBytes(caller.sessionId);
       if (storageEnabled() && historyBytes !== undefined)
@@ -410,9 +433,27 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
     const opened = await this.open(caller.sessionId, false);
     if (!opened.ok) return opened;
     const writer = opened.value?.rag.writer?.();
-    return writer
-      ? writer.deleteByIdRaw(id, this.scoped(caller, options))
-      : { ok: true, value: false };
+    if (!writer) return { ok: true, value: false };
+    const result = await writer.deleteByIdRaw(id, this.scoped(caller, options));
+    if (result.ok && result.value) {
+      const measured = this.measured?.get(caller.sessionId);
+      this.measuredTotals.set(
+        caller.sessionId,
+        (this.measuredTotals.get(caller.sessionId) ?? 0) -
+          (measured?.get(id) ?? 0),
+      );
+      measured?.delete(id);
+      const ids = this.liveIds.get(caller.sessionId);
+      if (ids)
+        this.liveIds.set(
+          caller.sessionId,
+          ids.filter((entry) => entry !== id),
+        );
+      const historyBytes = this.storageBytes(caller.sessionId);
+      if (storageEnabled() && historyBytes !== undefined)
+        storageSnapshots().update?.(caller, { historyBytes });
+    }
+    return result;
   }
 
   async recordTurn(input: {
@@ -423,12 +464,30 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
   }): Promise<boolean> {
     try {
       if (!input.caller.sessionId.trim()) return false;
-      const result = await this.write(
-        input.id ?? `turn:${randomUUID()}`,
-        renderTurn(input.userText, input.assistantText),
-        {},
-        { caller: input.caller, sessionId: input.caller.sessionId },
+      const turnId = input.id ?? `turn:${randomUUID()}`;
+      const chunks = chunkTurn(input.userText, input.assistantText);
+      const createdAt = (this.options.now?.() ?? new Date()).toISOString();
+      // Start every write before awaiting: session deletion waits for all chunks.
+      const results = await Promise.all(
+        chunks.map((chunk, chunkIndex) =>
+          this.write(
+            chunks.length === 1
+              ? turnId
+              : `${turnId}:chunk:${chunkIndex.toString().padStart(8, '0')}`,
+            renderTurn(chunk.userText, chunk.assistantText),
+            {
+              turnId,
+              chunkIndex,
+              chunkCount: chunks.length,
+              userContinuation: chunk.userContinuation,
+              createdAt,
+              userTextLength: chunk.userText.length,
+            },
+            { caller: input.caller, sessionId: input.caller.sessionId },
+          ),
+        ),
       );
+      const result = results.find((result) => !result.ok) ?? results[0];
       if (!result.ok && !this.failedOpens.has(input.caller.sessionId))
         this.options.log?.warn('Session history write failed', {
           error: result.error.message,
@@ -472,6 +531,10 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
     if (!storageEnabled()) return;
     this.cleared?.delete(caller.sessionId);
     this.measured ??= new Map();
+    this.measuredTotals.set(
+      caller.sessionId,
+      rows.reduce((sum, row) => sum + Buffer.byteLength(row.text, 'utf8'), 0),
+    );
     this.measured.set(
       caller.sessionId,
       new Map(rows.map((row) => [row.id, Buffer.byteLength(row.text, 'utf8')])),
@@ -487,7 +550,7 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
   storageBytes(sessionId: string): number | undefined {
     const rows = this.measured?.get(sessionId);
     return rows
-      ? [...rows.values()].reduce((sum, bytes) => sum + bytes, 0)
+      ? this.measuredTotals.get(sessionId)
       : this.cleared?.has(sessionId)
         ? 0
         : undefined;
@@ -502,18 +565,32 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
       ? await this.rows(caller.sessionId, opened.value.rag)
       : [];
     this.measure(caller, rows);
-    return rows.flatMap((row) => {
-      const parsed = parseTurn(row.text);
-      return parsed
-        ? [
-            {
-              id: row.id,
-              ...parsed,
-              createdAt: String(row.metadata.createdAt ?? ''),
-            },
-          ]
-        : [];
-    });
+    const turns = new Map<string, StoredTurn>();
+    for (const row of rows) {
+      const parsed = parseTurn(
+        row.text,
+        typeof row.metadata.userTextLength === 'number'
+          ? row.metadata.userTextLength
+          : undefined,
+      );
+      if (!parsed) continue;
+      const turnId =
+        typeof row.metadata.turnId === 'string' ? row.metadata.turnId : row.id;
+      const turn = turns.get(turnId) ?? {
+        id: turnId,
+        userText: '',
+        assistantText: '',
+        createdAt: String(row.metadata.createdAt ?? ''),
+      };
+      if (row.metadata.userContinuation === true)
+        turn.userText += parsed.userText;
+      else {
+        if (!turn.userText) turn.userText = parsed.userText;
+        turn.assistantText += parsed.assistantText;
+      }
+      turns.set(turnId, turn);
+    }
+    return [...turns.values()];
   }
 
   async forgetSessionHistory(sessionId: string): Promise<void> {
@@ -560,6 +637,7 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
     } finally {
       this.failedOpens.delete(sessionId);
       this.measured?.delete(sessionId);
+      this.measuredTotals.delete(sessionId);
       this.liveIds.delete(sessionId);
     }
   }

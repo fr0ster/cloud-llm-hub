@@ -58,11 +58,10 @@ describe('what a stored turn carries', () => {
     expect(text).toContain('ZDEMO_TEST_34345');
   });
 
-  it('lifts object names out so a clip cannot lose them', () => {
+  it('retains the entire answer including names at the end', () => {
     const long = `${'x'.repeat(4000)} created ZDEMO_LATE_NAME at the end`;
     const text = renderTurn('do it', long);
-    expect(text).toContain('…');
-    expect(text).toContain('Objects: ZDEMO_LATE_NAME');
+    expect(text).toBe(`User: do it\nAssistant: ${long}`);
   });
 
   it('picks out ABAP-shaped names and nothing else', () => {

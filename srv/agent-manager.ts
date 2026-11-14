@@ -3895,7 +3895,7 @@ export async function buildLlmOnlyAgent(
       historyRecencyWindow: config.agent.historyRecencyWindow,
       refreshToolsPerIteration: false,
       toolReselectPerIteration: false,
-      ragQueryK: 0,
+      ragQueryK: config.agent.ragQueryK,
       classificationEnabled: false,
       ragTranslateEnabled: false,
     },

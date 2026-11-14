@@ -51,7 +51,7 @@ parameters:
   LLM_AGENT_EMBEDDING_MODEL: "text-embedding-3-small"
 
 
-  # History recency window (only last N messages sent to LLM, older via RAG)
+  # Client-managed history recency; server-managed history uses semantic RAG only
   LLM_AGENT_HISTORY_RECENCY_WINDOW: "20"
 
   # System-to-destination mapping (optional, for multi-system routing)
