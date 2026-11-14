@@ -31,7 +31,9 @@ import {
   currentRoleModel,
   roleOfProfile,
 } from './lib/role-models-scope';
-import { objectToolText, toolObjects } from './lib/tool-objects';
+import { toolDefinitionAnnotations } from './lib/tool-definition-effects';
+import { objectToolText } from './lib/tool-objects';
+import { selectStepTools, type ToolSelection } from './lib/tool-selection';
 import { resolverFor, TrustResolver } from './lib/trust-resolver';
 import { TrustStore } from './lib/trust-store';
 import { reportWorkerActivity } from './lib/worker-activity';
@@ -132,7 +134,6 @@ import {
   type AgentConfig,
   getAgentConfig,
   type RagBackendKind,
-  type ToolClusterStrategy,
 } from './agent-config';
 import { runOutsideAdmission, trackCall } from './lib/admission-scope';
 import { boundHandlerExporter } from './lib/bound-handler-exporter';
@@ -320,13 +321,9 @@ const isSkillId = (id: unknown): boolean =>
 export class ExpositionFilteringRag implements IRag, IRagEditor {
   private skillTrustPool?: ReturnType<typeof buildSkillsPool>;
   /**
-   * Two collections, searched separately.
-   *
-   * A tool a role cannot run is not in the collection that role searches, so it
-   * cannot reach the model's context at all. The post-filter below stays as a
-   * second line — cheap, and it still catches a tool that entered the wrong
-   * collection — but it is no longer the only thing standing between a reader
-   * and CreateDomain.
+   * Two effect collections, searched separately. Exposition remains an
+   * independent permission filter: a reader tool can require the high tier.
+   * Callers without write rights never search the writer collection.
    *
    * `writer` is optional so a single-store construction (tests, in-memory mode)
    * keeps working: everything then lives in `inner` and behaves as before.
@@ -347,24 +344,24 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     private readonly toolGate: 'classifier' | 'off' = getAgentConfig().agent
       .toolGate ?? 'classifier',
     private readonly agentMode = getAgentConfig().agent.mode,
-    private readonly kReader = getAgentConfig().agent.kReader ?? 2,
-    private readonly kWriter = getAgentConfig().agent.kWriter ?? 1,
-    private readonly toolClusterStrategy: ToolClusterStrategy = getAgentConfig()
-      .agent.toolClusterStrategy ?? 'all-seeds',
+    private readonly kReader = getAgentConfig().agent.kReader ?? 5,
+    private readonly kWriter = getAgentConfig().agent.kWriter ?? 2,
+    private readonly toolSelection: ToolSelection = getAgentConfig().agent
+      .toolSelection ?? 'step-kind',
   ) {}
 
-  /** The store a given exposition's entries live in. */
-  private storeFor(exposition: string | undefined): IRag {
-    return this.writerStore && collectionFor(exposition) === 'writer'
+  /** The store selected by a tool's read-only effect. */
+  private storeFor(readOnlyHint: boolean | undefined): IRag {
+    return this.writerStore && collectionFor(readOnlyHint) === 'writer'
       ? this.writerStore
       : this.inner;
   }
 
   /** The store an entry is written to: skills to `skillStore` when there is one. */
-  private storeForEntry(id: string, exposition: string | undefined): IRag {
-    return this.skillStore && isSkillId(id)
-      ? this.skillStore
-      : this.storeFor(exposition);
+  private storeForEntry(id: string, readOnlyHint: boolean | undefined): IRag {
+    return isSkillId(id)
+      ? (this.skillStore ?? this.inner)
+      : this.storeFor(readOnlyHint);
   }
 
   // Skill ids (`skill:<name>`) already vectorized into THIS shared store. The
@@ -387,12 +384,13 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     const id = typeof rawId === 'string' ? rawId : '';
     if (!id) throw new Error('metadata.id is required for upsert');
     // Route here too: any id-carrying upsert (skills, callers outside the
-    // corpus load) must land in the collection its exposition belongs to —
-    // writing everything to `inner` would put high tools in the reader
-    // collection.
+    // corpus load) must land in its effect collection. Legacy callers may
+    // omit the effect; recover it from the tool definition in the corpus.
     const target = this.storeForEntry(
       id,
-      (rest as { exposition?: string }).exposition,
+      typeof rest.readOnlyHint === 'boolean'
+        ? rest.readOnlyHint
+        : getSharedCorpusDocs().find((doc) => doc.id === id)?.readOnlyHint,
     );
     const writer = target.writer?.() ?? this.inner.writer?.();
     if (!writer) throw new Error('Inner RAG is not editable');
@@ -449,18 +447,17 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     const inner = this.inner.writer?.();
     if (!inner) return undefined;
     const seen = this.vectorizedSkillIds;
-    // Route each entry to the collection its exposition belongs to (skills to
-    // the skill store when there is one). The embedding bundle already carries
-    // `exposition` on every entry, so the split costs no regeneration — and
-    // getting this wrong is silent: tools land in a collection the wrong roles
-    // search, and nothing errors.
+    // Route by effect, with definitions supplying metadata absent from older
+    // bundles/callers. Skills retain their separate store when provided.
     const pick = (
       id: string,
       metadata: RagMetadata | undefined,
     ): IRagBackendWriter => {
       const target = this.storeForEntry(
         id,
-        (metadata as { exposition?: string } | undefined)?.exposition,
+        typeof metadata?.readOnlyHint === 'boolean'
+          ? metadata.readOnlyHint
+          : getSharedCorpusDocs().find((doc) => doc.id === id)?.readOnlyHint,
       );
       return (target === this.inner ? inner : target.writer?.()) ?? inner;
     };
@@ -552,7 +549,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
         ? await requestToolGateDecision(embedding.text, () =>
             analyzer.analyze(embedding.text, getRequestHistory(), options),
           )
-        : { text: embedding.text, needsAbapSystem: true };
+        : { text: embedding.text, needsAbapSystem: true, writes: undefined };
     if (decision.text !== embedding.text) {
       embedding = this.queryEmbedder
         ? new QueryEmbedding(decision.text, this.queryEmbedder, {
@@ -612,7 +609,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     // With no role we search the reader collection alone — the same fail-closed
     // rule the post-filter applies below.
     const grantsWriteLevel = (allowedExpositions ?? []).some(
-      (e) => collectionFor(e) === 'writer',
+      (e) => e === 'high',
     );
     const searches = [this.inner.query(embedding, readerFetchK, cleanOpts)];
     if (this.writerStore && grantsWriteLevel) {
@@ -641,68 +638,22 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     // let a write tool that outscores every read tool (Delete* on a $TMP query)
     // take the read tools' places. Skills are capped once, across both.
     const capPerCollection = (collections: RagResult[][]) => {
-      const tools = collections.flatMap((rows, index) =>
-        rows
-          .filter((r) => !isSkillId(r.metadata.id))
-          .sort((a, b) => b.score - a.score)
-          .slice(0, index === 0 ? this.kReader : this.kWriter),
-      );
       const skills = collections
         .flat()
         .filter((r) => isSkillId(r.metadata.id))
         .sort((a, b) => b.score - a.score)
         .slice(0, this.skillRagK);
-      const found = tools.sort((a, b) => b.score - a.score);
-      const names = new Set(
-        found.map((row) => String(row.metadata.id).replace(/^tool:/, '')),
+      const tools = selectStepTools(
+        collections.flat().filter((row) => !isSkillId(row.metadata.id)),
+        getSharedCorpusDocs(),
+        decision.writes,
+        grantsWriteLevel,
+        isAllowed,
+        this.kReader,
+        this.kWriter,
+        this.toolSelection,
       );
-      const expanded: RagResult[] = [];
-      if (grantsWriteLevel) {
-        const objectOf = (row: RagResult) =>
-          toolObjects[String(row.metadata.id).replace(/^tool:/, '')];
-        const seeds =
-          this.toolClusterStrategy === 'all-seeds'
-            ? found
-            : found
-                .filter(
-                  (row) =>
-                    typeof row.metadata.exposition === 'string' &&
-                    collectionFor(row.metadata.exposition) === 'writer' &&
-                    objectOf(row),
-                )
-                .slice(0, 1);
-        const objects = new Set(seeds.map(objectOf).filter(Boolean));
-        for (const doc of getSharedCorpusDocs()) {
-          if (
-            !toolObjects[doc.name] ||
-            !objects.has(toolObjects[doc.name]) ||
-            names.has(doc.name)
-          )
-            continue;
-          const row: RagResult = {
-            text: doc.text,
-            score: 0,
-            metadata: {
-              id: doc.id,
-              name: doc.name,
-              exposition: doc.exposition,
-            },
-          };
-          if (isAllowed(row)) {
-            expanded.push(row);
-            names.add(doc.name);
-          }
-        }
-      }
-      const unique = found.filter(
-        (row, index) =>
-          found.findIndex(
-            (other) =>
-              String(other.metadata.id).replace(/^tool:/, '') ===
-              String(row.metadata.id).replace(/^tool:/, ''),
-          ) === index,
-      );
-      return [...unique, ...expanded, ...skills];
+      return [...tools, ...skills];
     };
 
     if (result.ok) {
@@ -711,7 +662,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
         overFetchK,
         kReader: this.kReader,
         kWriter: this.kWriter,
-        toolClusterStrategy: this.toolClusterStrategy,
+        writes: decision.writes,
         totalResults: result.value.length,
         // The EFFECTIVE value, not the requested one: with no role the filter
         // falls back to reader level, and logging 'all' there would describe
@@ -845,8 +796,7 @@ function getToolAnnotations(): Map<string, ToolEffectAnnotations | undefined> {
       .getHandlerEntries()
       .map((e) => [
         e.toolDefinition.name,
-        (e.toolDefinition as { annotations?: ToolEffectAnnotations })
-          .annotations,
+        toolDefinitionAnnotations(e.toolDefinition),
       ]),
   );
   return toolAnnotations;
@@ -1645,6 +1595,7 @@ export type ToolDocInput = {
   name: string;
   description?: string;
   inputSchema?: unknown;
+  annotations?: ToolEffectAnnotations;
 };
 type ToolDocBasicEntry = {
   name: string;
@@ -1758,8 +1709,7 @@ export function buildToolDocs(tools: ToolDocInput[]): {
   }
 
   for (const entry of entries) {
-    if (collectionFor(getToolExpositionMap().get(entry.name)) !== 'writer')
-      continue;
+    if (getToolExpositionMap().get(entry.name) !== 'high') continue;
     const original = basicEntries.find((tool) => tool.name === entry.name);
     const text = objectToolText(entry.name, original?.description ?? '');
     if (text) {
@@ -1858,6 +1808,7 @@ function listToolDefsFromExporter(): ToolDocInput[] {
   const exporter = new HandlerExporter(getHandlerExporterConfig());
   const coreTools = exporter.getHandlerEntries().map((e) => ({
     name: e.toolDefinition.name,
+    annotations: toolDefinitionAnnotations(e.toolDefinition),
     description: agentToolDescription(e.toolDefinition.description),
     inputSchema: agentToolSchema(
       e.toolDefinition.name,
@@ -1875,7 +1826,8 @@ function listToolDefsFromExporter(): ToolDocInput[] {
  * intent (uncached tools are LLM-enriched at runtime, not part of the bundle).
  */
 export function getSharedCorpusDocs(): SharedCorpusDoc[] {
-  const { entries } = buildToolDocs(listToolDefsFromExporter());
+  const definitions = listToolDefsFromExporter();
+  const { entries } = buildToolDocs(definitions);
   const expoMap = getToolExpositionMap();
   return entries.map((e) => ({
     id: `tool:${e.name}`,
@@ -1883,6 +1835,8 @@ export function getSharedCorpusDocs(): SharedCorpusDoc[] {
     text: e.text,
     exposition: expoMap.get(e.name),
     cached: e.cached,
+    readOnlyHint: definitions.find((definition) => definition.name === e.name)
+      ?.annotations?.readOnlyHint,
   }));
 }
 
@@ -1910,6 +1864,7 @@ export type ToolEmbeddingBundle = {
     text: string;
     vector: number[];
     exposition?: string;
+    readOnlyHint?: boolean;
   }[];
 };
 
@@ -1939,7 +1894,13 @@ export function planBundleLoad(
   runtime: EmbedderFingerprint,
 ): {
   usable: boolean;
-  toLoad: { id: string; text: string; vector: number[]; exposition?: string }[];
+  toLoad: {
+    id: string;
+    text: string;
+    vector: number[];
+    exposition?: string;
+    readOnlyHint?: boolean;
+  }[];
   supplementNames: string[];
 } {
   if (
@@ -1958,6 +1919,7 @@ export function planBundleLoad(
     text: string;
     vector: number[];
     exposition?: string;
+    readOnlyHint?: boolean;
   }[] = [];
   const supplementNames: string[] = [];
   for (const d of runtimeDocs) {
@@ -1968,6 +1930,7 @@ export function planBundleLoad(
         text: d.text,
         vector: be.vector,
         exposition: d.exposition,
+        readOnlyHint: d.readOnlyHint,
       });
     } else {
       supplementNames.push(d.name);
@@ -2072,11 +2035,10 @@ export async function loadToolCorpus(
     if (!w) throw new Error('Tool corpus store is not writable (in-memory)');
     let count = 0;
     for (const x of docs) {
-      const res = await w.upsertRaw(
-        x.id,
-        x.text,
-        x.exposition ? { exposition: x.exposition } : {},
-      );
+      const res = await w.upsertRaw(x.id, x.text, {
+        exposition: x.exposition,
+        readOnlyHint: x.readOnlyHint,
+      });
       if (!res.ok) throw corpusWriteError(x.id, res.error);
       count++;
     }
@@ -2137,12 +2099,10 @@ export async function loadToolCorpus(
     );
   let count = 0;
   for (const e of plan.toLoad) {
-    const res = await write(
-      e.id,
-      e.text,
-      e.vector,
-      e.exposition ? { exposition: e.exposition } : {},
-    );
+    const res = await write(e.id, e.text, e.vector, {
+      exposition: e.exposition,
+      readOnlyHint: e.readOnlyHint,
+    });
     if (!res.ok) throw corpusWriteError(e.id, res.error);
     count++;
   }
@@ -2815,9 +2775,7 @@ export async function buildEmbeddedMcpAdapter(
         .filter((e) => !isRagTool(e.toolDefinition.name))
         .map((e) => ({
           name: e.toolDefinition.name,
-          annotations: (
-            e.toolDefinition as { annotations?: ToolEffectAnnotations }
-          ).annotations,
+          annotations: toolDefinitionAnnotations(e.toolDefinition),
           description: agentToolDescription(e.toolDefinition.description),
           inputSchema: agentToolSchema(
             e.toolDefinition.name,
@@ -2831,7 +2789,7 @@ export async function buildEmbeddedMcpAdapter(
         const def = CLOUD_LOCAL_TOOLS[0];
         list.push({
           name: def.name,
-          annotations: undefined,
+          annotations: def.annotations,
           description: def.description ?? '',
           inputSchema: def.inputSchema as ReturnType<typeof toJsonSchema>,
         });

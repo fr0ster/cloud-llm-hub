@@ -96,6 +96,8 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 - **System type is declared, never guessed:** `x-sap-system-type` (`onprem` | `cloud` | `legacy`), else the destination's `SAP_SYSTEM_TYPE` property, else `onprem`. **Created objects** are attributed to `x-sap-responsible`, else the uppercased `x-sap-login`; a create with neither is refused (`system_context_missing`) before anything reaches SAP. See [SAP Connection Headers](docs/architecture/API_REFERENCE.md#system-type).
 - Detailed connection and session examples are documented in [`docs/usage/MCP_CONNECTION.md`](docs/usage/MCP_CONNECTION.md) and the [`Stream-HTTP` API reference](docs/architecture/API_REFERENCE.md#12-stream-http).
 
+Tool search defaults to `LLM_AGENT_TOOLS_SELECTION=step-kind`, `LLM_AGENT_TOOLS_K_READER=5` and `LLM_AGENT_TOOLS_K_WRITER=2`: RO steps receive reader top-k, RW steps receive writer object clusters, and UNKNOWN steps receive their union. See [tool selection configuration and measurements](docs/llm-agent/CONFIG_USAGE.md).
+
 For model discovery, set `LLM_AGENT_MODELS=catalog` with provider `sap-ai-sdk`
 (SAP AI Core) or `anthropic`. The catalog uses the configured provider credential;
 Anthropic shares the chat API key and optional base URL. See

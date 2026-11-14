@@ -9,12 +9,18 @@ import {
   toolStoreName,
 } from '../../srv/lib/tool-corpus';
 
-const d = (name: string, text: string, exposition?: string) => ({
+const d = (
+  name: string,
+  text: string,
+  exposition?: string,
+  readOnlyHint = true,
+) => ({
   id: `tool:${name}`,
   name,
   text,
   exposition,
   cached: true,
+  readOnlyHint,
 });
 const fp = {
   provider: 'ollama',
@@ -31,12 +37,27 @@ describe('tool corpus identity', () => {
   });
 
   it('a tool moving between roles changes both role corpus hashes', () => {
-    const before = [d('R', 'r', 'read'), d('W', 'w', 'high')];
-    const after = [d('R', 'r', 'high'), d('W', 'w', 'high')];
+    const before = [d('R', 'r', 'high'), d('W', 'w', 'high', false)];
+    const after = [d('R', 'r', 'high', false), d('W', 'w', 'high', false)];
     const rb = corpusByRole(before);
     const ra = corpusByRole(after);
     expect(corpusHash(rb.reader)).not.toBe(corpusHash(ra.reader));
     expect(corpusHash(rb.writer)).not.toBe(corpusHash(ra.writer));
+  });
+
+  it('keeps permission tiers independent of effects', () => {
+    const version = d('Version', 'version', 'high');
+    const unannotated = {
+      id: 'tool:Unannotated',
+      name: 'Unannotated',
+      text: 'tool',
+      cached: true,
+      exposition: 'readonly',
+    };
+    expect(corpusByRole([version, unannotated])).toEqual({
+      reader: [version],
+      writer: [unannotated],
+    });
   });
 
   it('role store names are fixed: one store per role, no hashes', () => {

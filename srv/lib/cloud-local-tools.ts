@@ -10,6 +10,7 @@ import type { ToolDocInput } from '../agent-manager';
 export const CLOUD_LOCAL_TOOLS: ToolDocInput[] = [
   {
     name: 'GetDumpSection',
+    annotations: { readOnlyHint: true },
     description:
       'Returns a runtime dump (ST22 short dump) section index, or one de-padded chapter when `section` is given.',
     inputSchema: {

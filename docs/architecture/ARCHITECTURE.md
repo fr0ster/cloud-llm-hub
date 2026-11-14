@@ -1164,9 +1164,9 @@ graph TB
 | `LLM_AGENT_MAX_ITERATIONS` | `agent-config.ts` | Max tool-loop iterations (default: `10`) |
 | `LLM_AGENT_RAG_TYPE` | `agent-config.ts`, `agent-manager.ts` | Selects the tool-intent RAG mode. `in-memory` (the default) is keyword-only and builds **no** embedder (`agent-manager.ts`: `if (ragType === 'in-memory') return null`). **Any other value** — every deployment template sets `vector` — takes the vector path, with the embedder chosen by `LLM_AGENT_PROVIDER`. There is no separate Ollama backend, despite the `RagType` union in `agent-config.ts` still naming `ollama` |
 | `LLM_AGENT_RAG_QUERY_K` | `agent-config.ts` | Legacy budget for other RAG stores; tool search uses separate reader/writer budgets |
-| `LLM_AGENT_TOOLS_K_READER` | `agent-config.ts` | Reader collection seed budget, default `2`; positive integer |
-| `LLM_AGENT_TOOLS_K_WRITER` | `agent-config.ts` | Writer collection seed budget, default `1`; positive integer. Write roles expand found object clusters within their allowed tools |
-| `LLM_AGENT_TOOLS_CLUSTER_STRATEGY` | `agent-config.ts` | Write-role cluster expansion: `all-seeds` (default) uses every found tool; `top-writer` uses only the highest-scoring writer tool with an object. Found tools and role filtering are preserved |
+| `LLM_AGENT_TOOLS_K_READER` | `agent-config.ts` | Reader collection seed budget, default `5`; positive integer |
+| `LLM_AGENT_TOOLS_K_WRITER` | `agent-config.ts` | Writer collection seed budget, default `2`; positive integer. Write roles expand found object clusters within their allowed tools |
+| `LLM_AGENT_TOOLS_SELECTION` | `step-kind` | `per-collection`: reader top-k plus writer clusters; `step-kind`: RO reader top-k, RW writer clusters, UNKNOWN union. Invalid values refuse startup. |
 | `LLM_AGENT_CLASSIFIER_MODEL` | `agent-config.ts` (`llm.classifierModel`) | Model for helper calls (classification, query translation); falls back to `LLM_AGENT_MODEL` |
 | `LLM_AGENT_SKILL_RAG_K` | `agent-config.ts` (`agent.skillRagK`) | Most `skill:*` entries one tool-RAG query surfaces (default `3`; `0` disables skills). Skills and tools compete for one top-K |
 | `LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK` | `agent-config.ts` (`agent.allowLlmOnlyFallback`) | `true`: a request naming no destination may fall back to the LLM-only agent when the default destination is not ready |
@@ -1178,15 +1178,20 @@ graph TB
 | `LLM_AGENT_STEP_REVIEW_TIMEOUT_MS` | deprecated | Ignored; no automatic critic or review deadline. |
 | `LLM_AGENT_SAP_RELEVANCE_SCORE` | deprecated | Ignored, including invalid values; automatic suspicion-based review was removed. |
 
-Offline measurement on 91 RW prompts with the Developer role:
+Tool selection uses explicit read-only effects, independently of exposition permissions and retrieval backend. Defaults: `step-kind`, reader k=5, writer k=2. Only writer seeds expand object clusters; cluster members retain permission filtering. Without write rights both strategies return readers only. The analyzer returns strict `writes` in its existing call; missing or invalid responses mean UNKNOWN. `per-collection` ignores step kind; `step-kind` uses it and adds no independent reader seeds to RW.
 
-| Strategy | kWriter | Target cluster complete | Average tools | Average foreign tools |
-| --- | --- | --- | --- | --- |
-| all-seeds | 1 | 91/91 | 11.5 | 4.5 |
-| all-seeds (previous default) | 5 | 91/91 | 20.7 | 13.6 |
-| top-writer | 1 | 78/91 | 9.2 | 3.3 |
+Baseline oracle evaluation on 91 cases (29 RO, 62 RW), with reader k=2 / writer k=1 and bge-m3 precomputed document vectors:
 
-The default is `all-seeds` with `LLM_AGENT_TOOLS_K_WRITER=1`: it preserved complete target clusters in this sample while reducing tool count and foreign tools. Consumers can override either environment variable.
+| Retrieval | Strategy | RO hits | RW hits | Total | RO avg/max tools | RW avg/max tools |
+| --- | --- | --- | --- | --- | --- | --- |
+| vector / bge-m3 | per-collection | 29/29 | 58/62 | 87/91 | 10.34 / 22 | 8.74 / 22 |
+| vector / bge-m3 | step-kind | 27/29 | 58/62 | 85/91 | 2.00 / 2 | 8.37 / 21 |
+| keyword only | per-collection | 28/29 | 50/62 | 78/91 | 11.66 / 22 | 9.73 / 21 |
+| keyword only | step-kind | 27/29 | 50/62 | 77/91 | 2.00 / 2 | 9.08 / 21 |
+
+The default is `step-kind` with reader k=5 and writer k=2, chosen from the 91-case bge-m3 vector evaluation: RO 29/29 with 5 tools; RW 61/62 with an average of 11.89 tools (90/91 total). Writer k=1 gives only 58/62 RW hits. The table above records the earlier reader k=2 / writer k=1 baseline. These are oracle step-kind measurements: the harness uses expected tool effects, without an LLM classification call.
+
+Run `npm run eval:tools -- --bundle srv/tool-embeddings.879dc890b222.json --store vector --embedder ollama` or `npm run eval:tools -- --store in-memory --embedder none` (`--keyword` alias). The harness defaults to `--k-reader 5 --k-writer 2`, matching the hub; pass `--k-reader 2 --k-writer 1` to reproduce the baseline. It uses hub factories and real selection code, prints both strategies and misses, and supports `--store in-memory|vector|qdrant`, `--url` for Qdrant, `--embedder none|ollama|openai|sap-ai-core`, `--model` and `--embedder-url`. `--bundle` defaults to the committed bundle and supplies vectors only on fingerprint match; otherwise the selected embedder vectorizes documents. It never rewrites bundles.
 
 ### Key HTTP Headers (Per-Request)
 

@@ -55,6 +55,7 @@ sk.json
 !srv/tool-intents.json
 !srv/tool-embeddings.json
 !tools/tool-rag-queries.json
+!tools/eval/tool-selection-cases.json
 # Per-fingerprint bundles the build step writes for non-default embedders
 # (tools/generate-tool-embeddings.ts): built per deployment, never committed.
 srv/tool-embeddings.*.json

@@ -97,17 +97,10 @@ describe('role-scoped tool collections', () => {
     expect([...names].sort()).toEqual(docs.map((doc) => doc.name).sort());
   });
 
-  it('routes by the ROLE boundary, not by whether a tool modifies', () => {
-    // `high` holds ~70 read tools (GetPackage, GetTable…). Routing by semantics
-    // would put those in the reader collection and drift from the boundary the
-    // execution check enforces.
-    expect(collectionFor('readonly')).toBe('reader');
-    expect(collectionFor('search')).toBe('reader');
-    expect(collectionFor('system')).toBe('reader');
-    expect(collectionFor('high')).toBe('writer');
-    // An unclassified tool must not land in the reader collection by accident…
-    // it lands there, but the post-filter still drops it for lacking a tag.
-    expect(collectionFor(undefined)).toBe('reader');
+  it('routes by explicit read-only effect', () => {
+    expect(collectionFor(true)).toBe('reader');
+    expect(collectionFor(false)).toBe('writer');
+    expect(collectionFor(undefined)).toBe('writer');
   });
 
   it('writes each tool into the collection its exposition belongs to', async () => {
@@ -208,10 +201,10 @@ describe('role-scoped tool collections', () => {
     if (!res.ok) throw new Error('query failed');
     const ids = res.value.map((r) => r.metadata.id);
     expect(ids.slice(0, 4)).toEqual([
-      'tool:DeleteClass',
-      'tool:DeleteTable',
       'tool:GetPackageContents',
       'tool:GetPackageTree',
+      'tool:DeleteClass',
+      'tool:DeleteTable',
     ]);
     expect(ids).toContain('tool:ActivateClass');
     expect(ids).not.toContain('tool:DeleteDomain');

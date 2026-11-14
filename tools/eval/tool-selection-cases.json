@@ -1,0 +1,457 @@
+[
+  {
+    "q": "Create the class ZCL_TEST",
+    "exp": "CreateClass",
+    "writes": true
+  },
+  {
+    "q": "Read the class ZCL_TEST",
+    "exp": "GetClass",
+    "writes": false
+  },
+  {
+    "q": "Change the source of the class ZCL_TEST",
+    "exp": "UpdateClass",
+    "writes": true
+  },
+  {
+    "q": "Delete the class ZCL_TEST",
+    "exp": "DeleteClass",
+    "writes": true
+  },
+  {
+    "q": "Activate the class ZCL_TEST",
+    "exp": "ActivateClass",
+    "writes": true
+  },
+  {
+    "q": "Run a syntax check of the class ZCL_TEST",
+    "exp": "CheckClass",
+    "writes": false
+  },
+  {
+    "q": "Create the program Z_TEST_REPORT",
+    "exp": "CreateProgram",
+    "writes": true
+  },
+  {
+    "q": "Read the program Z_TEST_REPORT",
+    "exp": "GetProgram",
+    "writes": false
+  },
+  {
+    "q": "Change the source of the program Z_TEST_REPORT",
+    "exp": "UpdateProgram",
+    "writes": true
+  },
+  {
+    "q": "Delete the program Z_TEST_REPORT",
+    "exp": "DeleteProgram",
+    "writes": true
+  },
+  {
+    "q": "Activate the program Z_TEST_REPORT",
+    "exp": "ActivateProgram",
+    "writes": true
+  },
+  {
+    "q": "Run a syntax check of the program Z_TEST_REPORT",
+    "exp": "CheckProgram",
+    "writes": false
+  },
+  {
+    "q": "Create the interface ZIF_TEST",
+    "exp": "CreateInterface",
+    "writes": true
+  },
+  {
+    "q": "Read the interface ZIF_TEST",
+    "exp": "GetInterface",
+    "writes": false
+  },
+  {
+    "q": "Change the source of the interface ZIF_TEST",
+    "exp": "UpdateInterface",
+    "writes": true
+  },
+  {
+    "q": "Delete the interface ZIF_TEST",
+    "exp": "DeleteInterface",
+    "writes": true
+  },
+  {
+    "q": "Activate the interface ZIF_TEST",
+    "exp": "ActivateInterface",
+    "writes": true
+  },
+  {
+    "q": "Run a syntax check of the interface ZIF_TEST",
+    "exp": "CheckInterface",
+    "writes": false
+  },
+  {
+    "q": "Create the database table ZTEST_TAB",
+    "exp": "CreateTable",
+    "writes": true
+  },
+  {
+    "q": "Read the database table ZTEST_TAB",
+    "exp": "GetTable",
+    "writes": false
+  },
+  {
+    "q": "Change the source of the database table ZTEST_TAB",
+    "exp": "UpdateTable",
+    "writes": true
+  },
+  {
+    "q": "Delete the database table ZTEST_TAB",
+    "exp": "DeleteTable",
+    "writes": true
+  },
+  {
+    "q": "Activate the database table ZTEST_TAB",
+    "exp": "ActivateTable",
+    "writes": true
+  },
+  {
+    "q": "Run a syntax check of the database table ZTEST_TAB",
+    "exp": "CheckTable",
+    "writes": false
+  },
+  {
+    "q": "Create the structure ZTEST_STR",
+    "exp": "CreateStructure",
+    "writes": true
+  },
+  {
+    "q": "Read the structure ZTEST_STR",
+    "exp": "GetStructure",
+    "writes": false
+  },
+  {
+    "q": "Change the source of the structure ZTEST_STR",
+    "exp": "UpdateStructure",
+    "writes": true
+  },
+  {
+    "q": "Delete the structure ZTEST_STR",
+    "exp": "DeleteStructure",
+    "writes": true
+  },
+  {
+    "q": "Activate the structure ZTEST_STR",
+    "exp": "ActivateStructure",
+    "writes": true
+  },
+  {
+    "q": "Run a syntax check of the structure ZTEST_STR",
+    "exp": "CheckStructure",
+    "writes": false
+  },
+  {
+    "q": "Create the function module Z_TEST_FM",
+    "exp": "CreateFunctionModule",
+    "writes": true
+  },
+  {
+    "q": "Read the function module Z_TEST_FM",
+    "exp": "GetFunctionModule",
+    "writes": false
+  },
+  {
+    "q": "Change the source of the function module Z_TEST_FM",
+    "exp": "UpdateFunctionModule",
+    "writes": true
+  },
+  {
+    "q": "Delete the function module Z_TEST_FM",
+    "exp": "DeleteFunctionModule",
+    "writes": true
+  },
+  {
+    "q": "Activate the function module Z_TEST_FM",
+    "exp": "ActivateFunctionModule",
+    "writes": true
+  },
+  {
+    "q": "Run a syntax check of the function module Z_TEST_FM",
+    "exp": "CheckFunctionModule",
+    "writes": false
+  },
+  {
+    "q": "Create the function group ZTEST_FG",
+    "exp": "CreateFunctionGroup",
+    "writes": true
+  },
+  {
+    "q": "Read the function group ZTEST_FG",
+    "exp": "GetFunctionGroup",
+    "writes": false
+  },
+  {
+    "q": "Change the source of the function group ZTEST_FG",
+    "exp": "UpdateFunctionGroup",
+    "writes": true
+  },
+  {
+    "q": "Delete the function group ZTEST_FG",
+    "exp": "DeleteFunctionGroup",
+    "writes": true
+  },
+  {
+    "q": "Activate the function group ZTEST_FG",
+    "exp": "ActivateFunctionGroup",
+    "writes": true
+  },
+  {
+    "q": "Run a syntax check of the function group ZTEST_FG",
+    "exp": "CheckFunctionGroup",
+    "writes": false
+  },
+  {
+    "q": "Create the domain ZTEST_DOM",
+    "exp": "CreateDomain",
+    "writes": true
+  },
+  {
+    "q": "Read the domain ZTEST_DOM",
+    "exp": "GetDomain",
+    "writes": false
+  },
+  {
+    "q": "Change the source of the domain ZTEST_DOM",
+    "exp": "UpdateDomain",
+    "writes": true
+  },
+  {
+    "q": "Delete the domain ZTEST_DOM",
+    "exp": "DeleteDomain",
+    "writes": true
+  },
+  {
+    "q": "Activate the domain ZTEST_DOM",
+    "exp": "ActivateDomain",
+    "writes": true
+  },
+  {
+    "q": "Run a syntax check of the domain ZTEST_DOM",
+    "exp": "CheckDomain",
+    "writes": false
+  },
+  {
+    "q": "Create the data element ZTEST_DTEL",
+    "exp": "CreateDataElement",
+    "writes": true
+  },
+  {
+    "q": "Read the data element ZTEST_DTEL",
+    "exp": "GetDataElement",
+    "writes": false
+  },
+  {
+    "q": "Change the source of the data element ZTEST_DTEL",
+    "exp": "UpdateDataElement",
+    "writes": true
+  },
+  {
+    "q": "Delete the data element ZTEST_DTEL",
+    "exp": "DeleteDataElement",
+    "writes": true
+  },
+  {
+    "q": "Activate the data element ZTEST_DTEL",
+    "exp": "ActivateDataElement",
+    "writes": true
+  },
+  {
+    "q": "Run a syntax check of the data element ZTEST_DTEL",
+    "exp": "CheckDataElement",
+    "writes": false
+  },
+  {
+    "q": "Create the CDS view ZI_TEST",
+    "exp": "CreateDdl",
+    "writes": true
+  },
+  {
+    "q": "Read the CDS view ZI_TEST",
+    "exp": "GetDdl",
+    "writes": false
+  },
+  {
+    "q": "Change the source of the CDS view ZI_TEST",
+    "exp": "UpdateDdl",
+    "writes": true
+  },
+  {
+    "q": "Delete the CDS view ZI_TEST",
+    "exp": "DeleteDdl",
+    "writes": true
+  },
+  {
+    "q": "Activate the CDS view ZI_TEST",
+    "exp": "ActivateDdl",
+    "writes": true
+  },
+  {
+    "q": "Run a syntax check of the CDS view ZI_TEST",
+    "exp": "CheckDdl",
+    "writes": false
+  },
+  {
+    "q": "Create the package ZTEST_PKG",
+    "exp": "CreatePackage",
+    "writes": true
+  },
+  {
+    "q": "Read the package ZTEST_PKG",
+    "exp": "GetPackage",
+    "writes": false
+  },
+  {
+    "q": "Change the source of the package ZTEST_PKG",
+    "exp": "UpdatePackage",
+    "writes": true
+  },
+  {
+    "q": "Delete the package ZTEST_PKG",
+    "exp": "DeletePackage",
+    "writes": true
+  },
+  {
+    "q": "Run a syntax check of the package ZTEST_PKG",
+    "exp": "CheckPackage",
+    "writes": false
+  },
+  {
+    "q": "Create the include ZTEST_INCL",
+    "exp": "CreateInclude",
+    "writes": true
+  },
+  {
+    "q": "Read the include ZTEST_INCL",
+    "exp": "GetInclude",
+    "writes": false
+  },
+  {
+    "q": "Change the source of the include ZTEST_INCL",
+    "exp": "UpdateInclude",
+    "writes": true
+  },
+  {
+    "q": "Delete the include ZTEST_INCL",
+    "exp": "DeleteInclude",
+    "writes": true
+  },
+  {
+    "q": "Activate the include ZTEST_INCL",
+    "exp": "ActivateInclude",
+    "writes": true
+  },
+  {
+    "q": "Create the behavior definition ZI_TEST",
+    "exp": "CreateBehaviorDefinition",
+    "writes": true
+  },
+  {
+    "q": "Read the behavior definition ZI_TEST",
+    "exp": "GetBehaviorDefinition",
+    "writes": false
+  },
+  {
+    "q": "Change the source of the behavior definition ZI_TEST",
+    "exp": "UpdateBehaviorDefinition",
+    "writes": true
+  },
+  {
+    "q": "Delete the behavior definition ZI_TEST",
+    "exp": "DeleteBehaviorDefinition",
+    "writes": true
+  },
+  {
+    "q": "Activate the behavior definition ZI_TEST",
+    "exp": "ActivateBehaviorDefinition",
+    "writes": true
+  },
+  {
+    "q": "Run a syntax check of the behavior definition ZI_TEST",
+    "exp": "CheckBehaviorDefinition",
+    "writes": false
+  },
+  {
+    "q": "Create the service definition ZSD_TEST",
+    "exp": "CreateServiceDefinition",
+    "writes": true
+  },
+  {
+    "q": "Read the service definition ZSD_TEST",
+    "exp": "GetServiceDefinition",
+    "writes": false
+  },
+  {
+    "q": "Change the source of the service definition ZSD_TEST",
+    "exp": "UpdateServiceDefinition",
+    "writes": true
+  },
+  {
+    "q": "Delete the service definition ZSD_TEST",
+    "exp": "DeleteServiceDefinition",
+    "writes": true
+  },
+  {
+    "q": "Activate the service definition ZSD_TEST",
+    "exp": "ActivateServiceDefinition",
+    "writes": true
+  },
+  {
+    "q": "Create the message class ZTEST_MSG",
+    "exp": "CreateMessageClass",
+    "writes": true
+  },
+  {
+    "q": "Read the message class ZTEST_MSG",
+    "exp": "GetMessageClass",
+    "writes": false
+  },
+  {
+    "q": "Change the source of the message class ZTEST_MSG",
+    "exp": "UpdateMessageClass",
+    "writes": true
+  },
+  {
+    "q": "Delete the message class ZTEST_MSG",
+    "exp": "DeleteMessageClass",
+    "writes": true
+  },
+  {
+    "q": "Create the table type ZTEST_TT",
+    "exp": "CreateTableType",
+    "writes": true
+  },
+  {
+    "q": "Read the table type ZTEST_TT",
+    "exp": "GetTableType",
+    "writes": false
+  },
+  {
+    "q": "Change the source of the table type ZTEST_TT",
+    "exp": "UpdateTableType",
+    "writes": true
+  },
+  {
+    "q": "Delete the table type ZTEST_TT",
+    "exp": "DeleteTableType",
+    "writes": true
+  },
+  {
+    "q": "Activate the table type ZTEST_TT",
+    "exp": "ActivateTableType",
+    "writes": true
+  },
+  {
+    "q": "Run a syntax check of the table type ZTEST_TT",
+    "exp": "CheckTableType",
+    "writes": false
+  }
+]
