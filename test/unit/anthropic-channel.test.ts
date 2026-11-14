@@ -22,9 +22,10 @@ jest.mock(
   }),
   { virtual: true },
 );
-jest.mock('../../srv/agent-manager', () =>
-  require('./helpers/channel-harness').agentManagerMock(),
-);
+jest.mock('../../srv/agent-manager', () => ({
+  ...require('./helpers/channel-harness').agentManagerMock(),
+  getSharedHistoryRag: jest.fn(),
+}));
 jest.mock('../../srv/agent-config', () =>
   require('./helpers/channel-harness').agentConfigMock(),
 );
@@ -57,6 +58,7 @@ import {
 } from '../../srv/lib/long-session';
 import { McpUnavailableError } from '../../srv/lib/mcp-outage';
 import { buildRagToolSchemas } from '../../srv/lib/rag-tool-catalogue';
+import * as sessionTurns from '../../srv/lib/session-turns';
 import {
   anthropicDoorRefusal,
   anthropicSessionClosed,
@@ -586,6 +588,24 @@ describe('a long session', () => {
     });
   });
 
+  it('passes only the full current question after a prior session turn', async () => {
+    const received: string[] = [];
+    harness.process = async (messages) => {
+      received.push(JSON.stringify(messages));
+      return { ok: true, value: { content: 'previous answer '.repeat(400) } };
+    };
+    await callInSession(body()).done;
+    const question = 'current question '.repeat(450);
+    await callInSession({
+      ...body(),
+      messages: [{ role: 'user', content: question }],
+    }).done;
+    expect(received).toHaveLength(2);
+    expect(JSON.parse(received[1])).toEqual([
+      { role: 'user', content: question },
+    ]);
+  });
+
   it('a long-session request leaves its connection open after the response — success', async () => {
     configure();
     const { res, done } = callInSession(body());
@@ -1008,4 +1028,175 @@ test('refuses a conflicting caller with HTTP 403 before agent dispatch', async (
   await handleAnthropicMessages(req, typedResponse(res));
   expect(res.statusCode).toBe(403);
   expect(harness.seenOptions).toHaveLength(0);
+});
+
+test.each([false, true])(
+  'Anthropic full history recall through the model (stream=%s)',
+  async (stream) => {
+    const { InMemoryRagProvider } = await import('@mcp-abap-adt/llm-agent');
+    const { SessionHistoryRouter } = await import(
+      '../../srv/lib/session-history-collection'
+    );
+    const manager = await import('../../srv/agent-manager');
+    const { SmartAgentBuilder, unwrapBuilderResult } = await import(
+      '@mcp-abap-adt/llm-agent-libs'
+    );
+    const router = new SessionHistoryRouter(
+      new InMemoryRagProvider({ name: 'anthropic-recall' }),
+    );
+    const history = jest.mocked(manager.getSharedHistoryRag);
+    history.mockReturnValue(router);
+    const pending: Promise<boolean>[] = [];
+    const write = router.recordTurn.bind(router);
+    const recorded = jest
+      .spyOn(router, 'recordTurn')
+      .mockImplementation((input) => {
+        const result = write(input);
+        pending.push(result);
+        return result;
+      });
+    const answer = Array.from(
+      { length: 9 },
+      (_, i) => `Named_Item_${i + 1}: ${'detail '.repeat(100)}`,
+    ).join('\n');
+    const seen: string[] = [];
+    const llm: import('@mcp-abap-adt/llm-agent').ILlm = {
+      chat: async (messages) => {
+        seen.push(JSON.stringify(messages));
+        return {
+          ok: true,
+          value: {
+            content: seen.length === 1 ? answer : 'recalled',
+            finishReason: 'stop',
+          },
+        };
+      },
+      async *streamChat(messages, tools, options) {
+        yield await this.chat(messages, tools, options);
+      },
+    };
+    try {
+      const { getHubRagAccess } = await import('../../srv/lib/rag-access');
+      const build = async () =>
+        unwrapBuilderResult(
+          await new SmartAgentBuilder({
+            skipModelValidation: true,
+            agent: {
+              classificationEnabled: false,
+              ragTranslateEnabled: false,
+              semanticHistoryEnabled: true,
+            },
+          })
+            .withMainLlm(llm)
+            .withHelperLlm(llm)
+            .withRagAccess(getHubRagAccess().access)
+            .setHistoryRag(router)
+            .build(),
+        ).agent;
+      let agent = await build();
+      harness.process = async (messages, opts) => {
+        const result = await agent.process(messages, opts);
+        return result.ok ? { ok: true, value: { ...result.value } } : result;
+      };
+      harness.stream = async function* (messages, opts) {
+        for await (const result of agent.streamProcess(messages, opts))
+          yield result.ok ? { ok: true, value: { ...result.value } } : result;
+      };
+      await call(body(stream)).done;
+      expect(await Promise.all(pending)).toEqual([true]);
+      expect(recorded).toHaveBeenCalledTimes(1);
+      const caller = recorded.mock.calls[0][0].caller;
+      expect(await router.listTurns(caller)).toEqual([
+        expect.objectContaining({ userText: 'hi', assistantText: answer }),
+      ]);
+      agent = await build();
+      seen.length = 0;
+      await call({
+        ...body(stream),
+        messages: [{ role: 'user', content: 'recall hi Named_Item' }],
+      }).done;
+      for (let i = 1; i <= 9; i++) expect(seen[0]).toContain(`Named_Item_${i}`);
+      await Promise.all(pending);
+    } finally {
+      recorded.mockRestore();
+      history.mockReset();
+    }
+  },
+);
+
+describe('history records only completed calls', () => {
+  test.each([
+    'success',
+    'error chunk',
+    'exception',
+    'disconnect',
+    'disconnect after terminal',
+  ] as const)('stream: %s', async (outcome) => {
+    const recorded = jest
+      .spyOn(sessionTurns, 'recordTurn')
+      .mockImplementation(() => {});
+    const res = fakeRes();
+    const write = res.write.bind(res);
+    res.write = (chunk) => {
+      const result = write(chunk);
+      if (
+        outcome === 'disconnect after terminal' &&
+        chunk.includes('message_stop')
+      )
+        res.disconnect();
+      return result;
+    };
+    harness.stream = async function* () {
+      yield { ok: true, value: { content: 'partial' } };
+      if (outcome === 'exception') throw new Error('stream failed');
+      if (outcome === 'error chunk') {
+        yield { ok: false, error: new Error('stream failed') };
+        return;
+      }
+      if (outcome === 'disconnect') res.disconnect();
+      yield { ok: true, value: { content: ' answer', finishReason: 'stop' } };
+    };
+    try {
+      await call(body(true), res).done;
+      expect(recorded).toHaveBeenCalledTimes(
+        outcome === 'success' || outcome === 'disconnect after terminal'
+          ? 1
+          : 0,
+      );
+      if (outcome === 'success')
+        expect(recorded).toHaveBeenCalledWith(
+          expect.objectContaining({ userId: 'alice' }),
+          expect.objectContaining({ role: 'user', content: 'hi' }),
+          'partial answer',
+        );
+    } finally {
+      recorded.mockRestore();
+    }
+  });
+
+  test.each(['success', 'error', 'exception', 'disconnect'] as const)(
+    'non-stream: %s',
+    async (outcome) => {
+      const recorded = jest
+        .spyOn(sessionTurns, 'recordTurn')
+        .mockImplementation(() => {});
+      const res = fakeRes();
+      harness.process = async () => {
+        if (outcome === 'exception') throw new Error('call failed');
+        if (outcome === 'error')
+          return { ok: false, error: new Error('call failed') };
+        if (outcome === 'disconnect') res.disconnect();
+        return { ok: true, value: { content: 'answer', stopReason: 'stop' } };
+      };
+      try {
+        const { done } = call(body(), res);
+        if (outcome === 'exception')
+          await expect(done).rejects.toThrow('call failed');
+        else await done;
+        expect(recorded).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
+      } finally {
+        recorded.mockRestore();
+      }
+    },
+  );
 });

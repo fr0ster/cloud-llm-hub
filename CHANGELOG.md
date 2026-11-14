@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- Server-managed OpenAI, Anthropic and MCP sessions recall history only through semantic RAG retrieval. Completed non-dialogue Anthropic responses are recorded in both streaming and non-streaming modes. Full recorded turns are retained until session end, split losslessly into ordered embedder-sized records when needed, without the former 1,200-character answer clip or 200-turn eviction. Client-managed history behavior is unchanged.
+
 ## [11.0.2] - 2026-11-13
 
 ### Fixed

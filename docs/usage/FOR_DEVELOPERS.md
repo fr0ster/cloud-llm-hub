@@ -4,7 +4,7 @@ What Cloud LLM Hub provides for integration with your services.
 
 ## Main advantages
 
-- **Intelligent context management.** The hub assembles the agent context per request: RAG artifacts, selected ABAP tools, role-filtered tool inventory, session/history window, destination context, and request-scoped external tools. Consuming services do not have to build that context pipeline themselves.
+- **Intelligent context management.** The hub assembles the agent context per request: RAG artifacts, selected ABAP tools, role-filtered tool inventory, semantic session history, destination context, and request-scoped external tools. Consuming services do not have to build that context pipeline themselves.
 - **Flexible integration surface.** The same hub can be consumed as MCP Streamable-HTTP, OpenAI-compatible Chat Completions, Anthropic-compatible Messages API, Web UI backend, script endpoint, or internal-service backend.
 - **Large ABAP MCP toolset.** Built-in `mcp-abap-adt` integration exposes roughly 149 tools: read/search, where-used, dictionary/source access, runtime dump/log analysis, and CRUD/check/activate operations where the caller's role allows them.
 - **SmartAgent on top of MCP.** Services can call the LLM agent instead of driving MCP manually. The hub handles tool selection, RAG retrieval, role filtering, external tools, streaming, and the bounded agent loop.
@@ -45,7 +45,7 @@ Cloud LLM Hub manages what context the LLM actually sees, so the consuming servi
 - **Tool relevance filtering.** Tool definitions are embedded and selected by relevance to the current turn. A large inventory does not blow up the prompt.
 - **Role-based tool exposure.** Tools outside the caller's role are removed from the inventory before the agent ever sees them. The agent cannot accidentally try to call a tool the user is not allowed to use.
 - **RAG retrieval.** Top-k artifacts from the relevant collection are injected for the current turn — project standards, conventions, skill prompts, prior findings. The consuming service does not have to paste them every request.
-- **Bounded history window.** Conversation history is trimmed to a configurable window so multi-turn sessions stay cost-bounded.
+- **Semantic session history.** Server-managed sessions store full turns and retrieve relevant history records by semantic search; the recent-message window is not sent to the model. Client-managed messages retain their existing context trimming.
 - **Bounded agent loop.** The agent stops on either explicit completion or a configurable iteration cap.
 
 ## Role-based access control to built-in tools

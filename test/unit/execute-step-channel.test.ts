@@ -104,6 +104,7 @@ import {
   clearGatekeeperMetrics,
   gatekeeperSnapshot,
 } from '../../srv/lib/gatekeeper-metrics';
+import * as sessionTurns from '../../srv/lib/session-turns';
 import {
   destinationClosedText,
   executeStepDoorRefusal,
@@ -433,3 +434,31 @@ describe('an unanswered write, thrown from the pipeline', () => {
     expect(result.content[0].text).toBe('ERROR: socket hang up');
   });
 });
+
+test.each(['success', 'error', 'exception', 'abort'] as const)(
+  'execute_step records only completed calls: %s',
+  async (outcome) => {
+    const recorded = jest
+      .spyOn(sessionTurns, 'recordTurn')
+      .mockImplementation(() => {});
+    const controller = new AbortController();
+    harness.process = async () => {
+      if (outcome === 'exception') throw new Error('step failed');
+      if (outcome === 'error')
+        return { ok: false, error: new Error('step failed') };
+      if (outcome === 'abort') controller.abort();
+      return { ok: true, value: { content: 'answer', stopReason: 'stop' } };
+    };
+    try {
+      await executeStep(
+        req,
+        caller,
+        { session: opened(), task: 'read' },
+        controller.signal,
+      );
+      expect(recorded).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
+    } finally {
+      recorded.mockRestore();
+    }
+  },
+);

@@ -78,6 +78,7 @@ import {
   ragToolNames,
 } from '../../srv/lib/rag-tool-catalogue';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
+import * as sessionTurns from '../../srv/lib/session-turns';
 import {
   destinationClosedText,
   openAiDoorRefusal,
@@ -570,6 +571,24 @@ describe('a long session', () => {
     const done = handleChatCompletions(req, res as unknown as Response);
     return { res, done };
   }
+
+  it('passes only the full current question after a prior session turn', async () => {
+    const received: string[] = [];
+    harness.process = async (messages) => {
+      received.push(JSON.stringify(messages));
+      return { ok: true, value: { content: 'previous answer '.repeat(400) } };
+    };
+    await callInSession(body()).done;
+    const question = 'current question '.repeat(450);
+    await callInSession({
+      ...body(),
+      messages: [{ role: 'user', content: question }],
+    }).done;
+    expect(received).toHaveLength(2);
+    expect(JSON.parse(received[1])).toEqual([
+      { role: 'user', content: question },
+    ]);
+  });
 
   it('a long-session request leaves its connection open after the response — success', async () => {
     configure();
@@ -1193,3 +1212,97 @@ describe('catalog loading at the chat entry point', () => {
 responseModelTests(body, (b, session) =>
   call(b, undefined, undefined, undefined, session),
 );
+
+test('client-managed history retains existing normalization and trimming', async () => {
+  const received: string[] = [];
+  harness.process = async (messages) => {
+    received.push(JSON.stringify(messages));
+    return { ok: true, value: { content: 'done' } };
+  };
+  const messages = [
+    { role: 'user', content: 'earlier question' },
+    { role: 'assistant', content: 'a'.repeat(3000) },
+    { role: 'user', content: 'follow-up' },
+  ];
+  await call({ ...body(), messages }).done;
+  expect(received).toHaveLength(1);
+  const context = received[0];
+  expect(context).toContain('earlier question');
+  expect(context).toContain('follow-up');
+  expect(context).not.toContain('a'.repeat(3000));
+  expect(context).toContain('a'.repeat(500));
+});
+
+describe('history records only completed calls', () => {
+  test.each([
+    'success',
+    'error chunk',
+    'exception',
+    'disconnect',
+    'disconnect after terminal',
+  ] as const)('stream: %s', async (outcome) => {
+    const recorded = jest
+      .spyOn(sessionTurns, 'recordTurn')
+      .mockImplementation(() => {});
+    const res = fakeRes();
+    const write = res.write.bind(res);
+    res.write = (chunk) => {
+      const result = write(chunk);
+      if (outcome === 'disconnect after terminal' && chunk.includes('[DONE]'))
+        res.disconnect();
+      return result;
+    };
+    harness.stream = async function* () {
+      yield { ok: true, value: { content: 'partial' } };
+      if (outcome === 'exception') throw new Error('stream failed');
+      if (outcome === 'error chunk') {
+        yield { ok: false, error: new Error('stream failed') };
+        return;
+      }
+      if (outcome === 'disconnect') res.disconnect();
+      yield { ok: true, value: { content: ' answer', finishReason: 'stop' } };
+    };
+    try {
+      await call(body(true), res).done;
+      expect(recorded).toHaveBeenCalledTimes(
+        outcome === 'success' || outcome === 'disconnect after terminal'
+          ? 1
+          : 0,
+      );
+      if (outcome === 'success')
+        expect(recorded).toHaveBeenCalledWith(
+          expect.objectContaining({ userId: 'alice' }),
+          expect.objectContaining({ role: 'user', content: 'hi' }),
+          'partial answer',
+        );
+    } finally {
+      recorded.mockRestore();
+    }
+  });
+
+  test.each(['success', 'error', 'exception', 'disconnect'] as const)(
+    'non-stream: %s',
+    async (outcome) => {
+      const recorded = jest
+        .spyOn(sessionTurns, 'recordTurn')
+        .mockImplementation(() => {});
+      const res = fakeRes();
+      harness.process = async () => {
+        if (outcome === 'exception') throw new Error('call failed');
+        if (outcome === 'error')
+          return { ok: false, error: new Error('call failed') };
+        if (outcome === 'disconnect') res.disconnect();
+        return { ok: true, value: { content: 'answer', stopReason: 'stop' } };
+      };
+      try {
+        const { done } = call(body(), res);
+        if (outcome === 'exception')
+          await expect(done).rejects.toThrow('call failed');
+        else await done;
+        expect(recorded).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
+      } finally {
+        recorded.mockRestore();
+      }
+    },
+  );
+});

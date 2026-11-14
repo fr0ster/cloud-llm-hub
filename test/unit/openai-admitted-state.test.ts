@@ -438,10 +438,9 @@ describe('a destination switch', () => {
     expect(del).not.toHaveBeenCalled();
     expect(history()).toEqual(['earlier', 'hi', 'done']);
     expect(harness.destinationSets).toEqual(switchedTo('OTHER'));
-    // The run carries the earlier turn, and so do the prior turns bound for
-    // the executor.
-    expect(JSON.stringify(messages)).toContain('earlier');
-    expect(JSON.stringify(priorTurns)).toContain('earlier');
+    // Bookkeeping retains earlier turns; model context uses semantic retrieval.
+    expect(messages).toEqual([{ role: 'user', content: 'hi' }]);
+    expect(priorTurns).toEqual([]);
   });
 });
 

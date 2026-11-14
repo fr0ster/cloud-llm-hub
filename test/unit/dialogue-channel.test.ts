@@ -392,7 +392,10 @@ it.each([false, true])(
     expect(harness.events).toContain('pipeline');
   },
 );
-it('disconnect mid-answer completes and stores visible text once', async () => {
+it('disconnect mid-answer completes without recording history', async () => {
+  const recorded = jest
+    .spyOn(sessionTurns, 'recordTurn')
+    .mockImplementation(() => {});
   const gate = deferred();
   send.mockImplementation(async (_text, opts) => {
     opts.onPartial({ kind: 'content', delta: 'ans' });
@@ -413,11 +416,14 @@ it('disconnect mid-answer completes and stores visible text once', async () => {
   expect(res.writableEnded).toBe(false);
   res.disconnect();
   gate.resolve();
-  await done;
-  expect(confirmUpTo).not.toHaveBeenCalled();
-  expect(getSessionHistory(session.key, 'alice').map((m) => m.content)).toEqual(
-    ['hi', visible],
-  );
+  try {
+    await done;
+    expect(confirmUpTo).not.toHaveBeenCalled();
+    expect(getSessionHistory(session.key, 'alice')).toEqual([]);
+    expect(recorded).not.toHaveBeenCalled();
+  } finally {
+    recorded.mockRestore();
+  }
 });
 
 for (const anthropic of [false, true])
@@ -1328,8 +1334,16 @@ for (const anthropic of [false, true]) {
     handle.subscribe = () => {
       throw new Error('follow failed');
     };
+    const recorded = jest
+      .spyOn(sessionTurns, 'recordTurn')
+      .mockImplementation(() => {});
     const res = fakeRes();
-    await handler(streamingRequest(), res as unknown as Response);
+    try {
+      await handler(streamingRequest(), res as unknown as Response);
+      expect(recorded).not.toHaveBeenCalled();
+    } finally {
+      recorded.mockRestore();
+    }
     expect(res.body).toContain('follow failed');
     if (anthropic) {
       expect(res.body).toContain('event: error\n');
@@ -1547,7 +1561,7 @@ for (const anthropic of [false, true]) {
   }
 }
 
-it('a request during follow sees the preceding turn in its history', async () => {
+it('a request during follow keeps bookkeeping history out of model context', async () => {
   const handle = await dialogueFor('alice', session.key, 'DEST');
   handle.state = () => ({
     settledSeq: 0,
@@ -1577,13 +1591,7 @@ it('a request during follow sees the preceding turn in its history', async () =>
     ['hi', visible],
   );
   send.mockImplementationOnce(async () => {
-    expect(getRequestHistory()).toEqual([
-      expect.objectContaining({ role: 'user', content: 'hi' }),
-      expect.objectContaining({
-        role: 'assistant',
-        content: expect.stringContaining(visible),
-      }),
-    ]);
+    expect(getRequestHistory()).toEqual([]);
     return { text: 'second answer' };
   });
   const req = streamingRequest();
@@ -1783,3 +1791,56 @@ it.each([handleChatCompletions, handleAnthropicMessages])(
     expect(output.body).not.toContain('"content":"tool ReadObject"');
   },
 );
+
+for (const anthropic of [false, true]) {
+  for (const mode of [
+    'non-stream',
+    'success',
+    'disconnect before terminal',
+    'disconnect after terminal',
+  ] as const) {
+    it(`records dialogue exactly once after success (anthropic=${anthropic}, mode=${mode})`, async () => {
+      const recorded = jest
+        .spyOn(sessionTurns, 'recordTurn')
+        .mockImplementation(() => {});
+      const req = streamingRequest();
+      req.body.stream = mode !== 'non-stream';
+      const res = fakeRes();
+      const terminal = anthropic ? 'event: message_stop' : 'data: [DONE]';
+      const write = res.write.bind(res);
+      res.write = (chunk) => {
+        const result = write(chunk);
+        if (
+          mode === 'disconnect before terminal' &&
+          chunk.includes(
+            anthropic ? 'event: message_delta' : '"finish_reason":"stop"',
+          )
+        )
+          res.disconnect();
+        if (mode === 'disconnect after terminal' && chunk.includes(terminal))
+          res.disconnect();
+        return result;
+      };
+      send.mockImplementation(async () => {
+        return { text: 'answer' };
+      });
+      try {
+        await (anthropic ? handleAnthropicMessages : handleChatCompletions)(
+          req,
+          typedResponse(res),
+        );
+        expect(recorded).toHaveBeenCalledTimes(
+          mode === 'disconnect before terminal' ? 0 : 1,
+        );
+        if (mode !== 'disconnect before terminal')
+          expect(recorded).toHaveBeenCalledWith(
+            expect.objectContaining({ userId: 'alice' }),
+            expect.objectContaining({ role: 'user', content: 'hi' }),
+            visible,
+          );
+      } finally {
+        recorded.mockRestore();
+      }
+    });
+  }
+}

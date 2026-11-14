@@ -85,6 +85,7 @@ import {
   type LongSessionRequest,
   releaseRequestConnection,
 } from './lib/session-connection';
+import { recordTurn } from './lib/session-turns';
 import {
   anthropicDoorRefusal,
   anthropicErrorPayload,
@@ -768,9 +769,15 @@ async function serveMessages(
       messages = retrieval.messages;
     }
     if (stream && useDialogue && early) {
+      const lastUser = messages
+        .filter((message) => message.role === 'user')
+        .at(-1);
       return await streamDialogue({
         stream: early,
         protocol: 'anthropic',
+        onEnd: (text) => {
+          if (lastUser) recordTurn(boundCaller.value, lastUser, text);
+        },
         model: () =>
           chatResponseModel(
             resolvedModel.model,
@@ -820,6 +827,8 @@ async function serveMessages(
       // still go before it: Anthropic clients, the Claude CLI among them, stop
       // reading at `message_stop`, and a notice after it reaches nobody.
       const measurement = requestMeasurement(req);
+      let accumulatedContent = '';
+      let streamSucceeded = false;
       let deliveredContent = false;
       let explicitMessages = false;
       let heldStop = undefined as { event?: string; data: string } | undefined;
@@ -856,6 +865,8 @@ async function serveMessages(
                     };
                   }
                 }
+                if (chunk.ok && !chunk.value.status && chunk.value.content)
+                  accumulatedContent += chunk.value.content;
                 if (chunk.ok && chunk.value.usage)
                   spentUsage = chunk.value.usage;
                 if (measurement && chunk.ok) {
@@ -891,10 +902,17 @@ async function serveMessages(
                 heldStop = event;
                 continue;
               }
+              if (event.event === 'message_stop')
+                streamSucceeded =
+                  !callerLeft.signal.aborted &&
+                  !agentOpts.signal?.aborted &&
+                  !out.detached;
               out.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
             }
           }, recordSpend),
         );
+
+        if (streamError !== undefined) streamSucceeded = false;
 
         // Destination state and unanswered-write notices remain independent of
         // the model cause. Every failed stream must now carry an error event.
@@ -927,6 +945,7 @@ async function serveMessages(
           }
         }
       } catch (err) {
+        streamSucceeded = false;
         spentUsage = largerSpend();
         if (spentUsage)
           out.write(
@@ -958,6 +977,11 @@ async function serveMessages(
       if (heldStop) {
         out.write(`event: ${heldStop.event}\ndata: ${heldStop.data}\n\n`);
       }
+      const lastUser = messages
+        .filter((message) => message.role === 'user')
+        .at(-1);
+      if (streamSucceeded && lastUser && accumulatedContent)
+        recordTurn(boundCaller.value, lastUser, accumulatedContent);
       clearInterval(keepAlive);
       out.end();
       return;
@@ -973,6 +997,11 @@ async function serveMessages(
       );
 
     if (result.ok) {
+      const lastUser = messages
+        .filter((message) => message.role === 'user')
+        .at(-1);
+      if (lastUser && !callerLeft.signal.aborted && !agentOpts.signal?.aborted)
+        recordTurn(boundCaller.value, lastUser, result.value.content);
       if (
         requestMeasurement(req) &&
         /\S/.test(result.value.content) &&

@@ -203,7 +203,7 @@ it("execute_step with another destination than the session's ? error naming both
   expect(result.content[0].text).toContain('OTHER');
   expect(harness.seenOptions).toHaveLength(0);
 });
-it("execute_step with a session sees the previous step's turn in its messages", async () => {
+it('execute_step leaves prior turns to semantic history retrieval', async () => {
   const session = await opened();
   const messages: unknown[] = [];
   harness.process = async (m) => {
@@ -212,11 +212,7 @@ it("execute_step with a session sees the previous step's turn in its messages", 
   };
   await executeStep(req, caller, { session, task: 'first' });
   await executeStep(req, caller, { session, task: 'second' });
-  expect(messages[1]).toEqual([
-    { role: 'user', content: 'first' },
-    { role: 'assistant', content: 'answer' },
-    { role: 'user', content: 'second' },
-  ]);
+  expect(messages[1]).toEqual([{ role: 'user', content: 'second' }]);
 });
 it('execute_step without session refuses and names the header', async () => {
   const result = await executeStep(req, caller, { task: 'first' });
@@ -376,15 +372,13 @@ it('appends the canonical notice for a deterministic contradiction', async () =>
   }
 });
 
-it('direct executor steps share each prior turn exactly once', async () => {
+it('direct executor steps receive only the current turn', async () => {
   const { handle, executor } = await directHandle();
   const session = await opened();
   try {
     await executeStep(req, caller, { session, task: 'first' });
     await executeStep(req, caller, { session, task: 'second' });
     expect(executor.process.mock.calls[1][0]).toEqual([
-      { role: 'user', content: 'first' },
-      { role: 'assistant', content: 'done' },
       { role: 'user', content: 'second' },
     ]);
   } finally {

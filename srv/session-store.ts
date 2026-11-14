@@ -25,7 +25,7 @@ import {
 } from './lib/session-history-collection';
 import { storageAggregates } from './lib/usage/storage-aggregates';
 
-/** Max messages kept in server session (before SmartAgent's own summarization) */
+/** Max messages retained for run bookkeeping and revival; not model context. */
 export const SESSION_MAX_MESSAGES = 20;
 
 /** Cleanup interval: every 5 minutes */

@@ -173,7 +173,7 @@ test('session deletion waits for a write already waiting on binding or storage',
   const writing = router.recordTurn({
     caller: a,
     userText: 'late',
-    assistantText: 'answer',
+    assistantText: 'answer'.repeat(3000),
   });
   const forgetting = router.forgetSessionHistory(a.sessionId);
   release();
@@ -238,4 +238,82 @@ test('the real builder forwards the trusted caller to history query and upsert',
     callOptionsFor(a),
   );
   expect(recalled.ok && recalled.value.length).toBe(1);
+});
+
+test('chunked turns preserve all Unicode text, order and session isolation', async () => {
+  const userText = `question\nAssistant: quoted ${'\u043f\u0438\u0442\u0430\u043d\u043d\u044f\u{1f642}'.repeat(1600)}`;
+  const assistantText = `${'answer\u{1f642}'.repeat(2200)}\nObjects: original text`;
+  expect(
+    await router.recordTurn({ caller: a, userText, assistantText, id: 'long' }),
+  ).toBe(true);
+  const result = await router.query(
+    new TextOnlyEmbedding('question'),
+    100,
+    callOptionsFor(a),
+  );
+  if (!result.ok) throw result.error;
+  expect(result.value.length).toBeGreaterThan(2);
+  for (const row of result.value) {
+    expect(Buffer.byteLength(row.text, 'utf8')).toBeLessThanOrEqual(6000);
+    expect(row.text).toMatch(/^User: /);
+    expect(row.metadata.turnId).toBe('long');
+  }
+  const indices = result.value
+    .map((row) => row.metadata.chunkIndex)
+    .sort((a, b) => Number(a) - Number(b));
+  expect(indices).toEqual(Array.from({ length: indices.length }, (_, i) => i));
+  expect(await router.listTurns(a)).toEqual([
+    expect.objectContaining({ id: 'long', userText, assistantText }),
+  ]);
+  expect(
+    await router.query(
+      new TextOnlyEmbedding('question'),
+      100,
+      callOptionsFor(b),
+    ),
+  ).toEqual({ ok: true, value: [] });
+  await router.forgetSessionHistory(a.sessionId);
+  expect(await router.listTurns(a)).toEqual([]);
+});
+
+test('default retention keeps the whole dialogue beyond 200 turns', async () => {
+  for (let i = 0; i < 205; i++)
+    await router.recordTurn({
+      caller: a,
+      userText: `q${i}`,
+      assistantText: `a${i}`,
+    });
+  expect(await router.listTurns(a)).toHaveLength(205);
+});
+
+test('unlimited writes avoid scans and account for UTF-8 upserts and deletion', async () => {
+  const storage = await import('../../srv/lib/usage/storage-values');
+  const enabled = jest.spyOn(storage, 'storageEnabled').mockReturnValue(true);
+  try {
+    await router.upsert('seed', { id: 'seed' }, { caller: a });
+    const opened = await provider.openCollection({
+      name: historyCollectionName(a.sessionId),
+      storeName: historyCollectionName(a.sessionId),
+      scope: 'session',
+      sessionId: a.sessionId,
+    });
+    if (!opened.ok) throw opened.error;
+    const { isRagScanner } = await import('@mcp-abap-adt/llm-agent');
+    if (!isRagScanner(opened.value.rag)) throw new Error('Scanner required');
+    const scan = jest.spyOn(opened.value.rag, 'scan');
+    await Promise.all(
+      Array.from({ length: 30 }, (_, i) =>
+        router.upsert('payload', { id: `row:${i}` }, { caller: a }),
+      ),
+    );
+    await router.upsert('replacement\u{1f642}', { id: 'seed' }, { caller: a });
+    expect(router.storageBytes(a.sessionId)).toBe(30 * 7 + 15);
+    await router.deleteById('seed', { caller: a });
+    expect(router.storageBytes(a.sessionId)).toBe(30 * 7);
+    expect(scan).not.toHaveBeenCalled();
+    await router.forgetSessionHistory(a.sessionId);
+    expect(router.storageBytes(a.sessionId)).toBe(0);
+  } finally {
+    enabled.mockRestore();
+  }
 });

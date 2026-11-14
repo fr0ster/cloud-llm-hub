@@ -1113,3 +1113,113 @@ function keepLongSession(userId: string, key: string): void {
   setLongSessionsForTest(registry);
 }
 afterEach(() => setLongSessionsForTest(undefined));
+
+test('a write after a restart without a history read counts the rows stored before it', async (): Promise<void> => {
+  const backend = new InMemoryRag();
+  const provider = historyTestProvider(backend);
+  const owner = turnOwner(session.userId, session.sessionId);
+  providersReady = true;
+  const before = new SessionHistoryRag(
+    provider,
+    (): string => owner,
+    Number.POSITIVE_INFINITY,
+    { storageBackend: 'hana-vector' },
+  );
+  for (const id of ['stored-1', 'stored-2'])
+    expect(
+      await before.recordTurn({
+        owner,
+        id,
+        userText: 'question',
+        assistantText: 'answer',
+      }),
+    ).toBe(true);
+  historyRag = new SessionHistoryRag(
+    provider,
+    (): string => owner,
+    Number.POSITIVE_INFINITY,
+    { storageBackend: 'hana-vector' },
+  );
+  expect(historyRag.storageBytes(owner)).toBeUndefined();
+  expect(
+    await historyRag.recordTurn({
+      owner,
+      id: 'after-restart',
+      userText: 'question',
+      assistantText: 'answer',
+    }),
+  ).toBe(true);
+  const turnBytes = Buffer.byteLength(renderTurn('question', 'answer'), 'utf8');
+  expect(historyRag.storageBytes(owner)).toBe(turnBytes * 3);
+  const scan = jest.spyOn(backend, 'scan');
+  expect(
+    await historyRag.recordTurn({
+      owner,
+      id: 'next',
+      userText: 'question',
+      assistantText: 'answer',
+    }),
+  ).toBe(true);
+  expect(historyRag.storageBytes(owner)).toBe(turnBytes * 4);
+  expect(scan).not.toHaveBeenCalled();
+});
+
+test('a delete that lands while the baseline scan runs discards that scan', async (): Promise<void> => {
+  const backend = new InMemoryRag();
+  const provider = historyTestProvider(backend);
+  const owner = turnOwner(session.userId, session.sessionId);
+  providersReady = true;
+  const before = new SessionHistoryRag(
+    provider,
+    (): string => owner,
+    Number.POSITIVE_INFINITY,
+    { storageBackend: 'hana-vector' },
+  );
+  for (const id of ['stored-1', 'stored-2'])
+    await before.recordTurn({
+      owner,
+      id,
+      userText: 'question',
+      assistantText: 'answer',
+    });
+  historyRag = new SessionHistoryRag(
+    provider,
+    (): string => owner,
+    Number.POSITIVE_INFINITY,
+    { storageBackend: 'hana-vector' },
+  );
+  const rag = historyRag;
+  const scan = backend.scan.bind(backend);
+  let deleted: Promise<void> | undefined;
+  jest.spyOn(backend, 'scan').mockImplementationOnce(async (...args) => {
+    const rows = await scan(...args);
+    deleted = rag.router
+      .deleteById('stored-1', {
+        caller: {
+          userId: session.userId,
+          sessionId: session.sessionId,
+          isAdmin: false,
+        },
+        sessionId: session.sessionId,
+      })
+      .then((): void => undefined);
+    await deleted;
+    return rows;
+  });
+  await rag.recordTurn({
+    owner,
+    id: 'after-restart',
+    userText: 'question',
+    assistantText: 'answer',
+  });
+  await deleted;
+  expect(rag.storageBytes(owner)).toBeUndefined();
+  await rag.recordTurn({
+    owner,
+    id: 'next',
+    userText: 'question',
+    assistantText: 'answer',
+  });
+  const turnBytes = Buffer.byteLength(renderTurn('question', 'answer'), 'utf8');
+  expect(rag.storageBytes(owner)).toBe(turnBytes * 3);
+});

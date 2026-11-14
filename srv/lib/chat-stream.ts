@@ -121,6 +121,7 @@ export async function streamDialogue(opts: {
   let failure: unknown;
   let text = '';
   let explicitMessages = false;
+  let terminalSucceeded = false;
   const deliveredUsage: Array<PlannerMessageUsage | undefined> = [];
   const addDeliveredUsage = (usage: PlannerMessageUsage | undefined) => {
     if (!usage) return;
@@ -197,8 +198,12 @@ export async function streamDialogue(opts: {
             stream.out.write(
               `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { input_tokens: usage.promptTokens, output_tokens: usage.completionTokens, x_hub: usage.x_hub } })}\n\n`,
             );
-          } else
+          } else {
+            if (event.event === 'message_stop')
+              terminalSucceeded =
+                !failure && !stream.signal.aborted && !stream.out.detached;
             stream.out.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
+          }
         }
       } else {
         for await (const chunk of source) {
@@ -217,9 +222,12 @@ export async function streamDialogue(opts: {
           stream.out.write(
             `data: ${JSON.stringify({ ...base, choices: [], usage: wireUsage })}\n\n`,
           );
+        terminalSucceeded =
+          !failure && !stream.signal.aborted && !stream.out.detached;
         stream.out.write('data: [DONE]\n\n');
       }
     } catch (error) {
+      terminalSucceeded = false;
       // Spend survives a failed turn. Emit it before the error closes the socket.
       const total = sumPlannerUsage(deliveredUsage, {
         durationMs: Date.now() - stream.createdAt,
@@ -281,7 +289,8 @@ export async function streamDialogue(opts: {
       )
         stream.measurement?.messageDelivered();
       stream.measurement?.turnEnded();
-      opts.onTurnEnd?.(text, opts.agent.hasFollow());
+      if (!stream.signal.aborted)
+        opts.onTurnEnd?.(text, opts.agent.hasFollow());
     });
   } catch (error) {
     failure = error;
@@ -332,7 +341,7 @@ export async function streamDialogue(opts: {
     ready();
     wake?.();
     await consuming;
-    opts.onEnd?.(text);
+    if (terminalSucceeded) opts.onEnd?.(text);
     stream.end();
   };
 }

@@ -648,13 +648,12 @@ async function serveChatCompletions(
   let normalizedMessages: Message[];
 
   if (serverManaged) {
-    // Server session mode: extract last user message, prepend server history
+    // Server session mode: prior turns enter only through semantic history retrieval.
     const lastUserContent = extractText(
       userMessages[userMessages.length - 1].content,
     );
     const newUserMessage: Message = { role: 'user', content: lastUserContent };
-    const serverHistory = getSessionHistory(sessionId, userId);
-    normalizedMessages = [...serverHistory, newUserMessage];
+    normalizedMessages = [newUserMessage];
   } else {
     // Client history mode: normalize all client messages
     normalizedMessages = body.messages
@@ -701,12 +700,13 @@ async function serveChatCompletions(
     // already persists the turn. Mirroring would store `newUser` twice (mirror + append),
     // so the next request (e.g. browser carrying the just-minted cookie) would prepend a
     // polluted history with a duplicated first user message. For explicit-session API
-    // clients this branch never runs (serverManaged uses sessionStore via getSessionHistory).
+    // clients this branch never runs (serverManaged uses semantic history retrieval).
   }
 
   // Trim history to prevent context overflow
   const rawHistorySize = normalizedMessages.length;
-  normalizedMessages = trimHistoryForContext(normalizedMessages);
+  if (!serverManaged)
+    normalizedMessages = trimHistoryForContext(normalizedMessages);
 
   log.info('Chat completions request', {
     stream: body.stream ?? false,
@@ -1165,7 +1165,6 @@ async function serveChatCompletions(
       const lastUser = normalizedMessages
         .filter((m) => m.role === 'user')
         .at(-1);
-      let following = false;
       return await streamDialogue({
         stream: early,
         protocol: 'openai',
@@ -1192,8 +1191,8 @@ async function serveChatCompletions(
             },
           };
         },
-        onTurnEnd: (text, hasFollow) => {
-          following = hasFollow;
+        onTurnEnd: (text) => {
+          if (callerLeft.signal.aborted || opts.signal?.aborted) return;
           if (lastUser) {
             if (text) assistant = { role: 'assistant', content: text };
             appendToSession(
@@ -1202,7 +1201,6 @@ async function serveChatCompletions(
               lastUser,
               ...(assistant ? [assistant] : []),
             );
-            if (!following) recordTurn(boundCaller.value, lastUser, text);
           }
         },
         onEnd: (text) => {
@@ -1216,8 +1214,7 @@ async function serveChatCompletions(
             assistant = { role: 'assistant', content: text };
             appendToSession(sessionId, userId, assistant);
           }
-          if (following && lastUser)
-            recordTurn(boundCaller.value, lastUser, text);
+          if (lastUser) recordTurn(boundCaller.value, lastUser, text);
         },
       });
     }
@@ -1254,6 +1251,7 @@ async function serveChatCompletions(
       let chunkCount = 0;
       let finishReasonSent = false;
       let accumulatedContent = ''; // Accumulate full response for session history
+      let streamSucceeded = false;
       let lastUsage: {
         prompt_tokens: number;
         completion_tokens: number;
@@ -1312,9 +1310,11 @@ async function serveChatCompletions(
                     );
 
                     try {
+                      let streamFailed = false;
                       for await (const chunk of stream) {
                         chunkCount++;
                         if (!chunk.ok) {
+                          streamFailed = true;
                           requestMeasurement(req)?.end('error');
                           const err = chunk.error;
                           if (isOutageError(chunk.error)) {
@@ -1485,6 +1485,7 @@ async function serveChatCompletions(
                           finishReasonSent = true;
                         }
                       }
+                      streamSucceeded = !streamFailed;
                     } catch (err) {
                       requestMeasurement(req)?.end('error');
                       if (isOutageError(err)) {
@@ -1563,8 +1564,15 @@ async function serveChatCompletions(
         responseLength: accumulatedContent.length,
       });
 
+      const terminalSucceeded =
+        streamSucceeded &&
+        !callerLeft.signal.aborted &&
+        !opts.signal?.aborted &&
+        !out.detached;
+      out.write('data: [DONE]\n\n');
+
       // Save conversation turn to server session
-      if (accumulatedContent) {
+      if (terminalSucceeded && accumulatedContent) {
         const lastUser = normalizedMessages
           .filter((m) => m.role === 'user')
           .slice(-1)[0];
@@ -1603,7 +1611,6 @@ async function serveChatCompletions(
         !out.detached
       )
         requestMeasurement(req)?.messageDelivered();
-      out.write('data: [DONE]\n\n');
       out.end();
       return;
     }
@@ -1671,7 +1678,12 @@ async function serveChatCompletions(
     }
 
     // Save conversation turn to server session
-    if (result.ok && finalContent !== '(no response)') {
+    if (
+      result.ok &&
+      !callerLeft.signal.aborted &&
+      !opts.signal?.aborted &&
+      finalContent !== '(no response)'
+    ) {
       const lastUser = normalizedMessages
         .filter((m) => m.role === 'user')
         .slice(-1)[0];

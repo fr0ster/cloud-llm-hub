@@ -21,10 +21,8 @@ export function extractText(c: unknown): string {
 /**
  * Store the completed turn for semantic recall, beside the verbatim store.
  *
- * The two answer different questions. `appendToSession` keeps the last turns
- * word for word, which is what resolves "that domain" on the very next
- * message. This one survives the recency window: many turns later, when the
- * wording is gone, a similar question still finds what the object was called.
+ * Server-managed model context recalls these full turns through semantic search.
+ * The separate message window remains available for UI and run bookkeeping.
  *
  * Fire-and-forget on purpose. The answer has already been sent; a failure to
  * remember it must not surface as an error on a request that succeeded.

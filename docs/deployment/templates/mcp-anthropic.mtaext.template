@@ -57,7 +57,7 @@ parameters:
 
   # Handler sets to expose
 
-  # History recency window
+  # Client-managed history recency; server-managed history uses semantic RAG only
   LLM_AGENT_HISTORY_RECENCY_WINDOW: "20"
 
   # RAG providers (spec §3) — empty/commented = today's behaviour.
