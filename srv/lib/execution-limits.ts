@@ -127,26 +127,25 @@ export function currentSessionLimit(
 /** Infinity is the numeric consumer's unbounded form, not a finite substitute. */
 export function runLimitOptions(
   role: RunRole,
-  defaults: { maxIterations: number; maxToolCalls?: number },
-): { maxIterations: number; maxToolCalls?: number } {
+  defaults: { maxIterations: number; maxToolCalls?: number } = {
+    maxIterations: Infinity,
+  },
+): { maxIterations: number; maxToolCalls: number | undefined } {
   const iterations = currentLimit(role, 'maxIterations');
   const calls = currentLimit(role, 'maxToolCalls');
   return {
     maxIterations:
       iterations === 'off' ? Infinity : (iterations ?? defaults.maxIterations),
     // An explicit undefined overrides SmartAgentBuilder's built-in 30-call default.
-    ...(calls === 'off'
-      ? { maxToolCalls: undefined }
-      : calls !== undefined
-        ? { maxToolCalls: calls }
-        : defaults.maxToolCalls !== undefined
-          ? { maxToolCalls: defaults.maxToolCalls }
-          : {}),
+    maxToolCalls:
+      calls === 'off' ? undefined : (calls ?? defaults.maxToolCalls),
   };
 }
 export function historyBudgetOptions(): { tokenBudget: number } | undefined {
   const value = currentSessionLimit('historyTokenBudget');
-  return value === 'off' ? undefined : { tokenBudget: value ?? 8000 };
+  return value === 'off' || value === undefined
+    ? undefined
+    : { tokenBudget: value };
 }
 export function sessionToolResultMaxChars(fallback: number): number {
   const value = currentSessionLimit('toolResultMaxChars');
@@ -184,13 +183,13 @@ export function effectiveExecutionLimits(
       `${role}.maxIterations`,
       settings[role]?.maxIterations,
       config[role]?.maxIterations,
-      10,
+      'off',
     );
     add(
       `${role}.maxToolCalls`,
       settings[role]?.maxToolCalls,
       config[role]?.maxToolCalls,
-      30,
+      'off',
     );
   }
   add(
@@ -205,7 +204,7 @@ export function effectiveExecutionLimits(
     'historyTokenBudget',
     settings.historyTokenBudget,
     config.historyTokenBudget,
-    8000,
+    'off',
   );
   return result;
 }

@@ -22,7 +22,7 @@ import {
 } from './dialogue-rag-scope';
 import { isOutageError } from './mcp-outage';
 import { isRagTool, ragToolEffect } from './rag-tool-catalogue';
-import { parseToolOutcome, type RecordedToolCall } from './reviewer-core';
+import type { RecordedToolCall } from './reviewer-core';
 import {
   isReadOnlyTool,
   type ToolEffectAnnotations,
@@ -252,18 +252,14 @@ export class RecordingMcpClient implements IMcpClient {
       this.inner.callTool(name, args, options),
     );
     if (res.ok) {
-      const { ok, status, error } = parseToolOutcome({
-        call: record.call,
-        result: res.value,
-      });
       const capped = capToolResult(
         res.value,
         this.maxChars,
-        this.knownNames.has(name) ? name : undefined,
+        name,
+        this.knownNames.has(name),
       );
-      if (capped.truncation) {
-        record.outcome = { ok, status, error };
-        record.truncation = capped.truncation;
+      if (capped.rejection) {
+        record.rejection = capped.rejection;
         res = { ...res, value: capped.result };
       }
     }

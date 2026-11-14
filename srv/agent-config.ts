@@ -34,7 +34,7 @@ import { parseTrustDefaults, type TrustDefaults } from './lib/trust';
  * - LLM_AGENT_CHAT_COORDINATOR: 'adaptive' | 'fixed' | 'dialogue' (default: 'adaptive')
  * - LLM_AGENT_PLAN_MAX_STEPS / MAX_REVISIONS / MAX_DURATION_MS: optional positive integers
  *   (library defaults: 20 / 3 / 300000)
- * - LLM_AGENT_MAX_ITERATIONS: Max tool loop iterations (default: 10)
+ * - LLM_AGENT_MAX_ITERATIONS: Max tool loop iterations (default: unlimited)
  * - LLM_AGENT_RAG_TYPE: RAG backend: 'in-memory' | 'ollama' (default: 'in-memory')
  * - LLM_AGENT_EXPOSITION: (deprecated — tool filtering now role-based via RAG)
  */
@@ -657,7 +657,9 @@ export function loadAgentConfig(): AgentConfig {
   const limits = configuredExecutionLimits();
   const configuredIterations = configuredLimit('LLM_AGENT_MAX_ITERATIONS');
   const maxIterations =
-    configuredIterations === 'off' ? Infinity : (configuredIterations ?? 10);
+    configuredIterations === 'off'
+      ? Infinity
+      : (configuredIterations ?? Infinity);
   const ragType = (process.env.LLM_AGENT_RAG_TYPE || 'in-memory') as RagType;
 
   // History recency window (max recent messages from client history)

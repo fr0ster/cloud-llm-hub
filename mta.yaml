@@ -31,7 +31,8 @@ parameters:
   LLM_AGENT_MCP_DIRECT_MAX: ""
   LLM_AGENT_MCP_DESTINATION:
   LLM_AGENT_MODE:
-  LLM_AGENT_MAX_ITERATIONS:
+  # Empty = no tool-loop iteration limit; the llm-only template sets "1".
+  LLM_AGENT_MAX_ITERATIONS: ""
   LLM_AGENT_CHAT_COORDINATOR: "adaptive"
   LLM_AGENT_DIALOGUE_EXECUTORS: "3"
   # Hub-wide cap on concurrent background tasks across ALL sessions: opt-in.

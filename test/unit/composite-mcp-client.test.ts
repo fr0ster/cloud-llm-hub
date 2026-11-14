@@ -107,7 +107,7 @@ test.each(['planner', 'controller'])(
       { trace: { traceId: 'planner' } },
     );
     expect(result.ok && result.value.content).toEqual(
-      expect.stringContaining('result truncated'),
+      expect.stringContaining('exceeding the limit'),
     );
     expect(docs.callTool).toHaveBeenCalledTimes(1);
     expect(sap.callTool).not.toHaveBeenCalled();

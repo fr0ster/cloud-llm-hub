@@ -68,6 +68,8 @@ test.each(['waiting', 'unreachable'] as const)(
           ?.maxIterations,
       ).toBe(config.agent.maxIterations);
       const calls = jest.mocked(SmartAgentBuilder).mock.calls;
+      const options = calls.at(-1)?.[0]?.agent;
+      expect(options).toHaveProperty('maxToolCalls', undefined);
       expect(calls.at(-1)?.[0]?.prompts?.system).toContain(
         'Mandatory base instructions',
       );
@@ -411,16 +413,18 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     expect(withToolCache).not.toHaveBeenCalled();
   });
 
-  it('disables pipeline translation on the controller and executor builders', async () => {
+  it('disables pipeline translation and explicitly removes the default tool-call limit on controller and executor builders', async () => {
     await agentManager.buildAgentForDestination(
       {} as never,
       {} as never,
       config,
     );
-    const calls = (SmartAgentBuilder as jest.Mock).mock.calls;
+    const calls = jest.mocked(SmartAgentBuilder).mock.calls;
     expect(calls).toHaveLength(2);
-    for (const [options] of calls)
-      expect(options.agent.ragTranslateEnabled).toBe(false);
+    for (const [options] of calls) {
+      expect(options?.agent?.ragTranslateEnabled).toBe(false);
+      expect(options?.agent).toHaveProperty('maxToolCalls', undefined);
+    }
   });
 
   it('keeps tool retrieval and skills on the worker alone', async () => {

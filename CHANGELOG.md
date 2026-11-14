@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- Tool-loop iteration and tool-call limits, and the history token budget, are off by default across hub agents. Explicit global, role and session limits remain supported, including `off`. Deployment templates no longer impose 20 iterations; the LLM-only template keeps its one-iteration mode.
+
+### Fixed
+
+- Oversized tool results now return an explicit error with the tool name, result size, limit and narrowing guidance, without partial data. The default size limit remains 60,000 characters; recordings and content-free warning logs report size-limit rejection.
+
 ## [11.0.3] - 2026-11-14
 
 ### Changed

@@ -380,13 +380,18 @@ test('docs share the existing recorder cap, deltas and checker read-only rule', 
   );
   expect(result).toEqual({
     ok: true,
-    value: { content: expect.stringContaining('result truncated: 10 of 100') },
+    value: {
+      isError: true,
+      content: expect.stringContaining(
+        'returned 100 characters, exceeding the limit of 10',
+      ),
+    },
   });
   // Records land in the origin, which the reviewer reads.
   expect(origin.getToolRecords('docs')).toEqual([
     expect.objectContaining({
       call: expect.objectContaining({ name: 'docs_search' }),
-      truncation: { truncated: true, originalLength: 100, keptLength: 10 },
+      rejection: { rejected: true, originalLength: 100, maxChars: 10 },
     }),
   ]);
   await runWithReadOnlyTools(async () => {

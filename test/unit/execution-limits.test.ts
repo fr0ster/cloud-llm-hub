@@ -2,7 +2,6 @@ import type { ILlm, IMcpClient } from '@mcp-abap-adt/llm-agent';
 import {
   PlannerToolsClient,
   runInPlannerScope,
-  SessionManager,
   SmartAgentBuilder,
   SmartAgentSubAgent,
   TaskBoard,
@@ -45,9 +44,9 @@ const client: IMcpClient = {
 };
 
 async function loopingRun(
-  maxIterations: number | 'off',
+  maxIterations?: number | 'off',
   toolRounds = 12,
-  maxToolCalls: number | 'off' = 'off',
+  maxToolCalls?: number | 'off',
 ) {
   return withExecutionLimits(
     { executor: { maxIterations, maxToolCalls } },
@@ -79,7 +78,7 @@ async function loopingRun(
         await new SmartAgentBuilder({
           skipModelValidation: true,
           agent: {
-            ...runLimitOptions('executor', { maxIterations: 10 }),
+            ...runLimitOptions('executor'),
             classificationEnabled: false,
             ragTranslateEnabled: false,
           },
@@ -134,7 +133,9 @@ test('toolResultMaxChars off returns the full tool result; a number caps it', as
       expect(result.ok && result.value.content).toEqual(
         limit === 'off'
           ? 'x'.repeat(1000)
-          : expect.stringContaining('20 of 1000'),
+          : expect.stringContaining(
+              'returned 1000 characters, exceeding the limit of 20',
+            ),
       );
     });
 });
@@ -171,11 +172,7 @@ test('historyTokenBudget off builds the SessionManager without a token budget', 
       clearAgentConfig();
     }
   });
-  const options = historyBudgetOptions();
-  if (!options) throw new Error('Expected the default history budget');
-  const manager = new SessionManager(options);
-  manager.addTokens(8000);
-  expect(manager.isOverBudget()).toBe(true);
+  expect(historyBudgetOptions()).toBeUndefined();
 });
 test('planStepBudget is refused with the stage 2 reason while libraryLimitsEnabled is false', () => {
   expect(
@@ -248,7 +245,7 @@ test('a stopped task ends a run whose maxIterations is off', async () => {
         await new SmartAgentBuilder({
           skipModelValidation: true,
           agent: {
-            ...runLimitOptions('executor', { maxIterations: 10 }),
+            ...runLimitOptions('executor'),
             classificationEnabled: false,
             ragTranslateEnabled: false,
           },
@@ -294,7 +291,7 @@ test('a stopped task ends a run whose maxIterations is off', async () => {
 });
 
 test('maxToolCalls off removes the library default; a number exhausts the budget', async () => {
-  const unlimited = await loopingRun('off', 35);
+  const unlimited = await loopingRun('off', 35, 'off');
   expect(unlimited.rounds).toBe(36);
   expect(unlimited.result.ok && unlimited.result.value.content).toBe('done');
   const limited = await loopingRun('off', 12, 3);
@@ -352,4 +349,13 @@ test('null limit values normalize to absent overrides without changing siblings'
       { libraryLimitsEnabled: false },
     ),
   ).toEqual({ ok: true, value: { executor: { maxToolCalls: 7 } } });
+});
+
+test('unset loop limits let a builder run beyond both former defaults', async () => {
+  const options = runLimitOptions('executor');
+  expect(options).toEqual({ maxIterations: Infinity, maxToolCalls: undefined });
+  expect(Object.hasOwn(options, 'maxToolCalls')).toBe(true);
+  const { rounds, result } = await loopingRun(undefined, 35);
+  expect(rounds).toBe(36);
+  expect(result.ok && result.value.content).toBe('done');
 });
