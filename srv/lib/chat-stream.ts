@@ -199,9 +199,11 @@ export async function streamDialogue(opts: {
               `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { input_tokens: usage.promptTokens, output_tokens: usage.completionTokens, x_hub: usage.x_hub } })}\n\n`,
             );
           } else {
-            if (event.event === 'message_stop')
+            if (event.event === 'message_stop') {
               terminalSucceeded =
                 !failure && !stream.signal.aborted && !stream.out.detached;
+              if (terminalSucceeded) opts.onEnd?.(text);
+            }
             stream.out.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
           }
         }
@@ -224,6 +226,7 @@ export async function streamDialogue(opts: {
           );
         terminalSucceeded =
           !failure && !stream.signal.aborted && !stream.out.detached;
+        if (terminalSucceeded) opts.onEnd?.(text);
         stream.out.write('data: [DONE]\n\n');
       }
     } catch (error) {
@@ -341,7 +344,6 @@ export async function streamDialogue(opts: {
     ready();
     wake?.();
     await consuming;
-    if (terminalSucceeded) opts.onEnd?.(text);
     stream.end();
   };
 }

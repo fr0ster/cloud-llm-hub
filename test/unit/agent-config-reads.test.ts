@@ -58,11 +58,17 @@ describe('agent config: settings read at the point of use before', () => {
       process.env.LLM_AGENT_MODEL = 'main-model';
       clearAgentConfig();
     });
-    it('rejects catalog mode with a non-SAP provider before server startup', () => {
+    it('rejects catalog mode with an unsupported provider before server startup', () => {
       process.env.LLM_AGENT_PROVIDER = 'openai';
       process.env.LLM_AGENT_MODELS = 'catalog,extra';
       expect(() => loadAgentConfig()).toThrow(BuildValidationError);
       expect(() => loadAgentConfig()).toThrow('LLM_AGENT_MODELS');
+    });
+
+    it('accepts Anthropic catalog mode before server startup', () => {
+      process.env.LLM_AGENT_PROVIDER = 'anthropic';
+      process.env.LLM_AGENT_MODELS = 'catalog,extra';
+      expect(loadAgentConfig().llm.provider).toBe('anthropic');
     });
 
     afterAll(() => {

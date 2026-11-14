@@ -470,6 +470,16 @@ test.each([true, false])(
             for (const element of bindings.elements)
               if (!element.isTypeOnly) providers.add(element.name.text);
         }
+        for (const statement of source.statements) {
+          if (!ts.isClassDeclaration(statement) || !statement.name) continue;
+          for (const clause of statement.heritageClauses ?? [])
+            for (const type of clause.types)
+              if (
+                ts.isIdentifier(type.expression) &&
+                providers.has(type.expression.text)
+              )
+                providers.add(statement.name.text);
+        }
         const visit = (node: ts.Node): void => {
           if (
             ts.isNewExpression(node) &&
@@ -486,6 +496,7 @@ test.each([true, false])(
       expect(constructions.sort()).toEqual([
         'srv/lib/llm-factory.ts:AnthropicProvider',
         'srv/lib/llm-factory.ts:DeepSeekProvider',
+        'srv/lib/llm-factory.ts:HubAnthropicProvider',
         'srv/lib/llm-factory.ts:OpenAIProvider',
         'srv/lib/llm-factory.ts:SapCoreAIProvider',
         'srv/lib/providers.ts:OllamaEmbedder',

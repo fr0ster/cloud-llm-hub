@@ -10,6 +10,13 @@ All notable changes to this project will be documented in this file. The format 
 - Consumers choose `LLM_AGENT_TOOLS_SELECTION=per-collection|step-kind`; deprecated cluster strategy settings are ignored with one startup warning. Defaults are now `step-kind`, reader k=5 and writer k=2. Selection works through generic retrieval metadata across keyword and vector backends.
 - The 91-case bge-m3 vector oracle evaluation selects `step-kind` with reader k=5 / writer k=2: RO 29/29 with 5 tools, RW 61/62 with an average of 11.89 tools (90/91 total); writer k=1 gives RW 58/62. The `eval:tools` harness defaults match the hub. See CONFIG_USAGE for the earlier 2/1 baseline. Step-kind measurements use oracle effects without an LLM.
 
+### Fixed
+
+- Hold stream metadata until content starts, record discarded attempt usage, and prevent retries from duplicating partial text or tool arguments.
+
+- Restore coordinator session history retrieval, wait for pending history writes, retrieve complete turns ranked by best chunk score, and report Anthropic stream error types without provider messages.
+- Keep coordinator history embedding independent of tools retrieval, prevent history write re-entry deadlocks, retry Anthropic SSE rate limits under the configured throttle policy, and preserve credential-redacted provider migration diagnostics.
+
 ## [11.0.3] - 2026-11-14
 
 ### Changed
