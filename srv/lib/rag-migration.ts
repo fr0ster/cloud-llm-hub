@@ -24,20 +24,26 @@ export { isRagMigrationReady } from './rag-readiness';
 
 type Log = (line: string) => void;
 
-/** Never log driver errors: they can contain connection strings or row contents. */
+/** Provider migration diagnostics are technical; redact URL credentials. */
 function failure(
   stage: string,
   error: RagError,
   log: Log,
 ): Result<void, RagError> {
   const diagnostic =
-    error.code === 'HUB_RESTAMP_CONFLICT' ||
-    /^(Invalid shared history identities|Unresolved shared history identity|Conflicting shared history users|Conflicting history owner):/.test(
-      error.message,
-    )
-      ? error.message
-      : error.code;
-  log(`RAG migration ${stage}: ${diagnostic}`);
+    stage.endsWith('/backend') && error.code.startsWith('RAG_')
+      ? `${error.code}: ${error.message}`
+      : error.code === 'HUB_RESTAMP_CONFLICT' ||
+          /^(Invalid shared history identities|Unresolved shared history identity|Conflicting shared history users|Conflicting history owner):/.test(
+            error.message,
+          )
+        ? error.message
+        : error.code;
+  const safe = diagnostic.replace(
+    /([a-z][a-z0-9+.-]*:\/\/)[^\s/]+:[^\s/]*@/gi,
+    '$1[redacted]@',
+  );
+  log(`RAG migration ${stage}: ${safe}`);
   return {
     ok: false,
     error: new RagError(
@@ -60,11 +66,14 @@ export async function migrateRagData(
       new RagError('Missing provider', 'MISSING_PROVIDER'),
       log,
     );
+  let stage = `${kind}/hub stores`;
   try {
     const restamp = await restampHubStores(collections);
     if (!restamp.ok) return failure(`${kind}/hub stores`, restamp.error, log);
+    stage = `${kind}/h_history`;
     const history = await migrateSharedHistory(collections);
     if (!history.ok) return failure(`${kind}/h_history`, history.error, log);
+    stage = `${kind}/backend`;
     const backend =
       kind === 'hana-vector' && collections instanceof HanaVectorRagProvider
         ? await migrateHanaVectorRagAccess(collections)
@@ -96,10 +105,12 @@ export async function migrateRagData(
       `RAG migration ${kind}: rewritten=${restamp.value.rewritten} moved=${history.value.moved}`,
     );
     return { ok: true, value: undefined };
-  } catch {
+  } catch (error) {
     return failure(
-      kind,
-      new RagError('Migration threw', 'MIGRATION_EXCEPTION'),
+      stage,
+      error instanceof RagError
+        ? error
+        : new RagError('Migration threw', 'MIGRATION_EXCEPTION'),
       log,
     );
   }

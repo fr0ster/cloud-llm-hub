@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- Hold stream metadata until content starts, record discarded attempt usage, and prevent retries from duplicating partial text or tool arguments.
+
+- Restore coordinator session history retrieval, wait for pending history writes, retrieve complete turns ranked by best chunk score, and report Anthropic stream error types without provider messages.
+- Keep coordinator history embedding independent of tools retrieval, prevent history write re-entry deadlocks, retry Anthropic SSE rate limits under the configured throttle policy, and preserve credential-redacted provider migration diagnostics.
+
 ## [11.0.3] - 2026-11-14
 
 ### Changed

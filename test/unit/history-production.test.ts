@@ -11,14 +11,18 @@ jest.mock('@sap/cds', () => ({
 }));
 
 import {
+  CircuitBreaker,
+  CircuitBreakerEmbedder,
   type ILlm,
   InMemoryRag,
   type Message,
   type RagCaller,
+  symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import { unwrapBuilderResult } from '@mcp-abap-adt/llm-agent-libs';
 import type { AgentConfig } from '../../srv/agent-config';
 import {
+  buildPlannerAgent,
   configureDestinationAgentBuilder,
   ExpositionFilteringRag,
   getSharedHistoryRag,
@@ -117,10 +121,36 @@ const config: AgentConfig = {
   destinations: { source: 'btp' },
 };
 
-test.each([false, true])(
-  'production history recall isolates two sessions (migrated=%s)',
-  async (migrated) => {
-    initProviders(await startProviders(config));
+test.each(
+  [
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ].flatMap(([migrated, coordinator]) =>
+    [false, true].map((embedded) => [migrated, coordinator, embedded]),
+  ),
+)(
+  'production history recall isolates two sessions (migrated=%s, coordinator=%s, embedded=%s)',
+  async (migrated, coordinator, embedded) => {
+    const providers = await startProviders(config);
+    const breaker = new CircuitBreaker();
+    const embed = jest.fn(async () => ({ vector: [1, 2] }));
+    const embedder = new CircuitBreakerEmbedder({ embed }, breaker);
+    initProviders({
+      ...providers,
+      embedding: embedded
+        ? {
+            embedder,
+            breaker,
+            retrieval: symmetricEmbedder(embedder),
+            fingerprint: {
+              provider: config.llm.provider,
+              embeddingModel: config.llm.model,
+            },
+          }
+        : null,
+    });
     const callers: RagCaller[] = ['s1', 's2'].map((sessionId) => ({
       userId: 'u1',
       sessionId,
@@ -192,8 +222,10 @@ test.each([false, true])(
         },
         new ExpositionFilteringRag(new InMemoryRag()),
         config,
+        coordinator ? { skipSkills: true, skipRetrieval: true } : undefined,
       );
       const recall = unwrapBuilderResult(await recallBuilder.build());
+      if (coordinator) expect(recall.ragStores.tools).toBeUndefined();
       for (const caller of callers) {
         seen.length = 0;
         const result = await recall.agent.process(
@@ -222,6 +254,23 @@ test.each([false, true])(
         }
       }
     };
+    const author = await buildPlannerAgent(
+      config,
+      'Recall the session facts.',
+      {
+        listTools: async () => ({ ok: true, value: [] }),
+        callTool: async () => ({ ok: true, value: { content: '' } }),
+      },
+      callOptionsFor(callers[0]),
+    );
+    seen.length = 0;
+    const authored = await author.process(
+      'recall session fact',
+      callOptionsFor(callers[0]),
+    );
+    if (!authored.ok) throw authored.error;
+    expect(JSON.stringify(seen)).toContain('PRIVATE_S1');
+    expect(JSON.stringify(seen)).not.toContain('PRIVATE_S2');
     await checkRecall(false);
     expect(await migrateSharedHistory(provider)).toEqual({
       ok: true,

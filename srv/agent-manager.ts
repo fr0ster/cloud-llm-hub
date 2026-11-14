@@ -1348,6 +1348,9 @@ let providers: Providers | null = null;
 /** Called once by server startup; components get instances, not config. */
 export function initProviders(p: Providers): void {
   historyProviders.clear();
+  sharedHistoryRag?.setQueryEmbedder(
+    p.embedding ? agentQueryEmbedder(p.embedding) : undefined,
+  );
   // Provider-only consumers do not need access stores. Validate the backend
   // when an agent or caller first requests access, retaining real persistence.
   initHubRagAccess(() =>
@@ -1592,7 +1595,9 @@ export function getSharedHistoryRag(): SessionHistoryRouter {
     : volatileHistoryProvider((name) =>
         getProviders().stores.create('session', name),
       );
+  const embedding = getProviders().embedding;
   sharedHistoryRag = new SessionHistoryRouter(provider, {
+    queryEmbedder: embedding ? agentQueryEmbedder(embedding) : undefined,
     storageBackend: kind,
     trustResolver: () => resolverFor(getCollectionRegistry()),
     log: cds.log('session-history'),
@@ -3034,12 +3039,10 @@ export async function configureDestinationAgentBuilder(
       ),
     );
 
-  // Recall of earlier turns. The pipeline already queries `history` on every
-  // request; until now nothing wrote to it, so it answered nothing every time.
-  if (!opts?.skipRetrieval) {
-    const historyRag = getSharedHistoryRag();
-    if (historyRag) builder.setHistoryRag(historyRag);
-  }
+  // Every destination agent recalls complete turns from its bound session,
+  // independently of tool and skill retrieval.
+  const historyRag = getSharedHistoryRag();
+  if (historyRag) builder.setHistoryRag(historyRag);
 
   const maxToolCalls = runLimitOptions(
     opts?.limitRole ?? 'executor',
@@ -3103,8 +3106,8 @@ export async function configureDestinationAgentBuilder(
   if (historyBudget)
     builder.withSessionManager(new SessionManager(historyBudget));
 
-  // The builder auto-creates a history store when summarization is enabled,
-  // even without setHistoryRag. Keep that store on the executor alone.
+  // Keep library summary writes on executors; controllers still retrieve
+  // complete session turns through the shared history router.
   if (!opts?.skipRetrieval) builder.withHistorySummarization(20);
 
   // Default hardcoded flow — matches PoC for minimal token overhead.
@@ -3193,6 +3196,7 @@ export async function buildPlannerAgent(
     .withToolTrust(builtInToolTrust(roleResolver))
     .withMainLlm(plannerRecorder.trackOfferedTools(llm))
     .withMcpClients([plannerRecorder])
+    .setHistoryRag(getSharedHistoryRag())
     .setToolsRag(docsMcp().withToolsRag(plannerTools, 'planner'))
     .withClassification(false)
     .withMode('hard');
@@ -3201,7 +3205,7 @@ export async function buildPlannerAgent(
     config.agent,
   ).maxToolCalls;
   if (maxToolCalls !== undefined) builder.withMaxToolCalls(maxToolCalls);
-  // DialogueSession owns the coordinator history; authors use the tool window.
+  // Authors retrieve session history; tool rounds use their separate window.
   if (authorClient)
     builder.withToolLoopContextStrategyFactory(() => createToolLoopWindow());
   const handle = unwrapBuilderResult(await builder.build());
@@ -3520,8 +3524,8 @@ export async function buildAgentForDestination(
   });
   const coordinatorBaseLlm = await mainLlmPromise;
 
-  // Controller build skips retrieval and skills: the coordinator consumes
-  // input/clarification history, not assembled retrieval context. Its tool-loop is gated off
+  // Controller retrieves session history, while skipping tool/skill retrieval.
+  // Its tool-loop is gated off
   // whenever the coordinator is active, so the controller never
   // consults the skills pool (see `configureDestinationAgentBuilder`).
   // Only the executor worker above needs the real skill vectorization. The

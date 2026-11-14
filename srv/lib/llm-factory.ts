@@ -18,8 +18,13 @@ import {
 } from '@mcp-abap-adt/anthropic-llm';
 import { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
 import {
+  findThrottled,
   type ILlm,
   type IThrottleStrategy,
+  type IUsageRecorder,
+  type LLMResponse,
+  ReportThrottling,
+  runWithThrottleRetry,
   staticApiKey,
 } from '@mcp-abap-adt/llm-agent';
 import { LlmAdapter, LlmProviderBridge } from '@mcp-abap-adt/llm-agent-libs';
@@ -33,9 +38,161 @@ import cds from '@sap/cds';
 import { getAgentConfig, type LlmProvider } from '../agent-config';
 import { captureLlm } from './context-capture';
 import { deployModel } from './deploy-model';
-import { reliableLlm } from './llm-failure';
+import {
+  anthropicStreamCode,
+  mergeStreamUsage,
+  reliableLlm,
+  reportLlmSpend,
+  StreamContentError,
+} from './llm-failure';
 import { sessionLlms } from './session-llms';
 import { usageRuntime } from './usage/runtime';
+
+/** Route Anthropic SSE quota errors through the provider's existing retry policy. */
+export class HubAnthropicProvider extends AnthropicProvider {
+  /** Keep one throttle attempt counter across the complete SSE consumption. */
+  override async *streamChat(
+    ...args: Parameters<AnthropicProvider['streamChat']>
+  ): AsyncIterable<LLMResponse> {
+    const [messages, tools, options] = args;
+    // A call-local provider reports HTTP throttling without retrying it. The
+    // outer loop owns the single HTTP/SSE budget; public config keeps concurrent
+    // calls isolated and preserves the provider's separate transient policy.
+    const provider = new AnthropicProvider({
+      ...this.config,
+      whenThrottled: {
+        name: 'stream-open',
+        // Let the outer policy alone choose and record the quota wait.
+        decide: () => ({ retry: false, waitMs: 0 }),
+      },
+    });
+    const controller = new AbortController();
+    const signal = options?.signal
+      ? AbortSignal.any([options.signal, controller.signal])
+      : controller.signal;
+    let item: LLMResponse | undefined;
+    let done = false;
+    let failed = false;
+    let failure: Error | undefined;
+    let wake = () => {};
+    let consumed = () => {};
+    let contentStarted = false;
+    // Reuse the provider quota and strategy for SSE quota failures. Holding
+    // metadata also lets the outer transient policy retry before content starts.
+    const work = runWithThrottleRetry(
+      async () => {
+        const held: LLMResponse[] = [];
+        let sawUsage = false;
+        // Provider records exist only for requests that reached the transport.
+        // Count usage-free attempts too, without counting quota/auth refusals.
+        const observeRequests = (
+          recorder?: IUsageRecorder,
+        ): IUsageRecorder => ({
+          record: (record) => {
+            if (record.kind === 'llm.call' && !sawUsage)
+              reportLlmSpend(
+                { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+                record.model,
+              );
+            recorder?.record(record);
+          },
+          with: (context) => observeRequests(recorder?.with(context)),
+        });
+        contentStarted = false;
+        const publish = async (response: LLMResponse) => {
+          if (signal.aborted) return;
+          const acknowledged = new Promise<void>((resolve) => {
+            consumed = resolve;
+          });
+          item = response;
+          wake();
+          await acknowledged;
+        };
+        try {
+          for await (const response of provider.streamChat(messages, tools, {
+            ...options,
+            signal,
+            usage: observeRequests(options?.usage ?? this.config.usage),
+          })) {
+            if (signal.aborted) return;
+            if (response.usage) sawUsage = true;
+            if (!contentStarted) {
+              held.push(response);
+              if (
+                !response.content &&
+                !response.toolCalls?.length &&
+                !response.finishReason
+              )
+                continue;
+              contentStarted = true;
+              for (const chunk of held) await publish(chunk);
+              held.length = 0;
+            } else await publish(response);
+          }
+          for (const chunk of held) await publish(chunk);
+        } catch (error) {
+          if (!contentStarted) {
+            let spent: LLMResponse['usage'];
+            for (const chunk of held) {
+              if (chunk.usage) spent = mergeStreamUsage(spent, chunk.usage);
+            }
+            if (spent) reportLlmSpend(spent, options?.model ?? this.model);
+          }
+          throw error;
+        }
+      },
+      {
+        key: this.quotaKey(options?.model),
+        strategy: {
+          name: this.config.whenThrottled?.name ?? 'stream',
+          decide: (context) =>
+            contentStarted
+              ? { retry: false, waitMs: 0, reason: 'content-started' }
+              : this.config.whenThrottled
+                ? this.config.whenThrottled.decide(context)
+                : new ReportThrottling().decide(context),
+        },
+        isThrottled: (error) =>
+          !!findThrottled(error) ||
+          anthropicStreamCode(error) === 'rate_limit_error',
+        retryAfterSeconds: (error) => this.retryAfterSeconds(error),
+        signal,
+      },
+    )
+      .catch((error: Error) => {
+        failed = true;
+        failure =
+          contentStarted && !findThrottled(error)
+            ? new StreamContentError(error)
+            : error;
+      })
+      .finally(() => {
+        done = true;
+        wake();
+      });
+    try {
+      while (true) {
+        const available = new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+        if (item === undefined && !done) await available;
+        if (item !== undefined) {
+          const response = item;
+          item = undefined;
+          yield response;
+          consumed();
+        } else if (done) {
+          if (failed) throw failure;
+          return;
+        }
+      }
+    } finally {
+      controller.abort();
+      consumed();
+      await work;
+    }
+  }
+}
 
 export interface HubLlmConfig {
   provider: LlmProvider;
@@ -143,8 +300,8 @@ export function makeHubCatalogProvider(): SapCoreAIProvider {
 function anthropicProvider(
   cfg: Pick<HubLlmConfig, 'apiKey' | 'baseURL'>,
   options: Omit<AnthropicConfig, 'credential' | 'baseURL'>,
-): AnthropicProvider {
-  return new AnthropicProvider({
+): HubAnthropicProvider {
+  return new HubAnthropicProvider({
     ...options,
     baseURL: cfg.baseURL,
     credential: apiKeyCredential(cfg.apiKey ?? ''),

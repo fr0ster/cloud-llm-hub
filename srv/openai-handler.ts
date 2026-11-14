@@ -1569,8 +1569,6 @@ async function serveChatCompletions(
         !callerLeft.signal.aborted &&
         !opts.signal?.aborted &&
         !out.detached;
-      out.write('data: [DONE]\n\n');
-
       // Save conversation turn to server session
       if (terminalSucceeded && accumulatedContent) {
         const lastUser = normalizedMessages
@@ -1593,6 +1591,7 @@ async function serveChatCompletions(
         // NOTE: state store upsert removed — llm-agent 6.0 has no default state store.
         // Session history managed by SessionManager + history RAG (session-scoped).
       }
+      out.write('data: [DONE]\n\n');
 
       if (chunkCount === 0) {
         log.warn(

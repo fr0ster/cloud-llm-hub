@@ -18,13 +18,61 @@ export function observeLlmSpend<T>(
   return spendObserver.run(record, run);
 }
 
-/** Report a completed model call to the innermost spend observer, if any. */
-export function reportLlmSpend(usage: TokenUsage): void {
-  spendObserver.getStore()?.(usage);
+/** Attribute one provider attempt, preserving an existing per-model breakdown. */
+export function reportLlmSpend(usage: TokenUsage, model: string): void {
+  spendObserver.getStore()?.({
+    ...usage,
+    models: usage.models ?? {
+      [model]: {
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+        totalTokens: usage.totalTokens,
+        requests: 1,
+      },
+    },
+  });
+}
+
+const anthropicErrorCodes = new Set([
+  'overloaded_error',
+  'api_error',
+  'rate_limit_error',
+  'invalid_request_error',
+  'authentication_error',
+  'permission_error',
+  'not_found_error',
+  'request_too_large',
+]);
+
+export function anthropicStreamCode(
+  error: Parameters<typeof llmFailure>[0],
+): string | undefined {
+  let current = error;
+  const seen = new Set<object>();
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
+    const code =
+      'code' in current && typeof current.code === 'string'
+        ? current.code
+        : undefined;
+    const prefix =
+      current instanceof Error
+        ? /^(?:Anthropic stream error: ([a-z_]+):|LLM unavailable \(([a-z_]+)\)$)/
+            .exec(current.message)
+            ?.slice(1)
+            .find(Boolean)
+        : undefined;
+    if (code && anthropicErrorCodes.has(code)) return code;
+    if (prefix && anthropicErrorCodes.has(prefix)) return prefix;
+    current = 'cause' in current ? current.cause : undefined;
+  }
+  return undefined;
 }
 
 /** Keep only status facts: provider messages may contain prompts or credentials. */
 export function llmFailure(error: unknown): string {
+  const streamCode = anthropicStreamCode(error);
+  if (streamCode) return `LLM unavailable (${streamCode})`;
   if (findThrottled(error)) return 'LLM unavailable (HTTP 429)';
   let current = error;
   for (let depth = 0; depth < 6 && current; depth++) {
@@ -68,6 +116,13 @@ export function llmFailure(error: unknown): string {
   return 'LLM unavailable (no response from model)';
 }
 
+/** A stream that has emitted content must never be restarted by an outer retry. */
+export class StreamContentError extends LlmError {
+  constructor(error: Error) {
+    super(llmFailure(error));
+  }
+}
+
 function safeLlmError(error: unknown): LlmError {
   const safe = new LlmError(
     llmFailure(error),
@@ -76,7 +131,16 @@ function safeLlmError(error: unknown): LlmError {
   // Preserve exhausted-policy facts so an outer retry decorator cannot start
   // another six unnamed waits. No raw provider cause is attached to this error.
   const throttled = findThrottled(error);
-  return throttled ? preserveThrottled(throttled, safe) : safe;
+  if (throttled) return preserveThrottled(throttled, safe);
+  if (error instanceof StreamContentError)
+    // Structured classification takes precedence over HTTP digits in safe text.
+    // Zero denotes a local terminal stream failure, not an HTTP response.
+    return Object.assign(safe, { status: 0 });
+  const streamCode = anthropicStreamCode(error);
+  // The builder retries structured 503 failures before output starts.
+  if (streamCode === 'overloaded_error' || streamCode === 'api_error')
+    return Object.assign(safe, { status: 503 });
+  return safe;
 }
 
 /** Normalize at the hub boundary before the tool loop drops structured causes. */
@@ -90,7 +154,7 @@ export function reliableLlm(inner: ILlm): ILlm {
               reportWorkerActivity('llm call');
               const result = await target.chat(...args);
               if (result.ok && result.value.usage)
-                reportLlmSpend(result.value.usage);
+                reportLlmSpend(result.value.usage, target.model ?? 'unknown');
               return result.ok
                 ? result
                 : {
@@ -119,7 +183,9 @@ export function reliableLlm(inner: ILlm): ILlm {
               const report = () => {
                 if (reported || !spent) return;
                 reported = true;
-                reportLlmSpend(spent);
+                // The adapter's configured model serves the call; it deliberately
+                // ignores client-facing model aliases in CallOptions.
+                reportLlmSpend(spent, target.model ?? 'unknown');
               };
               try {
                 while (true) {
