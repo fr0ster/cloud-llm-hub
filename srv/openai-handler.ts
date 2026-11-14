@@ -1569,8 +1569,6 @@ async function serveChatCompletions(
         !callerLeft.signal.aborted &&
         !opts.signal?.aborted &&
         !out.detached;
-      out.write('data: [DONE]\n\n');
-
       // Save conversation turn to server session
       if (terminalSucceeded && accumulatedContent) {
         const lastUser = normalizedMessages
@@ -1593,6 +1591,7 @@ async function serveChatCompletions(
         // NOTE: state store upsert removed — llm-agent 6.0 has no default state store.
         // Session history managed by SessionManager + history RAG (session-scoped).
       }
+      out.write('data: [DONE]\n\n');
 
       if (chunkCount === 0) {
         log.warn(
@@ -1773,6 +1772,8 @@ export async function handleModels(
   const log = cds.log('openai-handler/models');
   const config = getAgentConfig();
   const activeModel = getCurrentModel();
+  const ownedBy =
+    config.llm.provider === 'sap-ai-sdk' ? 'sap-ai-core' : config.llm.provider;
 
   let models: {
     id: string;
@@ -1786,15 +1787,15 @@ export async function handleModels(
           id,
           object: 'model',
           created: 0,
-          owned_by: 'sap-ai-core',
+          owned_by: ownedBy,
         }))
       : await getAvailableModels(config.llm);
   } catch (err) {
-    log.warn('Failed to fetch AI Core models, returning active model only', {
+    log.warn('Failed to fetch provider models, returning active model only', {
       error: err instanceof Error ? err.message : String(err),
     });
     models = [
-      { id: activeModel, object: 'model', created: 0, owned_by: 'sap-ai-core' },
+      { id: activeModel, object: 'model', created: 0, owned_by: ownedBy },
     ];
   }
 

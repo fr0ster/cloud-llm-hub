@@ -3,6 +3,7 @@ import {
   type ILlm,
   InMemoryRagProvider,
   type RagCaller,
+  RagError,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -252,16 +253,10 @@ test('chunked turns preserve all Unicode text, order and session isolation', asy
     callOptionsFor(a),
   );
   if (!result.ok) throw result.error;
-  expect(result.value.length).toBeGreaterThan(2);
-  for (const row of result.value) {
-    expect(Buffer.byteLength(row.text, 'utf8')).toBeLessThanOrEqual(6000);
-    expect(row.text).toMatch(/^User: /);
-    expect(row.metadata.turnId).toBe('long');
-  }
-  const indices = result.value
-    .map((row) => row.metadata.chunkIndex)
-    .sort((a, b) => Number(a) - Number(b));
-  expect(indices).toEqual(Array.from({ length: indices.length }, (_, i) => i));
+  expect(result.value).toHaveLength(1);
+  expect(result.value[0].text).toBe(
+    `User: ${userText}\nAssistant: ${assistantText}`,
+  );
   expect(await router.listTurns(a)).toEqual([
     expect.objectContaining({ id: 'long', userText, assistantText }),
   ]);
@@ -316,4 +311,242 @@ test('unlimited writes avoid scans and account for UTF-8 upserts and deletion', 
   } finally {
     enabled.mockRestore();
   }
+});
+
+test('query waits for a pending turn write in its own session', async () => {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const create = provider.createCollection.bind(provider);
+  jest
+    .spyOn(provider, 'createCollection')
+    .mockImplementation(async (...args) => {
+      await gate;
+      return create(...args);
+    });
+  const writing = router.recordTurn({
+    caller: a,
+    userText: 'pending',
+    assistantText: 'complete',
+  });
+  const reading = router.query(
+    new TextOnlyEmbedding('pending'),
+    2,
+    callOptionsFor(a),
+  );
+  expect(
+    await router.query(new TextOnlyEmbedding('pending'), 2, callOptionsFor(b)),
+  ).toEqual({ ok: true, value: [] });
+  release();
+  expect(await writing).toBe(true);
+  const result = await reading;
+  expect(result.ok && result.value[0].text).toBe(
+    'User: pending\nAssistant: complete',
+  );
+});
+
+test('k counts full turns instead of chunks', async () => {
+  const answer = 'recall '.repeat(9000);
+  await router.recordTurn({
+    caller: a,
+    id: 'long',
+    userText: 'recall',
+    assistantText: answer,
+  });
+  await router.recordTurn({
+    caller: a,
+    id: 'short',
+    userText: 'recall',
+    assistantText: 'short',
+  });
+  for (const id of ['short-two', 'short-three'])
+    await router.recordTurn({
+      caller: a,
+      id,
+      userText: 'recall',
+      assistantText: 'brief answer',
+    });
+  await router.recordTurn({
+    caller: b,
+    id: 'foreign',
+    userText: 'recall',
+    assistantText: 'foreign secret',
+  });
+  const result = await router.query(
+    new TextOnlyEmbedding('recall'),
+    2,
+    callOptionsFor(a),
+  );
+  if (!result.ok) throw result.error;
+  expect(result.value).toHaveLength(2);
+  expect(JSON.stringify(result.value)).not.toContain('foreign secret');
+  expect(result.value.find((row) => row.metadata.turnId === 'long')?.text).toBe(
+    `User: recall\nAssistant: ${answer}`,
+  );
+});
+
+test('failed history writes warn with identifiers and error class only', async () => {
+  const warn = jest.fn();
+  router = new SessionHistoryRouter(provider, { log: { warn } });
+  jest.spyOn(provider, 'createCollection').mockResolvedValue({
+    ok: false,
+    error: new RagError('private user and assistant text'),
+  });
+  await expect(
+    router.recordTurn({
+      caller: a,
+      id: 'failed-turn',
+      userText: 'private user',
+      assistantText: 'private assistant',
+    }),
+  ).resolves.toBe(false);
+  expect(warn).toHaveBeenCalledWith('Session history write failed', {
+    sessionHash: historyCollectionName(a.sessionId),
+    turnId: 'failed-turn',
+    error: 'RagError',
+  });
+  expect(JSON.stringify(warn.mock.calls)).not.toContain('private');
+});
+
+test('turn ranking uses the best chunk score and warns for missing chunks', async () => {
+  const warn = jest.fn();
+  router = new SessionHistoryRouter(provider, { log: { warn } });
+  await router.recordTurn({
+    caller: a,
+    id: 'long',
+    userText: 'rank',
+    assistantText: 'rank '.repeat(9000),
+  });
+  await router.recordTurn({
+    caller: a,
+    id: 'short',
+    userText: 'rank',
+    assistantText: 'short',
+  });
+  const catalog = await provider.describeCollections();
+  if (!catalog.ok) throw catalog.error;
+  const opened = await provider.openCollection(catalog.value.records[0]);
+  if (!opened.ok) throw opened.error;
+  const hits = await opened.value.rag.query(
+    new TextOnlyEmbedding('rank'),
+    100,
+    callOptionsFor(a),
+  );
+  if (!hits.ok) throw hits.error;
+  const ranked = hits.value
+    .map((row) => ({
+      ...row,
+      score:
+        row.metadata.turnId === 'short'
+          ? 0.8
+          : row.metadata.chunkIndex === 3
+            ? 0.9
+            : 0.1,
+    }))
+    .sort((left, right) => right.score - left.score);
+  jest
+    .spyOn(opened.value.rag, 'query')
+    .mockImplementation(async (_embedding, k) => ({
+      ok: true,
+      value: ranked.slice(0, k),
+    }));
+  const get = opened.value.rag.getById.bind(opened.value.rag);
+  jest
+    .spyOn(opened.value.rag, 'getById')
+    .mockImplementation(async (id, options) =>
+      id.endsWith('00000002') ? { ok: true, value: null } : get(id, options),
+    );
+  const result = await router.query(
+    new TextOnlyEmbedding('rank'),
+    2,
+    callOptionsFor(a),
+  );
+  if (!result.ok) throw result.error;
+  expect(result.value.map((row) => [row.metadata.turnId, row.score])).toEqual([
+    ['long', 0.9],
+    ['short', 0.8],
+  ]);
+  expect(warn).toHaveBeenCalledWith(
+    'Session history chunks missing',
+    expect.objectContaining({ turnId: 'long', error: 'IncompleteTurn' }),
+  );
+});
+
+test('a backend write can re-enter history for its own session', async () => {
+  await router.recordTurn({
+    caller: a,
+    userText: 'committed',
+    assistantText: 'answer',
+    id: 'first',
+  });
+  const opened = await provider.openCollection({
+    name: historyCollectionName(a.sessionId),
+    storeName: historyCollectionName(a.sessionId),
+    scope: 'session',
+    sessionId: a.sessionId,
+  });
+  if (!opened.ok) throw opened.error;
+  const writer = opened.value.rag.writer?.();
+  if (!writer) throw new Error('Missing writer');
+  const original = writer.upsertRaw.bind(writer);
+  const reentry = jest
+    .spyOn(writer, 'upsertRaw')
+    .mockImplementation(async (...args) => {
+      const recalled = await router.query(
+        new TextOnlyEmbedding('committed'),
+        2,
+        callOptionsFor(a),
+      );
+      expect(recalled.ok && recalled.value[0].text).toContain('committed');
+      return original(...args);
+    });
+  jest.spyOn(opened.value.rag, 'writer').mockReturnValue(writer);
+  expect(
+    await router.recordTurn({
+      caller: a,
+      userText: 'next',
+      assistantText: 'answer',
+    }),
+  ).toBe(true);
+  expect(reentry).toHaveBeenCalled();
+});
+
+test('the router embeds text-only vector queries once with scoped options', async () => {
+  const embedQuery = jest.fn(async () => ({ vector: [1, 2] }));
+  router = new SessionHistoryRouter(provider, {
+    queryEmbedder: { embedQuery },
+  });
+  await router.recordTurn({
+    caller: a,
+    userText: 'fact',
+    assistantText: 'answer',
+  });
+  const opened = await provider.openCollection({
+    name: historyCollectionName(a.sessionId),
+    storeName: historyCollectionName(a.sessionId),
+    scope: 'session',
+    sessionId: a.sessionId,
+  });
+  if (!opened.ok) throw opened.error;
+  const inner = opened.value.rag;
+  const original = inner.query.bind(inner);
+  jest
+    .spyOn(inner, 'query')
+    .mockImplementation(async (embedding, k, options) => {
+      expect(await embedding.toVector()).toEqual([1, 2]);
+      expect(await embedding.toVector()).toEqual([1, 2]);
+      return original(embedding, k, options);
+    });
+  const result = await router.query(
+    new TextOnlyEmbedding('fact'),
+    2,
+    callOptionsFor(a),
+  );
+  expect(result.ok && result.value[0].text).toContain('answer');
+  expect(embedQuery).toHaveBeenCalledTimes(1);
+  expect(embedQuery).toHaveBeenCalledWith(
+    'fact',
+    expect.objectContaining({ sessionId: a.sessionId }),
+  );
 });

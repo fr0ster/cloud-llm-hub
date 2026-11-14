@@ -1,5 +1,6 @@
 import { unwrapBuilderResult } from '@mcp-abap-adt/llm-agent-libs';
 import { bindCaller } from '../../srv/lib/rag-caller';
+import * as sessionTurns from '../../srv/lib/session-turns';
 import { testAccess } from './helpers/test-rag-access';
 
 jest.mock(
@@ -1032,4 +1033,25 @@ it('execute_step refuses a session bound to another owner before dispatch', asyn
   const result = await executeStep(req, caller, { session, task: 'first' });
   expect(result.isError).toBe(true);
   expect(harness.seenOptions).toHaveLength(0);
+});
+
+it('execute_step registers completed history before returning its MCP result', async () => {
+  const session = await opened();
+  const recorded = jest
+    .spyOn(sessionTurns, 'recordTurn')
+    .mockImplementation(() => {});
+  try {
+    await executeStep(req, caller, { session, task: 'remember this' }).then(
+      (result) => {
+        expect(result.isError).not.toBe(true);
+        expect(recorded).toHaveBeenCalledTimes(1);
+        expect(recorded.mock.calls[0][1]).toEqual({
+          role: 'user',
+          content: 'remember this',
+        });
+      },
+    );
+  } finally {
+    recorded.mockRestore();
+  }
 });

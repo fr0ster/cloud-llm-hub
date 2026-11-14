@@ -447,8 +447,10 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     expect(instances[0].withHistorySummarization).toHaveBeenCalledWith(20);
     expect(instances[1].setToolsRag).not.toHaveBeenCalled();
     expect(instances[1].addRagCollection).not.toHaveBeenCalled();
-    expect(instances[1].setHistoryRag).not.toHaveBeenCalled();
-    expect(instances[1].withEmbedder).not.toHaveBeenCalled();
+    expect(instances[1].setHistoryRag).toHaveBeenCalledTimes(1);
+    expect(instances[1].withEmbedder).toHaveBeenCalledTimes(
+      instances[0].withEmbedder.mock.calls.length,
+    );
     expect(instances[1].withSkillManager).not.toHaveBeenCalled();
     expect(instances[1].withHistorySummarization).not.toHaveBeenCalled();
   });
@@ -518,7 +520,7 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
       config,
     );
     pipelineInit.mockRestore();
-    expect(Object.keys(handle.ragStores)).toEqual([]);
+    expect(Object.keys(handle.ragStores)).toEqual(['history']);
     const messages = Array.from({ length: 30 }, (_, i) => ({
       role: i % 2 ? ('assistant' as const) : ('user' as const),
       content: `Попереднє повідомлення ${i}`,

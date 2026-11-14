@@ -24,8 +24,8 @@ export function extractText(c: unknown): string {
  * Server-managed model context recalls these full turns through semantic search.
  * The separate message window remains available for UI and run bookkeeping.
  *
- * Fire-and-forget on purpose. The answer has already been sent; a failure to
- * remember it must not surface as an error on a request that succeeded.
+ * Fire-and-forget on purpose. Writes are registered before the response ends;
+ * a failure to remember must not fail an otherwise successful request.
  */
 export function recordTurn(
   caller: RagCaller,
@@ -36,11 +36,9 @@ export function recordTurn(
   if (!rag) return;
   const question = extractText(lastUser.content);
   if (!question || !answer) return;
-  void rag
-    .recordTurn({
-      caller,
-      userText: question,
-      assistantText: answer,
-    })
-    .catch(() => {});
+  void rag.recordTurn({
+    caller,
+    userText: question,
+    assistantText: answer,
+  });
 }

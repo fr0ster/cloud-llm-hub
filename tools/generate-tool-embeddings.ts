@@ -199,6 +199,7 @@ export async function buildBundle(
       text: d.text,
       vector,
       exposition: d.exposition,
+      readOnlyHint: d.readOnlyHint,
     });
     opts.log(`  ${d.name}: ${vector.length}d`);
     await sleep(opts.throttleMs);
@@ -306,6 +307,7 @@ export async function buildQdrantStores(
       const res = await write(d.id, d.text, vector, {
         ownerScope: 'global',
         ...(d.exposition ? { exposition: d.exposition } : {}),
+        readOnlyHint: d.readOnlyHint,
       });
       if (!res.ok)
         throw new Error(

@@ -128,4 +128,20 @@ describe('planBundleLoad', () => {
     const plan = planBundleLoad(b, docs, FP);
     expect(plan.toLoad[0].exposition).toBe('readonly');
   });
+
+  it('takes effects from runtime definitions while reusing unchanged legacy vectors', () => {
+    const docs = [
+      { ...doc('GetProgramVersionSource', 'T', 'high'), readOnlyHint: true },
+    ];
+    const b = bundle([
+      { id: 'tool:GetProgramVersionSource', text: 'T', vector: [1, 0, 0] },
+    ]);
+    const plan = planBundleLoad(b, docs, FP);
+    expect(plan.supplementNames).toEqual([]);
+    expect(plan.toLoad[0]).toMatchObject({
+      exposition: 'high',
+      readOnlyHint: true,
+    });
+    expect(plan.toLoad[0].vector).toBe(b.entries[0].vector);
+  });
 });

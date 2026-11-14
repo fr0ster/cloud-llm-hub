@@ -17,6 +17,9 @@ it('matches a fresh derivation and covers every served tool', () => {
 
 it.each([
   ['GetDomain', 'domain'],
+  ['GetProgramVersionSource', 'program'],
+  ['UpdateTableType', 'tableType'],
+  ['GetObjectVersions', null],
   ['GetLocalTypes', 'class'],
   ['CreateCdsUnitTest', 'unitTest'],
   ['GetSqlQuery', null],

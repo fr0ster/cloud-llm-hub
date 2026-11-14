@@ -18,19 +18,12 @@ export type SharedCorpusDoc = {
   text: string;
   exposition?: string;
   cached: boolean;
+  readOnlyHint?: boolean;
 };
 
-/**
- * Which collection a tool belongs in, from its exposition group.
- *
- * The boundary is the ROLE boundary — exactly what `resolveExposition` grants —
- * NOT a fresh judgement about which tools modify. `high` is not a synonym for
- * modifiable: roughly 70 of its 156 tools are reads (GetPackage, GetDomain,
- * GetTable…). Deriving a second opinion here is how a collection drifts away
- * from the boundary the execution check actually enforces.
- */
-export function collectionFor(exposition: string | undefined): ToolRole {
-  return exposition === 'high' ? 'writer' : 'reader';
+/** Collections follow MCP effects; absent annotations conservatively mean write. */
+export function collectionFor(readOnlyHint: boolean | undefined): ToolRole {
+  return readOnlyHint === true ? 'reader' : 'writer';
 }
 
 /** The fingerprint of the committed, build-time AI Core embedding bundle. */
@@ -60,13 +53,15 @@ export function corpusByRole(
   docs: SharedCorpusDoc[],
 ): Record<ToolRole, SharedCorpusDoc[]> {
   const out: Record<ToolRole, SharedCorpusDoc[]> = { reader: [], writer: [] };
-  for (const doc of docs) out[collectionFor(doc.exposition)].push(doc);
+  for (const doc of docs) out[collectionFor(doc.readOnlyHint)].push(doc);
   return out;
 }
 
 /** 12 hex chars identifying a corpus's content — order-independent, text-sensitive. */
 export function corpusHash(docs: SharedCorpusDoc[]): string {
-  const pairs = docs.map((x) => `${x.id}\u0000${x.text}`).sort();
+  const pairs = docs
+    .map((x) => `${x.id}\u0000${x.text}\u0000${x.readOnlyHint === true}`)
+    .sort();
   return h12(pairs.join('\u0001'));
 }
 

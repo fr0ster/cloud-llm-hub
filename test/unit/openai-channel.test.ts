@@ -1050,7 +1050,10 @@ for (const failure of ['error chunk', 'exception'] as const)
     harness.stream = async function* () {
       yield { ok: true, value: { content: 'partial' } };
       // A model call completed inside the agent; its usage never reached a chunk.
-      reportLlmSpend({ promptTokens: 7, completionTokens: 3, totalTokens: 10 });
+      reportLlmSpend(
+        { promptTokens: 7, completionTokens: 3, totalTokens: 10 },
+        'm',
+      );
       const error = new LlmError('LLM unavailable (HTTP 503)');
       if (failure === 'exception') throw error;
       yield { ok: false, error };
@@ -1247,6 +1250,11 @@ describe('history records only completed calls', () => {
     const res = fakeRes();
     const write = res.write.bind(res);
     res.write = (chunk) => {
+      if (
+        chunk.includes('[DONE]') &&
+        (outcome === 'success' || outcome === 'disconnect after terminal')
+      )
+        expect(recorded).toHaveBeenCalledTimes(1);
       const result = write(chunk);
       if (outcome === 'disconnect after terminal' && chunk.includes('[DONE]'))
         res.disconnect();

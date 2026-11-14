@@ -16,6 +16,7 @@ const als = new AsyncLocalStorage<{
   userId?: string;
   ragIdentity?: RagCallerIdentity;
   toolGateDecision?: Promise<ToolQueryAnalysis>;
+  toolQueryAnalyses?: Map<string, Promise<ToolQueryAnalysis>>;
   /**
    * The conversation BEFORE this request's new user message.
    *
@@ -73,19 +74,26 @@ export function isToolGateBypassed(): boolean {
   return toolGateScope.getStore() === true;
 }
 
-/** First search owns analysis; later searches retain their own search text. */
+/** First search owns the request gate; each text owns its translation and kind. */
 export async function requestToolGateDecision(
   text: string,
   analyze: () => Promise<ToolQueryAnalysis>,
 ): Promise<ToolQueryAnalysis> {
   const scope = als.getStore();
   if (!scope) return analyze();
-  if (scope.toolGateDecision) {
-    const decision = await scope.toolGateDecision;
-    return { text, needsAbapSystem: decision.needsAbapSystem };
+  scope.toolQueryAnalyses ??= new Map<string, Promise<ToolQueryAnalysis>>();
+  const analyses = scope.toolQueryAnalyses;
+  let analysis = analyses.get(text);
+  if (!analysis) {
+    analysis = analyze();
+    analyses.set(text, analysis);
   }
-  scope.toolGateDecision = analyze();
-  return scope.toolGateDecision;
+  scope.toolGateDecision ??= analysis;
+  const [decision, gate] = await Promise.all([
+    analysis,
+    scope.toolGateDecision,
+  ]);
+  return { ...decision, needsAbapSystem: gate.needsAbapSystem };
 }
 
 export function getRequestUserId(): string | undefined {

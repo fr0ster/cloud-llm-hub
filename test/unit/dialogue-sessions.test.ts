@@ -3202,15 +3202,28 @@ test('a failed turn keeps planner spend observed before the failure', async () =
   const { h } = await ready();
   mockPlannerHook = async () => {
     // A completed model call inside the planner, then a model outage.
-    reportLlmSpend({ promptTokens: 5, completionTokens: 2, totalTokens: 7 });
+    reportLlmSpend(
+      { promptTokens: 5, completionTokens: 2, totalTokens: 7 },
+      'planner-model',
+    );
     throw Object.assign(new LlmError('private'), { response: { status: 503 } });
   };
   await h.session.send('go').catch(() => undefined);
   await until(() => h.state().lastFailedSeq > 0);
   expect(h.state().failureCause).toBe('LLM unavailable (HTTP 503)');
-  expect(h.failedUsage?.().planner).toEqual(
-    expect.objectContaining({ promptTokens: 5, completionTokens: 2 }),
-  );
+  expect(h.failedUsage?.().planner).toEqual({
+    promptTokens: 5,
+    completionTokens: 2,
+    totalTokens: 7,
+    models: {
+      'planner-model': {
+        promptTokens: 5,
+        completionTokens: 2,
+        totalTokens: 7,
+        requests: 1,
+      },
+    },
+  });
 });
 
 test('a later non-model failure does not inherit an earlier model cause', async () => {
@@ -3235,7 +3248,10 @@ test.each([true, false])(
   async (fails) => {
     const { h } = await ready();
     mockRun.mockImplementation(async () => {
-      reportLlmSpend({ promptTokens: 7, completionTokens: 3, totalTokens: 10 });
+      reportLlmSpend(
+        { promptTokens: 7, completionTokens: 3, totalTokens: 10 },
+        'worker-model',
+      );
       if (fails) throw new Error('worker failed after model call');
       return {
         output: 'done',
@@ -3252,7 +3268,19 @@ test.each([true, false])(
       expect.objectContaining({
         worker: 'executor',
         usage: fails
-          ? { promptTokens: 7, completionTokens: 3, totalTokens: 10 }
+          ? {
+              promptTokens: 7,
+              completionTokens: 3,
+              totalTokens: 10,
+              models: {
+                'worker-model': {
+                  promptTokens: 7,
+                  completionTokens: 3,
+                  totalTokens: 10,
+                  requests: 1,
+                },
+              },
+            }
           : { promptTokens: 8, completionTokens: 4, totalTokens: 12 },
       }),
     ]);
@@ -3262,7 +3290,10 @@ test.each([true, false])(
 test('failed worker spend reaches message usage once when the planner recovers', async () => {
   const { h } = await ready();
   mockRun.mockImplementation(async () => {
-    reportLlmSpend({ promptTokens: 7, completionTokens: 3, totalTokens: 10 });
+    reportLlmSpend(
+      { promptTokens: 7, completionTokens: 3, totalTokens: 10 },
+      'worker-model',
+    );
     throw new Error('worker failed');
   });
   await h.session.send('go');

@@ -1,5 +1,4 @@
 import { InMemoryRag, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
-import type { ToolClusterStrategy } from '../../srv/agent-config';
 import {
   ExpositionFilteringRag,
   getSharedCorpusDocs,
@@ -18,7 +17,7 @@ async function search(
   for (const name of [seed, 'GetSqlQuery', 'SearchObject', 'GetTable']) {
     const doc = docs.find((item) => item.name === name);
     if (!doc) throw new Error(`Missing ${name}`);
-    const store = doc.exposition === 'high' ? writer : reader;
+    const store = doc.readOnlyHint === true ? reader : writer;
     await store.writer().upsertRaw(doc.id, seed, {
       id: doc.id,
       name,
@@ -77,9 +76,11 @@ it('generic seeds add no cluster members', async () => {
   expect(rows[0].metadata.id).toBe('tool:GetSqlQuery');
 });
 
-it('expands reader seeds for a write role', async () => {
+it('does not expand reader seeds for a write role', async () => {
   const rows = await search('GetProgram', 'MCP_Developer', 1, 1);
-  expect(rows.map((row) => row.metadata.id)).toContain('tool:ActivateProgram');
+  expect(rows.map((row) => row.metadata.id)).not.toContain(
+    'tool:ActivateProgram',
+  );
 });
 
 it('caps both collections independently even when the caller requests a larger K', async () => {
@@ -94,6 +95,7 @@ it('caps both collections independently even when the caller requests a larger K
         id: `tool:${name}`,
         name,
         exposition,
+        readOnlyHint: exposition === 'readonly',
       });
     }
   }
@@ -124,53 +126,3 @@ it('caps both collections independently even when the caller requests a larger K
   expect(readerQuery.mock.calls[0][1]).toBe(3);
   expect(writerQuery.mock.calls[0][1]).toBe(6);
 });
-
-it.each<ToolClusterStrategy>(['all-seeds', 'top-writer'])(
-  'expands only the selected clusters with %s',
-  async (strategy) => {
-    const reader = new InMemoryRag();
-    const writer = new InMemoryRag();
-    for (const [store, name] of [
-      [reader, 'GetClass'],
-      [writer, 'UpdateUnitTest'],
-    ] as const) {
-      const doc = getSharedCorpusDocs().find((item) => item.name === name);
-      if (!doc) throw new Error(`Missing ${name}`);
-      await store.writer().upsertRaw(doc.id, 'query', {
-        id: doc.id,
-        name,
-        exposition: doc.exposition,
-      });
-    }
-    const rag = new ExpositionFilteringRag(
-      reader,
-      writer,
-      undefined,
-      0,
-      undefined,
-      undefined,
-      'off',
-      'hard',
-      1,
-      1,
-      strategy,
-    );
-    const result = await rag.query(new TextOnlyEmbedding('query'), 100, {
-      ragFilter: { exposition: resolveExposition(['MCP_Developer']) },
-    });
-    if (!result.ok) throw new Error('Query failed');
-    const names = result.value.map((row) => row.metadata.id);
-    expect(names).toEqual(
-      expect.arrayContaining([
-        'tool:GetClass',
-        'tool:UpdateUnitTest',
-        'tool:GetUnitTestResult',
-      ]),
-    );
-    if (strategy === 'all-seeds') {
-      expect(names).toContain('tool:UpdateClass');
-    } else {
-      expect(names).not.toContain('tool:UpdateClass');
-    }
-  },
-);

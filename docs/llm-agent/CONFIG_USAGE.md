@@ -58,9 +58,9 @@ goal sizes, states, durations and hashed session keys. They never contain goal t
 | `LLM_AGENT_MCP_DESTINATION` | empty | Default BTP destination; empty means LLM-only mode |
 | `LLM_AGENT_RAG_TYPE` | `in-memory` | Legacy switch: `in-memory` is keyword-only; any other value takes the vector path. Still read — it is the default the per-class variables below fall back to |
 | `LLM_AGENT_RAG_QUERY_K` | `5` in code, **`15` in `mta.yaml`** | Legacy RAG budget for other stores; tool collections use the budgets below |
-| `LLM_AGENT_TOOLS_K_READER` | `2` | Reader collection seed tools per query; positive integer |
-| `LLM_AGENT_TOOLS_K_WRITER` | `1` | Writer collection seed tools per query; positive integer. Write roles expand found object clusters within their allowed tools |
-| `LLM_AGENT_TOOLS_CLUSTER_STRATEGY` | `all-seeds` | Write-role cluster expansion: `all-seeds` (default) uses every found tool; `top-writer` uses only the highest-scoring writer tool with an object. Found tools and role filtering are preserved |
+| `LLM_AGENT_TOOLS_K_READER` | `5` | Reader collection seed tools per query; positive integer |
+| `LLM_AGENT_TOOLS_K_WRITER` | `2` | Writer collection seed tools per query; positive integer. Write roles expand found object clusters within their allowed tools |
+| `LLM_AGENT_TOOLS_SELECTION` | `step-kind` | `per-collection`: reader top-k plus writer clusters; `step-kind`: RO reader top-k, RW writer clusters, UNKNOWN union. Invalid values refuse startup. |
 | `LLM_AGENT_EMBEDDER` | `sap-ai-core` if `LLM_AGENT_PROVIDER=sap-ai-sdk`, else `openai` | `sap-ai-core` \| `openai` \| `ollama`. Only accepted when at least one RAG class below is not `in-memory` |
 | `LLM_AGENT_EMBEDDING_MODEL` | `text-embedding-3-small` (`ollama`: none — required) | Embedding model id |
 | `LLM_AGENT_EMBEDDING_DIMENSION` | ? | Optional positive integer for Qdrant task-result vectors. Otherwise resolved once per provider/embedder from existing hub collections with the same embedder (dimensions must agree), then from one constant-text embedding probe. Target collection 404 is expected for a new session. HANA/Postgres retain 1536. |
@@ -102,15 +102,30 @@ goal sizes, states, durations and hashed session keys. They never contain goal t
 | `LLM_AGENT_HISTORY_RECENCY_WINDOW` | see `agent-config.ts` | How much history reaches the model |
 | `LLM_AGENT_MCP_ENDPOINT` | — | **Inert.** Read and logged, consumed by nothing |
 
-Offline measurement on 91 RW prompts with the Developer role:
+Tool selection uses explicit read-only effects, independently of exposition permissions and retrieval backend. Defaults: `step-kind`, reader k=5, writer k=2. Only writer seeds expand object clusters; cluster members retain permission filtering. Without write rights both strategies return readers only. The analyzer returns strict `writes` in its existing call; missing or invalid responses mean UNKNOWN. `per-collection` ignores step kind; `step-kind` uses it and adds no independent reader seeds to RW.
 
-| Strategy | kWriter | Target cluster complete | Average tools | Average foreign tools |
-| --- | --- | --- | --- | --- |
-| all-seeds | 1 | 91/91 | 11.5 | 4.5 |
-| all-seeds (previous default) | 5 | 91/91 | 20.7 | 13.6 |
-| top-writer | 1 | 78/91 | 9.2 | 3.3 |
+The session history router embeds text-only vector queries independently, so coordinator history recall does not create or vectorize a tools store. Keyword history works without an embedder. Queries wait for pending writes from other calls; a query inside a write for the same session reads committed history without waiting on itself.
 
-The default is `all-seeds` with `LLM_AGENT_TOOLS_K_WRITER=1`: it preserved complete target clusters in this sample while reducing tool count and foreign tools. Consumers can override either environment variable.
+`per-collection` always returns reader top-k plus writer top-k expanded into their object clusters. `step-kind` returns reader top-k without clusters for RO, writer top-k with clusters for RW, and their union for UNKNOWN. Scores only order results within each effect collection; the selection does not depend on the store, embedder, retrieval method or score scale.
+
+The installed Core 23.1 definitions declare read-only effects with the literal `[read-only]` metadata tag. The hub normalizes this explicit declaration into MCP `annotations.readOnlyHint` before exposing tools through `listTools` and building the corpus; native annotations take precedence. A definition without either declaration is a writer. Older bundles reuse their unchanged text/vectors while receiving current effect and exposition metadata from definitions.
+
+Baseline oracle evaluation on 91 cases (29 RO, 62 RW), with reader k=2 / writer k=1 and bge-m3 precomputed document vectors:
+
+| Retrieval | Strategy | RO hits | RW hits | Total | RO avg/max tools | RW avg/max tools |
+| --- | --- | --- | --- | --- | --- | --- |
+| vector / bge-m3 | per-collection | 29/29 | 58/62 | 87/91 | 10.34 / 22 | 8.74 / 22 |
+| vector / bge-m3 | step-kind | 27/29 | 58/62 | 85/91 | 2.00 / 2 | 8.37 / 21 |
+| keyword only | per-collection | 28/29 | 50/62 | 78/91 | 11.66 / 22 | 9.73 / 21 |
+| keyword only | step-kind | 27/29 | 50/62 | 77/91 | 2.00 / 2 | 9.08 / 21 |
+
+The default is `step-kind` with reader k=5 and writer k=2, chosen from the 91-case bge-m3 vector evaluation: RO 29/29 with 5 tools; RW 61/62 with an average of 11.89 tools (90/91 total). Writer k=1 gives only 58/62 RW hits. The table above records the earlier reader k=2 / writer k=1 baseline. These are oracle step-kind measurements: the harness uses expected tool effects, without an LLM classification call.
+
+For that 2/1 baseline across all 91 cases, average/maximum tools are 9.25/22 versus 6.34/21 with bge-m3, and 10.34/22 versus 6.82/21 with keywords (`per-collection` versus `step-kind`). All 233 bge-m3 document vectors were reused; only queries were embedded. Object ownership coverage is 191 mapped / 45 unmapped out of 236 tools (previously 163 / 73); the local include mappings already existed and the table type key is normalized to `tableType`.
+
+Run `npm run eval:tools -- --bundle srv/tool-embeddings.879dc890b222.json --store vector --embedder ollama` or `npm run eval:tools -- --store in-memory --embedder none` (`--keyword` alias). The harness defaults to `--k-reader 5 --k-writer 2`, matching the hub; pass `--k-reader 2 --k-writer 1` to reproduce the baseline. It uses hub factories and real selection code, prints both strategies and misses, and supports `--store in-memory|vector|qdrant`, `--url` for Qdrant, `--embedder none|ollama|openai|sap-ai-core`, `--model` and `--embedder-url`. `--bundle` defaults to the committed bundle and supplies vectors only on fingerprint match; otherwise the selected embedder vectorizes documents. It never rewrites bundles.
+
+Precomputed vectors also require matching document text. Qdrant evaluations use a unique temporary collection prefix and delete their collections afterwards; `QDRANT_API_KEY` is optional. Removing the former cluster strategy setting is recommended: a leftover setting produces one startup warning and has no effect.
 
 All `LLM_GATEKEEPER_*` values: unset means off. A value that is not plain digits for a positive integer (`0x10`, `1e3`, ` 5` and `5.0` are refused) — or a combination the notes above forbid — stops `cds serve` before it listens, naming the variable. The values in force are logged at startup and returned in `Health()`.
 
@@ -166,9 +181,9 @@ While the restore has failed (or is still running past the wait), presets stay u
 
 **Session collections** persist too and expire after the session TTL (`LLM_AGENT_SESSION_TTL_MS`, default 1 h, counted from their last use). `RAG_SESSION_TTL_MS` still overrides it for collections only; it is deprecated. The hourly sweep removes expired ones from memory and from the catalog; the collections of an open long session are left to the session, which deletes them when it closes.
 
-**Session history** is stored in per-session `h_hist_<hash>` collections (`<prefix>_h_hist_<hash>` on Qdrant), created on first use and owned by the session. Stable session bindings restrict recall to the session owner; administrators have no read bypass. Ending or forgetting a session deletes its history collection. Process shutdown preserves long sessions and their history for restart. Full turns are retained for the entire session, with no 200-turn eviction. Long turns are split into ordered records sharing a turn ID, each with a user header; the fallback embedder input bound is `HISTORY_EMBEDDER_INPUT_BYTES` (6,000 UTF-8 bytes), not a relevance budget. Installed embedder/provider interfaces expose no input limit. Server-managed OpenAI, Anthropic and MCP `execute_step` requests send no recent-message window to the model and do not character-trim it. History enters through `setHistoryRag` and the library pipeline `rag-history` stage, which retrieves up to `LLM_AGENT_RAG_QUERY_K` records (default 5), without an added score threshold. Client-managed history normalization and trimming are unchanged. The in-memory window remains for run bookkeeping and session revival. Legacy `h_history` is migrated only after all session bindings are verified or established. After a failed open the hub waits 30 s before trying again and logs one warning per window. Request trace IDs do not replace stable session IDs.
+**Session history** is stored in per-session `h_hist_<hash>` collections (`<prefix>_h_hist_<hash>` on Qdrant), created on first use and owned by the session. Stable session bindings restrict recall to the session owner; administrators have no read bypass. Ending or forgetting a session deletes its history collection. Process shutdown preserves long sessions and their history for restart. Full turns are retained for the entire session, with no 200-turn eviction. Long turns are split into ordered records sharing a turn ID, each with a user header; the fallback embedder input bound is `HISTORY_EMBEDDER_INPUT_BYTES` (6,000 UTF-8 bytes), not a relevance budget. Installed embedder/provider interfaces expose no input limit. Server-managed OpenAI, Anthropic and MCP `execute_step` requests send no recent-message window to the model and do not character-trim it. History enters through `setHistoryRag` and the library pipeline `rag-history` stage, which retrieves up to `LLM_AGENT_RAG_QUERY_K` complete turns (default 5), without an added score threshold. Client-managed history normalization and trimming are unchanged. The in-memory window remains for run bookkeeping and session revival. Legacy `h_history` is migrated only after all session bindings are verified or established. After a failed open the hub waits 30 s before trying again and logs one open warning per window plus a content-free warning for each failed turn write. Request trace IDs do not replace stable session IDs.
 
-The history retrieval count comes from `srv/agent-config.ts` (`LLM_AGENT_RAG_QUERY_K`, default `5`), passed as `ragQueryK` in `srv/agent-manager.ts`, including the LLM-only builder. In `@mcp-abap-adt/llm-agent-libs`, `pipeline/default-pipeline` creates `rag-history` without a stage-specific `k`, and `pipeline/handlers/rag-query` resolves `config.k ?? ctx.config.ragQueryK ?? 10`. The count applies to records/chunks, so a request need not retrieve every chunk of a very large turn.
+The history retrieval count comes from `srv/agent-config.ts` (`LLM_AGENT_RAG_QUERY_K`, default `5`), passed as `ragQueryK` in `srv/agent-manager.ts`, including the LLM-only builder. In `@mcp-abap-adt/llm-agent-libs`, `pipeline/default-pipeline` creates `rag-history` without a stage-specific `k`, and `pipeline/handlers/rag-query` resolves `config.k ?? ctx.config.ragQueryK ?? 10`. The count applies to turns, ranked by their best chunk score; all addressable chunks of each selected turn are assembled without truncation. The coordinator retrieves session history too, while skipping tool and skill retrieval. Queries wait for pending writes in their own session.
 
 Remaining production `getSessionHistory` calls are both in `srv/openai-handler.ts`: delivery deduplication (`includes(lastUser)`) and streaming completion diagnostics (`storedMessages`). Its compatibility re-export is retained. The session store also supports message replacement for run bookkeeping, TTL cleanup and session revival (`srv/lib/session-lifecycle.ts`); none of these feeds its window to the model.
 
@@ -412,9 +427,13 @@ An **assistant** is the future memory-and-learning entity; an **agent** performs
 `LLM_AGENT_MODELS` is a comma-separated allowlist for request and agent model choices.
 
 Use `catalog` or `catalog,extra-model` with `LLM_AGENT_PROVIDER=sap-ai-sdk`
-(the default) to include SAP AI Core foundation models eligible for orchestration
-chat: text generation, orchestration scenario, and not deprecated. Other providers
-reject this token at startup. Explicit names and main/planner defaults remain allowed.
+(the default) or `LLM_AGENT_PROVIDER=anthropic` to load models available to the
+configured provider credential. SAP AI Core includes foundation models eligible
+for orchestration chat: text generation, orchestration scenario, and not deprecated.
+Anthropic uses the provider's model list with the same API key and base URL as chat;
+entries with capabilities are limited to text generation, while entries without
+capability metadata are included by id. Other providers reject this token at startup.
+Explicit names and main/planner defaults remain allowed.
 The catalog loads once after the server is served. Requests that resolve or validate
 models wait for loading to finish. If loading fails, only the explicit allowlist applies.
 Failures log the cause once; any later model request retries, including chat and MCP

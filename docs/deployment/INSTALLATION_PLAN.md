@@ -153,19 +153,24 @@ parameter out. Add one only when you actually need to change the behaviour:
 | `LLM_AGENT_RAG_TYPE` | `in-memory` (keyword-only) | Set to `vector` for semantic tool selection — requires a reachable embeddings endpoint |
 | `DESTINATION_MAPPING` | empty | Only for CALM or other external callers that address systems as `DEV.100` instead of a destination name |
 | `LLM_AGENT_RAG_QUERY_K` | `15` in `mta.yaml` (code fallback is `5`) | Legacy budget for other RAG stores |
-| `LLM_AGENT_TOOLS_K_READER` | `2` | Reader seed tools per query; positive integer |
-| `LLM_AGENT_TOOLS_K_WRITER` | `1` | Writer seed tools per query; positive integer. Write roles expand object clusters within their allowed tools |
-| `LLM_AGENT_TOOLS_CLUSTER_STRATEGY` | `all-seeds` | Write-role cluster expansion: `all-seeds` (default) uses every found tool; `top-writer` uses only the highest-scoring writer tool with an object. Found tools and role filtering are preserved |
+| `LLM_AGENT_TOOLS_K_READER` | `5` | Reader seed tools per query; positive integer |
+| `LLM_AGENT_TOOLS_K_WRITER` | `2` | Writer seed tools per query; positive integer. Write roles expand object clusters within their allowed tools |
+| `LLM_AGENT_TOOLS_SELECTION` | `step-kind` | RO reader top-k, RW writer clusters, UNKNOWN union; choose `per-collection` for reader top-k plus writer clusters on every step. Invalid values refuse startup |
 
-Offline measurement on 91 RW prompts with the Developer role:
+Tool selection uses explicit read-only effects, independently of exposition permissions and retrieval backend. Defaults: `step-kind`, reader k=5, writer k=2. Only writer seeds expand object clusters; cluster members retain permission filtering. Without write rights both strategies return readers only. The analyzer returns strict `writes` in its existing call; missing or invalid responses mean UNKNOWN. `per-collection` ignores step kind; `step-kind` uses it and adds no independent reader seeds to RW.
 
-| Strategy | kWriter | Target cluster complete | Average tools | Average foreign tools |
-| --- | --- | --- | --- | --- |
-| all-seeds | 1 | 91/91 | 11.5 | 4.5 |
-| all-seeds (previous default) | 5 | 91/91 | 20.7 | 13.6 |
-| top-writer | 1 | 78/91 | 9.2 | 3.3 |
+Baseline oracle evaluation on 91 cases (29 RO, 62 RW), with reader k=2 / writer k=1 and bge-m3 precomputed document vectors:
 
-The default is `all-seeds` with `LLM_AGENT_TOOLS_K_WRITER=1`: it preserved complete target clusters in this sample while reducing tool count and foreign tools. Consumers can override either environment variable.
+| Retrieval | Strategy | RO hits | RW hits | Total | RO avg/max tools | RW avg/max tools |
+| --- | --- | --- | --- | --- | --- | --- |
+| vector / bge-m3 | per-collection | 29/29 | 58/62 | 87/91 | 10.34 / 22 | 8.74 / 22 |
+| vector / bge-m3 | step-kind | 27/29 | 58/62 | 85/91 | 2.00 / 2 | 8.37 / 21 |
+| keyword only | per-collection | 28/29 | 50/62 | 78/91 | 11.66 / 22 | 9.73 / 21 |
+| keyword only | step-kind | 27/29 | 50/62 | 77/91 | 2.00 / 2 | 9.08 / 21 |
+
+The default is `step-kind` with reader k=5 and writer k=2, chosen from the 91-case bge-m3 vector evaluation: RO 29/29 with 5 tools; RW 61/62 with an average of 11.89 tools (90/91 total). Writer k=1 gives only 58/62 RW hits. The table above records the earlier reader k=2 / writer k=1 baseline. These are oracle step-kind measurements: the harness uses expected tool effects, without an LLM classification call.
+
+Run `npm run eval:tools -- --bundle srv/tool-embeddings.879dc890b222.json --store vector --embedder ollama` or `npm run eval:tools -- --store in-memory --embedder none` (`--keyword` alias). The harness defaults to `--k-reader 5 --k-writer 2`, matching the hub; pass `--k-reader 2 --k-writer 1` to reproduce the baseline. It uses hub factories and real selection code, prints both strategies and misses, and supports `--store in-memory|vector|qdrant`, `--url` for Qdrant, `--embedder none|ollama|openai|sap-ai-core`, `--model` and `--embedder-url`. `--bundle` defaults to the committed bundle and supplies vectors only on fingerprint match; otherwise the selected embedder vectorizes documents. It never rewrites bundles.
 
 For Scenario B, replace the AI Core block with `LLM_AGENT_PROVIDER`, `LLM_AGENT_API_KEY` and
 `LLM_AGENT_BASE_URL`, and leave the AI Core resource inactive.

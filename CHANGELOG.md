@@ -6,10 +6,17 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
+- Tool retrieval splits by explicit read-only effect, preserving exposition permissions. Version/local include tools and table types now have object clusters. The existing analyzer call returns strict step `writes`, with UNKNOWN fallback.
+- Consumers choose `LLM_AGENT_TOOLS_SELECTION=per-collection|step-kind`; deprecated cluster strategy settings are ignored with one startup warning. Defaults are now `step-kind`, reader k=5 and writer k=2. Selection works through generic retrieval metadata across keyword and vector backends.
+- The 91-case bge-m3 vector oracle evaluation selects `step-kind` with reader k=5 / writer k=2: RO 29/29 with 5 tools, RW 61/62 with an average of 11.89 tools (90/91 total); writer k=1 gives RW 58/62. The `eval:tools` harness defaults match the hub. See CONFIG_USAGE for the earlier 2/1 baseline. Step-kind measurements use oracle effects without an LLM.
 - Tool-loop iteration and tool-call limits, and the history token budget, are off by default across hub agents. Explicit global, role and session limits remain supported, including `off`. Deployment templates no longer impose 20 iterations; the LLM-only template keeps its one-iteration mode.
 
 ### Fixed
 
+- Hold stream metadata until content starts, record discarded attempt usage, and prevent retries from duplicating partial text or tool arguments.
+
+- Restore coordinator session history retrieval, wait for pending history writes, retrieve complete turns ranked by best chunk score, and report Anthropic stream error types without provider messages.
+- Keep coordinator history embedding independent of tools retrieval, prevent history write re-entry deadlocks, retry Anthropic SSE rate limits under the configured throttle policy, and preserve credential-redacted provider migration diagnostics.
 - Oversized tool results now return an explicit error with the tool name, result size, limit and narrowing guidance, without partial data. The default size limit remains 60,000 characters; recordings and content-free warning logs report size-limit rejection.
 
 ## [11.0.3] - 2026-11-14
@@ -56,7 +63,7 @@ All notable changes to this project will be documented in this file. The format 
 - Each session's history lives in its own collection and is deleted when the session ends. Long sessions keep their history across restarts.
 - Hub dialogue, run, session and planner-memory records no longer carry library identity keys. Existing rows are rewritten once at startup; rows whose owner is ambiguous are reported, not moved.
 - Shared `h_history` turns are moved into per-session collections at startup.
-- RW tool search is a selectable strategy (`LLM_AGENT_TOOLS_CLUSTER_STRATEGY`: `all-seeds` or `top-writer`). The default stays `all-seeds`, and `LLM_AGENT_TOOLS_K_WRITER` now defaults to 1 instead of 5: on 91 measured write prompts the target cluster was still always found, with about 11.5 tools in context instead of 20.7.
+- RW tool search gained configurable cluster expansion, and `LLM_AGENT_TOOLS_K_WRITER` now defaults to 1 instead of 5: on 91 measured write prompts the target cluster was still always found, with about 11.5 tools in context instead of 20.7. Superseded by the consumer selection strategies described under Unreleased.
 
 ### Added
 
