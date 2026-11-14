@@ -896,17 +896,16 @@ async function serveMessages(
             })();
             const sseStream = adapter.transformStream(observed, context);
             for await (const event of sseStream) {
-              // Only after a failed chunk. With none, every event is written as
-              // it arrives, byte for byte what the adapter emitted.
-              if (event.event === 'message_stop' && streamError !== undefined) {
+              // Hold the terminal event until completed history writes are registered.
+              if (event.event === 'message_stop') {
                 heldStop = event;
-                continue;
-              }
-              if (event.event === 'message_stop')
                 streamSucceeded =
+                  streamError === undefined &&
                   !callerLeft.signal.aborted &&
                   !agentOpts.signal?.aborted &&
                   !out.detached;
+                continue;
+              }
               out.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
             }
           }, recordSpend),
@@ -971,17 +970,17 @@ async function serveMessages(
         out.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
       }
 
+      const lastUser = messages
+        .filter((message) => message.role === 'user')
+        .at(-1);
+      if (streamSucceeded && lastUser && accumulatedContent)
+        recordTurn(boundCaller.value, lastUser, accumulatedContent);
       // The held `message_stop` closes the message after any notice above.
       if (measurement && !explicitMessages && deliveredContent && !out.detached)
         requestMeasurement(req)?.messageDelivered();
       if (heldStop) {
         out.write(`event: ${heldStop.event}\ndata: ${heldStop.data}\n\n`);
       }
-      const lastUser = messages
-        .filter((message) => message.role === 'user')
-        .at(-1);
-      if (streamSucceeded && lastUser && accumulatedContent)
-        recordTurn(boundCaller.value, lastUser, accumulatedContent);
       clearInterval(keepAlive);
       out.end();
       return;

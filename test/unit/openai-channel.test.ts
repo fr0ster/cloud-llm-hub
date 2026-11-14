@@ -1247,6 +1247,11 @@ describe('history records only completed calls', () => {
     const res = fakeRes();
     const write = res.write.bind(res);
     res.write = (chunk) => {
+      if (
+        chunk.includes('[DONE]') &&
+        (outcome === 'success' || outcome === 'disconnect after terminal')
+      )
+        expect(recorded).toHaveBeenCalledTimes(1);
       const result = write(chunk);
       if (outcome === 'disconnect after terminal' && chunk.includes('[DONE]'))
         res.disconnect();

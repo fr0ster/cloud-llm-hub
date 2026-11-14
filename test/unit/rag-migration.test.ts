@@ -262,3 +262,27 @@ test('a thrown driver failure keeps requests gated without logging secrets', asy
     expect.stringContaining('MIGRATION_EXCEPTION'),
   );
 });
+
+test.each([
+  [
+    'RAG access persistence requires Qdrant >= 1.17.0 (insert_only)',
+    'RAG access persistence requires Qdrant >= 1.17.0 (insert_only)',
+  ],
+  [
+    'Cannot migrate https://user:secret@example.com/store: HTTP 403',
+    'Cannot migrate https://[redacted]@example.com/store: HTTP 403',
+  ],
+])(
+  'backend migration logs technical reason with credentials redacted: %s',
+  async (message, expected) => {
+    jest.mocked(migratePgVectorRagAccess).mockResolvedValue({
+      ok: false,
+      error: new RagError(message, 'RAG_MIGRATION_ERROR'),
+    });
+    const log = jest.fn();
+    expect((await migrateRagData(provider(), 'pg-vector', log)).ok).toBe(false);
+    expect(log).toHaveBeenCalledWith(
+      `RAG migration pg-vector/backend: RAG_MIGRATION_ERROR: ${expected}`,
+    );
+  },
+);

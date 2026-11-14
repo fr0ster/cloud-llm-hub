@@ -1,7 +1,10 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   type CallOptions,
   DuplicateCollectionError,
+  FallbackQueryEmbedding,
+  type IQueryEmbedder,
   type IQueryEmbedding,
   type IRag,
   type IRagBackendWriter,
@@ -97,17 +100,24 @@ async function openHistory(
 }
 
 export interface SessionHistoryRouterOptions {
+  queryEmbedder?: IQueryEmbedder;
   storageBackend?: string;
   storePrefix?: string;
   maxTurns?: number;
   now?: () => Date;
   clock?: () => number;
   trustResolver?: () => TrustResolver;
-  log?: { warn(message: string, data?: { error: string }): void };
+  log?: {
+    warn(
+      message: string,
+      data?: { error: string; sessionHash?: string; turnId?: string },
+    ): void;
+  };
 }
 
 /** A single builder hook; every operation routes from the bound CallOptions.caller. */
 export class SessionHistoryRouter implements IRag, IRagEditor {
+  private readonly writeContext = new AsyncLocalStorage<ReadonlySet<string>>();
   private readonly pending = new Map<
     string,
     Set<Promise<Result<void, RagError>>>
@@ -134,7 +144,7 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
     if (!result.ok) {
       this.failedOpens.set(sessionId, { at: now, error: result.error });
       this.options.log?.warn('Session history open failed', {
-        error: result.error.message,
+        error: result.error.constructor.name,
       });
     } else {
       this.failedOpens.delete(sessionId);
@@ -164,6 +174,10 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
     private readonly provider: IRagProvider,
     private readonly options: SessionHistoryRouterOptions = {},
   ) {}
+
+  setQueryEmbedder(embedder: IQueryEmbedder | undefined): void {
+    this.options.queryEmbedder = embedder;
+  }
 
   get storageBackend(): string | undefined {
     return this.options.storageBackend;
@@ -214,26 +228,76 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
   ): Promise<Result<RagResult[], RagError>> {
     const caller = await this.caller(options);
     if (!caller) return { ok: true, value: [] };
+    if (!this.writeContext.getStore()?.has(caller.sessionId))
+      await Promise.allSettled(this.pending.get(caller.sessionId) ?? []);
     const opened = await this.open(caller.sessionId, false);
     if (!opened.ok) return opened;
     if (!opened.value) return { ok: true, value: [] };
-    const result = await opened.value.rag.query(
-      embedding,
-      k,
-      this.scoped(caller, options),
-    );
-    if (!result.ok) return result;
-    return {
-      ok: true,
-      value: result.value
-        .filter((row) =>
-          matchesRagIdentity(
-            row.metadata,
-            ragIdentityFilter(this.scoped(caller, options)),
-          ),
+    const scoped = this.scoped(caller, options);
+    const queryEmbedding = this.options.queryEmbedder
+      ? new FallbackQueryEmbedding(
+          embedding,
+          this.options.queryEmbedder,
+          scoped,
         )
-        .map((row) => this.trustedRow(row)),
-    };
+      : embedding;
+    const identity = ragIdentityFilter(scoped);
+    const turns = new Map<string, RagResult>();
+    let size = k;
+    if (k <= 0) return { ok: true, value: [] };
+    while (true) {
+      const result = await opened.value.rag.query(queryEmbedding, size, scoped);
+      if (!result.ok) return result;
+      for (const row of result.value) {
+        if (!matchesRagIdentity(row.metadata, identity)) continue;
+        const id = row.metadata.turnId ?? row.metadata.id;
+        if (typeof id !== 'string') continue;
+        const previous = turns.get(id);
+        if (!previous || row.score > previous.score) turns.set(id, row);
+      }
+      if (turns.size >= k || result.value.length < size) break;
+      size *= 2;
+    }
+    const value: RagResult[] = [];
+    for (const [turnId, best] of [...turns]
+      .sort((a, b) => b[1].score - a[1].score)
+      .slice(0, k)) {
+      const count =
+        typeof best.metadata.chunkCount === 'number'
+          ? best.metadata.chunkCount
+          : 1;
+      const rows: { id: string; text: string; metadata: RagMetadata }[] = [];
+      for (let index = 0; index < count; index++) {
+        const id =
+          count === 1
+            ? turnId
+            : `${turnId}:chunk:${index.toString().padStart(8, '0')}`;
+        const result = await opened.value.rag.getById(id, scoped);
+        if (
+          result.ok &&
+          result.value &&
+          matchesRagIdentity(result.value.metadata, identity)
+        )
+          rows.push({ id, ...result.value });
+      }
+      if (rows.length !== count)
+        this.options.log?.warn('Session history chunks missing', {
+          sessionHash: historyCollectionName(caller.sessionId),
+          turnId,
+          error: 'IncompleteTurn',
+        });
+      const turn = assembleTurns(rows)[0];
+      if (!turn) value.push(this.trustedRow(best));
+      if (turn)
+        value.push(
+          this.trustedRow({
+            text: renderTurn(turn.userText, turn.assistantText),
+            metadata: { ...best.metadata, turnId, createdAt: turn.createdAt },
+            score: best.score,
+          }),
+        );
+    }
+    return { ok: true, value };
   }
 
   private trustedRow(row: RagResult): RagResult {
@@ -308,7 +372,11 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
     const sessionId = options?.caller?.sessionId;
     if (!sessionId?.trim()) return { ok: true, value: undefined };
     // Register before binding/catalog I/O so session cleanup also waits for a late write.
-    const work = this.writeValidated(id, text, metadata, options);
+    const context = new Set(this.writeContext.getStore());
+    context.add(sessionId);
+    const work = this.writeContext.run(context, () =>
+      this.writeValidated(id, text, metadata, options),
+    );
     const pending =
       this.pending.get(sessionId) ?? new Set<Promise<Result<void, RagError>>>();
     this.pending.set(sessionId, pending);
@@ -519,9 +587,13 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
     assistantText: string;
     id?: string;
   }): Promise<boolean> {
+    if (!input.caller.sessionId.trim()) return false;
+    const turnId = input.id ?? `turn:${randomUUID()}`;
+    const warning = {
+      sessionHash: historyCollectionName(input.caller.sessionId),
+      turnId,
+    };
     try {
-      if (!input.caller.sessionId.trim()) return false;
-      const turnId = input.id ?? `turn:${randomUUID()}`;
       const chunks = chunkTurn(input.userText, input.assistantText);
       const createdAt = (this.options.now?.() ?? new Date()).toISOString();
       // Start every write before awaiting: session deletion waits for all chunks.
@@ -545,14 +617,16 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
         ),
       );
       const result = results.find((result) => !result.ok) ?? results[0];
-      if (!result.ok && !this.failedOpens.has(input.caller.sessionId))
+      if (!result.ok)
         this.options.log?.warn('Session history write failed', {
-          error: result.error.message,
+          ...warning,
+          error: result.error.constructor.name,
         });
       return result.ok;
     } catch (error) {
       this.options.log?.warn('Session history write failed', {
-        error: String(error),
+        ...warning,
+        error: error instanceof Error ? error.constructor.name : typeof error,
       });
       return false;
     }
@@ -622,32 +696,7 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
       ? await this.rows(caller.sessionId, opened.value.rag)
       : [];
     this.measure(caller, rows);
-    const turns = new Map<string, StoredTurn>();
-    for (const row of rows) {
-      const parsed = parseTurn(
-        row.text,
-        typeof row.metadata.userTextLength === 'number'
-          ? row.metadata.userTextLength
-          : undefined,
-      );
-      if (!parsed) continue;
-      const turnId =
-        typeof row.metadata.turnId === 'string' ? row.metadata.turnId : row.id;
-      const turn = turns.get(turnId) ?? {
-        id: turnId,
-        userText: '',
-        assistantText: '',
-        createdAt: String(row.metadata.createdAt ?? ''),
-      };
-      if (row.metadata.userContinuation === true)
-        turn.userText += parsed.userText;
-      else {
-        if (!turn.userText) turn.userText = parsed.userText;
-        turn.assistantText += parsed.assistantText;
-      }
-      turns.set(turnId, turn);
-    }
-    return [...turns.values()];
+    return assembleTurns(rows);
   }
 
   async forgetSessionHistory(sessionId: string): Promise<void> {
@@ -876,4 +925,35 @@ export async function migrateSharedHistory(
       error: error instanceof RagError ? error : new RagError(String(error)),
     };
   }
+}
+
+function assembleTurns(
+  rows: { id: string; text: string; metadata: RagMetadata }[],
+): StoredTurn[] {
+  const turns = new Map<string, StoredTurn>();
+  for (const row of rows) {
+    const parsed = parseTurn(
+      row.text,
+      typeof row.metadata.userTextLength === 'number'
+        ? row.metadata.userTextLength
+        : undefined,
+    );
+    if (!parsed) continue;
+    const turnId =
+      typeof row.metadata.turnId === 'string' ? row.metadata.turnId : row.id;
+    const turn = turns.get(turnId) ?? {
+      id: turnId,
+      userText: '',
+      assistantText: '',
+      createdAt: String(row.metadata.createdAt ?? ''),
+    };
+    if (row.metadata.userContinuation === true)
+      turn.userText += parsed.userText;
+    else {
+      if (!turn.userText) turn.userText = parsed.userText;
+      turn.assistantText += parsed.assistantText;
+    }
+    turns.set(turnId, turn);
+  }
+  return [...turns.values()];
 }

@@ -323,7 +323,7 @@ describe('the per-session history catalog record', () => {
 });
 
 describe('a failed open is kept for a cool-down', () => {
-  it('N calls in the window: one open attempt, one warning; after it, a new attempt', async () => {
+  it('N calls in the window: one open warning plus a warning per failed turn', async () => {
     const warnings: unknown[] = [];
     let now = 5_000_000;
     const provider = newProvider();
@@ -351,14 +351,14 @@ describe('a failed open is kept for a cool-down', () => {
       now += 1000;
     }
     expect(attempts).toBe(1);
-    expect(warnings).toHaveLength(1);
+    expect(warnings).toHaveLength(6);
 
     // Still down after the window: one new attempt, one new warning.
     now += HISTORY_OPEN_COOL_DOWN_MS;
     await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' });
     await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' });
     expect(attempts).toBe(2);
-    expect(warnings).toHaveLength(2);
+    expect(warnings).toHaveLength(9);
 
     // Back up, after the next window: the store opens and the turn is kept.
     down = false;
@@ -516,7 +516,8 @@ describe('a foreign h_history record', () => {
     expect(
       await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' }),
     ).toBe(false);
-    expect(JSON.stringify(warnings)).toContain('Conflicting history owner');
+    expect(JSON.stringify(warnings)).toContain('RagError');
+    expect(JSON.stringify(warnings)).not.toContain('Conflicting history owner');
     expect(await records(newProvider())).toEqual(before);
     expect(await historyRows()).toEqual([]);
   });
