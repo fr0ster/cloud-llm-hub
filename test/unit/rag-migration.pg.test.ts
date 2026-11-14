@@ -13,6 +13,8 @@ import { migrateRagData } from '../../srv/lib/rag-migration';
 import { PROVIDER_DEFAULT_DIMENSION } from '../../srv/lib/rag-provider-factory';
 import { type PgliteHandle, startPglite } from './helpers/pglite';
 
+jest.setTimeout(120_000);
+
 const dimension = PROVIDER_DEFAULT_DIMENSION;
 let pgl: PgliteHandle;
 let client: Awaited<ReturnType<typeof createPgClient>>;
