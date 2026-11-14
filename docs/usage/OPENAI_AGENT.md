@@ -264,7 +264,11 @@ For other users, `session_open` omits `models` and `limits` from its schema
 and refuses them if supplied anyway. Admin access applies only to the
 caller's own session.
 
-With `LLM_AGENT_MODELS=catalog` (SAP AI Core only), the model list and capabilities
-include eligible orchestration chat models plus explicit names and deployment defaults.
+With `LLM_AGENT_MODELS=catalog` and provider `sap-ai-sdk` or `anthropic`, the model
+list and capabilities include models available to the configured credential plus
+explicit names and deployment defaults. SAP AI Core includes eligible orchestration
+chat models; Anthropic uses its model list, filtering to text generation when
+capability metadata is available. `/v1/models` reports `owned_by: "sap-ai-core"`
+for SAP AI Core and `owned_by: "anthropic"` for Anthropic.
 Requests wait for catalog loading before validating models. After a failure, the
 explicit allowlist applies and any later model request retries, including chat and MCP. See [configuration](../llm-agent/CONFIG_USAGE.md).

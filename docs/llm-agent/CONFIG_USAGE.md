@@ -411,9 +411,13 @@ An **assistant** is the future memory-and-learning entity; an **agent** performs
 `LLM_AGENT_MODELS` is a comma-separated allowlist for request and agent model choices.
 
 Use `catalog` or `catalog,extra-model` with `LLM_AGENT_PROVIDER=sap-ai-sdk`
-(the default) to include SAP AI Core foundation models eligible for orchestration
-chat: text generation, orchestration scenario, and not deprecated. Other providers
-reject this token at startup. Explicit names and main/planner defaults remain allowed.
+(the default) or `LLM_AGENT_PROVIDER=anthropic` to load models available to the
+configured provider credential. SAP AI Core includes foundation models eligible
+for orchestration chat: text generation, orchestration scenario, and not deprecated.
+Anthropic uses the provider's model list with the same API key and base URL as chat;
+entries with capabilities are limited to text generation, while entries without
+capability metadata are included by id. Other providers reject this token at startup.
+Explicit names and main/planner defaults remain allowed.
 The catalog loads once after the server is served. Requests that resolve or validate
 models wait for loading to finish. If loading fails, only the explicit allowlist applies.
 Failures log the cause once; any later model request retries, including chat and MCP
