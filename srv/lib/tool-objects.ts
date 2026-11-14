@@ -22,7 +22,7 @@ function keywordsByObject(): Map<string, string[]> {
   );
   objectKeywords = new Map();
   for (const [name, object] of Object.entries(toolObjects)) {
-    if (!object || /Local/.test(name) || !search[name]) continue;
+    if (!object || /Local|Version/.test(name) || !search[name]) continue;
     const keywords = search[name].keywords;
     const previous = objectKeywords.get(object);
     objectKeywords.set(
@@ -39,7 +39,9 @@ export function objectToolText(
   description: string,
 ): string | undefined {
   const object = toolObjects[name];
-  if (!object) return undefined;
+  // Version readers gained ownership for cluster expansion, not new embedding
+  // text. Keep the precomputed corpus text and vectors compatible.
+  if (!object || /Version/.test(name)) return undefined;
   const verbs: Record<string, string> = {
     Get: 'read',
     Read: 'read',

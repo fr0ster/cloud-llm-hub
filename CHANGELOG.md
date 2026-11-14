@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- Tool retrieval splits by explicit read-only effect, preserving exposition permissions. Version/local include tools and table types now have object clusters. The existing analyzer call returns strict step `writes`, with UNKNOWN fallback.
+- Consumers choose `LLM_AGENT_TOOLS_SELECTION=per-collection|step-kind`; deprecated cluster strategy settings are ignored with one startup warning. Reader/writer budgets remain 2/1. Selection works through generic retrieval metadata across keyword and vector backends.
+- Default `per-collection` wins the 91-case bge-m3 oracle evaluation: 87/91 versus 85/91 for `step-kind` (RO 29/29 versus 27/29; RW both 58/62). Keyword-only: 78/91 versus 77/91 (RO 28/29 versus 27/29; RW both 50/62). See CONFIG_USAGE for average/maximum context sizes and the factory-based `eval:tools` harness. Step-kind measurements use oracle effects without an LLM.
+
 ## [11.0.3] - 2026-11-14
 
 ### Changed
@@ -48,7 +54,7 @@ All notable changes to this project will be documented in this file. The format 
 - Each session's history lives in its own collection and is deleted when the session ends. Long sessions keep their history across restarts.
 - Hub dialogue, run, session and planner-memory records no longer carry library identity keys. Existing rows are rewritten once at startup; rows whose owner is ambiguous are reported, not moved.
 - Shared `h_history` turns are moved into per-session collections at startup.
-- RW tool search is a selectable strategy (`LLM_AGENT_TOOLS_CLUSTER_STRATEGY`: `all-seeds` or `top-writer`). The default stays `all-seeds`, and `LLM_AGENT_TOOLS_K_WRITER` now defaults to 1 instead of 5: on 91 measured write prompts the target cluster was still always found, with about 11.5 tools in context instead of 20.7.
+- RW tool search gained configurable cluster expansion, and `LLM_AGENT_TOOLS_K_WRITER` now defaults to 1 instead of 5: on 91 measured write prompts the target cluster was still always found, with about 11.5 tools in context instead of 20.7. Superseded by the consumer selection strategies described under Unreleased.
 
 ### Added
 

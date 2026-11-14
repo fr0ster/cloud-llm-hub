@@ -9,23 +9,20 @@ import {
 } from '../../srv/request-session';
 
 const response = (translation: string, needsAbapSystem: unknown) =>
-  JSON.stringify({ translation, needsAbapSystem });
+  JSON.stringify({ translation, needsAbapSystem, writes: false });
 const make = (content: string) => {
   const chat = jest.fn().mockResolvedValue({ ok: true, value: { content } });
   return { chat, analyzer: new ToolQueryAnalyzer({ chat } as any) };
 };
 
-it.each([
-  response('Hello', false),
-  `\`\`\`json\n${response('Hello', false)}\n\`\`\``,
-])('parses plain and fenced JSON', async (content) => {
-  expect(await make(content).analyzer.analyze('Hello')).toEqual({
-    text: 'Hello',
-    needsAbapSystem: false,
-  });
+it('parses strict plain JSON', async () => {
+  expect(
+    await make(response('Hello', false)).analyzer.analyze('Hello'),
+  ).toEqual({ text: 'Hello', needsAbapSystem: false, writes: false });
 });
 it.each([
   'invalid',
+  '```json\n{}\n```',
   'null',
   response('translated', 'false'),
   response('', false),
@@ -34,9 +31,7 @@ it.each([
   const input = '\u0430'.repeat(20);
   const result = await analyzer.analyze(input);
   expect(result.needsAbapSystem).toBe(true);
-  expect(result.text).toBe(
-    content.includes('translated') ? 'translated' : input,
-  );
+  expect(result.text).toBe(input);
   await analyzer.analyze(input);
   expect(chat).toHaveBeenCalledTimes(2);
 });
@@ -166,6 +161,7 @@ it('uses the translation for short non-ASCII text', async () => {
   ).toEqual({
     text: 'English translation',
     needsAbapSystem: false,
+    writes: false,
   });
   expect(chat).toHaveBeenCalledTimes(1);
 });
@@ -238,13 +234,17 @@ it.each(['smart', 'hard'] as const)(
   },
 );
 
-it('shares the first pending decision across parallel searches and keeps later text original', async () => {
+it('shares the first pending gate across parallel searches and translates each text', async () => {
   let resolve!: (value: { text: string; needsAbapSystem: boolean }) => void;
-  const analyze = jest.fn(
-    () =>
-      new Promise<{ text: string; needsAbapSystem: boolean }>((r) => {
-        resolve = r;
-      }),
+  const analyze = jest.fn((text: string) =>
+    text === 'first query'
+      ? new Promise<{ text: string; needsAbapSystem: boolean }>((r) => {
+          resolve = r;
+        })
+      : Promise.resolve({
+          text: `translated ${text}`,
+          needsAbapSystem: false,
+        }),
   );
   const query = jest.fn().mockResolvedValue({ ok: true, value: rows });
   const rag = new ExpositionFilteringRag(
@@ -257,28 +257,28 @@ it('shares the first pending decision across parallel searches and keeps later t
   await runWithSessionId('same-session', async () => {
     const first = rag.query(new TextOnlyEmbedding('first query'), 5);
     const parallel = rag.query(new TextOnlyEmbedding('parallel query'), 5);
-    expect(analyze).toHaveBeenCalledTimes(1);
+    expect(analyze).toHaveBeenCalledTimes(2);
     resolve({ text: 'translated first', needsAbapSystem: true });
     await Promise.all([first, parallel]);
     await rag.query(new TextOnlyEmbedding('reselection query'), 5);
-    expect(analyze).toHaveBeenCalledTimes(1);
+    expect(analyze).toHaveBeenCalledTimes(3);
     const texts = query.mock.calls.map(([embedding]) => embedding.text);
     expect(texts).toContain('translated first');
-    expect(texts).toContain('parallel query');
-    expect(texts).toContain('reselection query');
+    expect(texts).toContain('translated parallel query');
+    expect(texts).toContain('translated reselection query');
   });
   const next = runWithSessionId('same-session', () =>
     rag.query(new TextOnlyEmbedding('next request'), 5),
   );
-  expect(analyze).toHaveBeenCalledTimes(2);
-  resolve({ text: 'next request', needsAbapSystem: true });
+  expect(analyze).toHaveBeenCalledTimes(4);
   await next;
 });
 
 it('honours a closed decision on subsequent searches', async () => {
-  const analyze = jest
-    .fn()
-    .mockResolvedValue({ text: 'Hello', needsAbapSystem: false });
+  const analyze = jest.fn(async (text: string) => ({
+    text: `translated ${text}`,
+    needsAbapSystem: text !== 'first query',
+  }));
   const query = jest.fn().mockResolvedValue({ ok: true, value: rows });
   const rag = new ExpositionFilteringRag(
     { query } as any,
@@ -294,8 +294,8 @@ it('honours a closed decision on subsequent searches', async () => {
         value: [],
       });
   });
-  expect(analyze).toHaveBeenCalledTimes(1);
-  expect(query.mock.calls[1][0].text).toBe('later query');
+  expect(analyze).toHaveBeenCalledTimes(2);
+  expect(query.mock.calls[1][0].text).toBe('translated later query');
 });
 
 it('isolates execute_step bypass between concurrent requests', async () => {

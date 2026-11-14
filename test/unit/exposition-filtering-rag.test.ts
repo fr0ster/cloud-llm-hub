@@ -83,13 +83,19 @@ describe('ExpositionFilteringRag — skill K cap (LLM_AGENT_SKILL_RAG_K, default
   // 2 tools + 5 skills, score-descending. The inner double ignores k and returns
   // these verbatim, so the cap logic is what's under test.
   const many: Row[] = [
-    { score: 0.99, metadata: { id: 'tool:A', exposition: 'high' } },
+    {
+      score: 0.99,
+      metadata: { id: 'tool:A', exposition: 'high', readOnlyHint: true },
+    },
     { score: 0.98, metadata: { id: 'skill:s1' } },
     { score: 0.97, metadata: { id: 'skill:s2' } },
     { score: 0.96, metadata: { id: 'skill:s3' } },
     { score: 0.95, metadata: { id: 'skill:s4' } },
     { score: 0.94, metadata: { id: 'skill:s5' } },
-    { score: 0.93, metadata: { id: 'tool:B', exposition: 'high' } },
+    {
+      score: 0.93,
+      metadata: { id: 'tool:B', exposition: 'high', readOnlyHint: true },
+    },
   ];
   const count = (ids: unknown[], pfx: string) =>
     ids.filter((i) => typeof i === 'string' && i.startsWith(pfx)).length;

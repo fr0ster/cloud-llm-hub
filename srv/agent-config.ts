@@ -1,5 +1,3 @@
-export type ToolClusterStrategy = 'all-seeds' | 'top-writer';
-
 import { deployModel } from './lib/deploy-model';
 import {
   configuredExecutionLimits,
@@ -302,8 +300,8 @@ export interface AgentConfig {
     kReader?: number;
     /** Writer tool seeds per query (default: 1). */
     kWriter?: number;
-    /** Object cluster expansion strategy (default: all-seeds). */
-    toolClusterStrategy?: ToolClusterStrategy;
+    /** Tool selection strategy; default chosen by oracle evaluation. */
+    toolSelection?: 'per-collection' | 'step-kind';
 
     /**
      * Most `skill:*` entries one RAG query may surface (`LLM_AGENT_SKILL_RAG_K`,
@@ -604,7 +602,19 @@ export function parseDestinationConfig(
  *
  * @throws Error if required configuration is missing
  */
+let warnedClusterStrategy = false;
 export function loadAgentConfig(): AgentConfig {
+  if (
+    process.env.LLM_AGENT_TOOLS_CLUSTER_STRATEGY !== undefined &&
+    !warnedClusterStrategy
+  ) {
+    warnedClusterStrategy = true;
+    cds
+      .log('agent-config')
+      .warn(
+        'LLM_AGENT_TOOLS_CLUSTER_STRATEGY is ignored; use LLM_AGENT_TOOLS_SELECTION.',
+      );
+  }
   validateModelCatalogProvider();
   const log = cds.log('agent-config');
 
@@ -743,11 +753,9 @@ export function loadAgentConfig(): AgentConfig {
       ragType,
       historyRecencyWindow,
       ragQueryK,
+      toolSelection: parseToolSelection(process.env.LLM_AGENT_TOOLS_SELECTION),
       kReader: parseToolSearchK(process.env.LLM_AGENT_TOOLS_K_READER, 2),
       kWriter: parseToolSearchK(process.env.LLM_AGENT_TOOLS_K_WRITER, 1),
-      toolClusterStrategy: parseToolClusterStrategy(
-        process.env.LLM_AGENT_TOOLS_CLUSTER_STRATEGY,
-      ),
       toolGate: parseToolGate(process.env.LLM_AGENT_TOOL_GATE),
       toolGateTimeoutMs: parseToolGateTimeoutMs(
         process.env.LLM_AGENT_TOOL_GATE_TIMEOUT_MS,
@@ -985,13 +993,12 @@ export function parseToolSearchK(
   return parsed;
 }
 
-/** Select how found tools seed object cluster expansion for write roles. */
-export function parseToolClusterStrategy(
+export function parseToolSelection(
   value: string | undefined,
-): ToolClusterStrategy {
-  if (value === undefined) return 'all-seeds';
-  if (value === 'all-seeds' || value === 'top-writer') return value;
+): 'per-collection' | 'step-kind' {
+  if (value === undefined) return 'per-collection';
+  if (value === 'per-collection' || value === 'step-kind') return value;
   throw new Error(
-    'LLM_AGENT_TOOLS_CLUSTER_STRATEGY must be one of: all-seeds, top-writer',
+    'LLM_AGENT_TOOLS_SELECTION must be one of: per-collection, step-kind',
   );
 }

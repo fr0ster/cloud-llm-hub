@@ -151,17 +151,22 @@ parameter out. Add one only when you actually need to change the behaviour:
 | `LLM_AGENT_RAG_QUERY_K` | `15` in `mta.yaml` (code fallback is `5`) | Legacy budget for other RAG stores |
 | `LLM_AGENT_TOOLS_K_READER` | `2` | Reader seed tools per query; positive integer |
 | `LLM_AGENT_TOOLS_K_WRITER` | `1` | Writer seed tools per query; positive integer. Write roles expand object clusters within their allowed tools |
-| `LLM_AGENT_TOOLS_CLUSTER_STRATEGY` | `all-seeds` | Write-role cluster expansion: `all-seeds` (default) uses every found tool; `top-writer` uses only the highest-scoring writer tool with an object. Found tools and role filtering are preserved |
+| `LLM_AGENT_TOOLS_SELECTION` | `per-collection` | Reader top-k plus writer clusters on every step; choose `step-kind` for RO/RW/UNKNOWN selection. Invalid values refuse startup |
 
-Offline measurement on 91 RW prompts with the Developer role:
+Tool selection uses explicit read-only effects, independently of exposition permissions and retrieval backend. Defaults: reader k=2, writer k=1. Only writer seeds expand object clusters; cluster members retain permission filtering. Without write rights both strategies return readers only. The analyzer returns strict `writes` in its existing call; missing or invalid responses mean UNKNOWN. `per-collection` ignores step kind; `step-kind` uses it and adds no independent reader seeds to RW.
 
-| Strategy | kWriter | Target cluster complete | Average tools | Average foreign tools |
-| --- | --- | --- | --- | --- |
-| all-seeds | 1 | 91/91 | 11.5 | 4.5 |
-| all-seeds (previous default) | 5 | 91/91 | 20.7 | 13.6 |
-| top-writer | 1 | 78/91 | 9.2 | 3.3 |
+Oracle evaluation on 91 cases (29 RO, 62 RW), with bge-m3 precomputed document vectors:
 
-The default is `all-seeds` with `LLM_AGENT_TOOLS_K_WRITER=1`: it preserved complete target clusters in this sample while reducing tool count and foreign tools. Consumers can override either environment variable.
+| Retrieval | Strategy | RO hits | RW hits | Total | RO avg/max tools | RW avg/max tools |
+| --- | --- | --- | --- | --- | --- | --- |
+| vector / bge-m3 | per-collection | 29/29 | 58/62 | 87/91 | 10.34 / 22 | 8.74 / 22 |
+| vector / bge-m3 | step-kind | 27/29 | 58/62 | 85/91 | 2.00 / 2 | 8.37 / 21 |
+| keyword only | per-collection | 28/29 | 50/62 | 78/91 | 11.66 / 22 | 9.73 / 21 |
+| keyword only | step-kind | 27/29 | 50/62 | 77/91 | 2.00 / 2 | 9.08 / 21 |
+
+The default `per-collection` wins by total bge-m3 hits (87 versus 85). Consumers can select `step-kind` for smaller read contexts. These are oracle step-kind measurements: the harness uses expected tool effects, without an LLM classification call.
+
+Run `npm run eval:tools -- --bundle srv/tool-embeddings.879dc890b222.json --store vector --embedder ollama` or `npm run eval:tools -- --store in-memory --embedder none` (`--keyword` alias). The harness uses hub factories and real selection code, prints both strategies and misses, and supports `--store in-memory|vector|qdrant`, `--url` for Qdrant, `--embedder none|ollama|openai|sap-ai-core`, `--model` and `--embedder-url`. `--bundle` defaults to the committed bundle and supplies vectors only on fingerprint match; otherwise the selected embedder vectorizes documents. It never rewrites bundles.
 
 For Scenario B, replace the AI Core block with `LLM_AGENT_PROVIDER`, `LLM_AGENT_API_KEY` and
 `LLM_AGENT_BASE_URL`, and leave the AI Core resource inactive.

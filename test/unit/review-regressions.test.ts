@@ -84,11 +84,11 @@ it('checker offered tools exclude writes even with developer permissions', async
     }),
   );
   const ids = result.ok ? result.value.map((r) => r.metadata.id) : [];
-  // Seeds plus their object clusters, cut to read-only tools for the checker.
+  // Read-only checker receives the reader top-k without cluster expansion.
   expect(ids).toEqual(
     expect.arrayContaining(['tool:GetClass', 'tool:GetProgram']),
   );
-  expect(ids).toContain('tool:CheckClass');
+  expect(ids).toHaveLength(2);
   expect(ids).not.toContain('tool:CreateClass');
   expect(
     ids.filter((id) => /^tool:(Create|Update|Delete|Activate)/.test(id ?? '')),

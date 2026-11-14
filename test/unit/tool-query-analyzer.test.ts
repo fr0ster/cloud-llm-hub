@@ -18,6 +18,7 @@ describe('ToolQueryAnalyzer', () => {
       value: {
         content: JSON.stringify({
           translation: translated,
+          writes: false,
           needsAbapSystem: true,
         }),
       },
@@ -52,12 +53,14 @@ describe('ToolQueryAnalyzer', () => {
       value: {
         content: JSON.stringify({
           translation: translated,
+          writes: false,
           needsAbapSystem: true,
         }),
       },
     });
     expect(await new ToolQueryAnalyzer(llmWith(chat)).analyze(text)).toEqual({
       text: translated,
+      writes: false,
       needsAbapSystem: true,
     });
     expect(chat).toHaveBeenCalledTimes(1);
@@ -69,6 +72,7 @@ describe('ToolQueryAnalyzer', () => {
       value: {
         content: JSON.stringify({
           translation: ` ${translated} `,
+          writes: false,
           needsAbapSystem: true,
         }),
       },
@@ -80,11 +84,12 @@ describe('ToolQueryAnalyzer', () => {
         translator.analyze(original),
       ]),
     ).toEqual([
-      { text: translated, needsAbapSystem: true },
-      { text: translated, needsAbapSystem: true },
+      { text: translated, needsAbapSystem: true, writes: false },
+      { text: translated, needsAbapSystem: true, writes: false },
     ]);
     expect(await translator.analyze(original)).toEqual({
       text: translated,
+      writes: false,
       needsAbapSystem: true,
     });
     expect(chat).toHaveBeenCalledTimes(1);
@@ -118,6 +123,7 @@ describe('ToolQueryAnalyzer', () => {
         value: {
           content: JSON.stringify({
             translation: translated,
+            writes: false,
             needsAbapSystem: true,
           }),
         },
@@ -129,6 +135,7 @@ describe('ToolQueryAnalyzer', () => {
     });
     expect(await translator.analyze(original)).toEqual({
       text: translated,
+      writes: false,
       needsAbapSystem: true,
     });
     expect(chat).toHaveBeenCalledTimes(2);
@@ -140,6 +147,7 @@ describe('ToolQueryAnalyzer', () => {
       value: {
         content: JSON.stringify({
           translation: translated,
+          writes: false,
           needsAbapSystem: true,
         }),
       },
@@ -155,6 +163,7 @@ describe('ToolQueryAnalyzer', () => {
     });
     expect(await translator.analyze(original)).toEqual({
       text: translated,
+      writes: false,
       needsAbapSystem: true,
     });
     expect(factory).toHaveBeenCalledTimes(2);
@@ -166,6 +175,7 @@ describe('ToolQueryAnalyzer', () => {
       value: {
         content: JSON.stringify({
           translation: translated,
+          writes: false,
           needsAbapSystem: true,
         }),
       },
@@ -199,6 +209,7 @@ describe('tool-only query translation', () => {
         value: {
           content: JSON.stringify({
             translation: translated,
+            writes: false,
             needsAbapSystem: true,
           }),
         },
@@ -331,12 +342,14 @@ describe('analyzer cancellation', () => {
         value: {
           content: JSON.stringify({
             translation: translated,
+            writes: false,
             needsAbapSystem: false,
           }),
         },
       });
       expect(await requests[1 - index]).toEqual({
         text: translated,
+        writes: false,
         needsAbapSystem: false,
       });
       expect(chat).toHaveBeenCalledTimes(1);
@@ -393,6 +406,7 @@ test('a session waiting on a 429 retry does not hold another session query', asy
       value: {
         content: JSON.stringify({
           translation: 'Read table',
+          writes: false,
           needsAbapSystem: true,
         }),
       },
@@ -403,6 +417,7 @@ test('a session waiting on a 429 retry does not hold another session query', asy
   try {
     await expect(b.run(() => analyzer.analyze('Read table'))).resolves.toEqual({
       text: 'Read table',
+      writes: false,
       needsAbapSystem: true,
     });
     expect(scopes).toEqual([a.quotaScope, b.quotaScope]);
