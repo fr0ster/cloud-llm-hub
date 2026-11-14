@@ -18,6 +18,7 @@ import {
   findThrottled,
   type ILlm,
   type IThrottleStrategy,
+  type IUsageRecorder,
   type LLMResponse,
   ReportThrottling,
   runWithThrottleRetry,
@@ -78,6 +79,22 @@ export class HubAnthropicProvider extends AnthropicProvider {
     const work = runWithThrottleRetry(
       async () => {
         const held: LLMResponse[] = [];
+        let sawUsage = false;
+        // Provider records exist only for requests that reached the transport.
+        // Count usage-free attempts too, without counting quota/auth refusals.
+        const observeRequests = (
+          recorder?: IUsageRecorder,
+        ): IUsageRecorder => ({
+          record: (record) => {
+            if (record.kind === 'llm.call' && !sawUsage)
+              reportLlmSpend(
+                { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+                record.model,
+              );
+            recorder?.record(record);
+          },
+          with: (context) => observeRequests(recorder?.with(context)),
+        });
         contentStarted = false;
         const publish = async (response: LLMResponse) => {
           if (signal.aborted) return;
@@ -92,8 +109,10 @@ export class HubAnthropicProvider extends AnthropicProvider {
           for await (const response of provider.streamChat(messages, tools, {
             ...options,
             signal,
+            usage: observeRequests(options?.usage ?? this.config.usage),
           })) {
             if (signal.aborted) return;
+            if (response.usage) sawUsage = true;
             if (!contentStarted) {
               held.push(response);
               if (
@@ -114,13 +133,7 @@ export class HubAnthropicProvider extends AnthropicProvider {
             for (const chunk of held) {
               if (chunk.usage) spent = mergeStreamUsage(spent, chunk.usage);
             }
-            if (spent)
-              reportLlmSpend({
-                ...spent,
-                models: {
-                  [options?.model ?? this.model]: { ...spent, requests: 1 },
-                },
-              });
+            if (spent) reportLlmSpend(spent, options?.model ?? this.model);
           }
           throw error;
         }

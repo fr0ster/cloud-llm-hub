@@ -18,9 +18,19 @@ export function observeLlmSpend<T>(
   return spendObserver.run(record, run);
 }
 
-/** Report a completed model call to the innermost spend observer, if any. */
-export function reportLlmSpend(usage: TokenUsage): void {
-  spendObserver.getStore()?.(usage);
+/** Attribute one provider attempt, preserving an existing per-model breakdown. */
+export function reportLlmSpend(usage: TokenUsage, model: string): void {
+  spendObserver.getStore()?.({
+    ...usage,
+    models: usage.models ?? {
+      [model]: {
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+        totalTokens: usage.totalTokens,
+        requests: 1,
+      },
+    },
+  });
 }
 
 const anthropicErrorCodes = new Set([
@@ -144,7 +154,7 @@ export function reliableLlm(inner: ILlm): ILlm {
               reportWorkerActivity('llm call');
               const result = await target.chat(...args);
               if (result.ok && result.value.usage)
-                reportLlmSpend(result.value.usage);
+                reportLlmSpend(result.value.usage, target.model ?? 'unknown');
               return result.ok
                 ? result
                 : {
@@ -173,7 +183,9 @@ export function reliableLlm(inner: ILlm): ILlm {
               const report = () => {
                 if (reported || !spent) return;
                 reported = true;
-                reportLlmSpend(spent);
+                // The adapter's configured model serves the call; it deliberately
+                // ignores client-facing model aliases in CallOptions.
+                reportLlmSpend(spent, target.model ?? 'unknown');
               };
               try {
                 while (true) {

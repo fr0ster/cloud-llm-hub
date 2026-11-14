@@ -1,21 +1,304 @@
 import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
 import {
+  addTokenUsage,
   findThrottled,
   type ILlm,
   staticApiKey,
   type ThrottleContext,
+  type TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
 import {
   LlmAdapter,
   LlmProviderBridge,
   RetryLlm,
 } from '@mcp-abap-adt/llm-agent-libs';
-import { HubAnthropicProvider } from '../../srv/lib/llm-factory';
+import { HubAnthropicProvider, makeHubLlm } from '../../srv/lib/llm-factory';
 import {
   llmFailure,
   observeLlmSpend,
   reliableLlm,
+  reportLlmSpend,
 } from '../../srv/lib/llm-failure';
+
+function attemptResponse(
+  inputTokens: number | undefined,
+  outcome: 'rate_limit_error' | 'api_error' | 'stop',
+  outputTokens = 0,
+): Response {
+  const event = (name: string, data: object) =>
+    `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
+  return new Response(
+    (inputTokens === undefined
+      ? ''
+      : event('message_start', {
+          message: { usage: { input_tokens: inputTokens, output_tokens: 0 } },
+        })) +
+      (outcome === 'rate_limit_error'
+        ? ''
+        : event('content_block_delta', {
+            delta: { type: 'text_delta', text: 'partial' },
+          })) +
+      (outcome === 'stop'
+        ? event('message_delta', {
+            delta: { stop_reason: 'stop' },
+            usage:
+              inputTokens === undefined
+                ? undefined
+                : { output_tokens: outputTokens },
+          })
+        : event('error', { error: { type: outcome, message: 'private' } })),
+    { headers: { 'Content-Type': 'text/event-stream' } },
+  );
+}
+
+test.each(['api_error', 'stop'] as const)(
+  'attributes both real Anthropic attempts when a retry ends in %s',
+  async (outcome) => {
+    const fetch = jest
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(attemptResponse(7, 'rate_limit_error'))
+      .mockResolvedValueOnce(attemptResponse(11, outcome, 3));
+    try {
+      const llm = await makeHubLlm(
+        {
+          provider: 'anthropic',
+          apiKey: 'spend-retry-test',
+          model: 'test',
+          whenThrottled: {
+            name: 'test',
+            decide: () => ({ retry: true, waitMs: 0 }),
+          },
+        },
+        0,
+      );
+      const reports: TokenUsage[] = [];
+      let spent: TokenUsage | undefined;
+      let seenAtFailure: TokenUsage | undefined;
+      const chunks = await observeLlmSpend(
+        async () => {
+          const result = [];
+          for await (const chunk of llm.streamChat([], undefined, {
+            model: 'public-alias',
+          })) {
+            result.push(chunk);
+            if (!chunk.ok) seenAtFailure = spent;
+          }
+          return result;
+        },
+        (usage) => {
+          reports.push(usage);
+          spent = addTokenUsage(spent, usage);
+        },
+      );
+      const completionTokens = outcome === 'stop' ? 3 : 0;
+      const expected = {
+        promptTokens: 18,
+        completionTokens,
+        totalTokens: 18 + completionTokens,
+        models: {
+          test: {
+            promptTokens: 18,
+            completionTokens,
+            totalTokens: 18 + completionTokens,
+            requests: 2,
+          },
+        },
+      };
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(fetch.mock.calls.map(([, init]) => init?.body)).toEqual([
+        expect.stringContaining('"model":"test"'),
+        expect.stringContaining('"model":"test"'),
+      ]);
+      expect(reports).toHaveLength(2);
+      for (const [index, usage] of reports.entries()) {
+        const promptTokens = index === 0 ? 7 : 11;
+        const output = index === 0 ? 0 : completionTokens;
+        expect(usage).toEqual({
+          promptTokens,
+          completionTokens: output,
+          totalTokens: promptTokens + output,
+          models: {
+            test: {
+              promptTokens,
+              completionTokens: output,
+              totalTokens: promptTokens + output,
+              requests: 1,
+            },
+          },
+        });
+      }
+      expect(spent).toEqual(expected);
+      expect(chunks.at(-1)?.ok).toBe(outcome === 'stop');
+      if (outcome === 'api_error') expect(seenAtFailure).toEqual(expected);
+    } finally {
+      fetch.mockRestore();
+    }
+  },
+);
+
+test('keeps retry spend separate for two actual models in one observer', async () => {
+  const fetch = jest
+    .spyOn(globalThis, 'fetch')
+    .mockResolvedValueOnce(attemptResponse(7, 'rate_limit_error'))
+    .mockResolvedValueOnce(attemptResponse(11, 'api_error'))
+    .mockResolvedValueOnce(attemptResponse(13, 'rate_limit_error'))
+    .mockResolvedValueOnce(attemptResponse(17, 'stop', 5));
+  try {
+    let spent: TokenUsage | undefined;
+    await observeLlmSpend(
+      async () => {
+        for (const model of ['test', 'other']) {
+          const llm = await makeHubLlm(
+            {
+              provider: 'anthropic',
+              apiKey: 'spend-two-models-test',
+              model,
+              whenThrottled: {
+                name: 'test',
+                decide: () => ({ retry: true, waitMs: 0 }),
+              },
+            },
+            0,
+          );
+          for await (const chunk of llm.streamChat([], undefined, {
+            model: 'public-alias',
+          })) {
+            if (!chunk.ok) expect(model).toBe('test');
+          }
+        }
+      },
+      (usage) => {
+        const entries = Object.values(usage.models ?? {});
+        for (const field of [
+          'promptTokens',
+          'completionTokens',
+          'totalTokens',
+        ] as const) {
+          expect(entries.reduce((sum, entry) => sum + entry[field], 0)).toBe(
+            usage[field],
+          );
+        }
+        spent = addTokenUsage(spent, usage);
+      },
+    );
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(fetch.mock.calls.map(([, init]) => init?.body)).toEqual(
+      ['test', 'test', 'other', 'other'].map((model) =>
+        expect.stringContaining(`"model":"${model}"`),
+      ),
+    );
+    expect(spent).toEqual({
+      promptTokens: 48,
+      completionTokens: 5,
+      totalTokens: 53,
+      models: {
+        test: {
+          promptTokens: 18,
+          completionTokens: 0,
+          totalTokens: 18,
+          requests: 2,
+        },
+        other: {
+          promptTokens: 30,
+          completionTokens: 5,
+          totalTokens: 35,
+          requests: 2,
+        },
+      },
+    });
+  } finally {
+    fetch.mockRestore();
+  }
+});
+
+test('preserves an existing breakdown instead of folding models into the fallback', () => {
+  const usage: TokenUsage = {
+    promptTokens: 18,
+    completionTokens: 3,
+    totalTokens: 21,
+    models: {
+      first: {
+        promptTokens: 7,
+        completionTokens: 1,
+        totalTokens: 8,
+        requests: 1,
+      },
+      second: {
+        promptTokens: 11,
+        completionTokens: 2,
+        totalTokens: 13,
+        requests: 1,
+      },
+    },
+  };
+  const report = jest.fn();
+  observeLlmSpend(() => reportLlmSpend(usage, 'fallback'), report);
+  expect(report).toHaveBeenCalledTimes(1);
+  expect(report).toHaveBeenCalledWith(usage);
+});
+
+test.each(['http', 'sse', 'success', 'partial-failure'])(
+  'counts a usage-free provider attempt (%s)',
+  async (scenario) => {
+    const fetch = jest
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        scenario === 'http'
+          ? new Response('rate limited', { status: 429 })
+          : attemptResponse(
+              scenario === 'sse' ? undefined : 7,
+              'rate_limit_error',
+            ),
+      )
+      .mockResolvedValueOnce(
+        attemptResponse(
+          scenario === 'http' || scenario === 'sse' ? 11 : undefined,
+          scenario === 'partial-failure' ? 'api_error' : 'stop',
+        ),
+      );
+    try {
+      const llm = await makeHubLlm(
+        {
+          provider: 'anthropic',
+          apiKey: `usage-free-${scenario}`,
+          model: 'test',
+          whenThrottled: {
+            name: 'test',
+            decide: () => ({ retry: true, waitMs: 0 }),
+          },
+        },
+        0,
+      );
+      let spent: TokenUsage | undefined;
+      await observeLlmSpend(
+        async () => {
+          for await (const chunk of llm.streamChat([]))
+            if (!chunk.ok) expect(scenario).toBe('partial-failure');
+        },
+        (usage) => {
+          spent = addTokenUsage(spent, usage);
+        },
+      );
+      const promptTokens = scenario === 'http' || scenario === 'sse' ? 11 : 7;
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(spent).toEqual({
+        promptTokens,
+        completionTokens: 0,
+        totalTokens: promptTokens,
+        models: {
+          test: {
+            promptTokens,
+            completionTokens: 0,
+            totalTokens: promptTokens,
+            requests: 2,
+          },
+        },
+      });
+    } finally {
+      fetch.mockRestore();
+    }
+  },
+);
 
 const codes = [
   'overloaded_error',
@@ -54,12 +337,17 @@ test('an override model throttle does not gate the default model in one session'
     quotaScope: 'model-isolation-session',
     whenThrottled: { name: 'test', decide },
   });
-  const consume = async (model?: string) => {
-    const chunks = [];
-    for await (const chunk of provider.streamChat([], undefined, { model }))
-      chunks.push(chunk);
-    return chunks;
-  };
+  const spent: TokenUsage[] = [];
+  const consume = (model?: string) =>
+    observeLlmSpend(
+      async () => {
+        const chunks = [];
+        for await (const chunk of provider.streamChat([], undefined, { model }))
+          chunks.push(chunk);
+        return chunks;
+      },
+      (usage) => spent.push(usage),
+    );
   try {
     expect(provider).toBeInstanceOf(AnthropicProvider);
     await expect(consume('model-B')).rejects.toMatchObject({ throttled: true });
@@ -78,6 +366,21 @@ test('an override model throttle does not gate the default model in one session'
       'response',
       'gate',
     ]);
+    expect(spent).toEqual(
+      ['model-B', 'model-A'].map((model) => ({
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        models: {
+          [model]: {
+            promptTokens: 0,
+            completionTokens: 0,
+            totalTokens: 0,
+            requests: 1,
+          },
+        },
+      })),
+    );
   } finally {
     fetch.mockRestore();
   }

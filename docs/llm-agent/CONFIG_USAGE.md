@@ -89,8 +89,6 @@ goal sizes, states, durations and hashed session keys. They never contain goal t
 | `LLM_GATEKEEPER_QUEUE_LENGTH` | the capacity | How many callers may wait to be admitted — for a slot, for their own session, or for a retention place. Requires `LLM_GATEKEEPER_MAX_LIVE_SESSIONS`. The queue passing three quarters is logged as pressure |
 | `LLM_GATEKEEPER_MAX_RETAINED_SESSIONS` | unbounded | How many sessions may hold history and session collections. An idle one is evicted — history, collections and their files — to make room: first sessions no caller ever presented (a client keeping no cookie gets one per request), then the least recently used; a session with a pipeline or a RAG operation running is never evicted. Requires `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` and may not be smaller. With `/v1/rag/*` in use, set it above the capacity by the number of concurrent uploads |
 | `LLM_AGENT_TOOL_LOOP_WINDOW` | `8` | Positive safe integer: agent tool loops keep the latest N tool rounds plus the prefix. Dropped results become deterministic one-line digests, without LLM summarization. The dialogue coordinator keeps its own history handling. |
-
-The session history router embeds text-only vector queries independently, so coordinator history recall does not create or vectorize a tools store. Keyword history works without an embedder. Queries wait for pending writes from other calls; a query inside a write for the same session reads committed history without waiting on itself.
 | `LLM_AGENT_TOOL_RESULT_MAX_CHARS` | `60000` | Non-negative integer character cap per model-visible MCP tool result, including local dialogue RAG tools. `0` disables. Oversized serialized text is cut at the cap, followed by a paging notice; error status is preserved. Recording stores the capped result and truncation lengths. Content-free truncation logs use `tool-result-cap`. |
 | `LLM_AGENT_MAX_TOOL_CALLS` | unset (library default: `30`) | Positive integer per-run tool-call budget for workers, checkers, planner and agent MCP. Calls over the budget receive error results. Empty or unset preserves the library default. |
 | `LLM_AGENT_CONTEXT_CAPTURE_FILE` | `context.sqlite` | Container-local full-context SQLite path, relative to the app directory. |
@@ -102,6 +100,8 @@ The session history router embeds text-only vector queries independently, so coo
 | `LLM_AGENT_MODE`, `LLM_AGENT_MAX_ITERATIONS` | see `agent-config.ts` | Agent loop behaviour |
 | `LLM_AGENT_HISTORY_RECENCY_WINDOW` | see `agent-config.ts` | How much history reaches the model |
 | `LLM_AGENT_MCP_ENDPOINT` | — | **Inert.** Read and logged, consumed by nothing |
+
+The session history router embeds text-only vector queries independently, so coordinator history recall does not create or vectorize a tools store. Keyword history works without an embedder. Queries wait for pending writes from other calls; a query inside a write for the same session reads committed history without waiting on itself.
 
 Offline measurement on 91 RW prompts with the Developer role:
 
