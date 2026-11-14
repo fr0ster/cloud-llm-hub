@@ -22,7 +22,8 @@ export function modelCapabilities(
   model: string,
 ): ModelCapabilities | undefined {
   let family: ModelCapabilities['family'];
-  if (model.startsWith('anthropic--')) family = 'anthropic';
+  if (model.startsWith('anthropic--') || model.startsWith('claude-'))
+    family = 'anthropic';
   else if (/^(?:gpt-5(?:[.-]|$)|o[134](?:-|$))/.test(model))
     family = 'openai-reasoning';
   else if (model.startsWith('gpt-')) family = 'openai';

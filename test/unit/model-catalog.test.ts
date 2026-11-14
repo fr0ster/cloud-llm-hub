@@ -4,9 +4,11 @@ import type { IModelInfo } from '@mcp-abap-adt/llm-agent';
 import express from 'express';
 
 const mockCatalog = jest.fn<Promise<IModelInfo[]>, []>();
+const mockAnthropicModels = jest.fn<Promise<IModelInfo[]>, []>();
 const mockError = jest.fn();
 jest.mock('../../srv/lib/llm-factory', () => ({
   makeHubCatalogProvider: () => ({ getModelCatalog: mockCatalog }),
+  makeHubAnthropicCatalogProvider: () => ({ getModels: mockAnthropicModels }),
 }));
 jest.mock('@sap/cds', () => ({
   __esModule: true,
@@ -62,6 +64,7 @@ beforeEach(() => {
   };
   resetModelCatalog();
   mockCatalog.mockReset();
+  mockAnthropicModels.mockReset();
   mockError.mockClear();
 });
 afterEach(() => {
@@ -117,6 +120,63 @@ it('publishes only eligible chat catalog entries and leaves non-catalog policies
   await ensureModelCatalog();
   expect(mockCatalog).toHaveBeenCalledTimes(1);
 });
+it('loads Anthropic model ids without requiring AI Core metadata and caches the snapshot', async () => {
+  process.env.LLM_AGENT_PROVIDER = 'anthropic';
+  mockAnthropicModels.mockResolvedValue([
+    { id: 'claude-test', owned_by: 'anthropic' },
+    { id: 'another-model' },
+  ]);
+  await ensureModelCatalog();
+  expect([...parseModelAllowlist()]).toEqual([
+    'extra',
+    'main',
+    'planner',
+    'claude-test',
+    'another-model',
+  ]);
+  await ensureModelCatalog();
+  expect(mockAnthropicModels).toHaveBeenCalledTimes(1);
+  expect(mockCatalog).not.toHaveBeenCalled();
+});
+it('keeps Anthropic chat models when capabilities are provided', async () => {
+  process.env.LLM_AGENT_PROVIDER = 'anthropic';
+  mockAnthropicModels.mockResolvedValue([
+    { id: 'chat', capabilities: ['text-generation'] },
+    { id: 'embedding', capabilities: ['embedding'] },
+    { id: 'image', capabilities: ['image-generation'] },
+    { id: 'no-capabilities', capabilities: [] },
+    { id: 'unspecified' },
+  ]);
+  await ensureModelCatalog();
+  expect([...parseModelAllowlist()]).toEqual([
+    'extra',
+    'main',
+    'planner',
+    'chat',
+    'unspecified',
+  ]);
+});
+it('retries failed Anthropic catalog loads and preserves explicit models', async () => {
+  process.env.LLM_AGENT_PROVIDER = 'anthropic';
+  mockAnthropicModels
+    .mockRejectedValueOnce(
+      Object.assign(new Error('private provider details'), {
+        response: { status: 401 },
+        config: { headers: { 'x-api-key': 'test-catalog-key' } },
+      }),
+    )
+    .mockResolvedValue([{ id: 'claude-test' }]);
+  await ensureModelCatalog();
+  expect([...parseModelAllowlist()]).toEqual(['extra', 'main', 'planner']);
+  await ensureModelCatalog();
+  expect(parseModelAllowlist().has('claude-test')).toBe(true);
+  expect(mockAnthropicModels).toHaveBeenCalledTimes(2);
+  expect(mockError).toHaveBeenCalledTimes(1);
+  expect(mockError).toHaveBeenCalledWith(
+    'Failed to load LLM_AGENT_MODELS catalog',
+    'LLM unavailable (HTTP 401)',
+  );
+});
 it('keeps explicit models on failure, logs the cause once, and retries on session GET', async () => {
   const cause = new Error('catalog unavailable');
   mockCatalog
@@ -160,8 +220,19 @@ it('shares concurrent loads', async () => {
   await first;
   expect(mockCatalog).toHaveBeenCalledTimes(1);
 });
-it('rejects catalog with other providers during startup validation', () => {
-  for (const provider of ['openai', 'anthropic', 'deepseek']) {
+it.each(['sap-ai-sdk', 'anthropic', undefined])(
+  'accepts catalog with provider %s during startup validation',
+  (provider) => {
+    expect(() =>
+      validateModelCatalogProvider({
+        LLM_AGENT_MODELS: 'catalog',
+        LLM_AGENT_PROVIDER: provider,
+      }),
+    ).not.toThrow();
+  },
+);
+it('rejects catalog with unsupported providers during startup validation', () => {
+  for (const provider of ['openai', 'deepseek']) {
     expect(() =>
       validateModelCatalogProvider({
         LLM_AGENT_MODELS: 'catalog',
@@ -173,11 +244,8 @@ it('rejects catalog with other providers during startup validation', () => {
         LLM_AGENT_MODELS: 'catalog',
         LLM_AGENT_PROVIDER: provider,
       }),
-    ).toThrow('LLM_AGENT_MODELS');
+    ).toThrow('catalog requires LLM_AGENT_PROVIDER=sap-ai-sdk or anthropic');
   }
-  expect(() =>
-    validateModelCatalogProvider({ LLM_AGENT_MODELS: 'catalog' }),
-  ).not.toThrow();
 });
 it('defers configured role checks, logs missing models after loading, and rejects at runtime', async () => {
   process.env.LLM_AGENT_EXECUTOR_MODEL = 'missing-executor';

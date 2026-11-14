@@ -1,7 +1,11 @@
 import { isOrchestrationChatModel } from '@mcp-abap-adt/sap-aicore-llm';
 import cds from '@sap/cds';
 import { BuildValidationError } from './build-validation-error';
-import { makeHubCatalogProvider } from './llm-factory';
+import {
+  makeHubAnthropicCatalogProvider,
+  makeHubCatalogProvider,
+} from './llm-factory';
+import { llmFailure } from './llm-failure';
 import {
   parseModelAllowlist,
   setModelCatalogSnapshot,
@@ -15,12 +19,14 @@ let failureLogged = false;
 export function validateModelCatalogProvider(
   env: NodeJS.ProcessEnv = process.env,
 ): void {
+  const provider = env.LLM_AGENT_PROVIDER || 'sap-ai-sdk';
   if (
     usesModelCatalog(env) &&
-    (env.LLM_AGENT_PROVIDER || 'sap-ai-sdk') !== 'sap-ai-sdk'
+    provider !== 'sap-ai-sdk' &&
+    provider !== 'anthropic'
   )
     throw new BuildValidationError(
-      'Invalid LLM_AGENT_MODELS: catalog requires LLM_AGENT_PROVIDER=sap-ai-sdk',
+      'Invalid LLM_AGENT_MODELS: catalog requires LLM_AGENT_PROVIDER=sap-ai-sdk or anthropic',
     );
 }
 
@@ -47,10 +53,23 @@ export function withModelCatalog<T>(run: () => Promise<T>): Promise<T> {
 
 async function loadCatalog(): Promise<void> {
   try {
-    const catalog = await makeHubCatalogProvider().getModelCatalog();
-    setModelCatalogSnapshot(
-      catalog.filter(isOrchestrationChatModel).map((info) => info.id),
-    );
+    if (process.env.LLM_AGENT_PROVIDER === 'anthropic') {
+      const catalog = await makeHubAnthropicCatalogProvider().getModels();
+      setModelCatalogSnapshot(
+        catalog
+          .filter(
+            (info) =>
+              info.capabilities === undefined ||
+              info.capabilities.includes('text-generation'),
+          )
+          .map((info) => info.id),
+      );
+    } else {
+      const catalog = await makeHubCatalogProvider().getModelCatalog();
+      setModelCatalogSnapshot(
+        catalog.filter(isOrchestrationChatModel).map((info) => info.id),
+      );
+    }
     loaded = true;
     const allow = parseModelAllowlist();
     for (const role of ['COORDINATOR', 'PLANNER', 'EXECUTOR', 'CHECKER']) {
@@ -70,7 +89,11 @@ async function loadCatalog(): Promise<void> {
         .log('model-catalog')
         .error(
           'Failed to load LLM_AGENT_MODELS catalog',
-          cause instanceof Error ? cause : String(cause),
+          process.env.LLM_AGENT_PROVIDER === 'anthropic'
+            ? llmFailure(cause)
+            : cause instanceof Error
+              ? cause
+              : String(cause),
         );
     }
   }

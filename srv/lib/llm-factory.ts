@@ -12,7 +12,10 @@
  */
 
 import { createHash } from 'node:crypto';
-import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
+import {
+  type AnthropicConfig,
+  AnthropicProvider,
+} from '@mcp-abap-adt/anthropic-llm';
 import { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
 import {
   type ILlm,
@@ -27,7 +30,7 @@ import {
   SapCoreAIProvider,
 } from '@mcp-abap-adt/sap-aicore-llm';
 import cds from '@sap/cds';
-import type { LlmProvider } from '../agent-config';
+import { getAgentConfig, type LlmProvider } from '../agent-config';
 import { captureLlm } from './context-capture';
 import { deployModel } from './deploy-model';
 import { reliableLlm } from './llm-failure';
@@ -134,6 +137,27 @@ export function makeHubCatalogProvider(): SapCoreAIProvider {
     model: deployModel(),
     resourceGroup: process.env.LLM_AGENT_RESOURCE_GROUP,
   });
+}
+
+/** The Anthropic construction shared by chat and catalog discovery. */
+function anthropicProvider(
+  cfg: Pick<HubLlmConfig, 'apiKey' | 'baseURL'>,
+  options: Omit<AnthropicConfig, 'credential' | 'baseURL'>,
+): AnthropicProvider {
+  return new AnthropicProvider({
+    ...options,
+    baseURL: cfg.baseURL,
+    credential: apiKeyCredential(cfg.apiKey ?? ''),
+  });
+}
+
+/** Discover models with the same configuration and credential as Anthropic chat. */
+export function makeHubAnthropicCatalogProvider(): AnthropicProvider {
+  const { llm } = getAgentConfig();
+  return anthropicProvider(
+    { apiKey: llm.apiKey, baseURL: llm.baseUrl },
+    { model: llm.model },
+  );
 }
 
 /** One credential per key, shared by every LLM and embedder on that account. */
@@ -253,11 +277,7 @@ async function createHubLlm(
       });
       break;
     case 'anthropic':
-      provider = new AnthropicProvider({
-        ...common,
-        baseURL: cfg.baseURL,
-        credential: apiKeyCredential(cfg.apiKey ?? ''),
-      });
+      provider = anthropicProvider(cfg, common);
       break;
     case 'deepseek':
       provider = new DeepSeekProvider({
