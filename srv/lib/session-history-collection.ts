@@ -156,6 +156,8 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
   private cleared?: Set<string>;
   private readonly measuredTotals = new Map<string, number>();
   private readonly baselines = new Map<string, Promise<void>>();
+  /** Sessions with a delete that landed while their baseline scan ran. */
+  private readonly staleBaselines = new Set<string>();
   private measured?: Map<string, Map<string, number>>;
 
   constructor(
@@ -410,13 +412,20 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
         const scan =
           this.baselines.get(caller.sessionId) ??
           this.rows(caller.sessionId, rag)
-            .then((rows) => this.measure(caller, rows))
+            .then((rows) => {
+              // A delete during the scan may still be in these rows.
+              if (!this.staleBaselines.has(caller.sessionId))
+                this.measure(caller, rows);
+            })
             .catch((error) =>
               this.options.log?.warn('Session history size: scan failed', {
                 error: String(error),
               }),
             )
-            .finally(() => this.baselines.delete(caller.sessionId));
+            .finally(() => {
+              this.baselines.delete(caller.sessionId);
+              this.staleBaselines.delete(caller.sessionId);
+            });
         this.baselines.set(caller.sessionId, scan);
         await scan;
       }
@@ -449,6 +458,7 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
       for (const old of overflow) {
         const removed = await writer.deleteByIdRaw(old);
         if (removed.ok && removed.value) {
+          this.markDeleted(caller.sessionId);
           const measured = this.measured?.get(caller.sessionId);
           this.measuredTotals.set(
             caller.sessionId,
@@ -466,6 +476,10 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
     return result;
   }
 
+  private markDeleted(sessionId: string): void {
+    if (this.baselines.has(sessionId)) this.staleBaselines.add(sessionId);
+  }
+
   async deleteById(
     id: string,
     options?: CallOptions,
@@ -478,6 +492,7 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
     if (!writer) return { ok: true, value: false };
     const result = await writer.deleteByIdRaw(id, this.scoped(caller, options));
     if (result.ok && result.value) {
+      this.markDeleted(caller.sessionId);
       const measured = this.measured?.get(caller.sessionId);
       this.measuredTotals.set(
         caller.sessionId,
