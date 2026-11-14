@@ -96,6 +96,11 @@ The proxy listens on `http://localhost:4004`. Development mode enables Basic aut
 - **System type is declared, never guessed:** `x-sap-system-type` (`onprem` | `cloud` | `legacy`), else the destination's `SAP_SYSTEM_TYPE` property, else `onprem`. **Created objects** are attributed to `x-sap-responsible`, else the uppercased `x-sap-login`; a create with neither is refused (`system_context_missing`) before anything reaches SAP. See [SAP Connection Headers](docs/architecture/API_REFERENCE.md#system-type).
 - Detailed connection and session examples are documented in [`docs/usage/MCP_CONNECTION.md`](docs/usage/MCP_CONNECTION.md) and the [`Stream-HTTP` API reference](docs/architecture/API_REFERENCE.md#12-stream-http).
 
+For model discovery, set `LLM_AGENT_MODELS=catalog` with provider `sap-ai-sdk`
+(SAP AI Core) or `anthropic`. The catalog uses the configured provider credential;
+Anthropic shares the chat API key and optional base URL. See
+[model selection](docs/llm-agent/CONFIG_USAGE.md#model-selection).
+
 ## Destination Diagnostics
 
 - `GET /odata/v4/mcp-proxy/ProbeDestination?destination=<name>` (CAP function) resolves a Destination service entry using SAP Cloud SDK's `executeHttpRequest`, establishes connectivity (including Connectivity proxy when required for on-premise destinations), performs an ADT discovery request, and returns the HTTP status. Responses include metadata such as proxy type, SAP client, Cloud Connector location ID, authentication type, and the probe timestamp. Requires the same authorization as the MCP streaming endpoints. The implementation leverages SAP Cloud SDK for automatic destination resolution, authentication handling, and proxy configuration.

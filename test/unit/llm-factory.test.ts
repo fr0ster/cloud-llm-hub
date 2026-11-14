@@ -1,3 +1,4 @@
+import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
 import type { UsageRecord } from '@mcp-abap-adt/llm-agent';
 import {
   SmartAgentBuilder,
@@ -5,6 +6,7 @@ import {
 } from '@mcp-abap-adt/llm-agent-libs';
 import { createUsageRecorder } from '@mcp-abap-adt/llm-usage';
 import { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
+import { clearAgentConfig, getAgentConfig } from '../../srv/agent-config';
 import { observeLlmSpend } from '../../srv/lib/llm-failure';
 import { WaitAsNeeded } from '../../srv/lib/throttle-strategy';
 import { testAccess } from './helpers/test-rag-access';
@@ -30,6 +32,7 @@ import {
   apiKeyCredential,
   getAiCoreAccess,
   hubLlmKey,
+  makeHubAnthropicCatalogProvider,
   makeHubCatalogProvider,
   makeHubLlm,
   readAiCoreServiceKey,
@@ -54,6 +57,7 @@ describe('llm-factory', () => {
   const saved = { ...process.env };
 
   beforeEach(() => {
+    clearAgentConfig();
     resetLlmCredentials();
     delete process.env.VCAP_SERVICES;
     delete process.env.AICORE_SERVICE_KEY;
@@ -61,6 +65,7 @@ describe('llm-factory', () => {
 
   afterAll(() => {
     process.env = saved;
+    clearAgentConfig();
   });
 
   it('prefers the aicore binding in VCAP_SERVICES over AICORE_SERVICE_KEY', () => {
@@ -115,6 +120,47 @@ describe('llm-factory', () => {
   it('shares one AI Core credential across the process', () => {
     process.env.AICORE_SERVICE_KEY = key('https://env.example.com');
     expect(getAiCoreAccess().credential).toBe(getAiCoreAccess().credential);
+  });
+
+  it('uses the configured Anthropic endpoint and shared chat credential for catalog discovery', async () => {
+    const previousEnv = { ...process.env };
+    process.env.LLM_AGENT_PROVIDER = 'anthropic';
+    process.env.LLM_AGENT_MODELS = 'catalog';
+    process.env.LLM_AGENT_MODEL = 'claude-test';
+    process.env.LLM_AGENT_API_KEY = 'test-catalog-key';
+    process.env.LLM_AGENT_BASE_URL = 'https://anthropic.example.com/v1';
+    const models = [{ id: 'claude-test' }, { id: 'claude-other' }];
+    const credentials: object[] = [];
+    const getModels = jest
+      .spyOn(AnthropicProvider.prototype, 'getModels')
+      .mockImplementation(async function (this: AnthropicProvider) {
+        credentials.push(this.config.credential);
+        return models;
+      });
+    try {
+      const { llm } = getAgentConfig();
+      const catalog = makeHubAnthropicCatalogProvider();
+      expect(catalog.model).toBe(llm.model);
+      expect(catalog.client.defaults.baseURL).toBe(llm.baseUrl);
+      expect(catalog.config.credential).toBe(
+        apiKeyCredential(llm.apiKey ?? ''),
+      );
+      const chat = await makeHubLlm(
+        { ...llm, baseURL: llm.baseUrl },
+        llm.temperature,
+      );
+      expect(await catalog.getModels()).toEqual(models);
+      expect(await chat.getModels?.()).toEqual({ ok: true, value: models });
+      expect(credentials).toEqual([
+        catalog.config.credential,
+        catalog.config.credential,
+      ]);
+      expect(credentials[0]).toBe(credentials[1]);
+    } finally {
+      getModels.mockRestore();
+      process.env = previousEnv;
+      clearAgentConfig();
+    }
   });
 
   it('shares one API-key credential per key', () => {

@@ -80,7 +80,7 @@
     "bench:usage": "tsx --expose-gc test/bench/usage-overhead.ts",
     "test:unit:watch": "jest --watch",
     "test:unit:coverage": "jest --coverage",
-    "test:integration": "jest --testMatch='**/test/integration/**/*.test.ts'",
+    "test:integration": "jest --config jest.integration.config.ts",
     "test:check": "npx tsc --noEmit",
     "lint": "npx biome check --write --config-path . srv tools test",
     "lint:check": "npx biome check --config-path . srv tools test",

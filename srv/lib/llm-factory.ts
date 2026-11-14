@@ -12,7 +12,10 @@
  */
 
 import { createHash } from 'node:crypto';
-import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
+import {
+  type AnthropicConfig,
+  AnthropicProvider,
+} from '@mcp-abap-adt/anthropic-llm';
 import { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
 import {
   findThrottled,
@@ -32,7 +35,7 @@ import {
   SapCoreAIProvider,
 } from '@mcp-abap-adt/sap-aicore-llm';
 import cds from '@sap/cds';
-import type { LlmProvider } from '../agent-config';
+import { getAgentConfig, type LlmProvider } from '../agent-config';
 import { captureLlm } from './context-capture';
 import { deployModel } from './deploy-model';
 import {
@@ -293,6 +296,27 @@ export function makeHubCatalogProvider(): SapCoreAIProvider {
   });
 }
 
+/** The Anthropic construction shared by chat and catalog discovery. */
+function anthropicProvider(
+  cfg: Pick<HubLlmConfig, 'apiKey' | 'baseURL'>,
+  options: Omit<AnthropicConfig, 'credential' | 'baseURL'>,
+): HubAnthropicProvider {
+  return new HubAnthropicProvider({
+    ...options,
+    baseURL: cfg.baseURL,
+    credential: apiKeyCredential(cfg.apiKey ?? ''),
+  });
+}
+
+/** Discover models with the same configuration and credential as Anthropic chat. */
+export function makeHubAnthropicCatalogProvider(): AnthropicProvider {
+  const { llm } = getAgentConfig();
+  return anthropicProvider(
+    { apiKey: llm.apiKey, baseURL: llm.baseUrl },
+    { model: llm.model },
+  );
+}
+
 /** One credential per key, shared by every LLM and embedder on that account. */
 export function apiKeyCredential(key: string): IApiKeyCredential {
   const identity = createHash('sha256').update(key).digest('hex');
@@ -410,11 +434,7 @@ async function createHubLlm(
       });
       break;
     case 'anthropic':
-      provider = new HubAnthropicProvider({
-        ...common,
-        baseURL: cfg.baseURL,
-        credential: apiKeyCredential(cfg.apiKey ?? ''),
-      });
+      provider = anthropicProvider(cfg, common);
       break;
     case 'deepseek':
       provider = new DeepSeekProvider({

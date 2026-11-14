@@ -31,6 +31,7 @@ test.each(['o1', 'o3-mini', 'o4-mini', 'gpt-5', 'gpt-5-mini'])(
 );
 
 test.each([
+  ['claude-test', 'anthropic'],
   ['gpt-4o', 'openai'],
   ['gemini-2.5-pro', 'gemini'],
   ['mistral-large', 'mistral'],

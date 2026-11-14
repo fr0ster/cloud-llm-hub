@@ -2,6 +2,7 @@ import type { Config } from 'jest';
 
 const config: Config = {
   testEnvironment: 'node',
+  setupFiles: ['<rootDir>/test/unit/helpers/ignore-local-env.ts'],
   setupFilesAfterEnv: ['<rootDir>/test/unit/helpers/init-rag-access.ts'],
   roots: ['<rootDir>/test'],
   testMatch: ['**/test/unit/**/*.test.ts'],
