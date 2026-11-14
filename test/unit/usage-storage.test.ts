@@ -1113,3 +1113,53 @@ function keepLongSession(userId: string, key: string): void {
   setLongSessionsForTest(registry);
 }
 afterEach(() => setLongSessionsForTest(undefined));
+
+test('a write after a restart without a history read counts the rows stored before it', async (): Promise<void> => {
+  const backend = new InMemoryRag();
+  const provider = historyTestProvider(backend);
+  const owner = turnOwner(session.userId, session.sessionId);
+  providersReady = true;
+  const before = new SessionHistoryRag(
+    provider,
+    (): string => owner,
+    Number.POSITIVE_INFINITY,
+    { storageBackend: 'hana-vector' },
+  );
+  for (const id of ['stored-1', 'stored-2'])
+    expect(
+      await before.recordTurn({
+        owner,
+        id,
+        userText: 'question',
+        assistantText: 'answer',
+      }),
+    ).toBe(true);
+  historyRag = new SessionHistoryRag(
+    provider,
+    (): string => owner,
+    Number.POSITIVE_INFINITY,
+    { storageBackend: 'hana-vector' },
+  );
+  expect(historyRag.storageBytes(owner)).toBeUndefined();
+  expect(
+    await historyRag.recordTurn({
+      owner,
+      id: 'after-restart',
+      userText: 'question',
+      assistantText: 'answer',
+    }),
+  ).toBe(true);
+  const turnBytes = Buffer.byteLength(renderTurn('question', 'answer'), 'utf8');
+  expect(historyRag.storageBytes(owner)).toBe(turnBytes * 3);
+  const scan = jest.spyOn(backend, 'scan');
+  expect(
+    await historyRag.recordTurn({
+      owner,
+      id: 'next',
+      userText: 'question',
+      assistantText: 'answer',
+    }),
+  ).toBe(true);
+  expect(historyRag.storageBytes(owner)).toBe(turnBytes * 4);
+  expect(scan).not.toHaveBeenCalled();
+});

@@ -40,7 +40,8 @@ export function historyCollectionName(sessionId: string): string {
   return `h_hist_${createHash('sha256').update(sessionId).digest('hex').slice(0, 32)}`;
 }
 
-type Handles = { rag: IRag; editor: IRagEditor };
+/** `created`: this call made the collection, so it starts empty. */
+type Handles = { rag: IRag; editor: IRagEditor; created?: true };
 
 /** History uses the session collection owner in the same provider catalog as other collections. */
 async function openHistory(
@@ -79,7 +80,9 @@ async function openHistory(
     attributes: { writtenBy: WRITTEN_BY, source: 'session-history' },
   };
   let created = await provider.createCollection(store, opts);
-  if (!created.ok && created.error instanceof OrphanStoreError)
+  if (created.ok)
+    return { ok: true, value: { ...created.value, created: true } };
+  if (created.error instanceof OrphanStoreError)
     created = await provider.createCollection(store, {
       ...opts,
       adoptExisting: true,
@@ -133,13 +136,26 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
       this.options.log?.warn('Session history open failed', {
         error: result.error.message,
       });
-    } else this.failedOpens.delete(sessionId);
+    } else {
+      this.failedOpens.delete(sessionId);
+      // A collection made by this call is empty: a known zero baseline.
+      if (
+        result.value?.created &&
+        storageEnabled() &&
+        !this.measured?.has(sessionId)
+      ) {
+        this.measured ??= new Map();
+        this.measured.set(sessionId, new Map());
+        this.measuredTotals.set(sessionId, 0);
+      }
+    }
     return result;
   }
 
   private readonly liveIds = new Map<string, string[]>();
   private cleared?: Set<string>;
   private readonly measuredTotals = new Map<string, number>();
+  private readonly baselines = new Map<string, Promise<void>>();
   private measured?: Map<string, Map<string, number>>;
 
   constructor(
@@ -382,7 +398,33 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
       if (Number.isFinite(this.options.maxTurns) && !ids.includes(id))
         ids.push(id);
       this.liveIds.set(caller.sessionId, ids);
-      if (storageEnabled()) {
+      // A running total needs a known baseline: rows written before this
+      // process (or after a failed revive read) are not in the map, so adding
+      // to an empty map would publish a partial size as the whole one.
+      if (
+        storageEnabled() &&
+        isRagScanner(rag) &&
+        !this.measured?.has(caller.sessionId) &&
+        !this.cleared?.has(caller.sessionId)
+      ) {
+        const scan =
+          this.baselines.get(caller.sessionId) ??
+          this.rows(caller.sessionId, rag)
+            .then((rows) => this.measure(caller, rows))
+            .catch((error) =>
+              this.options.log?.warn('Session history size: scan failed', {
+                error: String(error),
+              }),
+            )
+            .finally(() => this.baselines.delete(caller.sessionId));
+        this.baselines.set(caller.sessionId, scan);
+        await scan;
+      }
+      if (
+        storageEnabled() &&
+        (this.measured?.has(caller.sessionId) ||
+          this.cleared?.has(caller.sessionId))
+      ) {
         this.measured ??= new Map();
         const measured =
           this.measured.get(caller.sessionId) ?? new Map<string, number>();
