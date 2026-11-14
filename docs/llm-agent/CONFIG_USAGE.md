@@ -89,15 +89,16 @@ goal sizes, states, durations and hashed session keys. They never contain goal t
 | `LLM_GATEKEEPER_QUEUE_LENGTH` | the capacity | How many callers may wait to be admitted — for a slot, for their own session, or for a retention place. Requires `LLM_GATEKEEPER_MAX_LIVE_SESSIONS`. The queue passing three quarters is logged as pressure |
 | `LLM_GATEKEEPER_MAX_RETAINED_SESSIONS` | unbounded | How many sessions may hold history and session collections. An idle one is evicted — history, collections and their files — to make room: first sessions no caller ever presented (a client keeping no cookie gets one per request), then the least recently used; a session with a pipeline or a RAG operation running is never evicted. Requires `LLM_GATEKEEPER_MAX_LIVE_SESSIONS` and may not be smaller. With `/v1/rag/*` in use, set it above the capacity by the number of concurrent uploads |
 | `LLM_AGENT_TOOL_LOOP_WINDOW` | `8` | Positive safe integer: agent tool loops keep the latest N tool rounds plus the prefix. Dropped results become deterministic one-line digests, without LLM summarization. The dialogue coordinator keeps its own history handling. |
-| `LLM_AGENT_TOOL_RESULT_MAX_CHARS` | `60000` | Non-negative integer character cap per model-visible MCP tool result, including local dialogue RAG tools. `0` disables. Oversized serialized text is cut at the cap, followed by a paging notice; error status is preserved. Recording stores the capped result and truncation lengths. Content-free truncation logs use `tool-result-cap`. |
-| `LLM_AGENT_MAX_TOOL_CALLS` | unset (library default: `30`) | Positive integer per-run tool-call budget for workers, checkers, planner and agent MCP. Calls over the budget receive error results. Empty or unset preserves the library default. |
+| `LLM_AGENT_TOOL_RESULT_MAX_CHARS` | `60000` | Character limit per model-visible MCP tool result, including local dialogue RAG tools. `0` or `off` disables it. Oversized serialized results return an error with the tool name, result size, limit and advice to narrow the request; no partial data is returned. Recording stores the error and rejection metadata. Content-free warnings use `tool-result-cap`. |
+| `LLM_AGENT_MAX_TOOL_CALLS` | off (unlimited) | Positive integer per-run tool-call budget for workers, checkers, planner and agent MCP. Calls over an explicit budget receive error results. Empty, unset or `off` disables the limit, overriding the library default. |
 | `LLM_AGENT_CONTEXT_CAPTURE_FILE` | `context.sqlite` | Container-local full-context SQLite path, relative to the app directory. |
 | `LLM_AGENT_CONTEXT_CAPTURE_MAX_MB` | `512` | Stop writing at this file size in MiB and warn once; no automatic deletion. |
 | `LLM_AGENT_CONTEXT_CAPTURE` | `off` | `off`, `full` (SQLite; see Full LLM context capture below), or legacy `stats`: one content-free `context-capture` info line per LLM call, after completion (including failures). Counts messages/characters by role, tool results and definitions; records the three largest tool results by name/size, component, model, known task ids and salted session hashes, and provider input/output tokens when supplied. Streaming calls log once when consumed or closed; no token estimates or message/tool content. |
 | `LLM_AGENT_TEMPERATURE` | Provider/model default | Unset uses the provider/model default; set a number to override; `off` explicitly omits the parameter. Applies to all LLM calls (including classifier and workers). Invalid values fail startup. |
 | `LLM_AGENT_MAX_TOKENS` | `2000` | Maximum output tokens |
 | `LLM_AGENT_SAP_RELEVANCE_SCORE` | deprecated | Ignored, including invalid values; no automatic LLM critic |
-| `LLM_AGENT_MODE`, `LLM_AGENT_MAX_ITERATIONS` | see `agent-config.ts` | Agent loop behaviour |
+| `LLM_AGENT_MODE` | `smart` | Agent loop behaviour |
+| `LLM_AGENT_MAX_ITERATIONS` | off (unlimited) | Positive integer tool-loop iteration limit; empty, unset or `off` disables it. |
 | `LLM_AGENT_HISTORY_RECENCY_WINDOW` | see `agent-config.ts` | How much history reaches the model |
 | `LLM_AGENT_MCP_ENDPOINT` | — | **Inert.** Read and logged, consumed by nothing |
 
@@ -539,10 +540,10 @@ An invalid configured worker model fails startup naming the variable.
 |---|---|
 | `LLM_AGENT_EXECUTOR_MODEL` | Coordinator chooses the executor model when unset |
 | `LLM_AGENT_CHECKER_MODEL` | Coordinator chooses the checker model when unset |
-| `LLM_AGENT_<ROLE>_MAX_ITERATIONS` | Falls back to `LLM_AGENT_MAX_ITERATIONS`, then 10 |
-| `LLM_AGENT_<ROLE>_MAX_TOOL_CALLS` | Falls back to `LLM_AGENT_MAX_TOOL_CALLS`, then the library default of 30 |
+| `LLM_AGENT_<ROLE>_MAX_ITERATIONS` | Falls back to `LLM_AGENT_MAX_ITERATIONS`, then off (unlimited) |
+| `LLM_AGENT_<ROLE>_MAX_TOOL_CALLS` | Falls back to `LLM_AGENT_MAX_TOOL_CALLS`, then off (unlimited; overrides the library default) |
 | `LLM_AGENT_TOOL_RESULT_MAX_CHARS` | 60000; legacy `0` also disables the limit |
-| `LLM_AGENT_HISTORY_TOKEN_BUDGET` | 8000 |
+| `LLM_AGENT_HISTORY_TOKEN_BUDGET` | Off when unset; a positive integer enables the budget |
 
 `<ROLE>` is `COORDINATOR`, `EXECUTOR`, or `CHECKER`. Every limit listed here,
 including `LLM_AGENT_MAX_ITERATIONS` and `LLM_AGENT_MAX_TOOL_CALLS`, accepts

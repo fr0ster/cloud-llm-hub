@@ -1161,7 +1161,7 @@ graph TB
 | `LLM_AGENT_BASE_URL` | `agent-config.ts` | Base URL for LLM provider API (required for OpenAI-compatible endpoints) |
 | `LLM_AGENT_HISTORY_RECENCY_WINDOW` | `agent-config.ts` | Max recent messages to LLM (older excluded, available via RAG) |
 | `LLM_AGENT_MODE` | `agent-config.ts` | SmartAgent mode (`smart` \| `pass` \| `hard`, default: `smart`) |
-| `LLM_AGENT_MAX_ITERATIONS` | `agent-config.ts` | Max tool-loop iterations (default: `10`) |
+| `LLM_AGENT_MAX_ITERATIONS` | `agent-config.ts` | Max tool-loop iterations (default: unlimited; a positive integer enables the limit, `off` disables it) |
 | `LLM_AGENT_RAG_TYPE` | `agent-config.ts`, `agent-manager.ts` | Selects the tool-intent RAG mode. `in-memory` (the default) is keyword-only and builds **no** embedder (`agent-manager.ts`: `if (ragType === 'in-memory') return null`). **Any other value** — every deployment template sets `vector` — takes the vector path, with the embedder chosen by `LLM_AGENT_PROVIDER`. There is no separate Ollama backend, despite the `RagType` union in `agent-config.ts` still naming `ollama` |
 | `LLM_AGENT_RAG_QUERY_K` | `agent-config.ts` | Legacy budget for other RAG stores; tool search uses separate reader/writer budgets |
 | `LLM_AGENT_TOOLS_K_READER` | `agent-config.ts` | Reader collection seed budget, default `5`; positive integer |
@@ -1589,10 +1589,10 @@ An invalid configured worker model fails startup naming the variable.
 |---|---|
 | `LLM_AGENT_EXECUTOR_MODEL` | Coordinator chooses the executor model when unset |
 | `LLM_AGENT_CHECKER_MODEL` | Coordinator chooses the checker model when unset |
-| `LLM_AGENT_<ROLE>_MAX_ITERATIONS` | Falls back to `LLM_AGENT_MAX_ITERATIONS`, then 10 |
-| `LLM_AGENT_<ROLE>_MAX_TOOL_CALLS` | Falls back to `LLM_AGENT_MAX_TOOL_CALLS`, then the library default of 30 |
+| `LLM_AGENT_<ROLE>_MAX_ITERATIONS` | Falls back to `LLM_AGENT_MAX_ITERATIONS`, then off (unlimited) |
+| `LLM_AGENT_<ROLE>_MAX_TOOL_CALLS` | Falls back to `LLM_AGENT_MAX_TOOL_CALLS`, then off (unlimited; overrides the library default) |
 | `LLM_AGENT_TOOL_RESULT_MAX_CHARS` | 60000; legacy `0` also disables the limit |
-| `LLM_AGENT_HISTORY_TOKEN_BUDGET` | 8000 |
+| `LLM_AGENT_HISTORY_TOKEN_BUDGET` | Off when unset; a positive integer enables the budget |
 
 `<ROLE>` is `COORDINATOR`, `EXECUTOR`, or `CHECKER`. Every limit listed here,
 including `LLM_AGENT_MAX_ITERATIONS` and `LLM_AGENT_MAX_TOOL_CALLS`, accepts

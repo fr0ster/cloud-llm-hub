@@ -565,13 +565,13 @@ test.each(['adaptive', 'dialogue'] as const)(
       'alice',
     );
     expect(seen.length).toBeGreaterThan(0);
-    expect(seen.join('\n')).toContain('[result truncated: 100 of');
+    expect(seen.join('\n')).toContain('exceeding the limit of 100');
     expect(seen.join('\n')).not.toContain('x'.repeat(101));
   },
 );
 
 test.each([undefined, 7])(
-  'planner preserves or applies tool-call budget %s',
+  'planner explicitly disables or applies tool-call budget %s',
   async (maxToolCalls) => {
     const model = llm(`budget-${maxToolCalls}`);
     jest.mocked(makeHubLlm).mockResolvedValue(model.agent);
@@ -581,14 +581,13 @@ test.each([undefined, 7])(
     };
     initProviders(await startProviders(budgetConfig));
     await bindTestCaller(taskCaller);
-    const apply = jest.spyOn(SmartAgentBuilder.prototype, 'withMaxToolCalls');
     const planner = await buildPlannerAgent(budgetConfig, plannerText);
     try {
-      if (maxToolCalls === undefined) expect(apply).not.toHaveBeenCalled();
-      else expect(apply).toHaveBeenCalledWith(maxToolCalls);
+      const options = planner.getAgentConfig();
+      expect(options.maxToolCalls).toBe(maxToolCalls);
+      expect(Object.hasOwn(options, 'maxToolCalls')).toBe(true);
     } finally {
       releasePlannerAgent(planner);
-      apply.mockRestore();
     }
   },
 );
@@ -1046,9 +1045,8 @@ test('LLM-only agents omit the history manager for off and honor numeric session
     },
     { historyTokenBudget: 2 },
   );
-  await buildLlmOnlyAgent(config, 'waiting');
-  const manager = install.mock.calls.at(-1)?.[0];
-  if (!manager) throw new Error('Expected the default history manager');
-  manager.addTokens(2);
-  expect(manager.isOverBudget()).toBe(false);
+  install.mockClear();
+  const handle = await buildLlmOnlyAgent(config, 'waiting');
+  expect(install).not.toHaveBeenCalled();
+  expect(handle.agent['deps'].sessionManager).toBeUndefined();
 });

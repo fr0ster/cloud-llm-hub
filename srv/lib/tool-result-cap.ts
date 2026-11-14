@@ -23,41 +23,40 @@ export function withinToolResultBudget<T>(
   return toolResultBudget.run(effective, operation);
 }
 
-export interface ToolResultTruncation {
-  truncated: true;
+export interface ToolResultRejection {
+  rejected: true;
   originalLength: number;
-  keptLength: number;
+  maxChars: number;
 }
 
 export function capToolResult(
   result: McpToolResult,
   maxChars: number,
-  knownName?: string,
-): { result: McpToolResult; truncation?: ToolResultTruncation } {
+  toolName?: string,
+  logToolName = true,
+): { result: McpToolResult; rejection?: ToolResultRejection } {
   maxChars = sessionToolResultMaxChars(maxChars);
   if (maxChars === 0) return { result };
   const content = result.content;
   // Match the installed tool loop's string/JSON conversion exactly.
   const text = typeof content === 'string' ? content : JSON.stringify(content);
   if (text.length <= maxChars) return { result };
-  const truncation: ToolResultTruncation = {
-    truncated: true,
+  const rejection: ToolResultRejection = {
+    rejected: true,
     originalLength: text.length,
-    keptLength: maxChars,
+    maxChars,
   };
-  cds.log('tool-result-cap').info('Tool result truncated', {
-    ...(knownName ? { tool: knownName } : {}),
+  cds.log('tool-result-cap').warn('Tool result exceeds size limit', {
+    ...(logToolName && toolName ? { tool: toolName } : {}),
     originalLength: text.length,
-    keptLength: maxChars,
+    maxChars,
   });
   return {
     result: {
-      ...result,
-      content:
-        text.slice(0, maxChars) +
-        `\n[result truncated: ${maxChars} of ${text.length} characters shown. Narrow the request (smaller max_results/limit, a from/to range, filters, or one id) and page through the rest.]`,
+      isError: true,
+      content: `Tool ${toolName ?? '(unlisted tool)'} returned ${text.length} characters, exceeding the limit of ${maxChars}. No result data is included. Narrow the request (smaller limit/max_results, a from/to range, filters, or one id).`,
     },
-    truncation,
+    rejection,
   };
 }
 
@@ -87,7 +86,8 @@ export function withToolResultCap(
       const capped = capToolResult(
         result.value,
         maxChars,
-        knownNames.has(name) ? name : undefined,
+        name,
+        knownNames.has(name),
       );
       return capped.result === result.value
         ? result

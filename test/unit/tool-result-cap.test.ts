@@ -14,66 +14,76 @@ import {
   withToolResultCap,
 } from '../../srv/lib/tool-result-cap';
 
-const notice = '[result truncated: 5 of 6 characters shown.';
+const notice = 'returned 6 characters, exceeding the limit of 5.';
 
 test.each([
   { success: false, status: 'inactive', error: 'Create rejected' },
   { success: true, status: 'active', error: undefined },
-])('preserves complete envelope facts across truncation: %j', async (facts) => {
-  const content = JSON.stringify({ padding: 'x'.repeat(1000), ...facts });
-  const worker = new RecordingMcpClient(
-    {
-      listTools: async () => ({ ok: true, value: [] }),
-      callTool: async () => ({
-        ok: true,
-        value: { content, isError: false },
-      }),
-    },
-    undefined,
-    50,
-  );
-  const result = await worker.callTool(
-    'CreateClass',
-    {},
-    { trace: { traceId: 'create' } },
-  );
-  const records = worker.getToolRecords('create');
-  expect(result.ok && result.value.content).toBe(records[0].result.content);
-  expect(records[0].result.content).toBe(
-    capToolResult({ content }, 50).result.content,
-  );
-  expect(() => JSON.parse(records[0].result.content as string)).toThrow();
-  const outcome = parseToolOutcome(records[0]);
-  expect(outcome).toMatchObject({
-    name: 'CreateClass',
-    ok: facts.success,
-    status: facts.status,
-    truncation: {
-      truncated: true,
-      originalLength: content.length,
-      keptLength: 50,
-    },
-  });
-  expect(outcome.error).toBe(facts.error);
-  expect(evaluateDeterministic('I created the class.', records).ok).toBe(
-    facts.success,
-  );
-  expect(evaluateDeterministic('I activated the class.', records).ok).toBe(
-    facts.success,
-  );
-});
+])(
+  'records the same size-limit error for every oversized envelope: %j',
+  async (facts) => {
+    const content = JSON.stringify({ padding: 'x'.repeat(1000), ...facts });
+    const worker = new RecordingMcpClient(
+      {
+        listTools: async () => ({ ok: true, value: [] }),
+        callTool: async () => ({
+          ok: true,
+          value: { content, isError: false },
+        }),
+      },
+      undefined,
+      50,
+    );
+    const result = await worker.callTool(
+      'CreateClass',
+      {},
+      { trace: { traceId: 'create' } },
+    );
+    const records = worker.getToolRecords('create');
+    expect(result.ok && result.value.content).toBe(records[0].result.content);
+    expect(records[0].result.content).toBe(
+      capToolResult({ content }, 50, 'CreateClass').result.content,
+    );
+    expect(() => JSON.parse(records[0].result.content as string)).toThrow();
+    const outcome = parseToolOutcome(records[0]);
+    expect(outcome).toMatchObject({
+      name: 'CreateClass',
+      ok: false,
+      rejection: {
+        rejected: true,
+        originalLength: content.length,
+        maxChars: 50,
+      },
+    });
+    expect(outcome.error).toBe(records[0].result.content);
+    expect(records[0].result.isError).toBe(true);
+    expect(records[0].result.content).not.toContain('x'.repeat(10));
+    expect(evaluateDeterministic('I created the class.', records).ok).toBe(
+      false,
+    );
+    expect(evaluateDeterministic('I activated the class.', records).ok).toBe(
+      false,
+    );
+  },
+);
 
-test('cap keeps exactly the allowed prefix, appends paging notice and preserves isError', () => {
-  const capped = capToolResult({ content: 'abcdef', isError: true }, 5);
-  expect(capped.result.content).toContain(`abcde\n${notice}`);
-  expect(capped.result.content).toContain('page through the rest.');
-  expect(capped.result.isError).toBe(true);
-  expect(capped.truncation).toEqual({
-    truncated: true,
-    originalLength: 6,
-    keptLength: 5,
-  });
-});
+test.each([false, true])(
+  'oversized result becomes an error without a partial prefix (isError=%s)',
+  (isError) => {
+    const capped = capToolResult({ content: 'abcdef', isError }, 5, 'GetTable');
+    expect(capped.result).toEqual({
+      isError: true,
+      content: `Tool GetTable ${notice} No result data is included. Narrow the request (smaller limit/max_results, a from/to range, filters, or one id).`,
+    });
+    expect(capped.result.content).not.toContain('abcde');
+    expect(capped.rejection).toEqual({
+      rejected: true,
+      originalLength: 6,
+      maxChars: 5,
+    });
+  },
+);
+
 test.each([0, 5, 6])(
   'under or at cap, and zero disabled, preserve result identity (%i)',
   (cap) => {
@@ -85,14 +95,20 @@ test.each([{ data: 'abcdef' }, [{ type: 'text', text: 'abcdef' }]])(
   'caps the exact serialized content seen by the installed model loop',
   (content) => {
     const text = JSON.stringify(content);
-    const capped = capToolResult({ content }, 5);
-    expect(capped.result.content).toBe(
-      text.slice(0, 5) +
-        `\n[result truncated: 5 of ${text.length} characters shown. Narrow the request (smaller max_results/limit, a from/to range, filters, or one id) and page through the rest.]`,
+    const capped = capToolResult({ content }, 5, 'Read');
+    expect(capped.result.isError).toBe(true);
+    expect(capped.result.content).toContain(
+      `returned ${text.length} characters, exceeding the limit of 5`,
     );
+    expect(capped.result.content).not.toContain('abcde');
+    expect(capped.rejection).toEqual({
+      rejected: true,
+      originalLength: text.length,
+      maxChars: 5,
+    });
   },
 );
-test('normal chat client and recording worker both cap results; reviewer sees the same result and lengths', async () => {
+test('chat and recording worker return the same size-limit error and metadata', async () => {
   const inner: IMcpClient = {
     listTools: async () => ({
       ok: true,
@@ -115,8 +131,8 @@ test('normal chat client and recording worker both cap results; reviewer sees th
     expect(result.ok && result.value.content).toContain(notice);
   }
   expect(worker.getToolRecords('t')[0]).toMatchObject({
-    result: { content: expect.stringContaining(notice), isError: false },
-    truncation: { truncated: true, originalLength: 6, keptLength: 5 },
+    result: { content: expect.stringContaining(notice), isError: true },
+    rejection: { rejected: true, originalLength: 6, maxChars: 5 },
   });
 });
 test('configuration defaults, zero and strict nonnegative integer validation', () => {
@@ -133,9 +149,9 @@ test('configuration defaults, zero and strict nonnegative integer validation', (
     ).toThrow();
 });
 
-test('truncation logging includes only known name and lengths, once per result', async () => {
+test('rejection warning includes only known name and lengths, once per result', async () => {
   const log = cds.log('tool-result-cap');
-  const spy = jest.spyOn(log, 'info').mockImplementation(() => {});
+  const spy = jest.spyOn(log, 'warn').mockImplementation(() => {});
   try {
     const client = withToolResultCap(
       {
@@ -152,10 +168,10 @@ test('truncation logging includes only known name and lengths, once per result',
     await client.callTool('untrusted user text', {});
     expect(spy.mock.calls).toEqual([
       [
-        'Tool result truncated',
-        { tool: 'Known', originalLength: 6, keptLength: 5 },
+        'Tool result exceeds size limit',
+        { tool: 'Known', originalLength: 6, maxChars: 5 },
       ],
-      ['Tool result truncated', { originalLength: 6, keptLength: 5 }],
+      ['Tool result exceeds size limit', { originalLength: 6, maxChars: 5 }],
     ]);
   } finally {
     spy.mockRestore();

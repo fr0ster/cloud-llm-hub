@@ -101,7 +101,7 @@ import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { parseToolOutcome } from '../../srv/lib/reviewer-core';
 
 test.each(['chat', 'planner', 'executor', 'checker'])(
-  '%s real model boundary tags once after raw capture and truncation',
+  '%s real model boundary tags once after size-limit rejection',
   async () => {
     const seen: Message[][] = [];
     const response: ILlm['chat'] = async (messages) => {
@@ -164,7 +164,10 @@ test.each(['chat', 'planner', 'executor', 'checker'])(
     const sap = model.find((m) => m.tool_call_id === 'sap');
     expect(sap?.content).toContain('[source: target:GetClass; trust 4.3]\n');
     expect(String(sap?.content).match(/\[source:/g)).toHaveLength(1);
-    expect(String(sap?.content).match(/\[result truncated:/g)).toHaveLength(1);
+    expect(sap?.content).toContain(
+      'returned 80 characters, exceeding the limit of 20',
+    );
+    expect(sap?.content).not.toContain('x'.repeat(20));
     for (const id of ['rag', 'hub'])
       expect(model.find((m) => m.tool_call_id === id)?.content).not.toContain(
         '[source:',

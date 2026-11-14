@@ -89,6 +89,15 @@ it('every new parameter has a default, so a deployment without it still resolves
   }
 });
 
+// Templates no longer set an iteration limit, so the base descriptor must
+// resolve it on its own: empty means no limit.
+it('LLM_AGENT_MAX_ITERATIONS resolves without an .mtaext value', () => {
+  const mta = load(
+    fs.readFileSync(path.resolve(__dirname, '../../mta.yaml'), 'utf8'),
+  ) as { parameters: Record<string, unknown> };
+  expect(mta.parameters.LLM_AGENT_MAX_ITERATIONS).toBe('');
+});
+
 it('only LLM_AGENT_MODEL has to name a model in an .mtaext', () => {
   const mta = load(
     fs.readFileSync(path.resolve(__dirname, '../../mta.yaml'), 'utf8'),

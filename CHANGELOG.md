@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file. The format 
 - Tool retrieval splits by explicit read-only effect, preserving exposition permissions. Version/local include tools and table types now have object clusters. The existing analyzer call returns strict step `writes`, with UNKNOWN fallback.
 - Consumers choose `LLM_AGENT_TOOLS_SELECTION=per-collection|step-kind`; deprecated cluster strategy settings are ignored with one startup warning. Defaults are now `step-kind`, reader k=5 and writer k=2. Selection works through generic retrieval metadata across keyword and vector backends.
 - The 91-case bge-m3 vector oracle evaluation selects `step-kind` with reader k=5 / writer k=2: RO 29/29 with 5 tools, RW 61/62 with an average of 11.89 tools (90/91 total); writer k=1 gives RW 58/62. The `eval:tools` harness defaults match the hub. See CONFIG_USAGE for the earlier 2/1 baseline. Step-kind measurements use oracle effects without an LLM.
+- Tool-loop iteration and tool-call limits, and the history token budget, are off by default across hub agents. Explicit global, role and session limits remain supported, including `off`. Deployment templates no longer impose 20 iterations; the LLM-only template keeps its one-iteration mode.
 
 ### Fixed
 
@@ -16,6 +17,7 @@ All notable changes to this project will be documented in this file. The format 
 
 - Restore coordinator session history retrieval, wait for pending history writes, retrieve complete turns ranked by best chunk score, and report Anthropic stream error types without provider messages.
 - Keep coordinator history embedding independent of tools retrieval, prevent history write re-entry deadlocks, retry Anthropic SSE rate limits under the configured throttle policy, and preserve credential-redacted provider migration diagnostics.
+- Oversized tool results now return an explicit error with the tool name, result size, limit and narrowing guidance, without partial data. The default size limit remains 60,000 characters; recordings and content-free warning logs report size-limit rejection.
 
 ## [11.0.3] - 2026-11-14
 

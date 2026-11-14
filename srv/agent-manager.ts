@@ -3002,12 +3002,6 @@ export async function configureDestinationAgentBuilder(
   const historyRag = getSharedHistoryRag();
   if (historyRag) builder.setHistoryRag(historyRag);
 
-  const maxToolCalls = runLimitOptions(
-    opts?.limitRole ?? 'executor',
-    config.agent,
-  ).maxToolCalls;
-  if (maxToolCalls !== undefined) builder.withMaxToolCalls(maxToolCalls);
-
   // Mandatory skill pool. The builder vectorizes each skill into toolsRag as
   // `skill:<name>` = "Skill: <name>\n<description>" and the hardcoded flow
   // injects the matched skill's body into the system message. Wired here (agent
@@ -3158,11 +3152,6 @@ export async function buildPlannerAgent(
     .setToolsRag(docsMcp().withToolsRag(plannerTools, 'planner'))
     .withClassification(false)
     .withMode('hard');
-  const maxToolCalls = runLimitOptions(
-    'coordinator',
-    config.agent,
-  ).maxToolCalls;
-  if (maxToolCalls !== undefined) builder.withMaxToolCalls(maxToolCalls);
   // Authors retrieve session history; tool rounds use their separate window.
   if (authorClient)
     builder.withToolLoopContextStrategyFactory(() => createToolLoopWindow());
@@ -3896,11 +3885,6 @@ export async function buildLlmOnlyAgent(
     .withHistorySummarization(20)
     .withClientAdapter(new ClineClientAdapter());
 
-  const maxToolCalls = runLimitOptions(
-    'coordinator',
-    config.agent,
-  ).maxToolCalls;
-  if (maxToolCalls !== undefined) builder.withMaxToolCalls(maxToolCalls);
   const historyBudget = historyBudgetOptions();
   if (historyBudget)
     builder.withSessionManager(new SessionManager(historyBudget));

@@ -13,7 +13,7 @@
  */
 
 import type { ToolCallRecord } from '@mcp-abap-adt/llm-agent';
-import type { ToolResultTruncation } from './tool-result-cap';
+import type { ToolResultRejection } from './tool-result-cap';
 import {
   claimedWriteOps,
   claimsCompletedRead,
@@ -47,15 +47,14 @@ export type ReviewVerdict = { ok: true } | { ok: false; issues: ReviewIssue[] };
 export type ToolOutcome = {
   name: string;
   ok: boolean;
-  truncation?: ToolResultTruncation;
+  rejection?: ToolResultRejection;
   status?: string;
   error?: string;
 };
 
-/** Facts parsed before model-visible content is capped. */
+/** Size-limit metadata for the model-visible error result. */
 export type RecordedToolCall = ToolCallRecord & {
-  outcome?: Omit<ToolOutcome, 'name' | 'truncation'>;
-  truncation?: ToolResultTruncation;
+  rejection?: ToolResultRejection;
 };
 
 /** Best-effort envelope extraction from `McpToolResult.content`, robust to the
@@ -109,9 +108,7 @@ function parseEnvelope(content: unknown): Record<string, unknown> {
  *  field is treated as success (many read tools carry no envelope at all). */
 export function parseToolOutcome(record: ToolCallRecord): ToolOutcome {
   const name = record.call.name;
-  const { outcome, truncation } = record as RecordedToolCall;
-  if (outcome)
-    return { ...outcome, name, ...(truncation ? { truncation } : {}) };
+  const { rejection } = record as RecordedToolCall;
   const mcpError = record.result.isError === true;
   const envelope = parseEnvelope(record.result.content);
   const envelopeSuccess = envelope.success;
@@ -120,7 +117,7 @@ export function parseToolOutcome(record: ToolCallRecord): ToolOutcome {
   const ok = !mcpError && envelopeSuccess !== false;
 
   if (ok)
-    return { name, ok: true, status, ...(truncation ? { truncation } : {}) };
+    return { name, ok: true, status, ...(rejection ? { rejection } : {}) };
 
   const contentText =
     typeof record.result.content === 'string'
@@ -135,7 +132,7 @@ export function parseToolOutcome(record: ToolCallRecord): ToolOutcome {
     ok: false,
     status,
     error,
-    ...(truncation ? { truncation } : {}),
+    ...(rejection ? { rejection } : {}),
   };
 }
 

@@ -70,6 +70,10 @@ the native Anthropic or DeepSeek API) needs no AI Core entitlement at all.
 
 ---
 
+Tool-loop iteration and tool-call limits, and the history token budget, are off by default. Set `LLM_AGENT_MAX_ITERATIONS`, `LLM_AGENT_MAX_TOOL_CALLS` or `LLM_AGENT_HISTORY_TOKEN_BUDGET` to a positive integer to enable a limit, or `off` to disable it explicitly. Per-role `LLM_AGENT_<ROLE>_MAX_ITERATIONS` / `MAX_TOOL_CALLS` override global values (`ROLE`: `COORDINATOR`, `EXECUTOR`, `CHECKER`); per-session settings override configuration per value. `LLM_AGENT_TOOL_RESULT_MAX_CHARS` defaults to `60000` (`0` or `off` disables it). Oversized results return an error naming the tool, size and limit and asking for a narrower request, without partial data. See [configuration reference](../llm-agent/CONFIG_USAGE.md).
+
+Deployment templates leave these optional budgets unset. The LLM-only template keeps `LLM_AGENT_MAX_ITERATIONS: "1"` for its mode.
+
 ## Installation Steps
 
 ### Step 1: Clone and Install (5 min)

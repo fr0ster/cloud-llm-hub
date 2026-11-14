@@ -44,7 +44,6 @@ parameters:
 
   # SmartAgent Configuration
   LLM_AGENT_MODE: "smart"
-  LLM_AGENT_MAX_ITERATIONS: "20"
   LLM_AGENT_CHAT_COORDINATOR: "adaptive"
   LLM_AGENT_DIALOGUE_EXECUTORS: "3"
   # Opt-in hub-wide cap across all sessions; empty = per-session queues only.

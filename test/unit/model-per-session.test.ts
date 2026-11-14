@@ -54,7 +54,7 @@ jest.mock('../../srv/lib/llm-factory', () => ({
         };
       mockOfferedTools.push((tools ?? []).map((tool) => tool.name));
       mockCalls.push(config.model ?? '');
-      if (mockLoop)
+      if (mockLoop && mockCalls.length <= 35)
         return {
           ok: true,
           value: {
@@ -101,7 +101,7 @@ jest.mock('../../srv/lib/llm-factory', () => ({
     streamChat: async function* (_messages, tools) {
       mockOfferedTools.push((tools ?? []).map((tool) => tool.name));
       mockCalls.push(config.model ?? '');
-      if (mockLoop) {
+      if (mockLoop && mockCalls.length <= 35) {
         yield {
           ok: true,
           value: {
@@ -543,7 +543,7 @@ test('shared destination executor applies scoped model and maxIterations without
         sessionId: taskCaller.sessionId,
       }),
     );
-    expect(mockCalls).toHaveLength(10);
+    expect(mockCalls).toHaveLength(36);
     expect(new Set(mockCalls)).toEqual(new Set(['worker-default']));
   } finally {
     mockLoop = false;
@@ -830,8 +830,8 @@ test.each(
               ? { iterations: 3, calls: undefined, history: false }
               : {
                   iterations: getAgentConfig().agent.maxIterations,
-                  calls: 30,
-                  history: true,
+                  calls: undefined,
+                  history: false,
                 },
           );
       }
