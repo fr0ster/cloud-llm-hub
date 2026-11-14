@@ -15,7 +15,7 @@
     "@mcp-abap-adt/interfaces-utils": "^1.1.1",
     "@mcp-abap-adt/lib": "^23.1.0",
     "@mcp-abap-adt/llm-agent": "^32.0.1",
-    "@mcp-abap-adt/llm-agent-libs": "^32.0.1",
+    "@mcp-abap-adt/llm-agent-libs": "^32.0.2",
     "@mcp-abap-adt/llm-agent-mcp": "^30.10.3",
     "@mcp-abap-adt/llm-agent-rag": "^30.10.3",
     "@mcp-abap-adt/llm-agent-server-libs": "^32.0.1",
