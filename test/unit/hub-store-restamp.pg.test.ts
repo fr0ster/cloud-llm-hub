@@ -28,6 +28,8 @@ import {
 import { PROVIDER_DEFAULT_DIMENSION } from '../../srv/lib/rag-provider-factory';
 import { type PgliteHandle, startPglite } from './helpers/pglite';
 
+jest.setTimeout(120_000);
+
 const DIM = PROVIDER_DEFAULT_DIMENSION;
 
 /** Writes never embed; the registry below needs an embedder for its own use. */

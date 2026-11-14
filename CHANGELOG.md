@@ -4,9 +4,16 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [11.0.3] - 2026-11-14
+
 ### Changed
 
 - Server-managed OpenAI, Anthropic and MCP sessions recall history only through semantic RAG retrieval. Completed non-dialogue Anthropic responses are recorded in both streaming and non-streaming modes. Full recorded turns are retained until session end, split losslessly into ordered embedder-sized records when needed, without the former 1,200-character answer clip or 200-turn eviction. Client-managed history behavior is unchanged.
+- Retrieved history enters the context newest first (`llm-agent-libs` 32.0.2).
+
+### Fixed
+
+- History storage size is no longer published from a partial count after a restart or a failed revive read; it is measured once, starts at zero for a new collection, or stays unknown.
 
 ## [11.0.2] - 2026-11-13
 
