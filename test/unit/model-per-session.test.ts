@@ -751,7 +751,7 @@ test.each(
     const second = registry.open('llm-http', { key: 'ls-llm-default' });
     if ('refused' in first || 'refused' in second)
       throw new Error('Cannot open sessions');
-    const builds: { iterations: number; calls?: number; history: boolean }[] =
+    const builds: { iterations?: number; calls?: number; history: boolean }[] =
       [];
     const original = SmartAgentBuilder.prototype.build;
     const build = jest
@@ -829,7 +829,11 @@ test.each(
             key === 'ls-llm-configured'
               ? { iterations: 3, calls: undefined, history: false }
               : {
-                  iterations: getAgentConfig().agent.maxIterations,
+                  iterations: Number.isFinite(
+                    getAgentConfig().agent.maxIterations,
+                  )
+                    ? getAgentConfig().agent.maxIterations
+                    : undefined,
                   calls: undefined,
                   history: false,
                 },

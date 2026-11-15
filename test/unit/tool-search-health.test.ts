@@ -327,6 +327,118 @@ test('vector tools fail with an open embedder breaker while non-tool stores reta
   await assertToolSearchHealthy();
 });
 
+test.each([
+  ['vector', 'reader'],
+  ['vector', 'writer'],
+  ['qdrant', 'reader'],
+  ['qdrant', 'writer'],
+  ['qdrant', 'skills'],
+] as const)(
+  '%s %s preserves the first embedding failure without retrying and recovers only after a successful probe',
+  async (backend, role) => {
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockImplementation(
+        async () => new Response(JSON.stringify({ result: [] })),
+      );
+    const raw = jest.fn(async () => ({ vector: [1, 0] }));
+    raw.mockRejectedValueOnce(new Error('first query embedding failed'));
+    const breaker = new CircuitBreaker({ failureThreshold: 30 });
+    const embedder = new CircuitBreakerEmbedder({ embed: raw }, breaker);
+    const embedding: Embedding = {
+      embedder,
+      breaker,
+      retrieval: symmetricEmbedder(embedder),
+      fingerprint: { provider: 'test', embeddingModel: 'test' },
+    };
+    const stores = createRagStoreFactory(
+      {
+        embedder: null,
+        backends: { tools: backend, session: 'vector', persistent: 'vector' },
+        qdrant: { url: 'http://qdrant.invalid', prefix: 'hub' },
+      },
+      embedding,
+    );
+    const store =
+      role === 'skills'
+        ? stores.createLocalTools()
+        : stores.create('tools', role);
+    const rag = new ExpositionFilteringRag(
+      role === 'reader' ? store : new InMemoryRag(),
+      role === 'writer' ? store : undefined,
+      role === 'skills' ? store : undefined,
+    );
+    const result = await rag.query(
+      new QueryEmbedding('read tool', embedding.retrieval),
+      5,
+      { ragFilter: { exposition: ['high'] } },
+    );
+    expect(result.ok).toBe(false);
+    expect(raw).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(isAgentReady()).toBe(false);
+    expect(withToolSearchHealth({ status: 200, body: {} }).status).toBe(503);
+    expect(toolSearchFailure()).toContain(`${role} tool corpus`);
+
+    // An ordinary successful search must not clear the recorded outage.
+    expect((await store.query(new TextOnlyEmbedding('read tool'), 1)).ok).toBe(
+      true,
+    );
+    expect(raw).toHaveBeenCalledTimes(2);
+    expect(withToolSearchHealth({ status: 200, body: {} }).status).toBe(503);
+
+    raw.mockRejectedValueOnce(new Error('probe failed'));
+    await expect(assertToolSearchHealthy()).rejects.toMatchObject({
+      statusCode: 503,
+    });
+    expect(raw).toHaveBeenCalledTimes(3);
+    expect(toolSearchFailure()).toBeDefined();
+    await assertToolSearchHealthy();
+    expect(raw).toHaveBeenCalledTimes(4);
+    expect(toolSearchFailure()).toBeUndefined();
+    expect(withToolSearchHealth({ status: 200, body: {} }).status).toBe(200);
+  },
+);
+
+test('docs MCP query embedding fails once without retry and stays unhealthy until a fresh probe succeeds', async () => {
+  const embedQuery = jest.fn(async () => ({ vector: [1, 0] }));
+  embedQuery.mockRejectedValueOnce(new Error('first docs embedding failed'));
+  const docs = new ExternalMcp(
+    parseExternalMcp({
+      LLM_AGENT_EXECUTOR_MCP: 'DOCS',
+      LLM_AGENT_MCP_SELECTION: 'DOCS=rag',
+    }),
+    () => [],
+    async () => ({
+      listTools: async () => ({
+        ok: true,
+        value: [{ name: 'search', description: 'docs', inputSchema: {} }],
+      }),
+      callTool: async () => ({ ok: true, value: { content: 'docs' } }),
+    }),
+    undefined,
+    undefined,
+    () => ({ embedDocument: async () => ({ vector: [1, 0] }), embedQuery }),
+  );
+  await docs.clients('executor');
+  const rag = docs.withToolsRag(new InMemoryRag(), 'executor');
+  expect((await rag.query(new TextOnlyEmbedding('docs'), 1)).ok).toBe(false);
+  expect(embedQuery).toHaveBeenCalledTimes(1);
+  expect(isAgentReady()).toBe(false);
+  expect(toolSearchFailure()).toContain('external docs MCP');
+  expect((await rag.query(new TextOnlyEmbedding('docs'), 1)).ok).toBe(true);
+  expect(embedQuery).toHaveBeenCalledTimes(2);
+  expect(withToolSearchHealth({ status: 200, body: {} }).status).toBe(503);
+  embedQuery.mockRejectedValueOnce(new Error('docs probe failed'));
+  await expect(assertToolSearchHealthy()).rejects.toMatchObject({
+    statusCode: 503,
+  });
+  expect(embedQuery).toHaveBeenCalledTimes(3);
+  await assertToolSearchHealthy();
+  expect(embedQuery).toHaveBeenCalledTimes(4);
+  expect(toolSearchFailure()).toBeUndefined();
+});
+
 test('the production embedder probe recovers an open breaker immediately without waiting for its recovery window', async () => {
   let failed = true;
   const raw = jest

@@ -3,6 +3,8 @@ import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 /**
  * First listed owner wins name collisions; one non-cacheable part disables
  * caching. The last part is the primary client and receives unlisted names.
+ * Keep this as one builder slot: llm-agent 33 requires labeled servers for
+ * multiple slots. ExternalMcp already assigns stable aliases to docs tools.
  */
 export function compositeMcpClient(parts: IMcpClient[]): IMcpClient {
   let owners = new Map<string, IMcpClient>();

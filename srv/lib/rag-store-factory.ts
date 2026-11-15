@@ -128,8 +128,13 @@ export function createRagStoreFactory(
     }
   };
 
-  const primaryVectorStore = (e: Embedding, opts?: VectorStoreOptions): IRag =>
+  const primaryVectorStore = (
+    e: Embedding,
+    opts?: VectorStoreOptions,
+    toolSearch = false,
+  ): IRag =>
     new VectorRag(e.retrieval, {
+      ...(toolSearch ? { fallbackOnQueryEmbeddingError: false } : {}),
       vectorWeight: 0.7,
       keywordWeight: 0.3,
       queryPreprocessors: opts?.queryPreprocessors,
@@ -145,7 +150,7 @@ export function createRagStoreFactory(
     createLocal: (opts) =>
       embedding ? vectorStore(embedding, opts) : new InMemoryRag(),
     createLocalTools: (opts) =>
-      embedding ? primaryVectorStore(embedding, opts) : new InMemoryRag(),
+      embedding ? primaryVectorStore(embedding, opts, true) : new InMemoryRag(),
     qdrantCollection: qName,
     create(cls, name, opts) {
       const backend = rag.backends[cls];
@@ -156,7 +161,7 @@ export function createRagStoreFactory(
         );
       if (backend === 'vector')
         return cls === 'tools'
-          ? primaryVectorStore(embedding, opts)
+          ? primaryVectorStore(embedding, opts, true)
           : vectorStore(embedding, opts);
       // Programmer-misuse assertion: a hana-vector / pg-vector store is opened
       // through the collection provider, which writes its catalog record. A
@@ -175,6 +180,7 @@ export function createRagStoreFactory(
         url: q.url,
         collectionName: qName(name),
         embedder: embedding.retrieval,
+        ...(cls === 'tools' ? { fallbackOnQueryEmbeddingError: false } : {}),
         ...(q.apiKey ? { credential: apiKeyCredential(q.apiKey) } : {}),
       });
     },

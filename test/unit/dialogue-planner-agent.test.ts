@@ -8,6 +8,7 @@ const taskCaller = {
 
 import {
   type ILlm,
+  type IMcpClient,
   InMemoryRag,
   type ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
@@ -950,6 +951,65 @@ test.each(['direct', 'rag', 'auto'])(
     }
   },
 );
+
+test('llm-agent 33 builds destination, workers, planner, author and session agents with multiple docs destinations in one MCP slot', async () => {
+  const model = llm('multi-docs');
+  jest.mocked(makeHubLlm).mockResolvedValue(model.agent);
+  initProviders(await startProviders(config));
+  await bindTestCaller(taskCaller);
+  const docs = new ExternalMcp(
+    parseExternalMcp({
+      LLM_AGENT_EXECUTOR_MCP: 'DOCS_A,DOCS_B',
+      LLM_AGENT_PLANNER_MCP: 'DOCS_A,DOCS_B',
+    }),
+    () => [],
+    async (destination) => ({
+      listTools: async () => ({
+        ok: true,
+        value: [{ name: 'search', description: destination, inputSchema: {} }],
+      }),
+      callTool: async () => ({ ok: true, value: { content: destination } }),
+    }),
+  );
+  jest.spyOn(docsMcp(), 'clients').mockImplementation(docs.clients.bind(docs));
+  const slots = jest.spyOn(SmartAgentBuilder.prototype, 'withMcpClients');
+  const client: IMcpClient = {
+    listTools: async () => ({ ok: true, value: [] }),
+    callTool: async () => ({ ok: true, value: { content: 'SAP' } }),
+  };
+  const tools = new ExpositionFilteringRag(new InMemoryRag());
+  await buildExecutorWorker(client, tools, config);
+  const recorded = new RecordingMcpClient(client);
+  await buildExecutorWorker(recorded, tools, config);
+  const planner = await buildPlannerAgent(config, plannerText);
+  const author = await buildPlannerAgent(config, 'Author a plan', client);
+  const embedded = new MCPClientWrapper({ transport: 'embedded' });
+  const destination = await buildAgentForDestination(
+    new McpClientAdapter(embedded),
+    tools,
+    config,
+  );
+  const session = await buildLlmOnlyAgent(config, 'waiting');
+  try {
+    expect(slots.mock.calls.length).toBeGreaterThanOrEqual(7);
+    for (const [clients] of slots.mock.calls) expect(clients).toHaveLength(1);
+    for (const [clients] of slots.mock.calls.slice(0, 4)) {
+      const listed = await clients[0].listTools();
+      expect(listed.ok && listed.value.map((tool) => tool.name)).toEqual(
+        expect.arrayContaining(['DOCS_A__search', 'DOCS_B__search']),
+      );
+      for (const name of ['DOCS_A', 'DOCS_B']) {
+        const result = await clients[0].callTool(`${name}__search`, {});
+        expect(result.ok && result.value.content).toBe(name);
+      }
+    }
+  } finally {
+    releasePlannerAgent(planner);
+    releasePlannerAgent(author);
+    await destination.close();
+    await session.close();
+  }
+});
 
 // The LLM client is shared; the agents and their run budgets must remain separate.
 test('coordinator agents apply session limits without mutating shared configuration', async () => {

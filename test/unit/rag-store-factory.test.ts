@@ -256,4 +256,48 @@ describe('RagStoreFactory', () => {
     if (!result.ok) expect(result.error).toBeInstanceOf(RagError);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it.each(['vector', 'qdrant'] as const)(
+    '%s non-tool stores retain the default query embedding fallback',
+    async (backend) => {
+      jest
+        .spyOn(global, 'fetch')
+        .mockImplementation(
+          async () => new Response(JSON.stringify({ result: [] })),
+        );
+      const raw = jest.fn(async () => ({ vector: [1, 0] }));
+      const breaker = new CircuitBreaker({ failureThreshold: 30 });
+      const embedder = new CircuitBreakerEmbedder({ embed: raw }, breaker);
+      const embedding = {
+        embedder,
+        retrieval: symmetricEmbedder(embedder),
+        breaker,
+        fingerprint: { provider: 'test', embeddingModel: 'test' },
+      };
+      const factory = createRagStoreFactory(
+        {
+          ...q,
+          backends: { tools: backend, session: backend, persistent: backend },
+        },
+        embedding,
+      );
+      for (const store of [
+        factory.create('session', 'history'),
+        factory.create('persistent', 'facts'),
+        factory.createLocal(),
+      ]) {
+        raw.mockClear();
+        raw.mockRejectedValueOnce(new Error('first embedding failed'));
+        expect(
+          (
+            await store.query(
+              new QueryEmbedding('read', embedding.retrieval),
+              1,
+            )
+          ).ok,
+        ).toBe(true);
+        expect(raw).toHaveBeenCalledTimes(2);
+      }
+    },
+  );
 });

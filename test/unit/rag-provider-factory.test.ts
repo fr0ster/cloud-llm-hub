@@ -75,6 +75,7 @@ describe('createCollectionProvider', () => {
     expect(a.embedder).toBe(retrieval);
     expect(a.layout).toBe('shared');
     expect(a.autoCreateSchema).toBeUndefined();
+    expect(a.connection).not.toHaveProperty('fallbackOnQueryEmbeddingError');
     expect(a.connection).toMatchObject({
       host: 'h',
       port: 443,
@@ -110,6 +111,7 @@ describe('createCollectionProvider', () => {
     const a = calls.pgProvider[0];
     expect(a.layout).toBe('shared');
     expect(a.embedder).toBe(retrieval);
+    expect(a.connection).not.toHaveProperty('fallbackOnQueryEmbeddingError');
     expect(a.connection).toMatchObject({
       connectionString: 'postgres://db:5432/x',
       schema: 's',
