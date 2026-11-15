@@ -33,6 +33,11 @@ import {
 } from './lib/role-models-scope';
 import { toolDefinitionAnnotations } from './lib/tool-definition-effects';
 import { objectToolText } from './lib/tool-objects';
+import {
+  assertToolSearchHealthy,
+  queryToolCorpus,
+  toolSearchFailure,
+} from './lib/tool-search-health';
 import { selectStepTools, type ToolSelection } from './lib/tool-selection';
 import { resolverFor, TrustResolver } from './lib/trust-resolver';
 import { TrustStore } from './lib/trust-store';
@@ -73,7 +78,7 @@ import { withToolResultCap } from './lib/tool-result-cap';
  * - SmartAgentBuilder wires together: LLM, MCP, RAG, resilience, metrics
  * - LLM: SAP AI Core via sap-ai-sdk provider
  * - MCP: Embedded EmbeddableMcpServer (in-process, no HTTP overhead)
- * - RAG: FallbackRag(VectorRag → InMemoryRag) with CircuitBreakerEmbedder
+ * - RAG: VectorRag for tools; other local stores keep keyword fallback
  * - RAG query: the tools store translates a query to English first
  *   (ToolQueryAnalyzer on the classifier-model LLM); no query expander and
  *   no reranker are wired — retrieval is the store's own vector top-K
@@ -348,7 +353,35 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     private readonly kWriter = getAgentConfig().agent.kWriter ?? 2,
     private readonly toolSelection: ToolSelection = getAgentConfig().agent
       .toolSelection ?? 'step-kind',
+    private readonly backend: RagBackendKind = getAgentConfig().rag.backends
+      .tools,
+    private readonly probeQueryEmbedder?: IQueryEmbedder,
   ) {}
+
+  private search(
+    store: IRag,
+    role: string,
+    embedding: IQueryEmbedding,
+    k: number,
+    options: CallOptions,
+  ) {
+    return queryToolCorpus(
+      store,
+      `${role} tool corpus (${this.backend})`,
+      () => store.query(embedding, k, options),
+      async () => {
+        const embedder = this.probeQueryEmbedder ?? this.queryEmbedder;
+        const text = 'tool search readiness probe';
+        const probe = embedder
+          ? new QueryEmbedding(text, embedder)
+          : new TextOnlyEmbedding(text);
+        // Even a local side store with keyword fallback must reach the embedder.
+        if (embedder) await probe.toVector();
+        return store.query(probe, 1);
+      },
+      options.signal,
+    );
+  }
 
   /** The store selected by a tool's read-only effect. */
   private storeFor(readOnlyHint: boolean | undefined): IRag {
@@ -611,14 +644,32 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     const grantsWriteLevel = (allowedExpositions ?? []).some(
       (e) => e === 'high',
     );
-    const searches = [this.inner.query(embedding, readerFetchK, cleanOpts)];
+    const searches = [
+      this.search(this.inner, 'reader', embedding, readerFetchK, cleanOpts),
+    ];
     if (this.writerStore && grantsWriteLevel) {
-      searches.push(this.writerStore.query(embedding, writerFetchK, cleanOpts));
+      searches.push(
+        this.search(
+          this.writerStore,
+          'writer',
+          embedding,
+          writerFetchK,
+          cleanOpts,
+        ),
+      );
     }
     // Skills are not role-gated: their own store is always searched, and the
     // skill cap below applies across every collection as before.
     if (this.skillStore) {
-      searches.push(this.skillStore.query(embedding, overFetchK, cleanOpts));
+      searches.push(
+        this.search(
+          this.skillStore,
+          'skills',
+          embedding,
+          overFetchK,
+          cleanOpts,
+        ),
+      );
     }
     const parts = await Promise.all(searches);
     const failed = parts.find((r) => !r.ok);
@@ -1038,7 +1089,7 @@ let sharedClassifierLlm: ReturnType<typeof makeHubLlm> | null = null;
 
 /** Check if at least one SmartAgent is initialized and ready */
 export function isAgentReady(): boolean {
-  return initializationDone || agentHandles.size > 0;
+  return !toolSearchFailure() && (initializationDone || agentHandles.size > 0);
 }
 
 /** Deploy main model; request choices never change this value. */
@@ -1478,6 +1529,8 @@ function toolsStore(
   analyzer?: ToolQueryAnalyzer,
   queryEmbedder?: IQueryEmbedder,
   toolGate?: 'classifier' | 'off',
+  backend: RagBackendKind = getAgentConfig().rag.backends.tools,
+  probeQueryEmbedder?: IQueryEmbedder,
 ): ExpositionFilteringRag {
   return new ExpositionFilteringRag(
     inner,
@@ -1487,6 +1540,12 @@ function toolsStore(
     analyzer,
     queryEmbedder,
     toolGate,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    backend,
+    probeQueryEmbedder,
   );
 }
 
@@ -1496,6 +1555,7 @@ async function createToolsRagStore(
   translateQueries: boolean,
   queryEmbedder?: IQueryEmbedder,
   toolGate?: 'classifier' | 'off',
+  probeQueryEmbedder?: IQueryEmbedder,
 ): Promise<ExpositionFilteringRag> {
   // One backend per collection. They are separate stores, not one store with a
   // tag: a tool a role cannot run must not be searchable by that role at all.
@@ -1510,6 +1570,8 @@ async function createToolsRagStore(
     translateQueries ? createToolQueryAnalyzer() : undefined,
     queryEmbedder,
     toolGate,
+    stores.backendOf('tools'),
+    probeQueryEmbedder,
   );
 }
 
@@ -1999,7 +2061,7 @@ export function resetToolCorpusReadersForTest(): void {
  * and never calls an LLM (spec §4.4):
  * - in-memory: the texts, keyword-only;
  * - vector: the bundle whose fingerprint AND every entry match;
- * - qdrant: the role stores whose completion records exist.
+ * - qdrant: current completion records and exact point counts in both role stores.
  * Anything else is a {@link ToolCorpusMissingError} naming the build step.
  *
  * `translateQueries: false` disables tool-query translation for measurement.
@@ -2062,6 +2124,14 @@ export async function loadToolCorpus(
         problems.push(
           `${role}: record is stale for ${collection} (built for another embedder or corpus)`,
         );
+      else {
+        const count = await p.stores.countPoints('tools', names[role]);
+        if (!count.ok) throw count.error;
+        if (count.value !== roles[role].length)
+          problems.push(
+            `${role}: ${collection} has ${count.value} points; expected ${roles[role].length}`,
+          );
+      }
     }
     if (problems.length) throw new ToolCorpusMissingError(problems.join('; '));
     // Skills go to a per-process side store: the role stores are the build
@@ -2073,6 +2143,8 @@ export async function loadToolCorpus(
       opts.translateQueries === false ? undefined : createToolQueryAnalyzer(),
       agentQueryEmbedder(p.embedding),
       opts.toolGate,
+      backend,
+      p.embedding.probeQueryEmbedder,
     );
     return { store, count: docs.length };
   }
@@ -2091,6 +2163,7 @@ export async function loadToolCorpus(
     opts.translateQueries ?? true,
     agentQueryEmbedder(p.embedding),
     opts.toolGate,
+    p.embedding.probeQueryEmbedder,
   );
   const write = store.writer()?.upsertPrecomputedRaw;
   if (!write)
@@ -4009,6 +4082,7 @@ export async function getSmartAgent(
   requestedDestination?: string,
   scopedExecutor = false,
 ): Promise<HubAgentHandle> {
+  await assertToolSearchHealthy();
   const log = cds.log('agent-manager');
   const config = getAgentConfig();
 

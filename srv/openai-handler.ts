@@ -32,6 +32,11 @@ import {
 import { runWithRequestLlms } from './lib/session-llms';
 import { summarizeToolResult } from './lib/tool-result-summary';
 import {
+  assertToolSearchHealthy,
+  toolSearchFailure,
+  ToolSearchUnavailableError,
+} from './lib/tool-search-health';
+import {
   measureRequest,
   requestMeasurement,
 } from './lib/usage/request-records';
@@ -350,6 +355,21 @@ async function handleChatCompletionsScoped(
   req: Request,
   res: Response,
 ): Promise<void> {
+  try {
+    if (toolSearchFailure()) await assertToolSearchHealthy();
+  } catch (error) {
+    res.status(503).json({
+      error: {
+        message:
+          error instanceof ToolSearchUnavailableError
+            ? error.message
+            : 'Tool search unavailable',
+        type: 'service_unavailable',
+        code: 'tool_search_unavailable',
+      },
+    });
+    return;
+  }
   // Block requests until the providers are built and the agent is available
   if (!isProvidersReady() || !isAgentReady()) {
     const aiCoreAvailable = isAiCoreConfigured();

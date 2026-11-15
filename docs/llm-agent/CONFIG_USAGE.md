@@ -133,6 +133,16 @@ All `LLM_GATEKEEPER_*` values: unset means off. A value that is not plain digits
 
 `LLM_AGENT_SAP_RELEVANCE_SCORE` and `LLM_AGENT_STEP_REVIEW_TIMEOUT_MS` are deprecated and ignored; they do not trigger validation errors or deadlines.
 
+## Tool-search health and recovery
+
+A TOOL SEARCH failure in the configured tool-corpus backend or its embedder fails the step/request. Docs MCP candidates and local RAG tools never replace a failed tool search. Vector tool stores use the primary vector store directly: an open embedder circuit breaker returns an error instead of switching to an in-memory keyword store. Non-tool stores retain their existing behavior, including successful empty searches.
+
+The failure also makes the hub unhealthy across destinations, users, models and cached sessions. `GET /health` returns HTTP 503 with `status: "DOWN"` and `toolSearch.error`, alongside any collection-restore state. Agent entry points refuse requests with HTTP 503 and `tool_search_unavailable` naming the failed role collection and configured backend. The published health cause contains no provider response bodies or credentials. Caller cancellation does not mark the backend unhealthy. Docs MCP failures alone do not change this state.
+
+Recovery is request-driven. The next agent request runs a probe for every failed store; concurrent requests share the probe batch. Probes use constant text and fresh query embeddings, without retaining the original request, caller credentials, abort signal or a failed memoized vector. The production probe reaches the real embedder even when its breaker is open, and records success only after an embedding succeeds. It then searches the failed store. The hub admits requests again only after all failed stores pass. There is no recovery timer, timeout or arbitrary deadline; `/health` only reports the current state and never probes. A new failure during a probe remains unhealthy until a later successful probe.
+
+For Qdrant tool corpora, startup requires both a current catalog completion record and an exact point count equal to that role's corpus size in each reader/writer collection. Empty, short or oversized tool collections raise `ToolCorpusMissingError` with the same build-step guidance and 503 behavior as a missing corpus. Rebuild with `npx tsx tools/generate-tool-embeddings.ts` using the target configuration, then restart. Ordinary non-tool Qdrant collections are not subject to this corpus-size check.
+
 ## Long sessions
 
 A hub session holds an ABAP connection between requests under a server-issued key. These variables bound it. Unset means the default; a value that is not plain digits for a positive integer, a per-user cap above the total, or an unknown store stops `cds serve` before it listens, naming the variable. The values in force are logged at startup (`Long-session configuration`).

@@ -11,6 +11,7 @@ import { callOptionsFor } from './rag-caller';
 import { captureReviewProfile, recordReviewProfile } from './review-scope';
 import { currentRoleModel, roleOfProfile } from './role-models-scope';
 import { evaluateGated } from './step-reviewer';
+import { assertToolSearchHealthy } from './tool-search-health';
 
 const executorModel = new AsyncLocalStorage<string | undefined>();
 
@@ -41,6 +42,7 @@ export async function runExecutorStep(
     model,
   ]: ExecutorStepArgs
 ) {
+  await assertToolSearchHealthy();
   if (
     !opts.caller ||
     !opts.caller.sessionId ||

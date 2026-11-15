@@ -31,15 +31,17 @@ describe('default configuration builds today objects', () => {
     expect(p.stores.create('session', 'history')).toBeInstanceOf(InMemoryRag);
   });
 
-  it('LLM_AGENT_RAG_TYPE=vector, sap-ai-sdk: FallbackRag(VectorRag) and a breaker-wrapped AI Core embedder', async () => {
+  it('vector tools have no fallback while history and user RAG retain fallback with a breaker-wrapped AI Core embedder', async () => {
     process.env.LLM_AGENT_RAG_TYPE = 'vector';
     delete process.env.LLM_AGENT_PROVIDER;
     const p = await startProviders(loadAgentConfig());
     expect(p.embedding?.embedder).toBeInstanceOf(CircuitBreakerEmbedder);
     const tools = p.stores.create('tools', 'reader');
-    expect(tools).toBeInstanceOf(FallbackRag);
-    expect((tools as unknown as { primary: unknown }).primary).toBeInstanceOf(
-      VectorRag,
+    expect(tools).toBeInstanceOf(VectorRag);
+    expect(tools).not.toBeInstanceOf(FallbackRag);
+    expect(p.stores.create('session', 'history')).toBeInstanceOf(FallbackRag);
+    expect(p.stores.create('persistent', 'user-rag')).toBeInstanceOf(
+      FallbackRag,
     );
   });
 });

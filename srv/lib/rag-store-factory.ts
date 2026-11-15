@@ -126,19 +126,17 @@ export function createRagStoreFactory(
     }
   };
 
+  const primaryVectorStore = (e: Embedding, opts?: VectorStoreOptions): IRag =>
+    new VectorRag(e.retrieval, {
+      vectorWeight: 0.7,
+      keywordWeight: 0.3,
+      queryPreprocessors: opts?.queryPreprocessors,
+      documentEnrichers: opts?.documentEnrichers ?? [
+        new NoopDocumentEnricher(),
+      ],
+    });
   const vectorStore = (e: Embedding, opts?: VectorStoreOptions): IRag =>
-    new FallbackRag(
-      new VectorRag(e.retrieval, {
-        vectorWeight: 0.7,
-        keywordWeight: 0.3,
-        queryPreprocessors: opts?.queryPreprocessors,
-        documentEnrichers: opts?.documentEnrichers ?? [
-          new NoopDocumentEnricher(),
-        ],
-      }),
-      new InMemoryRag(),
-      e.breaker,
-    );
+    new FallbackRag(primaryVectorStore(e, opts), new InMemoryRag(), e.breaker);
 
   return {
     backendOf: (cls) => rag.backends[cls],
@@ -152,7 +150,10 @@ export function createRagStoreFactory(
         throw new Error(
           `RAG class ${cls} is ${backend} but no embedder was built`,
         );
-      if (backend === 'vector') return vectorStore(embedding, opts);
+      if (backend === 'vector')
+        return cls === 'tools'
+          ? primaryVectorStore(embedding, opts)
+          : vectorStore(embedding, opts);
       // Programmer-misuse assertion: a hana-vector / pg-vector store is opened
       // through the collection provider, which writes its catalog record. A
       // bare store here would hold rows no record describes (an orphan the

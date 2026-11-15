@@ -158,6 +158,10 @@ fails (HANA unreachable at boot), `/health` answers 503 while the hub retries in
 doubling to 5 min). Switching the app to an `http` health check on `/health` would turn that into a restart
 loop, killing the instance that is about to recover. `mta.yaml` sets no `health-check-type`; do not add one.
 
+Tool-corpus search failures also make `/health` return 503 `DOWN` with a content-free `toolSearch.error` naming the affected role collection/backend. Every agent request is refused until a request-driven probe of each failed store succeeds; health checks alone do not trigger recovery. Restore the embedder/vector backend, then retry an agent request. This probe can verify the embedder through an open circuit breaker immediately, without waiting for a timer. Docs MCP failures alone do not mark the hub unhealthy. See [Tool-search health and recovery](../llm-agent/CONFIG_USAGE.md#tool-search-health-and-recovery).
+
+At startup, Qdrant tool collections must have current completion records and exactly the expected number of points for each role. A current record with an empty or incomplete collection still produces `ToolCorpusMissingError` and 503. Rebuild the corpus for the target configuration with `npx tsx tools/generate-tool-embeddings.ts`, then restart; ordinary empty non-tool collections remain valid.
+
 **6. Dimension and other embedders.** The shipped tables are `REAL_VECTOR(1536)`, matching
 `text-embedding-3-small`. Another embedder needs regenerated DDL. Nothing stops the hub at startup over a
 mismatch: the library checks the tables lazily, per store. Tables of another dimension make the collections

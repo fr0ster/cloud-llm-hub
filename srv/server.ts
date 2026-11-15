@@ -110,6 +110,10 @@ import {
 } from './lib/session-middleware';
 import { createSessionRecordStore } from './lib/session-record-store';
 import { openAiSessionRefusal } from './lib/throttle-surfacing';
+import {
+  toolSearchReadinessGuard,
+  withToolSearchHealth,
+} from './lib/tool-search-health';
 import { readUsageConfig } from './lib/usage/config';
 import { startProcessMeter, stopProcessMeter } from './lib/usage/process-meter';
 import {
@@ -594,7 +598,7 @@ cds.on('bootstrap', (app: Application) => {
   // 200 { status: 'UP' } as CAP's does; with persistent collections, 503 with
   // the restore's state and cause until the restore has succeeded.
   app.get('/health', (_req: Request, res: Response) => {
-    const h = restoreHealth(collectionsRestoreStatus());
+    const h = withToolSearchHealth(restoreHealth(collectionsRestoreStatus()));
     res.status(h.status).json(h.body);
   });
 
@@ -675,6 +679,7 @@ cds.on('bootstrap', (app: Application) => {
   };
 
   app.use('/mcp', context, wrappedAuth, requireMcpRole, authJsonErrorHandler);
+  app.use('/mcp/agent/stream/http', toolSearchReadinessGuard);
 
   // Request logger for debugging
   app.use('/mcp/stream', (req: Request, _res: Response, next: NextFunction) => {
@@ -817,6 +822,7 @@ cds.on('bootstrap', (app: Application) => {
     authJsonErrorHandler,
   );
   app.use('/v1', context, wrappedAuth, requireMcpRole, authJsonErrorHandler);
+  app.use(['/v1/chat/completions', '/v1/messages'], toolSearchReadinessGuard);
 
   app.get('/v1/ping', (_req: Request, res: Response) => {
     res.status(204).end();

@@ -51,6 +51,8 @@ export interface Embedding {
   retrieval: IRetrievalEmbedder;
   breaker: CircuitBreaker;
   fingerprint: EmbedderFingerprint;
+  /** Request-driven tool-search recovery can reach the provider even with an open breaker. */
+  probeQueryEmbedder?: IQueryEmbedder;
 }
 
 /** `sap-ai-sdk` for AI Core keeps the committed bundle's header valid. */
@@ -139,6 +141,18 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
     retrieval: symmetricEmbedder(embedder),
     breaker,
     fingerprint: embedderFingerprint(cfg),
+    probeQueryEmbedder: {
+      async embedQuery(text, options) {
+        try {
+          const result = await raw.embed(text, options);
+          breaker.recordSuccess();
+          return result;
+        } catch (error) {
+          breaker.recordFailure();
+          throw error;
+        }
+      },
+    },
   };
 }
 

@@ -84,7 +84,12 @@ function fakeProviders(
       createLocal: () => new InMemoryRag(),
       qdrantCollection: (n: string) => `hub-${n}`,
       listStores: async () => ({ ok: true, value: [] }),
-      countPoints: async () => ({ ok: true, value: 1 }),
+      countPoints: async (_cls: string, name: string) => ({
+        ok: true,
+        value:
+          corpusByRole(docs)[name.endsWith('reader') ? 'reader' : 'writer']
+            .length,
+      }),
       deleteStore: async () => ({ ok: true, value: undefined }),
     },
     destinations: { list: async () => [], clearCache() {} },

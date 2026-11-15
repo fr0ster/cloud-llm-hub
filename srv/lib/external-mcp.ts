@@ -423,12 +423,7 @@ export class ExternalMcp {
         if (prop === 'query')
           return async (...args: Parameters<IRag['query']>) => {
             const result = await target.query(...args);
-            if (!result.ok) {
-              if (args[2]?.signal?.aborted) return result;
-              this.warn(
-                'Tool corpus query unavailable; returning docs candidates only',
-              );
-            }
+            if (!result.ok) return result;
             const direct: RagResult[] = [];
             const ranked: RagResult[] = [];
             let vector: number[] | undefined;
@@ -484,7 +479,7 @@ export class ExternalMcp {
               .slice(0, args[1]);
             return {
               ok: true as const,
-              value: [...(result.ok ? result.value : []), ...hits, ...direct],
+              value: [...result.value, ...hits, ...direct],
             };
           };
         const value = Reflect.get(target, prop);

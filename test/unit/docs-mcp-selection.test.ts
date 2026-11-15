@@ -412,20 +412,25 @@ test('skills default to system and correction while collection classes stay info
   ).toEqual([3, 3.5, 4]);
 });
 
-test('failed corpus retains direct docs candidates', async () => {
+test('failed corpus surfaces its error even when direct docs are available', async () => {
   const { docs } = setup('direct');
   await docs.clients('executor');
+  const failure = {
+    ok: false as const,
+    error: new RagError('private corpus content'),
+  };
   const failed: IRag = {
     ...corpus,
-    query: async () => ({
-      ok: false,
-      error: new RagError('private corpus content'),
-    }),
+    query: async () => failure,
   };
-  expect(await names(docs.withToolsRag(failed, 'executor'))).toEqual([
-    'tool:search_cds',
-    'tool:search_ui',
-  ]);
+  expect(
+    await docs
+      .withToolsRag(failed, 'executor')
+      .query(new TextOnlyEmbedding('cds'), 1),
+  ).toBe(failure);
+  await expect(names(docs.withToolsRag(failed, 'executor'))).rejects.toBe(
+    failure.error,
+  );
 });
 
 test('caller abort preserves the corpus failure unchanged', async () => {
@@ -442,8 +447,14 @@ test('caller abort preserves the corpus failure unchanged', async () => {
   ).toBe(failure);
 });
 
-test('failed corpus returns direct and ranked docs only and warns without content', async () => {
+test('failed corpus surfaces through mixed docs selection without logging content', async () => {
   const warn = jest.fn();
+  const info = jest
+    .spyOn(cds.log('external-mcp'), 'info')
+    .mockImplementation(() => {});
+  const errorLog = jest
+    .spyOn(cds.log('external-mcp'), 'error')
+    .mockImplementation(() => {});
   const docs = new ExternalMcp(
     parseExternalMcp({
       LLM_AGENT_EXECUTOR_MCP: 'DIRECT,RAG',
@@ -459,21 +470,31 @@ test('failed corpus returns direct and ranked docs only and warns without conten
     () => embedder,
   );
   await docs.clients('executor');
+  const failure = {
+    ok: false as const,
+    error: new RagError('private corpus content'),
+  };
   const failed: IRag = {
     ...corpus,
-    query: async () => ({
-      ok: false,
-      error: new RagError('private corpus content'),
-    }),
+    query: async () => failure,
   };
-  expect(await names(docs.withToolsRag(failed, 'executor'))).toEqual([
-    'tool:RAG__search_cds',
-    'tool:DIRECT__search_cds',
-    'tool:DIRECT__search_ui',
-  ]);
-  expect(warn.mock.calls).toEqual([
-    ['Tool corpus query unavailable; returning docs candidates only'],
-  ]);
+  try {
+    info.mockClear();
+    expect(
+      await docs
+        .withToolsRag(failed, 'executor')
+        .query(new TextOnlyEmbedding('cds'), 1),
+    ).toBe(failure);
+    await expect(names(docs.withToolsRag(failed, 'executor'))).rejects.toBe(
+      failure.error,
+    );
+    expect(warn).not.toHaveBeenCalled();
+    expect(info).not.toHaveBeenCalled();
+    expect(errorLog).not.toHaveBeenCalled();
+  } finally {
+    info.mockRestore();
+    errorLog.mockRestore();
+  }
 });
 
 test('thrown caller abort propagates unchanged', async () => {
