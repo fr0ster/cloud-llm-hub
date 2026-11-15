@@ -34,6 +34,8 @@ export interface RagStoreFactory {
    * runtime writes that a shared, build-owned store must never receive.
    */
   createLocal(opts?: VectorStoreOptions): IRag;
+  /** Process-local skills store; tool searches must not use keyword fallback. */
+  createLocalTools(opts?: VectorStoreOptions): IRag;
   listStores(
     cls: RagStoreClass,
     prefix: string,
@@ -142,6 +144,8 @@ export function createRagStoreFactory(
     backendOf: (cls) => rag.backends[cls],
     createLocal: (opts) =>
       embedding ? vectorStore(embedding, opts) : new InMemoryRag(),
+    createLocalTools: (opts) =>
+      embedding ? primaryVectorStore(embedding, opts) : new InMemoryRag(),
     qdrantCollection: qName,
     create(cls, name, opts) {
       const backend = rag.backends[cls];

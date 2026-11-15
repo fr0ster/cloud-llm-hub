@@ -91,10 +91,19 @@ export async function assertToolSearchHealthy(): Promise<void> {
 }
 
 export const toolSearchReadinessGuard: RequestHandler = async (
-  _req,
+  req,
   res,
   next,
 ) => {
+  // Match Express's case-insensitive routes and optional trailing slash.
+  // Health reports state without starting a recovery probe.
+  if (
+    (req.method === 'GET' || req.method === 'HEAD') &&
+    /^\/(?:health|mcp\/health)\/?$/i.test(req.path)
+  ) {
+    next();
+    return;
+  }
   try {
     await assertToolSearchHealthy();
     next();

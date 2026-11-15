@@ -378,3 +378,102 @@ test('the production embedder probe recovers an open breaker immediately without
   expect(raw).toHaveBeenCalled();
   expect(toolSearchFailure()).toBeUndefined();
 });
+
+test('local skills fail with an open breaker and recover through the raw embedder probe', async () => {
+  let failed = true;
+  const raw = jest
+    .spyOn(SapAiCoreEmbedder.prototype, 'embed')
+    .mockImplementation(async () => {
+      if (failed) throw new Error('embedder offline');
+      return { vector: [1, 0] };
+    });
+  const embedding = buildEmbedding({ kind: 'sap-ai-core', model: 'test' });
+  if (!embedding) throw new Error('Missing embedder');
+  const stores = createRagStoreFactory(
+    {
+      embedder: null,
+      backends: { tools: 'qdrant', session: 'vector', persistent: 'vector' },
+      qdrant: { url: 'http://qdrant.invalid', prefix: 'hub' },
+    },
+    embedding,
+  );
+  const rag = new ExpositionFilteringRag(
+    new InMemoryRag(),
+    undefined,
+    stores.createLocalTools(),
+    3,
+    undefined,
+    embedding.retrieval,
+    'off',
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    'qdrant',
+    embedding.probeQueryEmbedder,
+  );
+  recover = () => {
+    failed = false;
+  };
+  for (let i = 0; i < 30; i++) embedding.breaker.recordFailure();
+  expect((await rag.query(new TextOnlyEmbedding('skill'), 5)).ok).toBe(false);
+  expect(toolSearchFailure()).toContain('skills tool corpus (qdrant)');
+  expect(raw).not.toHaveBeenCalled();
+  await expect(assertToolSearchHealthy()).rejects.toMatchObject({
+    statusCode: 503,
+  });
+  failed = false;
+  await assertToolSearchHealthy();
+  expect(embedding.breaker.state).toBe('closed');
+  expect(toolSearchFailure()).toBeUndefined();
+  expect(await rag.query(new TextOnlyEmbedding('skill'), 5)).toEqual({
+    ok: true,
+    value: [],
+  });
+});
+
+test('docs query probes bypass an open production embedder breaker', async () => {
+  let failed = false;
+  jest
+    .spyOn(SapAiCoreEmbedder.prototype, 'embed')
+    .mockImplementation(async () => {
+      if (failed) throw new Error('embedder offline');
+      return { vector: [1, 0] };
+    });
+  const embedding = buildEmbedding({ kind: 'sap-ai-core', model: 'test' });
+  if (!embedding) throw new Error('Missing embedder');
+  const docs = new ExternalMcp(
+    parseExternalMcp({
+      LLM_AGENT_EXECUTOR_MCP: 'DOCS',
+      LLM_AGENT_MCP_SELECTION: 'DOCS=rag',
+    }),
+    () => [],
+    async () => ({
+      listTools: async () => ({
+        ok: true,
+        value: [{ name: 'search', description: 'docs', inputSchema: {} }],
+      }),
+      callTool: async () => ({ ok: true, value: { content: 'docs' } }),
+    }),
+    undefined,
+    undefined,
+    () => embedding.retrieval,
+    () => embedding.probeQueryEmbedder,
+  );
+  await docs.clients('executor');
+  failed = true;
+  recover = () => {
+    failed = false;
+  };
+  for (let i = 0; i < 30; i++) embedding.breaker.recordFailure();
+  const rag = docs.withToolsRag(new InMemoryRag(), 'executor');
+  expect((await rag.query(new TextOnlyEmbedding('docs'), 1)).ok).toBe(false);
+  await expect(assertToolSearchHealthy()).rejects.toMatchObject({
+    statusCode: 503,
+  });
+  failed = false;
+  await assertToolSearchHealthy();
+  expect(embedding.breaker.state).toBe('closed');
+  expect(toolSearchFailure()).toBeUndefined();
+  expect((await rag.query(new TextOnlyEmbedding('docs'), 1)).ok).toBe(true);
+});

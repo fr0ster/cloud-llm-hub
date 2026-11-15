@@ -6,6 +6,7 @@ import {
   QueryEmbedding,
   RagError,
   symmetricEmbedder,
+  VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import { QdrantRag } from '@mcp-abap-adt/qdrant-rag';
 import type { RagConfig } from '../../srv/agent-config';
@@ -75,6 +76,18 @@ describe('RagStoreFactory', () => {
     expect(createRagStoreFactory(inMem, null).createLocal()).toBeInstanceOf(
       InMemoryRag,
     );
+  });
+
+  it('createLocalTools uses a primary local vector store, or in-memory without an embedder', () => {
+    const local = createRagStoreFactory(
+      q,
+      buildEmbedding(emb),
+    ).createLocalTools();
+    expect(local).toBeInstanceOf(VectorRag);
+    expect(local).not.toBeInstanceOf(FallbackRag);
+    expect(
+      createRagStoreFactory(inMem, null).createLocalTools(),
+    ).toBeInstanceOf(InMemoryRag);
   });
 
   it('listStores / countPoints / deleteStore talk to Qdrant REST and map errors to RagError', async () => {

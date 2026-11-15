@@ -13,7 +13,7 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Fixed
 
-- Tool-search backend or embedder failures now fail the request and mark the hub unhealthy instead of returning docs-only or RAG-only tools. Agent requests receive an explicit 503 until a request-driven backend probe succeeds, including recovery through an open embedder breaker without a timer. Vector tool stores no longer fall back to keyword search. Qdrant tool-corpus startup checks now require exact per-role point counts as well as current catalog records.
+- Tool-search errors and docs MCP query-embedding failures fail the request and mark the hub unhealthy. Every API route and MCP endpoint receives an explicit 503 until a request-driven probe succeeds; GET/HEAD health endpoints report state without probing. Probes recover through open embedder breakers without a timer. Vector tool stores and local skills no longer fall back to keyword search. Qdrant tool-corpus startup checks warn for zero points and require exact nonzero per-role counts with current catalog records. Upstream vector stores still lack a public option to disable retries of failed caller embeddings.
 
 - Hold stream metadata until content starts, record discarded attempt usage, and prevent retries from duplicating partial text or tool arguments.
 

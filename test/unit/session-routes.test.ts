@@ -92,10 +92,16 @@ jest.mock('../../srv/anthropic-handler', () => ({
 }));
 
 import express from 'express';
+import { RagError } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { longSessions } from '../../srv/lib/long-session';
 import { clearSessionConfig } from '../../srv/lib/session-config';
+import {
+  assertToolSearchHealthy,
+  queryToolCorpus,
+  toolSearchFailure,
+} from '../../srv/lib/tool-search-health';
 import type { CollectionMeta } from '../../srv/rag-collections';
 import { SESSION_COOKIE, SESSION_HEADER } from '../../srv/session-id';
 
@@ -144,6 +150,102 @@ function chat(headers: Record<string, string> = {}, path = 'chat/completions') {
     body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }),
   });
 }
+
+test('bootstrap rejects every route while tool search is unhealthy and admits traffic only after a successful probe', async () => {
+  process.env.LLM_AGENT_PLAIN_API = 'true';
+  process.env.LLM_AGENT_PLAIN_MCP = 'true';
+  let failed = true;
+  const failure = {
+    ok: false as const,
+    error: new RagError('private backend response'),
+  };
+  const probe = jest.fn(async () =>
+    failed ? failure : { ok: true as const, value: [] },
+  );
+  await queryToolCorpus(
+    {},
+    'reader tool corpus (qdrant)',
+    async () => failure,
+    probe,
+  );
+  try {
+    for (const route of [
+      '/health',
+      '/HEALTH/',
+      '/mcp/health',
+      '/MCP/HEALTH/',
+    ]) {
+      for (const method of ['GET', 'HEAD']) {
+        const response = await fetch(base + route, { method });
+        expect(response.status).toBe(503);
+        if (method === 'GET')
+          expect(await response.json()).toMatchObject({ status: 'DOWN' });
+      }
+    }
+    expect(probe).not.toHaveBeenCalled();
+    const routes = [
+      '/v1/chat/completions',
+      '/v1/messages',
+      '/v1/rag/collections',
+      '/v1/session',
+      '/v1/session/models',
+      '/v1/session/events',
+      '/v1/models',
+      '/v1/usage',
+      '/v1/token',
+      '/v1/ping',
+      '/v1/destinations/resolve',
+      '/v1/destinations/mappings',
+      '/mcp/stream/http',
+      '/mcp/agent/stream/http',
+      '/mcp/stream/sse',
+      '/V1/SESSION/',
+      '/MCP/STREAM/HTTP',
+      '/health/extra',
+      '/chat/webapp/api/sessions',
+      '/odata/v4/api',
+      '/missing',
+    ];
+    for (const route of routes) {
+      for (const method of [
+        'GET',
+        'HEAD',
+        'POST',
+        'PUT',
+        'DELETE',
+        'OPTIONS',
+      ]) {
+        const response = await fetch(base + route, { method });
+        expect(response.status).toBe(503);
+        if (method !== 'HEAD')
+          expect(await response.json()).toMatchObject({
+            error: { code: 'tool_search_unavailable' },
+          });
+      }
+    }
+    // The guard runs before body parsers and route-specific validation.
+    const malformed = await fetch(`${base}/v1/session`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{',
+    });
+    expect(malformed.status).toBe(503);
+    expect(longSessions().size()).toBe(0);
+    failed = false;
+    probe.mockClear();
+    expect((await fetch(`${base}/health`)).status).toBe(503);
+    expect(probe).not.toHaveBeenCalled();
+    expect((await fetch(`${base}/v1/ping`)).status).toBe(204);
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(toolSearchFailure()).toBeUndefined();
+    expect((await fetch(`${base}/health`)).status).toBe(200);
+    expect((await fetch(`${base}/mcp/health`)).status).toBe(200);
+    expect((await openOne()).res.status).toBe(201);
+  } finally {
+    failed = false;
+    await assertToolSearchHealthy();
+  }
+});
 
 describe('POST /v1/session', () => {
   it('POST /v1/session → 201 with ls- key without a long-session cookie', async () => {

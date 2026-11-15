@@ -1835,6 +1835,7 @@ export function docsMcp(): ExternalMcp {
     undefined,
     undefined,
     () => providers?.embedding?.retrieval,
+    () => providers?.embedding?.probeQueryEmbedder,
   );
   return externalDocs;
 }
@@ -2127,7 +2128,11 @@ export async function loadToolCorpus(
       else {
         const count = await p.stores.countPoints('tools', names[role]);
         if (!count.ok) throw count.error;
-        if (count.value !== roles[role].length)
+        if (count.value === 0)
+          cds
+            .log('tool-rag')
+            .warn(`${role}: ${collection} is empty; no tools available`);
+        else if (count.value !== roles[role].length)
           problems.push(
             `${role}: ${collection} has ${count.value} points; expected ${roles[role].length}`,
           );
@@ -2139,7 +2144,7 @@ export async function loadToolCorpus(
     const store = toolsStore(
       p.stores.create('tools', names.reader),
       p.stores.create('tools', names.writer),
-      p.stores.createLocal(),
+      p.stores.createLocalTools(),
       opts.translateQueries === false ? undefined : createToolQueryAnalyzer(),
       agentQueryEmbedder(p.embedding),
       opts.toolGate,

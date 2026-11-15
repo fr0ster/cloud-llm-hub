@@ -6,6 +6,7 @@ import {
   symmetricEmbedder,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
+import cds from '@sap/cds';
 import {
   ExpositionFilteringRag,
   loadToolCorpus,
@@ -117,9 +118,7 @@ afterEach(() => {
 });
 
 test.each([
-  ['reader', 0],
   ['reader', 1],
-  ['writer', 0],
   ['writer', 1],
   ['writer', 3],
 ] as const)(
@@ -141,6 +140,38 @@ test.each([
       `${role}: cloud-llm-hub-tools-${role} has ${count} points; expected 2`,
     );
     expect(counts).toHaveBeenCalledWith('tools', `tools-${role}`);
+  },
+);
+
+test.each(['reader', 'writer', 'both'])(
+  'startup accepts an empty %s collection with warnings and searches return no tools',
+  async (empty) => {
+    const p = providers();
+    jest
+      .spyOn(p.stores, 'countPoints')
+      .mockImplementation(async (_cls, name) => ({
+        ok: true,
+        value: empty === 'both' || name.endsWith(empty) ? 0 : 2,
+      }));
+    const warn = jest
+      .spyOn(cds.log('tool-rag'), 'warn')
+      .mockImplementation(() => {});
+    const skills = jest.spyOn(p.stores, 'createLocalTools');
+    const { store } = await loadToolCorpus(p, docs, {
+      translateQueries: false,
+      toolGate: 'off',
+    });
+    expect(skills).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(empty === 'both' ? 2 : 1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('is empty; no tools available'),
+    );
+    expect(
+      await store.query(new TextOnlyEmbedding('read and write'), 5, {
+        ragFilter: { exposition: ['high'] },
+      }),
+    ).toEqual({ ok: true, value: [] });
+    expect(toolSearchFailure()).toBeUndefined();
   },
 );
 
@@ -205,6 +236,10 @@ test('a Qdrant tool-search outage marks health DOWN and recovers only after a su
     );
     await assertToolSearchHealthy();
     expect(toolSearchFailure()).toBeUndefined();
+    expect(await rag.query(new TextOnlyEmbedding('read'), 5)).toEqual({
+      ok: true,
+      value: [],
+    });
     // An empty ordinary collection remains a successful, empty search.
     expect(
       await stores

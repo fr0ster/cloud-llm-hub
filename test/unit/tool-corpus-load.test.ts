@@ -82,6 +82,7 @@ function fakeProviders(
       backendOf: () => backend,
       create: () => new InMemoryRag(),
       createLocal: () => new InMemoryRag(),
+      createLocalTools: () => new InMemoryRag(),
       qdrantCollection: (n: string) => `hub-${n}`,
       listStores: async () => ({ ok: true, value: [] }),
       countPoints: async (_cls: string, name: string) => ({

@@ -593,6 +593,7 @@ cds.on('bootstrap', (app: Application) => {
 
   // First HTTP middleware: default deny also covers routes added during bootstrap.
   app.use(ragReadinessGuard(isRagMigrationReady));
+  app.use(toolSearchReadinessGuard);
 
   // Before CAP's own /health (mounted after `bootstrap`), so this one answers.
   // 200 { status: 'UP' } as CAP's does; with persistent collections, 503 with
@@ -679,7 +680,6 @@ cds.on('bootstrap', (app: Application) => {
   };
 
   app.use('/mcp', context, wrappedAuth, requireMcpRole, authJsonErrorHandler);
-  app.use('/mcp/agent/stream/http', toolSearchReadinessGuard);
 
   // Request logger for debugging
   app.use('/mcp/stream', (req: Request, _res: Response, next: NextFunction) => {
@@ -711,12 +711,16 @@ cds.on('bootstrap', (app: Application) => {
 
   // MCP health check
   app.get('/mcp/health', (_req: Request, res: Response) => {
-    res.json({
-      status: 'ok',
-      transport: 'StreamableHTTP',
-      endpoint: '/mcp/stream/http',
-      timestamp: new Date().toISOString(),
+    const health = withToolSearchHealth({
+      status: 200,
+      body: {
+        status: 'ok',
+        transport: 'StreamableHTTP',
+        endpoint: '/mcp/stream/http',
+        timestamp: new Date().toISOString(),
+      },
     });
+    res.status(health.status).json(health.body);
   });
 
   // Handle GET requests to /mcp/stream/http (should be POST)
@@ -822,7 +826,6 @@ cds.on('bootstrap', (app: Application) => {
     authJsonErrorHandler,
   );
   app.use('/v1', context, wrappedAuth, requireMcpRole, authJsonErrorHandler);
-  app.use(['/v1/chat/completions', '/v1/messages'], toolSearchReadinessGuard);
 
   app.get('/v1/ping', (_req: Request, res: Response) => {
     res.status(204).end();

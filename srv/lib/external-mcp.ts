@@ -1,5 +1,6 @@
 import {
   type IMcpClient,
+  type IQueryEmbedder,
   type IRag,
   type IRetrievalEmbedder,
   McpError,
@@ -18,6 +19,7 @@ import { buildHeadersForDestination } from '@sap-cloud-sdk/connectivity';
 import { resolveHttpDestination } from '../connections/destinationResolver';
 import { profileToolAllowed } from '../request-session';
 import { BuildValidationError } from './build-validation-error';
+import { queryToolCorpus } from './tool-search-health';
 import { resolverFor, type TrustResolver } from './trust-resolver';
 
 const roles = ['planner', 'executor', 'checker', 'analyst'] as const;
@@ -125,6 +127,7 @@ export class ExternalMcp {
   >();
   private readonly cached = new Map<string, Connection>();
   private readonly unhealthy = new Set<string>();
+  private readonly searchHealth = new Map<string, object>();
   private readonly retryAt = new Map<string, number>();
   private readonly owners = new Map<
     string,
@@ -146,6 +149,7 @@ export class ExternalMcp {
     ) => cds.log('external-mcp').warn(message, detail),
     private readonly now = Date.now,
     private readonly embedder?: () => IRetrievalEmbedder | undefined,
+    private readonly probeQueryEmbedder?: () => IQueryEmbedder | undefined,
   ) {}
   catalogue(role?: ExternalMcpRole): { name: string; effect: 'read' }[] {
     return [...this.owners]
@@ -418,74 +422,95 @@ export class ExternalMcp {
     });
   }
   withToolsRag(rag: IRag, role: string): IRag {
+    let searchKey = this.searchHealth.get(role);
+    if (!searchKey) {
+      searchKey = {};
+      this.searchHealth.set(role, searchKey);
+    }
+    const key = searchKey;
     return new Proxy(rag, {
       get: (target, prop) => {
         if (prop === 'query')
           return async (...args: Parameters<IRag['query']>) => {
             const result = await target.query(...args);
             if (!result.ok) return result;
-            const direct: RagResult[] = [];
-            const ranked: RagResult[] = [];
-            let vector: number[] | undefined;
-            if (
-              this.available(role).some(
-                ([name, owner]) =>
-                  this.mode(owner.destination) === 'rag' &&
-                  this.vectors.has(name),
-              )
-            ) {
-              try {
-                // No artificial deadline: work stops only via the caller's abort.
-                vector = (
-                  await this.embedder?.()?.embedQuery(args[0].text, args[2])
-                )?.vector;
-                if (!vector?.length)
-                  throw new Error('Missing docs query vector');
-              } catch {
-                args[2]?.signal?.throwIfAborted();
-                vector = undefined;
-                this.warn(
-                  'External docs MCP query embedding unavailable; no RAG docs hits',
-                );
-              }
-            }
-            for (const [name, owner] of this.available(role)) {
-              if (!profileToolAllowed(name)) continue;
-              const record = {
-                text: `Tool: ${name}`,
-                metadata: { id: `tool:${name}`, name },
-                score: 1,
-              };
-              if (this.mode(owner.destination) === 'direct')
-                direct.push(record);
-              else {
-                const entry = this.vectors.get(name);
-                if (!entry || !vector) continue;
-                const dot = entry.vector.reduce(
-                  (sum, value, i) => sum + value * (vector[i] ?? 0),
-                  0,
-                );
-                const norm =
-                  Math.hypot(...entry.vector) * Math.hypot(...vector);
-                ranked.push({
-                  ...record,
-                  text: entry.text,
-                  score: norm ? dot / norm : 0,
-                });
-              }
-            }
-            const hits = ranked
-              .sort((a, b) => b.score - a.score)
-              .slice(0, args[1]);
+            const docs = await queryToolCorpus(
+              key,
+              `external docs MCP (${role})`,
+              () => this.searchTools(role, args[0].text, args[1], args[2]),
+              () =>
+                this.searchTools(
+                  role,
+                  'tool search readiness probe',
+                  1,
+                  undefined,
+                  true,
+                ),
+              args[2]?.signal,
+            );
+            if (!docs.ok) return docs;
             return {
               ok: true as const,
-              value: [...result.value, ...hits, ...direct],
+              value: [...result.value, ...docs.value],
             };
           };
         const value = Reflect.get(target, prop);
         return typeof value === 'function' ? value.bind(target) : value;
       },
     });
+  }
+  private async searchTools(
+    role: string,
+    text: string,
+    k: number,
+    options?: Parameters<IRag['query']>[2],
+    probe = false,
+  ) {
+    const direct: RagResult[] = [];
+    const ranked: RagResult[] = [];
+    let vector: number[] | undefined;
+    if (
+      probe ||
+      this.available(role).some(
+        ([name, owner]) =>
+          this.mode(owner.destination) === 'rag' && this.vectors.has(name),
+      )
+    ) {
+      // No artificial deadline: work stops only via the caller's abort.
+      const embedder = probe
+        ? (this.probeQueryEmbedder?.() ?? this.embedder?.())
+        : this.embedder?.();
+      vector = (await embedder?.embedQuery(text, options))?.vector;
+      if (!vector?.length) throw new Error('Missing docs query vector');
+    }
+    for (const [name, owner] of this.available(role)) {
+      if (!profileToolAllowed(name)) continue;
+      const record = {
+        text: `Tool: ${name}`,
+        metadata: { id: `tool:${name}`, name },
+        score: 1,
+      };
+      if (this.mode(owner.destination) === 'direct') direct.push(record);
+      else {
+        const entry = this.vectors.get(name);
+        if (!entry || !vector) continue;
+        const dot = entry.vector.reduce(
+          (sum, value, i) => sum + value * (vector[i] ?? 0),
+          0,
+        );
+        const norm = Math.hypot(...entry.vector) * Math.hypot(...vector);
+        ranked.push({
+          ...record,
+          text: entry.text,
+          score: norm ? dot / norm : 0,
+        });
+      }
+    }
+    const hits = ranked.sort((a, b) => b.score - a.score).slice(0, k);
+    return {
+      ok: true as const,
+      value: [...hits, ...direct],
+    };
   }
   /** Start discovery without delaying profile reads. */
   refresh(): void {
