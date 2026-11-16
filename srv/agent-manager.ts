@@ -998,6 +998,7 @@ import {
   retryRestore,
   storePrefixFor,
 } from './lib/collection-persistence';
+import type { PromptCachingRole } from './lib/deploy-role-config';
 import { type DumpBufferStore, makeDefaultDumpBuffer } from './lib/dump-buffer';
 import {
   handleGetDumpSectionCall,
@@ -1588,6 +1589,7 @@ export function createToolQueryAnalyzer(): ToolQueryAnalyzer {
           apiKey: config.llm.apiKey,
           baseURL: config.llm.baseUrl,
           component: 'analyst',
+          role: 'classifier',
           model: config.llm.classifierModel,
           resourceGroup: config.llm.resourceGroup,
           whenThrottled: config.llm.whenThrottled,
@@ -2908,6 +2910,7 @@ export async function buildEmbeddedMcpAdapter(
 function getOrCreateSharedLlms(
   config: AgentConfig,
   component: 'chat' | 'planner-author' = 'chat',
+  role: PromptCachingRole = 'coordinator',
 ): {
   mainLlm: ReturnType<typeof makeHubLlm>;
   classifierLlm: ReturnType<typeof makeHubLlm>;
@@ -2923,6 +2926,7 @@ function getOrCreateSharedLlms(
       resourceGroup: config.llm.resourceGroup,
       maxTokens: config.llm.maxTokens,
       component,
+      role,
     },
     config.llm.temperature,
   );
@@ -2935,6 +2939,7 @@ function getOrCreateSharedLlms(
         apiKey: config.llm.apiKey,
         baseURL: config.llm.baseUrl,
         component,
+        role,
         model: mainModel,
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,
@@ -2953,6 +2958,7 @@ function getOrCreateSharedLlms(
         apiKey: config.llm.apiKey,
         baseURL: config.llm.baseUrl,
         component: 'classifier',
+        role: 'classifier',
         model: classifierModel,
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,
@@ -2989,7 +2995,7 @@ export async function configureDestinationAgentBuilder(
   },
 ): Promise<SmartAgentBuilder> {
   const { mainLlm: mainLlmPromise, classifierLlm: classifierLlmPromise } =
-    getOrCreateSharedLlms(config);
+    getOrCreateSharedLlms(config, 'chat', opts?.limitRole ?? 'executor');
   const mainLlm = await mainLlmPromise;
   const classifierLlm = await classifierLlmPromise;
 
@@ -3177,6 +3183,7 @@ export async function buildPlannerAgent(
       },
     },
     authorClient ? 'planner-author' : 'chat',
+    authorClient ? 'planner' : 'coordinator',
   ).mainLlm;
   const roleResolver = resolverFor(getCollectionRegistry());
   const skillsPool = buildSkillsPool({ resolver: () => roleResolver });
@@ -3564,7 +3571,7 @@ export async function buildAgentForDestination(
     mcpAdapter,
     toolsRag,
     config,
-    { skipSkills: true, skipRetrieval: true },
+    { skipSkills: true, skipRetrieval: true, limitRole: 'coordinator' },
   );
 
   if (!rawExecutor) throw new Error('Executor agent was not built');
@@ -3982,7 +3989,7 @@ export async function buildLlmOnlyAgent(
   handle.agent = guardLlmOnlyAgent(inner, {
     decide: process.env.LLM_AGENT_CLASSIFIER_MODEL?.trim()
       ? classifierLlm
-      : mainLlm,
+      : await getOrCreateSharedLlms(config, 'chat', 'classifier').mainLlm,
     why,
   });
   log.info('LLM-only agent built (read-only RAG tools)');

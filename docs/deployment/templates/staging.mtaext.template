@@ -21,6 +21,14 @@ extends: cloud-llm-hub-staging                       # the generated staging MTA
 version: 1.0.0
 
 parameters:
+  # Prompt caching: on/off (true/false also accepted). Empty roles inherit global.
+  # LLM_AGENT_PROMPT_CACHING: "on"
+  # LLM_AGENT_COORDINATOR_PROMPT_CACHING: ""
+  # LLM_AGENT_PLANNER_PROMPT_CACHING: ""
+  # LLM_AGENT_EXECUTOR_PROMPT_CACHING: ""
+  # LLM_AGENT_CHECKER_PROMPT_CACHING: ""
+  # LLM_AGENT_CLASSIFIER_PROMPT_CACHING: ""
+  # Classifier also covers helper clients and query translation; summaries use the main role.
   # LLM_AGENT_CONTEXT_CAPTURE: full
   # LLM_AGENT_CONTEXT_CAPTURE_FILE: context.sqlite
   # LLM_AGENT_CONTEXT_CAPTURE_MAX_MB: 512

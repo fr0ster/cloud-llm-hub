@@ -630,6 +630,7 @@ test('independent planner model survives request hot-swap and rebuilds', async (
         apiKey: config.llm.apiKey,
         baseURL: config.llm.baseUrl,
         component: 'chat',
+        role: 'coordinator',
         model: 'independent-planner',
         maxTokens: config.llm.maxTokens,
         resourceGroup: config.llm.resourceGroup,

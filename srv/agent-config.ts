@@ -2,6 +2,7 @@ import { deployModel } from './lib/deploy-model';
 import {
   configuredExecutionLimits,
   configuredLimit,
+  configuredPromptCaching,
   configuredRoleModel,
 } from './lib/deploy-role-config';
 import type { ExecutionLimits } from './lib/execution-limits';
@@ -638,6 +639,15 @@ export function loadAgentConfig(): AgentConfig {
       : new WaitIfShortEnough(throttleMaxWaitMs);
   const model = deployModel();
   const temperature = configuredTemperature();
+  configuredPromptCaching();
+  for (const role of [
+    'coordinator',
+    'planner',
+    'executor',
+    'checker',
+    'classifier',
+  ] as const)
+    configuredPromptCaching(role);
   const maxTokens = Number.parseInt(
     process.env.LLM_AGENT_MAX_TOKENS ||
       process.env.SAP_CORE_AI_MAX_TOKENS ||

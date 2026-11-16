@@ -3,30 +3,70 @@ import type { ExecutionLimits, Limit } from './execution-limits';
 import { parseModelAllowlist, usesModelCatalog } from './model-policy';
 import type { RoleName } from './role-model-settings';
 
+export type PromptCachingRole = RoleName | 'classifier';
+
 const ROLE_ENV = {
   coordinator: {
     model: 'LLM_AGENT_COORDINATOR_MODEL',
+    promptCaching: 'LLM_AGENT_COORDINATOR_PROMPT_CACHING',
     maxIterations: 'LLM_AGENT_COORDINATOR_MAX_ITERATIONS',
     maxToolCalls: 'LLM_AGENT_COORDINATOR_MAX_TOOL_CALLS',
   },
   planner: {
     model: 'LLM_AGENT_PLANNER_MODEL',
+    promptCaching: 'LLM_AGENT_PLANNER_PROMPT_CACHING',
   },
   executor: {
     model: 'LLM_AGENT_EXECUTOR_MODEL',
+    promptCaching: 'LLM_AGENT_EXECUTOR_PROMPT_CACHING',
     maxIterations: 'LLM_AGENT_EXECUTOR_MAX_ITERATIONS',
     maxToolCalls: 'LLM_AGENT_EXECUTOR_MAX_TOOL_CALLS',
   },
   checker: {
     model: 'LLM_AGENT_CHECKER_MODEL',
+    promptCaching: 'LLM_AGENT_CHECKER_PROMPT_CACHING',
     maxIterations: 'LLM_AGENT_CHECKER_MAX_ITERATIONS',
     maxToolCalls: 'LLM_AGENT_CHECKER_MAX_TOOL_CALLS',
   },
-} as const satisfies Record<RoleName, { model: string }> &
+  classifier: {
+    model: 'LLM_AGENT_CLASSIFIER_MODEL',
+    promptCaching: 'LLM_AGENT_CLASSIFIER_PROMPT_CACHING',
+  },
+} as const satisfies Record<
+  PromptCachingRole,
+  { model: string; promptCaching: string }
+> &
   Record<
     Exclude<RoleName, 'planner'>,
     { maxIterations: string; maxToolCalls: string }
   >;
+
+/** Role overrides global; omission keeps provider prompt caching enabled. */
+export function configuredPromptCaching(
+  role?: PromptCachingRole,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const parse = (name: string): boolean | undefined => {
+    const raw = env[name];
+    if (raw === undefined || raw.trim() === '') return undefined;
+    switch (raw.trim()) {
+      case 'on':
+      case 'true':
+        return true;
+      case 'off':
+      case 'false':
+        return false;
+      default:
+        throw new BuildValidationError(
+          `Invalid ${name}: expected on, off, true or false, got ${JSON.stringify(raw)}`,
+        );
+    }
+  };
+  const global = parse('LLM_AGENT_PROMPT_CACHING');
+  return (
+    (role ? parse(ROLE_ENV[role].promptCaching) : undefined) ?? global ?? true
+  );
+}
 
 /** Shared by startup validation and dependency-light runtime scopes. */
 export function configuredRoleModel(
