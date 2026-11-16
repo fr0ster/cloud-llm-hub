@@ -7,6 +7,12 @@ import { load } from 'js-yaml';
 // LLM_AGENT_PG_PASSWORD) go through
 // .env → cf set-env (tools/deploy.sh), never through mta.yaml.
 const CARRIED = [
+  'LLM_AGENT_PROMPT_CACHING',
+  'LLM_AGENT_COORDINATOR_PROMPT_CACHING',
+  'LLM_AGENT_PLANNER_PROMPT_CACHING',
+  'LLM_AGENT_EXECUTOR_PROMPT_CACHING',
+  'LLM_AGENT_CHECKER_PROMPT_CACHING',
+  'LLM_AGENT_CLASSIFIER_PROMPT_CACHING',
   'LLM_AGENT_LOG_LEVEL',
   'LLM_AGENT_LOG_LEVELS',
   'LLM_AGENT_EMBEDDER',
@@ -43,6 +49,11 @@ it('every non-secret RAG/destination setting reaches cloud-llm-hub-srv', () => {
 });
 
 const NEW = [
+  'LLM_AGENT_COORDINATOR_PROMPT_CACHING',
+  'LLM_AGENT_PLANNER_PROMPT_CACHING',
+  'LLM_AGENT_EXECUTOR_PROMPT_CACHING',
+  'LLM_AGENT_CHECKER_PROMPT_CACHING',
+  'LLM_AGENT_CLASSIFIER_PROMPT_CACHING',
   'LLM_AGENT_EMBEDDER',
   'LLM_AGENT_EMBEDDER_URL',
   'LLM_AGENT_TOOLS_RAG_BACKEND',
@@ -87,6 +98,7 @@ it('every new parameter has a default, so a deployment without it still resolves
   for (const name of NEW) {
     expect([name, mta.parameters[name]]).toEqual([name, '']);
   }
+  expect(mta.parameters.LLM_AGENT_PROMPT_CACHING).toBe('on');
 });
 
 // Templates no longer set an iteration limit, so the base descriptor must

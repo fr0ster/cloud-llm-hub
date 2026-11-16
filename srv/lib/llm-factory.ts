@@ -39,6 +39,10 @@ import { getAgentConfig, type LlmProvider } from '../agent-config';
 import { captureLlm } from './context-capture';
 import { deployModel } from './deploy-model';
 import {
+  configuredPromptCaching,
+  type PromptCachingRole,
+} from './deploy-role-config';
+import {
   anthropicStreamCode,
   mergeStreamUsage,
   reliableLlm,
@@ -196,6 +200,7 @@ export class HubAnthropicProvider extends AnthropicProvider {
 
 export interface HubLlmConfig {
   provider: LlmProvider;
+  role?: PromptCachingRole;
   component?: 'chat' | 'other' | 'planner-author' | 'classifier' | 'analyst';
   contextCapture?: 'off' | 'stats' | 'full';
   /** API key for openai / anthropic / deepseek. Unused for sap-ai-sdk. */
@@ -292,6 +297,7 @@ function aiCoreProvider(
 export function makeHubCatalogProvider(): SapCoreAIProvider {
   return aiCoreProvider({
     model: deployModel(),
+    promptCaching: configuredPromptCaching(),
     resourceGroup: process.env.LLM_AGENT_RESOURCE_GROUP,
   });
 }
@@ -313,7 +319,7 @@ export function makeHubAnthropicCatalogProvider(): AnthropicProvider {
   const { llm } = getAgentConfig();
   return anthropicProvider(
     { apiKey: llm.apiKey, baseURL: llm.baseUrl },
-    { model: llm.model },
+    { model: llm.model, promptCaching: configuredPromptCaching() },
   );
 }
 
@@ -357,6 +363,7 @@ export function hubLlmKey(
     baseURL: cfg.baseURL,
     resourceGroup: cfg.resourceGroup,
     temperature,
+    promptCaching: configuredPromptCaching(cfg.role),
     maxTokens: cfg.maxTokens,
     component: cfg.component,
     quotaScope: cfg.quotaScope,
@@ -369,8 +376,9 @@ export async function makeHubLlm(
   cfg: HubLlmConfig,
   temperature: number | undefined,
 ): Promise<ILlm> {
-  const llm = await createHubLlm(cfg, temperature);
+  const promptCaching = configuredPromptCaching(cfg.role);
   const key = hubLlmKey(cfg, temperature);
+  const llm = await createHubLlm(cfg, temperature, promptCaching);
   return new Proxy(llm, {
     get(target, property) {
       if (property === 'chat')
@@ -378,7 +386,11 @@ export async function makeHubLlm(
           const owner = sessionLlms.getStore();
           const client = owner
             ? await owner.get(key, (quotaScope) =>
-                createHubLlm({ ...cfg, quotaScope }, temperature),
+                createHubLlm(
+                  { ...cfg, quotaScope },
+                  temperature,
+                  promptCaching,
+                ),
               )
             : target;
           return client.chat(...args);
@@ -388,7 +400,11 @@ export async function makeHubLlm(
           const owner = sessionLlms.getStore();
           const client = owner
             ? await owner.get(key, (quotaScope) =>
-                createHubLlm({ ...cfg, quotaScope }, temperature),
+                createHubLlm(
+                  { ...cfg, quotaScope },
+                  temperature,
+                  promptCaching,
+                ),
               )
             : target;
           yield* client.streamChat(...args);
@@ -402,12 +418,14 @@ export async function makeHubLlm(
 async function createHubLlm(
   cfg: HubLlmConfig,
   temperature: number | undefined,
+  promptCaching: boolean,
 ): Promise<ILlm> {
   const maxTokens = cfg.maxTokens != null ? Number(cfg.maxTokens) : undefined;
   const usage = usageRuntime()?.recorder;
   const common = {
     ...(usage ? { usage } : {}),
     model: cfg.model,
+    promptCaching,
     ...(temperature === undefined ? {} : { temperature }),
     maxTokens,
     whenThrottled: cfg.whenThrottled,

@@ -102,7 +102,18 @@ goal sizes, states, durations and hashed session keys. They never contain goal t
 | `LLM_AGENT_HISTORY_RECENCY_WINDOW` | see `agent-config.ts` | How much history reaches the model |
 | `LLM_AGENT_MCP_ENDPOINT` | — | **Inert.** Read and logged, consumed by nothing |
 
-Prompt caching is on by default in the llm-agent providers, and the hub sets no caching option of its own. With `anthropic`, requests carry automatic prompt caching (`cache_control`); with `sap-ai-sdk` and Anthropic models, SAP AI Core places cache breakpoints on the system prompt and tools; `openai` and `deepseek` cache prompt prefixes on their side automatically. Usage records keep cache reads (`cachedInputTokens`) and cache writes (`cacheCreationInputTokens`) per model. Normalized prompt totals already include them, so do not add the cache counters to the input tokens again. Context capture stores the cache reads in `cached_tokens`.
+Prompt caching is on or off; it is on by default. `LLM_AGENT_PROMPT_CACHING=on|off` sets it for every hub LLM client (`true|false` are aliases). A role variable overrides the global value for that role; empty or unset values inherit, and invalid values fail startup with `BuildValidationError`. The hub only passes this switch to the provider. What the provider caches is the provider's own business.
+
+| Environment variable | Default | Scope |
+| --- | --- | --- |
+| `LLM_AGENT_PROMPT_CACHING` | `on` | All LLM clients |
+| `LLM_AGENT_COORDINATOR_PROMPT_CACHING` | Inherit global | Coordinator, including LLM-only chat |
+| `LLM_AGENT_PLANNER_PROMPT_CACHING` | Inherit global | Plan author |
+| `LLM_AGENT_EXECUTOR_PROMPT_CACHING` | Inherit global | Executors |
+| `LLM_AGENT_CHECKER_PROMPT_CACHING` | Inherit global | Checkers |
+| `LLM_AGENT_CLASSIFIER_PROMPT_CACHING` | Inherit global | Classifier and helper clients, including query analysis and translation |
+
+The library's history summarizer reuses the main LLM and follows that client's role setting. Usage records keep cache reads (`cachedInputTokens`) and cache writes (`cacheCreationInputTokens`) per model. Context capture stores the cache reads in `cached_tokens`.
 
 Tool selection uses explicit read-only effects, independently of exposition permissions and retrieval backend. Defaults: `step-kind`, reader k=5, writer k=2. Only writer seeds expand object clusters; cluster members retain permission filtering. Without write rights both strategies return readers only. The analyzer returns strict `writes` in its existing call; missing or invalid responses mean UNKNOWN. `per-collection` ignores step kind; `step-kind` uses it and adds no independent reader seeds to RW.
 
