@@ -45,7 +45,12 @@ const llm: ILlm = {
         content: text,
         toolCalls: [call],
         finishReason: 'stop',
-        usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
+        usage: {
+          promptTokens: 10,
+          completionTokens: 20,
+          totalTokens: 30,
+          cachedInputTokens: 7,
+        },
       },
     };
   },
@@ -109,6 +114,7 @@ test('full captures complete requests and chat/stream responses with isolated se
     trace: 'trace',
     input_tokens: 10,
     output_tokens: 20,
+    cached_tokens: 7,
     ok: 1,
   });
 });

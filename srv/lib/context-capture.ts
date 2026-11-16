@@ -271,12 +271,7 @@ export function captureLlm(
           response: contextJson(response),
           inputTokens: usage?.promptTokens ?? null,
           outputTokens: usage?.completionTokens ?? null,
-          cachedTokens:
-            usage &&
-            'cachedTokens' in usage &&
-            typeof usage.cachedTokens === 'number'
-              ? usage.cachedTokens
-              : null,
+          cachedTokens: usage?.cachedInputTokens ?? null,
           durationMs: performance.now() - started,
           ok: error === null,
           error,
