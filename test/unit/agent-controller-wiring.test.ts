@@ -427,33 +427,45 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     }
   });
 
-  it('keeps tool retrieval and skills on the worker alone', async () => {
-    const toolsRag = {} as never;
-    await agentManager.buildAgentForDestination({} as never, toolsRag, config);
-    expect(setToolsRag).toHaveBeenCalledTimes(1);
-    expect(setToolsRag).toHaveBeenCalledWith(toolsRag);
-    expect(withSkillManager).toHaveBeenCalledTimes(1);
-    const instances = (SmartAgentBuilder as jest.Mock).mock.results.map(
-      (r) => r.value,
-    );
-    expect(instances[0].setToolsRag).toHaveBeenCalledWith(toolsRag);
-    expect(instances[0].addRagCollection).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: 'skills',
-        meta: expect.objectContaining({ scope: 'global' }),
-      }),
-    );
-    expect(instances[0].withSkillManager).toHaveBeenCalledTimes(1);
-    expect(instances[0].withHistorySummarization).toHaveBeenCalledWith(20);
-    expect(instances[1].setToolsRag).not.toHaveBeenCalled();
-    expect(instances[1].addRagCollection).not.toHaveBeenCalled();
-    expect(instances[1].setHistoryRag).toHaveBeenCalledTimes(1);
-    expect(instances[1].withEmbedder).toHaveBeenCalledTimes(
-      instances[0].withEmbedder.mock.calls.length,
-    );
-    expect(instances[1].withSkillManager).not.toHaveBeenCalled();
-    expect(instances[1].withHistorySummarization).not.toHaveBeenCalled();
-  });
+  it.each([undefined, 'off', 'on'] as const)(
+    'keeps tool retrieval and skills on the worker alone (clientHistory=%s)',
+    async (clientHistory) => {
+      const toolsRag = {} as never;
+      await agentManager.buildAgentForDestination({} as never, toolsRag, {
+        ...config,
+        agent: { ...config.agent, clientHistory },
+      });
+      expect(setToolsRag).toHaveBeenCalledTimes(1);
+      expect(setToolsRag).toHaveBeenCalledWith(toolsRag);
+      expect(withSkillManager).toHaveBeenCalledTimes(1);
+      const instances = (SmartAgentBuilder as jest.Mock).mock.results.map(
+        (r) => r.value,
+      );
+      expect(instances[0].setToolsRag).toHaveBeenCalledWith(toolsRag);
+      expect(instances[0].addRagCollection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'skills',
+          meta: expect.objectContaining({ scope: 'global' }),
+        }),
+      );
+      expect(instances[0].withSkillManager).toHaveBeenCalledTimes(1);
+      if (clientHistory === 'on')
+        expect(instances[0].withHistorySummarization).toHaveBeenCalledWith(20);
+      else expect(instances[0].withHistorySummarization).not.toHaveBeenCalled();
+      for (const [options] of jest.mocked(SmartAgentBuilder).mock.calls)
+        expect(options?.agent?.historyAutoSummarizeLimit).toBe(
+          clientHistory === 'on' ? undefined : Infinity,
+        );
+      expect(instances[1].setToolsRag).not.toHaveBeenCalled();
+      expect(instances[1].addRagCollection).not.toHaveBeenCalled();
+      expect(instances[1].setHistoryRag).toHaveBeenCalledTimes(1);
+      expect(instances[1].withEmbedder).toHaveBeenCalledTimes(
+        instances[0].withEmbedder.mock.calls.length,
+      );
+      expect(instances[1].withSkillManager).not.toHaveBeenCalled();
+      expect(instances[1].withHistorySummarization).not.toHaveBeenCalled();
+    },
+  );
 
   it('runs the real controller with zero retrieval, translation, embedding or LLM calls before planning', async () => {
     const actual = jest.requireActual('@mcp-abap-adt/llm-agent-libs');

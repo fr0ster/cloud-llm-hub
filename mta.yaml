@@ -18,6 +18,7 @@ parameters:
   LLM_AGENT_MODEL:
   # Unset uses the provider/model default; set a number to override; off explicitly omits.
   LLM_AGENT_TEMPERATURE:
+  LLM_AGENT_CLIENT_HISTORY: "off"
   # Prompt caching: on/off (true/false also accepted); empty role values inherit global.
   LLM_AGENT_PROMPT_CACHING: "on"
   LLM_AGENT_COORDINATOR_PROMPT_CACHING: ""
@@ -59,7 +60,9 @@ parameters:
   LLM_AGENT_PLANNER_MODEL: ""
   LLM_AGENT_PLANNER_KNOWLEDGE: "planning"
   LLM_AGENT_EMBEDDING_MODEL: ""
+  # Applies only with CLIENT_HISTORY=on; counts messages, not turns.
   LLM_AGENT_HISTORY_RECENCY_WINDOW:
+  # Complete session history turns per retrieval; code fallback is 5.
   LLM_AGENT_RAG_QUERY_K: "15"
   LLM_AGENT_PIPELINE_MODE: "default"
   # RAG providers (spec §3). "" = not set = today's behaviour; a bare key
@@ -152,6 +155,7 @@ modules:
       LLM_AGENT_TOOL_RESULT_MAX_CHARS: ${LLM_AGENT_TOOL_RESULT_MAX_CHARS}
       LLM_AGENT_MAX_TOOL_CALLS: ${LLM_AGENT_MAX_TOOL_CALLS}
       LLM_AGENT_TEMPERATURE: ${LLM_AGENT_TEMPERATURE}
+      LLM_AGENT_CLIENT_HISTORY: ${LLM_AGENT_CLIENT_HISTORY}
       LLM_AGENT_PROMPT_CACHING: ${LLM_AGENT_PROMPT_CACHING}
       LLM_AGENT_COORDINATOR_PROMPT_CACHING: ${LLM_AGENT_COORDINATOR_PROMPT_CACHING}
       LLM_AGENT_PLANNER_PROMPT_CACHING: ${LLM_AGENT_PLANNER_PROMPT_CACHING}

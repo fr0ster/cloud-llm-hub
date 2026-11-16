@@ -18,16 +18,23 @@ import {
   type Message,
   type RagCaller,
   symmetricEmbedder,
+  TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
-import { unwrapBuilderResult } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  DialogueSession,
+  PlannerToolsClient,
+  unwrapBuilderResult,
+} from '@mcp-abap-adt/llm-agent-libs';
 import type { AgentConfig } from '../../srv/agent-config';
 import {
+  buildLlmOnlyAgent,
   buildPlannerAgent,
   configureDestinationAgentBuilder,
   ExpositionFilteringRag,
   getSharedHistoryRag,
   initProviders,
 } from '../../srv/agent-manager';
+import { clientHistoryMessages } from '../../srv/lib/client-history';
 import {
   LongSessionRegistry,
   setLongSessionsForTest,
@@ -35,6 +42,7 @@ import {
 import { startProviders } from '../../srv/lib/providers';
 import { getHubRagAccess } from '../../srv/lib/rag-access';
 import { callOptionsFor } from '../../srv/lib/rag-caller';
+import { withRagContext } from '../../srv/lib/rag-context-marker';
 import { migrateSharedHistory } from '../../srv/lib/session-history-collection';
 import { recordTurn } from '../../srv/lib/session-turns';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
@@ -285,3 +293,255 @@ test.each(
       await router.forgetSessionHistory(caller.sessionId);
   },
 );
+
+test.each(
+  (['off', 'on'] as const).flatMap((policy) =>
+    (['planner', 'author', 'executor', 'controller', 'llm-only'] as const).map(
+      (path) => ({ policy, path }),
+    ),
+  ),
+)(
+  'exclusive history: $policy / $path / process and stream',
+  async ({ policy: clientHistory, path }) => {
+    initProviders(await startProviders(config));
+    const caller: RagCaller = {
+      userId: 'history-user',
+      sessionId: `client-history-${clientHistory}-${path}`,
+      isAdmin: false,
+    };
+    await getHubRagAccess().access.bindings.bind(
+      caller.sessionId,
+      caller.userId,
+    );
+    const registry = new LongSessionRegistry(
+      { ttlMs: 1e15, maxSessions: 10, maxPerUser: 10, queueLength: 1 },
+      { onClose: async () => {} },
+    );
+    registry.open(caller.userId, { key: caller.sessionId });
+    setLongSessionsForTest(registry);
+    const router = getSharedHistoryRag();
+    for (let index = 0; index < 3; index++)
+      expect(
+        await router.recordTurn({
+          caller,
+          userText: 'current request',
+          assistantText: `RETRIEVED_${index} ${'complete detail '.repeat(600)}`,
+        }),
+      ).toBe(true);
+    const query = jest.spyOn(router, 'query');
+    const runConfig: AgentConfig = {
+      ...config,
+      agent: {
+        ...config.agent,
+        clientHistory,
+        ragQueryK: 2,
+        // Off must retain every message in the current turn despite this.
+        historyRecencyWindow: clientHistory === 'off' ? 1 : undefined,
+      },
+    };
+    const mcp = {
+      listTools: async () => ({ ok: true as const, value: [] }),
+      callTool: async () => ({ ok: true as const, value: { content: '' } }),
+    };
+    const agent =
+      path === 'planner' || path === 'author'
+        ? await buildPlannerAgent(
+            runConfig,
+            'Answer the current request.',
+            path === 'author' ? mcp : undefined,
+          )
+        : path === 'llm-only'
+          ? (await buildLlmOnlyAgent(runConfig, 'waiting')).agent
+          : unwrapBuilderResult(
+              await (
+                await configureDestinationAgentBuilder(
+                  mcp,
+                  new ExpositionFilteringRag(new InMemoryRag()),
+                  runConfig,
+                  path === 'controller'
+                    ? { skipSkills: true, skipRetrieval: true }
+                    : undefined,
+                )
+              ).build(),
+            ).agent;
+    const originalChat = llm.chat.bind(llm);
+    const chat = jest
+      .spyOn(llm, 'chat')
+      .mockImplementation(async (messages, tools, options) => {
+        if (
+          messages.some((message) =>
+            message.content?.includes('Classify the last user request'),
+          )
+        ) {
+          seen.push(messages);
+          return {
+            ok: true,
+            value: {
+              content: '{"action":false,"language":"en"}',
+              finishReason: 'stop',
+            },
+          };
+        }
+        return originalChat(messages, tools, options);
+      });
+    const current: Message = { role: 'user', content: 'current request' };
+    const rounds: Message[] = Array.from(
+      { length: clientHistory === 'off' ? 12 : 3 },
+      (_, index) => [
+        {
+          role: 'assistant' as const,
+          content: null,
+          tool_calls: [
+            {
+              id: `call-${index}`,
+              type: 'function' as const,
+              function: { name: 'read', arguments: '{}' },
+            },
+          ],
+        },
+        {
+          role: 'tool' as const,
+          content: `TOOL_RESULT_${index} ${'tool detail '.repeat(100)}`,
+          tool_call_id: `call-${index}`,
+        },
+      ],
+    ).flat();
+    const messages = clientHistoryMessages(
+      [
+        { role: 'system', content: 'client protocol' },
+        { role: 'user', content: 'CLIENT_EARLIER_REQUEST' },
+        { role: 'assistant', content: 'CLIENT_EARLIER_ANSWER' },
+        current,
+        ...rounds,
+      ],
+      clientHistory,
+    );
+    let answer = '';
+    for (const streaming of [false, true]) {
+      seen.length = 0;
+      answer = '';
+      if (streaming) {
+        for await (const chunk of agent.streamProcess(
+          messages,
+          callOptionsFor(caller),
+        )) {
+          if (!chunk.ok) throw chunk.error;
+          if (chunk.value.content && !chunk.value.ephemeral)
+            answer += chunk.value.content;
+        }
+      } else {
+        const result = await agent.process(messages, callOptionsFor(caller));
+        if (!result.ok) throw result.error;
+        answer = result.value.content;
+      }
+      expect(seen).toHaveLength(path === 'llm-only' ? 2 : 1);
+      const modelMessages = seen[seen.length - 1];
+      const context = JSON.stringify(modelMessages);
+      expect(context.includes('CLIENT_EARLIER_REQUEST')).toBe(
+        clientHistory === 'on',
+      );
+      expect(context.includes('CLIENT_EARLIER_ANSWER')).toBe(
+        clientHistory === 'on',
+      );
+      expect(
+        modelMessages.filter((message) => message.role === 'user'),
+      ).toHaveLength(clientHistory === 'off' ? 1 : 2);
+      expect(context).toContain('current request');
+      if (clientHistory === 'off') {
+        expect(context.match(/RETRIEVED_\d/g)).toHaveLength(2);
+        expect(context.match(/complete detail /g)).toHaveLength(1200);
+        expect(JSON.stringify(seen)).not.toContain('CLIENT_EARLIER');
+      } else {
+        expect(JSON.stringify(seen)).not.toContain('RETRIEVED_');
+        expect(query).not.toHaveBeenCalled();
+      }
+      for (const round of rounds) {
+        if (round.role === 'tool') {
+          const delivered = modelMessages.find(
+            (message) => message.tool_call_id === round.tool_call_id,
+          );
+          expect(delivered?.content).toContain(round.content);
+        } else {
+          expect(modelMessages).toContainEqual(round);
+        }
+      }
+      if (clientHistory === 'off')
+        expect(query).toHaveBeenLastCalledWith(
+          expect.anything(),
+          2,
+          expect.objectContaining({ caller }),
+        );
+    }
+    // Use the production completion hook, with collection context attached.
+    // Recall waits for the registered write; the stored request stays verbatim.
+    recordTurn(caller, withRagContext(current, 'NOT_USER_TEXT'), answer);
+    await router.query(
+      new TextOnlyEmbedding('current request'),
+      2,
+      callOptionsFor(caller),
+    );
+    expect(await router.listTurns(caller)).toContainEqual(
+      expect.objectContaining({
+        userText: 'current request',
+        assistantText: answer,
+      }),
+    );
+    expect(JSON.stringify(await router.listTurns(caller))).not.toContain(
+      'NOT_USER_TEXT',
+    );
+    expect(messages).toHaveLength(
+      (clientHistory === 'off' ? 2 : 4) + rounds.length,
+    );
+    await router.forgetSessionHistory(caller.sessionId);
+    chat.mockRestore();
+  },
+);
+
+test('real dialogue corrections through the production planner retain ORIGINAL_REQUEST constraints', async () => {
+  initProviders(await startProviders(config));
+  const caller: RagCaller = {
+    userId: 'history-user',
+    sessionId: 'dialogue-correction',
+    isAdmin: false,
+  };
+  await getHubRagAccess().access.bindings.bind(caller.sessionId, caller.userId);
+  const calls: Message[][] = [];
+  jest.spyOn(llm, 'chat').mockImplementation(async (messages) => {
+    calls.push(messages);
+    const result = await new PlannerToolsClient().callTool('plan_update', {
+      steps: [{ id: 'read', goal: 'Read table ZSAFE' }],
+      status: calls.length === 1 ? 'active' : 'waiting_user',
+      ...(calls.length === 1 ? {} : { question: 'Proceed with the read?' }),
+    });
+    if (!result.ok || result.value.isError)
+      throw new Error('plan update failed');
+    return {
+      ok: true,
+      value: { content: 'Plan updated', finishReason: 'stop' },
+    };
+  });
+  const planner = await buildPlannerAgent(
+    { ...config, agent: { ...config.agent, clientHistory: 'off' } },
+    'Keep the original request constraints during corrections.',
+    new PlannerToolsClient(),
+  );
+  const session = await DialogueSession.open({
+    id: caller.sessionId,
+    caller,
+    planner,
+    maxCorrections: 2,
+    board: { workers: new Map(), maxConcurrent: 1, maxTasks: 10 },
+  });
+  try {
+    await session.send('ORIGINAL_REQUEST: only read table ZSAFE; never write.');
+    expect(calls).toHaveLength(2);
+    const correction = JSON.stringify(calls[1]);
+    expect(correction).toContain(
+      'ORIGINAL_REQUEST: only read table ZSAFE; never write.',
+    );
+    expect(correction).toContain('[actions]');
+    expect(correction).toContain('[check]');
+  } finally {
+    await session.close();
+  }
+});

@@ -24,6 +24,7 @@ Edit `.mtaext` and set:
 
 - **LLM_AGENT_MODEL**: Your LLM model name (e.g., `gpt-4o-mini`, `claude-3-5-sonnet`, `deepseek-chat`)
 - **LLM_AGENT_TEMPERATURE**: Unset uses the provider/model default; set a number to override; `off` explicitly omits the parameter.
+- **LLM_AGENT_CLIENT_HISTORY**: `off` (default) keeps the last user message and following assistant/tool messages; `on` forwards all client messages, subject to `LLM_AGENT_HISTORY_RECENCY_WINDOW`. Only off retrieves earlier complete turns from session history RAG using `LLM_AGENT_RAG_QUERY_K` (code 5; base deployment 15). Only `off` and `on` are accepted; invalid values fail startup. See [CONFIG_USAGE](../llm-agent/CONFIG_USAGE.md).
 - **LLM_AGENT_PROMPT_CACHING**: `on` (default) or `off`; `true`/`false` are aliases. Optional `LLM_AGENT_COORDINATOR_PROMPT_CACHING`, `LLM_AGENT_PLANNER_PROMPT_CACHING`, `LLM_AGENT_EXECUTOR_PROMPT_CACHING`, `LLM_AGENT_CHECKER_PROMPT_CACHING` and `LLM_AGENT_CLASSIFIER_PROMPT_CACHING` override global for each role (classifier also covers helpers). Empty inherits; invalid values fail startup. See [CONFIG_USAGE](../llm-agent/CONFIG_USAGE.md).
 - **LLM_AGENT_MAX_TOKENS**: Max tokens (default: `2000`)
 - **LLM_AGENT_MCP_DESTINATION**: BTP Destination name for ABAP connection

@@ -12,6 +12,7 @@ import type {
   Message,
   PlannerMessage,
   PlannerMessageUsage,
+  PlannerRequestRecord,
   TaskRecord,
   TokenUsage,
   ToolCallRecord,
@@ -24,6 +25,7 @@ import {
   type RagCaller,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  DefaultPlannerContextBuilder,
   DialogueSession,
   PlannerToolsClient,
   SemaphorePool,
@@ -85,7 +87,11 @@ import {
   migrateDialogueToolContract,
   touchDialogueState,
 } from './dialogue-store';
-import { clientTurnId, turnSource } from './dialogue-turn-source';
+import {
+  clientTurnId,
+  clientTurnMessages,
+  turnSource,
+} from './dialogue-turn-source';
 import { clearExecutionLimits, getExecutionLimits } from './execution-limits';
 import { admitBackground, type PipelineSession } from './gatekeeper';
 import { isLlmFailure, llmFailure, observeLlmSpend } from './llm-failure';
@@ -120,6 +126,7 @@ import {
   type SessionLlms,
 } from './session-llms';
 import { sessionSlot as slot } from './session-slot';
+import { recordTurn, waitForSessionTurns } from './session-turns';
 import { evaluateGated } from './step-reviewer';
 import { cachedSystemIdentity } from './system-identity-cache';
 import { createTaskResultStore } from './task-result-store';
@@ -138,6 +145,19 @@ interface TurnCaller {
   ragCaller?: RagCaller;
   userId: string;
   identity: RagCallerIdentity;
+}
+
+interface HistoryTurn {
+  id: string;
+  caller: RagCaller;
+  text: string;
+  answer: string;
+  tasks: Set<string>;
+  taskAnswers: Map<string, string>;
+  recorded: boolean;
+  consumerMessages: Message[];
+  clientLoop: Message[];
+  transcript: NonNullable<PlannerRequestRecord['transcript']>;
 }
 
 export interface PlannerCounts {
@@ -797,9 +817,83 @@ async function open(
     };
   };
   const taskCallers = new Map<string, TurnCaller>();
-  const pendingEventCallers: TurnCaller[] = [];
+  // Client turns survive any number of internal planner turns and task events.
+  // Task ownership, rather than message roles or the latest send(), ties late
+  // replies back to their original request, including when sends are queued.
+  const historyTurns = new Map<string, HistoryTurn>();
+  const queuedHistoryTurns: HistoryTurn[] = [];
+  const taskHistoryTurns = new Map<string, HistoryTurn[]>();
+  const completedHistoryTasks = new Set<string>();
+  let activeHistoryTurns: HistoryTurn[] = [];
+  let historyBoundary: { requestId?: string; offset: number } = { offset: 0 };
+  const currentTurnTranscript = (request: PlannerRequestRecord | undefined) => {
+    const transcript = request?.transcript ?? [];
+    const offset =
+      request?.id === historyBoundary.requestId ? historyBoundary.offset : 0;
+    // Library transcript bounds can remove older entries while appending.
+    return transcript.slice(
+      Math.min(offset, Math.max(0, transcript.length - 1)),
+    );
+  };
+  const historyAnswer = (text: string) => {
+    for (const turn of activeHistoryTurns) turn.answer = stripNoMessage(text);
+  };
+  const finishHistory = (turns: Iterable<HistoryTurn> = activeHistoryTurns) => {
+    for (const turn of turns) {
+      if (turn.recorded || turn.tasks.size || !turn.answer.trim()) continue;
+      turn.recorded = true;
+      recordTurn(
+        turn.caller,
+        { role: 'user', content: turn.text },
+        turn.answer,
+        turn.id,
+      );
+    }
+  };
   const pendingEventTasks: string[] = [];
   let eventCaller: TurnCaller | undefined;
+  let historyEventTurn = false;
+  const resolveEventHistory = (request: PlannerRequestRecord | undefined) => {
+    if (!historyEventTurn) return;
+    // The library's turn-start signal has no event payload. Read task IDs from
+    // its tagged event entries (including corrective notes), never client prose.
+    // This covers inactivity/long-running notices as well as terminal outcomes.
+    const ids = new Set<string>();
+    for (const message of currentTurnTranscript(request)) {
+      if (message.internalKind !== 'events' && message.internalKind !== 'note')
+        continue;
+      for (const line of (message.content ?? '').split('\n')) {
+        const match = line.match(
+          /^\[(?:task events|actions)\](?: from [^:]+:)? (?:- |task )?(\S+)/,
+        );
+        if (match && taskHistoryTurns.has(match[1])) ids.add(match[1]);
+      }
+    }
+    activeHistoryTurns = [
+      ...new Set([...ids].flatMap((id) => taskHistoryTurns.get(id) ?? [])),
+    ];
+    for (const id of ids)
+      if (completedHistoryTasks.has(id))
+        for (const turn of taskHistoryTurns.get(id) ?? [])
+          turn.tasks.delete(id);
+    const callers = [...ids].flatMap((id) => {
+      const caller = taskCallers.get(id);
+      return caller ? [caller] : [];
+    });
+    const origin = callers[0];
+    eventCaller = origin
+      ? {
+          ...origin,
+          identity: {
+            ...origin.identity,
+            admin: callers.every(
+              (caller) =>
+                caller.identity.admin && caller.userId === origin.userId,
+            ),
+          },
+        }
+      : undefined;
+  };
   const unsubscribeTaskCaller = signals.on(
     'dialogue.task.state',
     ({ payload: { task, previous } }) => {
@@ -825,6 +919,8 @@ async function open(
       }
       if (task.state !== 'queued') queuedActivity.delete(task.id);
       if (task.state === 'queued' && previous === undefined) {
+        taskHistoryTurns.set(task.id, [...activeHistoryTurns]);
+        for (const turn of activeHistoryTurns) turn.tasks.add(task.id);
         taskCallers.set(task.id, {
           userId: getRequestUserId() ?? userId,
           ragCaller: trustedCaller.getStore() ?? boundCaller.value,
@@ -836,10 +932,15 @@ async function open(
         task.state === 'failed' ||
         task.state === 'stopped'
       ) {
+        for (const turn of taskHistoryTurns.get(task.id) ?? []) {
+          if (!turn.taskAnswers.has(task.id))
+            turn.taskAnswers.set(
+              task.id,
+              task.error ?? task.output ?? `Task ${task.id} ${task.state}.`,
+            );
+        }
+        completedHistoryTasks.add(task.id);
         pendingEventTasks.push(task.id);
-        const caller = taskCallers.get(task.id);
-        if (caller) pendingEventCallers.push(caller);
-        taskCallers.delete(task.id);
       }
     },
     { source: slot(userId, key) },
@@ -848,21 +949,23 @@ async function open(
     'dialogue.turn.started',
     ({ payload: { trigger } }) => {
       eventCaller = undefined;
-      if (trigger !== 'event') return;
-      const callers = pendingEventCallers.splice(0);
-      const origin = callers[0];
-      if (origin)
-        eventCaller = {
-          ...origin,
-          // A batched event turn must not gain privileges from another task.
-          identity: {
-            ...origin.identity,
-            admin: callers.every(
-              (caller) =>
-                caller.identity.admin && caller.userId === origin.userId,
-            ),
-          },
-        };
+      historyEventTurn = trigger === 'event';
+      const request = session
+        ?.snapshot()
+        .requests?.find((item) => item.closedAt === undefined);
+      // Every library turn owns only its new transcript entries. Late events
+      // prepend their client owner's saved work, never an intervening turn.
+      historyBoundary = {
+        requestId: request?.id,
+        offset: request?.transcript?.length ?? 0,
+      };
+      if (trigger !== 'event') {
+        const turn = queuedHistoryTurns.shift();
+        if (turn) turn.transcript = [];
+        activeHistoryTurns = turn ? [turn] : [];
+        return;
+      }
+      activeHistoryTurns = [];
     },
     { source: slot(userId, key) },
   );
@@ -980,6 +1083,39 @@ async function open(
   const unsubscribeSettled = signals.on(
     'dialogue.turn.settled',
     async ({ payload: { outcome, trigger } }) => {
+      const request = session
+        ?.snapshot()
+        .requests?.find((item) => item.closedAt === undefined);
+      const transcript = currentTurnTranscript(request);
+      for (const turn of activeHistoryTurns)
+        turn.transcript.push(...transcript);
+      // Corrections may consume completed task events within the same library
+      // turn. Otherwise retain ownership until the background event is handled.
+      const activity = signals.last('dialogue.activity', slot(userId, key));
+      const consumedHistoryTurns = new Set<HistoryTurn>();
+      if ((activity?.payload.queuedInputs ?? 0) <= queuedHistoryTurns.length) {
+        for (const id of completedHistoryTasks) {
+          for (const turn of taskHistoryTurns.get(id) ?? []) {
+            turn.tasks.delete(id);
+            consumedHistoryTurns.add(turn);
+          }
+          taskHistoryTurns.delete(id);
+          taskCallers.delete(id);
+        }
+        completedHistoryTasks.clear();
+      }
+      // A later client turn can consume an earlier turn's task events during
+      // correction. The earlier turn gets its own full task results; only the
+      // active turn gets the coordinator's combined final answer.
+      const earlierHistoryTurns: HistoryTurn[] = [];
+      for (const turn of consumedHistoryTurns)
+        if (!activeHistoryTurns.includes(turn)) {
+          turn.answer = [...turn.taskAnswers.values()].join('\n\n');
+          earlierHistoryTurns.push(turn);
+        }
+      // Their results are final even if the later correction itself failed.
+      finishHistory(earlierHistoryTurns);
+      if (outcome === 'ok') finishHistory();
       settledSeq++;
       if (outcome === 'failed') {
         lastFailedSeq = settledSeq;
@@ -1021,6 +1157,7 @@ async function open(
   ) =>
     withSessionSettings(userId, key, () =>
       runWithToolScope(coordinatorToolScope, async () => {
+        await waitForSessionTurns(key, options.signal);
         // Reset the library's legacy malformed-verdict failure before decisions.
         const current = session?.snapshot();
         const resetSteps = current && unusableCheckerPlanSteps(current);
@@ -1222,12 +1359,53 @@ async function open(
       coordinatorResolver,
     );
     let coordinatorToolResolver = await coordinatorResolver();
-    session = await DialogueSession.open({
-      caller: boundCaller.value,
-      resultStore: createTaskResultStore(() => getCollectionRegistry(), {
+    const taskResultStore = createTaskResultStore(
+      () => getCollectionRegistry(),
+      {
         userId,
         sessionKey: key,
-      }),
+      },
+    );
+    session = await DialogueSession.open({
+      plannerContextBuilder: {
+        build(input) {
+          resolveEventHistory(input.open);
+          const currentTranscript = [
+            ...activeHistoryTurns.flatMap((turn) => turn.transcript),
+            ...currentTurnTranscript(input.open),
+          ];
+          const clientLoop = activeHistoryTurns.flatMap(
+            (turn) => turn.clientLoop,
+          );
+          const current = new DefaultPlannerContextBuilder().build({
+            ...input,
+            memory: [],
+            open: input.open
+              ? { ...input.open, transcript: currentTranscript }
+              : undefined,
+          });
+          // The library's prose projector drops null-content tool-call messages.
+          if (clientLoop.length) current.splice(1, 0, ...clientLoop);
+          // Earlier dialogue transcripts are storage, not an alternate prompt source.
+          // Only the consumer's explicit messages can precede the current turn on on.
+          const supplied =
+            config.agent.clientHistory === 'on'
+              ? activeHistoryTurns.flatMap((turn) => turn.consumerMessages)
+              : [];
+          return [...supplied, ...current];
+        },
+      },
+      caller: boundCaller.value,
+      resultStore: {
+        ...taskResultStore,
+        put(task, options) {
+          // TaskRecord.output is bounded; retain the canonical full result for
+          // history before a later turn can consume its completion event.
+          for (const turn of taskHistoryTurns.get(task.id) ?? [])
+            turn.taskAnswers.set(task.id, task.output);
+          return taskResultStore.put(task, options);
+        },
+      },
       toolTrust: (name) =>
         destinationHandle.toolTrustFor?.(coordinatorToolResolver)(name),
       profileSource: source,
@@ -1296,6 +1474,11 @@ async function open(
         preparePlanner: async (input, options) =>
           withSessionSettings(userId, key, () =>
             runWithToolScope(coordinatorToolScope, async () => {
+              resolveEventHistory(
+                session
+                  ?.snapshot()
+                  .requests?.find((item) => item.closedAt === undefined),
+              );
               coordinatorToolResolver = trustResolver.forProfile(input);
               const result = await withCoordinatorRun(
                 async (run) =>
@@ -1390,6 +1573,18 @@ async function open(
           const text = stripNoMessage(
             typeof assistant?.content === 'string' ? assistant.content : '',
           );
+          // The library has now applied corrections and recomputed plan status.
+          // User sends have no onMessage callback; read their final saved reply.
+          if (activeHistoryTurns.length) {
+            const lastAssistant = [...state.conversation]
+              .reverse()
+              .find((message) => message.role === 'assistant');
+            historyAnswer(
+              typeof lastAssistant?.content === 'string'
+                ? lastAssistant.content
+                : '',
+            );
+          }
           await outbox.upsert(
             turnReply && text.trim()
               ? [
@@ -1527,6 +1722,7 @@ async function open(
       },
       onMessage(message) {
         if (stopped) return;
+        historyAnswer(message.text);
         void outbox
           .add(
             withFailedWorkerUsage([message, ...(session?.takePending() ?? [])]),
@@ -1586,6 +1782,38 @@ async function open(
   const send = session.send.bind(session);
   session.send = (text, options = {}) => {
     options = sessionOptions(options);
+    // send accepts only the new client text. All later planner/delegation
+    // histories are hub-owned and must pass through without role-based cuts.
+    const historyId = `dialogue:${clientTurnId.getStore() ?? randomUUID()}`;
+    let historyTurn = historyTurns.get(historyId);
+    if (!historyTurn) {
+      const clientMessages = clientTurnMessages.getStore() ?? [];
+      let clientUserIndex = clientMessages.length - 1;
+      while (
+        clientUserIndex >= 0 &&
+        clientMessages[clientUserIndex].role !== 'user'
+      )
+        clientUserIndex--;
+      historyTurn = {
+        id: historyId,
+        caller: options.caller ?? boundCaller.value,
+        text,
+        answer: '',
+        tasks: new Set(),
+        taskAnswers: new Map(),
+        recorded: false,
+        transcript: [],
+        consumerMessages: clientMessages.slice(0, Math.max(0, clientUserIndex)),
+        clientLoop:
+          clientUserIndex < 0
+            ? []
+            : clientMessages
+                .slice(clientUserIndex + 1)
+                .filter((message) => message.role !== 'system'),
+      };
+      historyTurns.set(historyId, historyTurn);
+    }
+    queuedHistoryTurns.push(historyTurn);
     emit({
       kind: 'turn',
       source: turnSource.getStore() ?? 'mcp',

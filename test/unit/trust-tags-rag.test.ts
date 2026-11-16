@@ -26,6 +26,7 @@ import { turnOwner } from '../../srv/lib/history-turn';
 import { planAuthorContextNotes } from '../../srv/lib/planner-memory';
 import { createHubRagAccess, initHubRagAccess } from '../../srv/lib/rag-access';
 import { withCompactRagSearch } from '../../srv/lib/rag-search-context';
+import { historyCollectionName } from '../../srv/lib/session-history-collection';
 import { parseTrustDefaults } from '../../srv/lib/trust';
 import { TrustResolver } from '../../srv/lib/trust-resolver';
 import { TrustStore } from '../../srv/lib/trust-store';
@@ -249,18 +250,19 @@ test('session history overwrites spoofed provenance with role session defaults',
     ...rag,
     query: async () => ({ ok: true, value: [historyRow] }),
   };
+  const provider = historyTestProvider(inner);
   const history = new SessionHistoryRag(
-    historyTestProvider(inner),
+    provider,
     () => turnOwner('alice', 'trust-history'),
     undefined,
     {
       trustResolver: () => resolver,
     },
   );
-  await history.recordTurn({
-    owner: turnOwner('alice', 'trust-history'),
-    userText: 'q',
-    assistantText: 'a',
+  await provider.createCollection(historyCollectionName('trust-history'), {
+    scope: 'session',
+    sessionId: 'trust-history',
+    collectionName: historyCollectionName('trust-history'),
   });
   expect(await tag(history)).toBe('[source: session; trust 4]\ntext');
 });

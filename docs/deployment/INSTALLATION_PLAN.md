@@ -149,11 +149,12 @@ parameter out. Add one only when you actually need to change the behaviour:
 | Parameter | Default | When you need it |
 |-----------|---------|------------------|
 | `LLM_AGENT_CLASSIFIER_MODEL` | falls back to `LLM_AGENT_MODEL` | Only to route classification to a cheaper model. A separate deployed model is not a prerequisite |
+| `LLM_AGENT_CLIENT_HISTORY` | `off` | `off`: keep the last user message and its following tool/assistant messages; earlier complete turns come from session history RAG. `on`: forward consumer messages, subject to `LLM_AGENT_HISTORY_RECENCY_WINDOW`, without history RAG retrieval. Both modes record turns. Only `off` and `on` are accepted; blank uses the default. History retrieval uses `LLM_AGENT_RAG_QUERY_K` (code 5; base deployment 15). |
 | `LLM_AGENT_PROMPT_CACHING` | `on` | Set `off` to switch prompt caching off; `true`/`false` are aliases. Optional `LLM_AGENT_COORDINATOR_PROMPT_CACHING`, `LLM_AGENT_PLANNER_PROMPT_CACHING`, `LLM_AGENT_EXECUTOR_PROMPT_CACHING`, `LLM_AGENT_CHECKER_PROMPT_CACHING` and `LLM_AGENT_CLASSIFIER_PROMPT_CACHING` override global; empty inherits. Invalid values fail startup. |
 | `LLM_AGENT_EMBEDDING_MODEL` | `text-embedding-3-small` | Only when your provider names the model differently |
 | `LLM_AGENT_RAG_TYPE` | `in-memory` (keyword-only) | Set to `vector` for semantic tool selection — requires a reachable embeddings endpoint |
 | `DESTINATION_MAPPING` | empty | Only for CALM or other external callers that address systems as `DEV.100` instead of a destination name |
-| `LLM_AGENT_RAG_QUERY_K` | `15` in `mta.yaml` (code fallback is `5`) | Legacy budget for other RAG stores |
+| `LLM_AGENT_RAG_QUERY_K` | `15` in `mta.yaml` (code fallback is `5`) | Complete history turns per retrieval and legacy budget for other RAG stores |
 | `LLM_AGENT_TOOLS_K_READER` | `5` | Reader seed tools per query; positive integer |
 | `LLM_AGENT_TOOLS_K_WRITER` | `2` | Writer seed tools per query; positive integer. Write roles expand object clusters within their allowed tools |
 | `LLM_AGENT_TOOLS_SELECTION` | `step-kind` | RO reader top-k, RW writer clusters, UNKNOWN union; choose `per-collection` for reader top-k plus writer clusters on every step. Invalid values refuse startup |

@@ -15,6 +15,7 @@ jest.mock('../../srv/lib/llm-factory', () => ({
 import { LlmError } from '@mcp-abap-adt/llm-agent';
 import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import { chatSessionBodyTests } from './helpers/chat-session-body';
+import { clientToolHistoryTests } from './helpers/client-tool-history';
 
 // Bootstrap logging is tested with real CAP in logging-config.test.ts.
 jest.mock('../../srv/lib/logging-config', () => ({
@@ -137,6 +138,8 @@ function call(
 
 beforeEach(() => harness.reset());
 afterEach(() => configure());
+
+clientToolHistoryTests('openai', body, call);
 
 describe('/v1/chat/completions at the door', () => {
   it('refuses in the OpenAI envelope, with no Retry-After, after resolving the agent', async () => {
@@ -1216,25 +1219,49 @@ responseModelTests(body, (b, session) =>
   call(b, undefined, undefined, undefined, session),
 );
 
-test('client-managed history retains existing normalization and trimming', async () => {
-  const received: string[] = [];
-  harness.process = async (messages) => {
-    received.push(JSON.stringify(messages));
-    return { ok: true, value: { content: 'done' } };
-  };
-  const messages = [
-    { role: 'user', content: 'earlier question' },
-    { role: 'assistant', content: 'a'.repeat(3000) },
-    { role: 'user', content: 'follow-up' },
-  ];
-  await call({ ...body(), messages }).done;
-  expect(received).toHaveLength(1);
-  const context = received[0];
-  expect(context).toContain('earlier question');
-  expect(context).toContain('follow-up');
-  expect(context).not.toContain('a'.repeat(3000));
-  expect(context).toContain('a'.repeat(500));
-});
+test.each([undefined, 'off', 'on'] as const)(
+  'client-managed history normalizes full messages without character trimming (clientHistory=%s)',
+  async (clientHistory) => {
+    const agentConfig = jest.requireMock<
+      typeof import('../../srv/agent-config')
+    >('../../srv/agent-config');
+    const config = agentConfig.getAgentConfig();
+    const configured = jest
+      .spyOn(agentConfig, 'getAgentConfig')
+      .mockReturnValue({
+        ...config,
+        agent: { ...config.agent, clientHistory },
+      });
+    const received: string[] = [];
+    harness.process = async (messages) => {
+      received.push(JSON.stringify(messages));
+      return { ok: true, value: { content: 'done' } };
+    };
+    const messages = [
+      { role: 'user', content: [{ type: 'text', text: 'earlier question' }] },
+      { role: 'assistant', content: 'a'.repeat(9000) },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'follow-up'.repeat(1000) }],
+      },
+    ];
+    try {
+      await call({ ...body(), messages }).done;
+      expect(received).toHaveLength(1);
+      expect(JSON.parse(received[0])).toEqual([
+        ...(clientHistory === 'on'
+          ? [
+              { role: 'user', content: 'earlier question' },
+              { role: 'assistant', content: 'a'.repeat(9000) },
+            ]
+          : []),
+        { role: 'user', content: 'follow-up'.repeat(1000) },
+      ]);
+    } finally {
+      configured.mockRestore();
+    }
+  },
+);
 
 describe('history records only completed calls', () => {
   test.each([
@@ -1252,7 +1279,9 @@ describe('history records only completed calls', () => {
     res.write = (chunk) => {
       if (
         chunk.includes('[DONE]') &&
-        (outcome === 'success' || outcome === 'disconnect after terminal')
+        (outcome === 'success' ||
+          outcome === 'disconnect' ||
+          outcome === 'disconnect after terminal')
       )
         expect(recorded).toHaveBeenCalledTimes(1);
       const result = write(chunk);
@@ -1273,7 +1302,9 @@ describe('history records only completed calls', () => {
     try {
       await call(body(true), res).done;
       expect(recorded).toHaveBeenCalledTimes(
-        outcome === 'success' || outcome === 'disconnect after terminal'
+        outcome === 'success' ||
+          outcome === 'disconnect' ||
+          outcome === 'disconnect after terminal'
           ? 1
           : 0,
       );
@@ -1282,6 +1313,7 @@ describe('history records only completed calls', () => {
           expect.objectContaining({ userId: 'alice' }),
           expect.objectContaining({ role: 'user', content: 'hi' }),
           'partial answer',
+          expect.stringMatching(/^client:/),
         );
     } finally {
       recorded.mockRestore();
@@ -1307,7 +1339,9 @@ describe('history records only completed calls', () => {
         if (outcome === 'exception')
           await expect(done).rejects.toThrow('call failed');
         else await done;
-        expect(recorded).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
+        expect(recorded).toHaveBeenCalledTimes(
+          outcome === 'success' || outcome === 'disconnect' ? 1 : 0,
+        );
       } finally {
         recorded.mockRestore();
       }

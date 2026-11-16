@@ -23,12 +23,8 @@ import {
   storePrefixFor,
 } from './collection-persistence';
 import { collectionEnabled } from './collection-toggle';
-import { turnOwner } from './history-turn';
 import { plannerContext, plannerMemoryStore } from './planner-context';
-import {
-  forgetScopedPlannerMemory,
-  scopedPlannerMemory,
-} from './planner-memory-scope';
+import { forgetScopedPlannerMemory } from './planner-memory-scope';
 import { fingerprintHash } from './tool-corpus';
 import {
   resolverFor,
@@ -92,18 +88,8 @@ export async function plannerSessionOptions(
   try {
     const embedding = getProviders().embedding;
     return await plannerContext({
-      memory: () => {
-        const rag = getSharedPlannerMemoryRag();
-        return rag
-          ? trustedRetrievalStore(
-              scopedPlannerMemory(rag, turnOwner(userId, key), key),
-              async () =>
-                typeof resolver === 'function'
-                  ? resolver()
-                  : (resolver ?? resolverFor(getCollectionRegistry())),
-            )
-          : undefined;
-      },
+      // A second session memory would bypass the exclusive history source.
+      memory: () => undefined,
       embedding: embedding
         ? {
             retrieval: embedding.retrieval,

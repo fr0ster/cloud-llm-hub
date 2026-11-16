@@ -190,7 +190,7 @@ afterEach(() => {
 const visible = 'one\n\ntwo\n\nanswer';
 for (const initial of ['', 'NO_MESSAGE', 'answer']) {
   for (const following of [false, true]) {
-    it(`openai records history and recall once: initial=${JSON.stringify(initial)}, follow=${following}`, async () => {
+    it(`openai stores delivered history without duplicating session recall: initial=${JSON.stringify(initial)}, follow=${following}`, async () => {
       emptyPending = true;
       const record = jest
         .spyOn(sessionTurns, 'recordTurn')
@@ -214,7 +214,7 @@ for (const initial of ['', 'NO_MESSAGE', 'answer']) {
         expect(record).not.toHaveBeenCalled();
         if (following) {
           jest.mocked(outbox.pending).mockImplementation(() => {
-            // Recall must wait until the follow's visible answer is collected.
+            // Delivery must not record a second turn over session-owned recall.
             expect(record).not.toHaveBeenCalled();
             return [
               {
@@ -241,12 +241,9 @@ for (const initial of ['', 'NO_MESSAGE', 'answer']) {
           { role: 'user', content: 'hi' },
           ...(answer ? [{ role: 'assistant', content: answer }] : []),
         ]);
-        expect(record).toHaveBeenCalledTimes(1);
-        expect(record).toHaveBeenCalledWith(
-          { sessionId: session.key, userId: 'alice', isAdmin: true },
-          expect.objectContaining({ role: 'user', content: 'hi' }),
-          answer,
-        );
+        // dialogueFor is mocked here. The real session records its full turn;
+        // the channel only maintains the separately assembled delivery history.
+        expect(record).not.toHaveBeenCalled();
       } finally {
         record.mockRestore();
       }
@@ -1799,13 +1796,14 @@ for (const anthropic of [false, true]) {
     'disconnect before terminal',
     'disconnect after terminal',
   ] as const) {
-    it(`records dialogue exactly once after success (anthropic=${anthropic}, mode=${mode})`, async () => {
+    it(`leaves recall to the dialogue session (anthropic=${anthropic}, mode=${mode})`, async () => {
       const recorded = jest
         .spyOn(sessionTurns, 'recordTurn')
         .mockImplementation(() => {});
       const req = streamingRequest();
       req.body.stream = mode !== 'non-stream';
       const res = fakeRes();
+      const disconnect = jest.spyOn(res, 'disconnect');
       const terminal = anthropic ? 'event: message_stop' : 'data: [DONE]';
       const write = res.write.bind(res);
       res.write = (chunk) => {
@@ -1829,14 +1827,14 @@ for (const anthropic of [false, true]) {
           req,
           typedResponse(res),
         );
-        expect(recorded).toHaveBeenCalledTimes(
-          mode === 'disconnect before terminal' ? 0 : 1,
+        expect(recorded).not.toHaveBeenCalled();
+        expect(send).toHaveBeenCalledTimes(1);
+        expect(disconnect).toHaveBeenCalledTimes(
+          mode.startsWith('disconnect') ? 1 : 0,
         );
-        if (mode !== 'disconnect before terminal')
-          expect(recorded).toHaveBeenCalledWith(
-            expect.objectContaining({ userId: 'alice' }),
-            expect.objectContaining({ role: 'user', content: 'hi' }),
-            visible,
+        if (mode !== 'non-stream')
+          expect(res.body.includes(terminal)).toBe(
+            mode !== 'disconnect before terminal',
           );
       } finally {
         recorded.mockRestore();

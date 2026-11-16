@@ -55,6 +55,10 @@ import {
 } from '../../srv/lib/long-session';
 import { createHubRagAccess, initHubRagAccess } from '../../srv/lib/rag-access';
 import { historyCollectionName } from '../../srv/lib/session-history-collection';
+import {
+  assertToolSearchHealthy,
+  toolSearchFailure,
+} from '../../srv/lib/tool-search-health';
 import { collectionAggregateQuery } from '../../srv/lib/usage/storage-aggregates';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { appendToSession, sweepSessionHistory } from '../../srv/session-store';
@@ -300,17 +304,22 @@ describe('the per-session history catalog record', () => {
     ).toHaveLength(1);
   });
 
-  it('a backend that is down: the turn fails quietly; after the cool-down the next use opens the store', async () => {
+  it('a backend outage marks readiness unhealthy and repair replays the original turn', async () => {
     const warnings: unknown[] = [];
-    let now = 1_000_000;
+    const now = 1_000_000;
     const rag = history(() => ALICE, { warnings, clock: () => now });
     down = true;
     expect(
       await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' }),
     ).toBe(false);
     expect(warnings.length).toBeGreaterThan(0);
+    expect(toolSearchFailure()).toContain('Session history unavailable');
+    await expect(assertToolSearchHealthy()).rejects.toMatchObject({
+      statusCode: 503,
+    });
     down = false;
-    now += HISTORY_OPEN_COOL_DOWN_MS;
+    // Repair bypasses the read cooldown and persists the retained first turn.
+    await assertToolSearchHealthy();
     expect(
       await rag.recordTurn({
         owner: ALICE,
@@ -318,12 +327,12 @@ describe('the per-session history catalog record', () => {
         assistantText: 'a ZDEMO_LATER',
       }),
     ).toBe(true);
-    expect(await recall(rag, 'ZDEMO_LATER')).toHaveLength(1);
+    expect(await recall(rag, 'ZDEMO_LATER')).toHaveLength(2);
   });
 });
 
-describe('a failed open is kept for a cool-down', () => {
-  it('N calls in the window: one open warning plus a warning per failed turn', async () => {
+describe('failed history writes remain queued', () => {
+  it('subsequent turns do not write around an outage; repair drains all retained turns', async () => {
     const warnings: unknown[] = [];
     let now = 5_000_000;
     const provider = newProvider();
@@ -347,22 +356,24 @@ describe('a failed open is kept for a cool-down', () => {
           assistantText: 'a',
         }),
       ).toBe(false);
-      expect((await rag.query(new TextOnlyEmbedding('q'), 5)).ok).toBe(false);
       now += 1000;
     }
     expect(attempts).toBe(1);
-    expect(warnings).toHaveLength(6);
+    expect(warnings).toHaveLength(2);
+    await expect(
+      rag.query(new TextOnlyEmbedding('q'), 5),
+    ).rejects.toMatchObject({ statusCode: 503 });
+    expect(attempts).toBe(2);
 
     // Still down after the window: one new attempt, one new warning.
     now += HISTORY_OPEN_COOL_DOWN_MS;
     await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' });
     await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' });
     expect(attempts).toBe(2);
-    expect(warnings).toHaveLength(9);
 
     // Back up, after the next window: the store opens and the turn is kept.
     down = false;
-    now += HISTORY_OPEN_COOL_DOWN_MS;
+    await assertToolSearchHealthy();
     expect(
       await rag.recordTurn({
         owner: ALICE,
@@ -370,8 +381,8 @@ describe('a failed open is kept for a cool-down', () => {
         assistantText: 'a ZDEMO_BACK',
       }),
     ).toBe(true);
-    expect(attempts).toBe(3);
-    expect(await recall(rag, 'ZDEMO_BACK')).toHaveLength(1);
+    expect(toolSearchFailure()).toBeUndefined();
+    expect(await rag.listTurns(ALICE)).toHaveLength(8);
   });
 });
 

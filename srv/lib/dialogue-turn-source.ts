@@ -1,8 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { Message } from '@mcp-abap-adt/llm-agent';
 
 export const turnSource = new AsyncLocalStorage<'webui' | 'api' | 'mcp'>();
 
 export const clientTurnId = new AsyncLocalStorage<string | undefined>();
+export const clientTurnMessages = new AsyncLocalStorage<Message[]>();
 
 export function validatedClientTurnId(
   value: string | string[] | undefined,

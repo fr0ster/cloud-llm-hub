@@ -129,7 +129,7 @@ import {
   setSessionAgentsCollection,
   takeRevivalNotice,
 } from './lib/session-lifecycle';
-import { recordTurn } from './lib/session-turns';
+import { recordTurn, waitForSessionTurns } from './lib/session-turns';
 import {
   destinationClosedText,
   executeStepDoorRefusal,
@@ -433,6 +433,7 @@ async function executeStepRun(
       );
     }
 
+    await waitForSessionTurns(longSession.key, callerSignal);
     handle = await getSmartAgent(
       undefined,
       targetDestination,
@@ -622,7 +623,7 @@ async function executeStepRun(
       totalTokens: r.value.usage?.totalTokens,
       stopReason: r.value.stopReason,
     });
-    if (longSession && !callerSignal?.aborted && !admitted.signal?.aborted) {
+    if (longSession && !admitted.signal?.aborted) {
       const lastUser: Message = { role: 'user', content: task };
       appendToSession(sessionId, userId, lastUser, {
         role: 'assistant',

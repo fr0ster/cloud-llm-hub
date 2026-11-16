@@ -22,6 +22,7 @@ import {
   initSessionHistoryRouter,
   SessionHistoryRouter,
 } from '../../srv/lib/session-history-collection';
+import { assertToolSearchHealthy } from '../../srv/lib/tool-search-health';
 
 const a: RagCaller = { userId: 'u1', sessionId: 's1', isAdmin: false };
 const b: RagCaller = { ...a, sessionId: 's2' };
@@ -389,7 +390,7 @@ test('k counts full turns instead of chunks', async () => {
 test('failed history writes warn with identifiers and error class only', async () => {
   const warn = jest.fn();
   router = new SessionHistoryRouter(provider, { log: { warn } });
-  jest.spyOn(provider, 'createCollection').mockResolvedValue({
+  const create = jest.spyOn(provider, 'createCollection').mockResolvedValue({
     ok: false,
     error: new RagError('private user and assistant text'),
   });
@@ -407,6 +408,11 @@ test('failed history writes warn with identifiers and error class only', async (
     error: 'RagError',
   });
   expect(JSON.stringify(warn.mock.calls)).not.toContain('private');
+  create.mockRestore();
+  await assertToolSearchHealthy();
+  expect(await router.listTurns(a)).toContainEqual(
+    expect.objectContaining({ id: 'failed-turn' }),
+  );
 });
 
 test('turn ranking uses the best chunk score and warns for missing chunks', async () => {

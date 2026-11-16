@@ -4,6 +4,7 @@ import {
   type CallOptions,
   DuplicateCollectionError,
   FallbackQueryEmbedding,
+  httpStatusOf,
   type IQueryEmbedder,
   type IQueryEmbedding,
   type IRag,
@@ -20,7 +21,10 @@ import {
   type RagScanRecord,
   type Result,
   ragIdentityFilter,
+  retryAfterSecondsOf,
+  runWithThrottleRetry,
   stampRagOwner,
+  WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
 import {
   HISTORY_OPEN_COOL_DOWN_MS,
@@ -34,6 +38,16 @@ import {
   type StoredTurn,
 } from './history-turn';
 import { getHubRagAccess } from './rag-access';
+import {
+  sessionHistoryRepair,
+  sessionHistoryWrite,
+  withHistoryStoreTransport,
+} from './session-history-write-scope';
+import {
+  assertToolSearchHealthy,
+  markHubBackendFailure,
+  waitForBackendWork,
+} from './tool-search-health';
 import { resolverFor, type TrustResolver } from './trust-resolver';
 import { storageSnapshots } from './usage/storage-snapshot';
 import { storageEnabled } from './usage/storage-values';
@@ -45,6 +59,19 @@ export function historyCollectionName(sessionId: string): string {
 
 /** `created`: this call made the collection, so it starts empty. */
 type Handles = { rag: IRag; editor: IRagEditor; created?: true };
+
+interface QueuedTurn {
+  caller: RagCaller;
+  userText: string;
+  assistantText: string;
+  id: string;
+}
+
+interface TurnQueue {
+  turns: QueuedTurn[];
+  running?: Promise<boolean>;
+  failed: boolean;
+}
 
 /** History uses the session collection owner in the same provider catalog as other collections. */
 async function openHistory(
@@ -100,6 +127,7 @@ async function openHistory(
 }
 
 export interface SessionHistoryRouterOptions {
+  storeUrl?: string;
   queryEmbedder?: IQueryEmbedder;
   storageBackend?: string;
   storePrefix?: string;
@@ -117,6 +145,60 @@ export interface SessionHistoryRouterOptions {
 
 /** A single builder hook; every operation routes from the bound CallOptions.caller. */
 export class SessionHistoryRouter implements IRag, IRagEditor {
+  private readonly turnQueues = new Map<string, TurnQueue>();
+
+  /** A disconnect cancels only admission's wait, never an already owed write. */
+  async waitForTurns(sessionId: string, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    const queue = this.turnQueues.get(sessionId);
+    if (!queue) return;
+    const wait = async () => {
+      while (queue.turns.length) {
+        if (queue.running) await queue.running;
+        if (queue.failed) await assertToolSearchHealthy();
+      }
+    };
+    await waitForBackendWork(wait(), signal);
+  }
+
+  private drainTurns(sessionId: string, queue: TurnQueue): Promise<boolean> {
+    if (queue.running) return queue.running;
+    queue.running = (async () => {
+      while (queue.turns.length) {
+        const turn = queue.turns[0];
+        if (
+          !(await sessionHistoryWrite.run(true, () =>
+            withHistoryStoreTransport(this.options.storeUrl, () =>
+              this.storeTurn(turn),
+            ),
+          ))
+        ) {
+          queue.failed = true;
+          markHubBackendFailure(
+            queue,
+            'Session history unavailable: backend or embedder failed',
+            async () => {
+              this.failedOpens.delete(sessionId);
+              // The exact retained payload and IDs are replayed, not a dummy read.
+              return {
+                ok: await sessionHistoryRepair.run(true, () =>
+                  this.drainTurns(sessionId, queue),
+                ),
+              };
+            },
+          );
+          return false;
+        }
+        queue.turns.shift();
+      }
+      queue.failed = false;
+      this.turnQueues.delete(sessionId);
+      return true;
+    })().finally(() => {
+      queue.running = undefined;
+    });
+    return queue.running;
+  }
   private readonly writeContext = new AsyncLocalStorage<ReadonlySet<string>>();
   private readonly pending = new Map<
     string,
@@ -228,8 +310,10 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
   ): Promise<Result<RagResult[], RagError>> {
     const caller = await this.caller(options);
     if (!caller) return { ok: true, value: [] };
-    if (!this.writeContext.getStore()?.has(caller.sessionId))
+    if (!this.writeContext.getStore()?.has(caller.sessionId)) {
+      await this.waitForTurns(caller.sessionId, options?.signal);
       await Promise.allSettled(this.pending.get(caller.sessionId) ?? []);
+    }
     const opened = await this.open(caller.sessionId, false);
     if (!opened.ok) return opened;
     if (!opened.value) return { ok: true, value: [] };
@@ -588,41 +672,64 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
     id?: string;
   }): Promise<boolean> {
     if (!input.caller.sessionId.trim()) return false;
-    const turnId = input.id ?? `turn:${randomUUID()}`;
+    const sessionId = input.caller.sessionId;
+    const queue = this.turnQueues.get(sessionId) ?? {
+      turns: [],
+      failed: false,
+    };
+    this.turnQueues.set(sessionId, queue);
+    queue.turns.push({ ...input, id: input.id ?? `turn:${randomUUID()}` });
+    return queue.failed ? false : this.drainTurns(sessionId, queue);
+  }
+
+  private async storeTurn(input: QueuedTurn): Promise<boolean> {
+    const turnId = input.id;
     const warning = {
       sessionHash: historyCollectionName(input.caller.sessionId),
       turnId,
     };
     try {
-      const chunks = chunkTurn(input.userText, input.assistantText);
-      const createdAt = (this.options.now?.() ?? new Date()).toISOString();
-      // Start every write before awaiting: session deletion waits for all chunks.
-      const results = await Promise.all(
-        chunks.map((chunk, chunkIndex) =>
-          this.write(
-            chunks.length === 1
-              ? turnId
-              : `${turnId}:chunk:${chunkIndex.toString().padStart(8, '0')}`,
-            renderTurn(chunk.userText, chunk.assistantText),
-            {
-              turnId,
-              chunkIndex,
-              chunkCount: chunks.length,
-              userContinuation: chunk.userContinuation,
-              createdAt,
-              userTextLength: chunk.userText.length,
-            },
-            { caller: input.caller, sessionId: input.caller.sessionId },
-          ),
-        ),
+      return await runWithThrottleRetry(
+        async () => {
+          // Retry the catalog too: a store may throttle before an upsert is reached.
+          this.failedOpens.delete(input.caller.sessionId);
+          const chunks = chunkTurn(input.userText, input.assistantText);
+          const createdAt = (this.options.now?.() ?? new Date()).toISOString();
+          // Start every write before awaiting: session deletion waits for all chunks.
+          const outcomes = await Promise.allSettled(
+            chunks.map((chunk, chunkIndex) =>
+              this.write(
+                chunks.length === 1
+                  ? turnId
+                  : `${turnId}:chunk:${chunkIndex.toString().padStart(8, '0')}`,
+                renderTurn(chunk.userText, chunk.assistantText),
+                {
+                  turnId,
+                  chunkIndex,
+                  chunkCount: chunks.length,
+                  userContinuation: chunk.userContinuation,
+                  createdAt,
+                  userTextLength: chunk.userText.length,
+                },
+                { caller: input.caller, sessionId: input.caller.sessionId },
+              ),
+            ),
+          );
+          for (const outcome of outcomes) {
+            if (outcome.status === 'rejected') throw outcome.reason;
+            if (!outcome.value.ok) throw outcome.value.error;
+          }
+          return true;
+        },
+        {
+          key: `session-history-store:${this.options.storageBackend ?? 'local'}`,
+          strategy: new WaitAsTold({ fallbackBackoffMs: 2000 }),
+          isThrottled: (error) =>
+            error instanceof Error && httpStatusOf(error) === 429,
+          retryAfterSeconds: (error) =>
+            error instanceof Error ? retryAfterSecondsOf(error) : undefined,
+        },
       );
-      const result = results.find((result) => !result.ok) ?? results[0];
-      if (!result.ok)
-        this.options.log?.warn('Session history write failed', {
-          ...warning,
-          error: result.error.constructor.name,
-        });
-      return result.ok;
     } catch (error) {
       this.options.log?.warn('Session history write failed', {
         ...warning,
@@ -700,6 +807,7 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
   }
 
   async forgetSessionHistory(sessionId: string): Promise<void> {
+    await this.waitForTurns(sessionId);
     await Promise.allSettled(this.pending.get(sessionId) ?? []);
     try {
       const name = historyCollectionName(sessionId);
@@ -756,6 +864,15 @@ export function initSessionHistoryRouter(router: SessionHistoryRouter): void {
 }
 export async function forgetSessionHistory(sessionId: string): Promise<void> {
   await activeRouter?.forgetSessionHistory(sessionId);
+}
+
+/** Waiting does not create a provider when this process has never owed a turn. */
+export async function waitForSessionHistoryTurns(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  signal?.throwIfAborted();
+  await activeRouter?.waitForTurns(sessionId, signal);
 }
 
 /** Copy completely before deleting the shared store; stable ids make retries safe. */

@@ -3,6 +3,11 @@ import { normalizeAndValidateExternalTools } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import {
+  clientHistoryMessages,
+  clientHistoryTurnId,
+  hasPendingClientTools,
+} from './lib/client-history';
+import {
   registerClientTools,
   runWithClientTools,
 } from './lib/client-tool-trust';
@@ -90,7 +95,7 @@ import {
   type LongSessionRequest,
   releaseRequestConnection,
 } from './lib/session-connection';
-import { recordTurn } from './lib/session-turns';
+import { recordTurn, waitForSessionTurns } from './lib/session-turns';
 import {
   anthropicDoorRefusal,
   anthropicErrorPayload,
@@ -441,7 +446,11 @@ async function serveMessages(
       : undefined,
     cds.context?.user?.is('MCP_Admin') === true,
   );
-  let { messages } = normalized;
+  const historyTurnId = clientHistoryTurnId(normalized.messages);
+  let messages = clientHistoryMessages(
+    normalized.messages,
+    getAgentConfig().agent.clientHistory,
+  );
 
   log.info('Messages request', {
     stream,
@@ -611,6 +620,7 @@ async function serveMessages(
   let responseModel: string;
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
+    await waitForSessionTurns(sessionId, callerLeft.signal);
     responseModel = chatResponseModel(resolvedModel.model, getCurrentModel());
     handle = await getSmartAgent(
       currentRoleModel('coordinator') ?? resolvedModel.model,
@@ -760,6 +770,12 @@ async function serveMessages(
     ? undefined
     : collectionRetrieval(handle.agent);
   try {
+    await waitForSessionTurns(
+      sessionId,
+      pipeline.signal
+        ? AbortSignal.any([pipeline.signal, callerLeft.signal])
+        : callerLeft.signal,
+    );
     if (collections) {
       const retrieval = await collections.retrieve(
         req,
@@ -790,15 +806,9 @@ async function serveMessages(
       messages = retrieval.messages;
     }
     if (stream && useDialogue && early) {
-      const lastUser = messages
-        .filter((message) => message.role === 'user')
-        .at(-1);
       return await streamDialogue({
         stream: early,
         protocol: 'anthropic',
-        onEnd: (text) => {
-          if (lastUser) recordTurn(boundCaller.value, lastUser, text);
-        },
         model: () =>
           chatResponseModel(
             resolvedModel.model,
@@ -850,6 +860,7 @@ async function serveMessages(
       const measurement = requestMeasurement(req);
       let accumulatedContent = '';
       let streamSucceeded = false;
+      let pendingClientTools = false;
       let deliveredContent = false;
       let explicitMessages = false;
       let heldStop = undefined as { event?: string; data: string } | undefined;
@@ -874,6 +885,8 @@ async function serveMessages(
             const source = chatAgent.streamProcess(messages, agentOpts);
             const observed = (async function* () {
               for await (const chunk of source) {
+                if (chunk.ok)
+                  pendingClientTools ||= hasPendingClientTools(chunk.value);
                 if (!chunk.ok && streamError === undefined) {
                   requestMeasurement(req)?.end('error');
                   streamError = chunk.error;
@@ -921,10 +934,7 @@ async function serveMessages(
               if (event.event === 'message_stop') {
                 heldStop = event;
                 streamSucceeded =
-                  streamError === undefined &&
-                  !callerLeft.signal.aborted &&
-                  !agentOpts.signal?.aborted &&
-                  !out.detached;
+                  streamError === undefined && !agentOpts.signal?.aborted;
                 continue;
               }
               out.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
@@ -994,8 +1004,19 @@ async function serveMessages(
       const lastUser = messages
         .filter((message) => message.role === 'user')
         .at(-1);
-      if (streamSucceeded && lastUser && accumulatedContent)
-        recordTurn(boundCaller.value, lastUser, accumulatedContent);
+      if (
+        !useDialogue &&
+        streamSucceeded &&
+        !pendingClientTools &&
+        lastUser &&
+        accumulatedContent
+      )
+        recordTurn(
+          boundCaller.value,
+          lastUser,
+          accumulatedContent,
+          historyTurnId,
+        );
       // The held `message_stop` closes the message after any notice above.
       if (measurement && !explicitMessages && deliveredContent && !out.detached)
         requestMeasurement(req)?.messageDelivered();
@@ -1020,8 +1041,18 @@ async function serveMessages(
       const lastUser = messages
         .filter((message) => message.role === 'user')
         .at(-1);
-      if (lastUser && !callerLeft.signal.aborted && !agentOpts.signal?.aborted)
-        recordTurn(boundCaller.value, lastUser, result.value.content);
+      if (
+        !useDialogue &&
+        lastUser &&
+        !agentOpts.signal?.aborted &&
+        !hasPendingClientTools(result.value)
+      )
+        recordTurn(
+          boundCaller.value,
+          lastUser,
+          result.value.content,
+          historyTurnId,
+        );
       if (
         requestMeasurement(req) &&
         /\S/.test(result.value.content) &&

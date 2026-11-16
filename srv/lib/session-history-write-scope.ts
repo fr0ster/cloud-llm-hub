@@ -1,0 +1,61 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import {
+  httpStatusOf,
+  RagError,
+  retryAfterSecondsOf,
+  runWithThrottleRetry,
+  WaitAsTold,
+} from '@mcp-abap-adt/llm-agent';
+
+/** Shared providers select the existing strict embedding composition only for owed turns. */
+export const sessionHistoryWrite = new AsyncLocalStorage<true>();
+export const sessionHistoryRepair = new AsyncLocalStorage<true>();
+
+const storeTransport = new AsyncLocalStorage<string>();
+let installedFetch: typeof fetch | undefined;
+
+/** Qdrant's Result conversion discards HTTP headers. Observe 429 before that boundary.
+ * The adapter is process-wide, but only matching storage URLs in this async scope wait.
+ * Request bodies used by the provider are replayable JSON strings. */
+export function withHistoryStoreTransport<T>(
+  url: string | undefined,
+  run: () => T,
+): T {
+  if (!url) return run();
+  if (globalThis.fetch !== installedFetch) {
+    const transport = globalThis.fetch;
+    installedFetch = (input, init) => {
+      const store = storeTransport.getStore();
+      const address =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      if (!store || !(address === store || address.startsWith(`${store}/`)))
+        return transport(input, init);
+      return runWithThrottleRetry(
+        async () => {
+          const response = await transport(input, init);
+          if (response.status !== 429) return response;
+          await response.body?.cancel();
+          throw Object.assign(new RagError('Session history store throttled'), {
+            status: 429,
+            headers: response.headers,
+          });
+        },
+        {
+          key: `session-history-http:${store}`,
+          strategy: new WaitAsTold({ fallbackBackoffMs: 2000 }),
+          isThrottled: (error) =>
+            error instanceof Error && httpStatusOf(error) === 429,
+          retryAfterSeconds: (error) =>
+            error instanceof Error ? retryAfterSecondsOf(error) : undefined,
+          signal: init?.signal ?? undefined,
+        },
+      );
+    };
+    globalThis.fetch = installedFetch;
+  }
+  return storeTransport.run(url.replace(/\/$/, ''), run);
+}

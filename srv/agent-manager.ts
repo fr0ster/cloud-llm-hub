@@ -1,5 +1,11 @@
 import type { ToolTrust } from '@mcp-abap-adt/llm-agent';
 import { submitVerdictTool } from './lib/checker-verdict-tool';
+import {
+  type ClientHistory,
+  consumerHistoryRag,
+  coordinatorContextMessages,
+  withCoordinatorContext,
+} from './lib/client-history';
 import { clientToolTrust } from './lib/client-tool-trust';
 import { coordinatorModel } from './lib/coordinator-model';
 import {
@@ -216,9 +222,12 @@ import {
   requestToolGateDecision,
 } from './request-session';
 
-/** Keep generated verification steps inside the hub's checker tool scope. */
+/** Scope generated checks and gate cross-turn prompt context independently of storage. */
 export class CheckerAdaptiveController implements IAdaptiveController {
-  constructor(private readonly inner: IAdaptiveController) {}
+  constructor(
+    private readonly inner: IAdaptiveController,
+    _clientHistory: ClientHistory = 'off',
+  ) {}
   get name() {
     return this.inner.name;
   }
@@ -241,7 +250,9 @@ export class CheckerAdaptiveController implements IAdaptiveController {
     });
   }
   async plan(input: Parameters<IAdaptiveController['plan']>[0]) {
-    const result = await this.inner.plan(input);
+    // Previous runs bypass history RAG selection. Current-run check/revise data
+    // and the coordinator's persistent run store remain independent of this gate.
+    const result = await this.inner.plan({ ...input, previousRun: undefined });
     return {
       ...result,
       plan: { ...result.plan, steps: this.rewrite(result.plan.steps) },
@@ -1613,6 +1624,7 @@ export function getSharedHistoryRag(): SessionHistoryRouter {
       );
   const embedding = getProviders().embedding;
   sharedHistoryRag = new SessionHistoryRouter(provider, {
+    storeUrl: kind === 'qdrant' ? getAgentConfig().rag.qdrant?.url : undefined,
     queryEmbedder: embedding ? agentQueryEmbedder(embedding) : undefined,
     storageBackend: kind,
     trustResolver: () => resolverFor(getCollectionRegistry()),
@@ -3010,9 +3022,14 @@ export async function configureDestinationAgentBuilder(
     skipModelValidation,
     agent: {
       timeZone: config.timeZone,
+      historyAutoSummarizeLimit:
+        config.agent.clientHistory === 'on' ? undefined : Infinity,
       ...runLimitOptions(opts?.limitRole ?? 'executor', config.agent),
       mode: config.agent.mode,
-      historyRecencyWindow: config.agent.historyRecencyWindow,
+      historyRecencyWindow:
+        config.agent.clientHistory === 'on'
+          ? config.agent.historyRecencyWindow
+          : undefined,
       refreshToolsPerIteration: false,
       toolReselectPerIteration: true,
       ragQueryK: config.agent.ragQueryK,
@@ -3087,7 +3104,10 @@ export async function configureDestinationAgentBuilder(
 
   // Every destination agent recalls complete turns from its bound session,
   // independently of tool and skill retrieval.
-  const historyRag = getSharedHistoryRag();
+  const historyRag =
+    config.agent.clientHistory === 'on'
+      ? consumerHistoryRag
+      : getSharedHistoryRag();
   if (historyRag) builder.setHistoryRag(historyRag);
 
   // Mandatory skill pool. The builder vectorizes each skill into toolsRag as
@@ -3146,9 +3166,9 @@ export async function configureDestinationAgentBuilder(
   if (historyBudget)
     builder.withSessionManager(new SessionManager(historyBudget));
 
-  // Keep library summary writes on executors; controllers still retrieve
-  // complete session turns through the shared history router.
-  if (!opts?.skipRetrieval) builder.withHistorySummarization(20);
+  // Preserve legacy summarization only when forwarding client history.
+  if (!opts?.skipRetrieval && config.agent.clientHistory === 'on')
+    builder.withHistorySummarization(20);
 
   // Default hardcoded flow — matches PoC for minimal token overhead.
   // Tools store wrapped with ExpositionFilteringRag to strip ragFilter
@@ -3224,8 +3244,14 @@ export async function buildPlannerAgent(
       Boolean(authorClient) || config.llm.provider !== 'sap-ai-sdk',
     agent: {
       timeZone: config.timeZone,
+      historyAutoSummarizeLimit:
+        config.agent.clientHistory === 'on' ? undefined : Infinity,
       ...runLimitOptions('coordinator', config.agent),
       classificationEnabled: false,
+      historyRecencyWindow:
+        config.agent.clientHistory === 'on'
+          ? config.agent.historyRecencyWindow
+          : undefined,
       ragQueryK: config.agent.ragQueryK,
       ragTranslateEnabled: false,
     },
@@ -3237,7 +3263,11 @@ export async function buildPlannerAgent(
     .withToolTrust(builtInToolTrust(roleResolver))
     .withMainLlm(plannerRecorder.trackOfferedTools(llm))
     .withMcpClients([plannerRecorder])
-    .setHistoryRag(getSharedHistoryRag())
+    .setHistoryRag(
+      config.agent.clientHistory === 'on'
+        ? consumerHistoryRag
+        : getSharedHistoryRag(),
+    )
     .setToolsRag(docsMcp().withToolsRag(plannerTools, 'planner'))
     .withClassification(false)
     .withMode('hard');
@@ -3628,9 +3658,18 @@ export async function buildAgentForDestination(
       get model() {
         return requestModel.getStore() ?? coordinatorBaseLlm.model;
       },
-      chat: async (...args) => (await coordinatorLlm()).chat(...args),
-      streamChat: async function* (...args) {
-        yield* (await coordinatorLlm()).streamChat(...args);
+      chat: async (messages, tools, options) =>
+        (await coordinatorLlm()).chat(
+          coordinatorContextMessages(messages),
+          tools,
+          options,
+        ),
+      streamChat: async function* (messages, tools, options) {
+        yield* (await coordinatorLlm()).streamChat(
+          coordinatorContextMessages(messages),
+          tools,
+          options,
+        );
       },
     };
     const budget = Object.fromEntries(
@@ -3638,20 +3677,20 @@ export async function buildAgentForDestination(
         ([, value]) => value !== undefined,
       ),
     );
-    builder.withStepperCoordinator(
-      new AdaptiveCoordinatorHandler({
-        controller: new CheckerAdaptiveController(
-          new LlmAdaptiveController(requestLlm, {
-            systemPrompt: HUB_ADAPTIVE_CONTROLLER_SYSTEM,
-          }),
-        ),
-        workers,
-        finalizer: noticeFinalizer,
-        runRecords: getRunRecordStore(),
-        budget,
-        fallbackWorker: 'executor',
-      }),
-    );
+    const coordinator = new AdaptiveCoordinatorHandler({
+      controller: new CheckerAdaptiveController(
+        new LlmAdaptiveController(requestLlm, {
+          systemPrompt: HUB_ADAPTIVE_CONTROLLER_SYSTEM,
+        }),
+        config.agent.clientHistory ?? 'off',
+      ),
+      workers,
+      finalizer: noticeFinalizer,
+      runRecords: getRunRecordStore(),
+      budget,
+      fallbackWorker: 'executor',
+    });
+    builder.withStepperCoordinator(withCoordinatorContext(coordinator));
   } else {
     builder.withDagCoordinator({
       planner: new FixedExecutorPlanner(),
@@ -3929,10 +3968,15 @@ export async function buildLlmOnlyAgent(
     skipModelValidation: config.llm.provider !== 'sap-ai-sdk',
     agent: {
       timeZone: config.timeZone,
+      historyAutoSummarizeLimit:
+        config.agent.clientHistory === 'on' ? undefined : Infinity,
       ...runLimitOptions('coordinator', config.agent),
       // Pass mode skips tool selection; LLM-only sessions always support reads.
       mode: 'smart',
-      historyRecencyWindow: config.agent.historyRecencyWindow,
+      historyRecencyWindow:
+        config.agent.clientHistory === 'on'
+          ? config.agent.historyRecencyWindow
+          : undefined,
       refreshToolsPerIteration: false,
       toolReselectPerIteration: false,
       ragQueryK: config.agent.ragQueryK,
@@ -3970,8 +4014,14 @@ export async function buildLlmOnlyAgent(
     .withClassification(false)
     .withLlmCallStrategy(new FallbackLlmCallStrategy())
     .withMetrics(metrics)
-    .setHistoryRag(getSharedHistoryRag())
-    .withHistorySummarization(20)
+    .setHistoryRag(
+      config.agent.clientHistory === 'on'
+        ? consumerHistoryRag
+        : getSharedHistoryRag(),
+    )
+    .withHistorySummarization(
+      config.agent.clientHistory === 'on' ? 20 : Infinity,
+    )
     .withClientAdapter(new ClineClientAdapter());
 
   const historyBudget = historyBudgetOptions();

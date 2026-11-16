@@ -24,9 +24,14 @@ import {
   runWithVerdictTools,
   verdictToolsEnabled,
 } from '../../srv/lib/checker-verdict-tool';
+import { consumerHistoryRag } from '../../srv/lib/client-history';
 import { dialogueChat } from '../../srv/lib/dialogue-chat';
 import { followDialogue } from '../../srv/lib/dialogue-follow';
-import { clientTurnId, turnSource } from '../../srv/lib/dialogue-turn-source';
+import {
+  clientTurnId,
+  clientTurnMessages,
+  turnSource,
+} from '../../srv/lib/dialogue-turn-source';
 import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import { parseModelAllowlist } from '../../srv/lib/model-policy';
 import * as plannerMemory from '../../srv/lib/planner-memory';
@@ -46,6 +51,8 @@ import { reportWorkerActivity } from '../../srv/lib/worker-activity';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { fixtureTrustResolver } from './helpers/agent-profiles';
 import { liveSession } from './helpers/canonical-rag';
+import { fakeReq, fakeRes } from './helpers/channel-harness';
+import { typedRequest, typedResponse } from './helpers/response-model';
 import { testAccess } from './helpers/test-rag-access';
 
 jest.mock('../../srv/connections/destinationResolver', () => ({
@@ -158,6 +165,7 @@ let mockPlannerHook: ((text: string) => Promise<void>) | undefined;
 let mockPlannerPreparationHook: (() => void) | undefined;
 let mockCaptureLlm: (() => Promise<ILlm>) | undefined;
 let mockIsolationHistory: SessionHistoryRouter | undefined;
+let mockClientHistory: 'off' | 'on' = 'off';
 let mockFinalAnswer: string | undefined;
 let mockBackgroundAnswer: string | undefined;
 let mockPlanUsage: TokenUsage | undefined;
@@ -176,23 +184,28 @@ let mockPlan:
     }
   | undefined;
 let mockExecutorPool: number | undefined = 1;
+let mockLongTaskMs: number | undefined;
 const mockRegister = { track: <T>(p: Promise<T>) => p };
 jest.mock('../../srv/agent-config', () => ({
   ...jest.requireActual('../../srv/agent-config'),
   getAgentConfig: () => ({
     ...jest.requireActual('../../srv/agent-config').getAgentConfig(),
     agent: {
+      clientHistory: mockClientHistory,
       dialogue: {
         executors: 2,
         executorPool: mockExecutorPool,
         maxTasks: 50,
         maxCorrections: 2,
+        longTaskMs: mockLongTaskMs,
+        waitTickMs: mockLongTaskMs ? 0 : undefined,
       },
     },
   }),
 }));
 jest.mock('../../srv/agent-manager', () => ({
   getCollectionRegistry: () => mockTaskResultRegistry,
+  getSharedHistoryRag: () => mockIsolationHistory,
   docsMcp: () => ({
     describeWorkers: (
       workers: import('@mcp-abap-adt/llm-agent').WorkerProfileSummary[],
@@ -245,7 +258,12 @@ jest.mock('../../srv/agent-manager', () => ({
         .withMainLlm(await mockCaptureLlm())
         .withMode('hard')
         .withClassification(false);
-      if (mockIsolationHistory) builder.setHistoryRag(mockIsolationHistory);
+      if (mockIsolationHistory)
+        builder.setHistoryRag(
+          mockClientHistory === 'on'
+            ? consumerHistoryRag
+            : mockIsolationHistory,
+        );
       return unwrapBuilderResult(await builder.build()).agent;
     }
     return {
@@ -474,6 +492,7 @@ beforeEach(() => {
   mockPlannerPreparationHook = undefined;
   mockCaptureLlm = undefined;
   mockIsolationHistory = undefined;
+  mockClientHistory = 'off';
   mockFinalAnswer = undefined;
   mockBackgroundAnswer = undefined;
   mockToolRecords.clear();
@@ -2689,13 +2708,14 @@ test('same-user dialogues isolate every LLM call, clients, quota and retrieval a
     const a = await dialogueFor('alice', keys[0], 'TEST');
     const aOwner = longSessionLlms({ userId: 'alice', key: keys[0] });
     await a.session.send(marker);
-    expect(
-      await history.recordTurn({
-        caller: isolationCallers[0],
-        userText: marker,
-        assistantText: 'Done',
-      }),
-    ).toBe(true);
+    await history.query(
+      new TextOnlyEmbedding(marker),
+      5,
+      callOptionsFor(isolationCallers[0]),
+    );
+    expect(await history.listTurns(isolationCallers[0])).toEqual([
+      expect.objectContaining({ userText: marker, assistantText: 'Done' }),
+    ]);
     // Prove the marker was persisted before checking the negative cases.
     await new Promise<void>((resolve) => setImmediate(resolve));
     const aMemory = await scopedPlannerMemory(
@@ -2763,7 +2783,11 @@ test('same-user dialogues isolate every LLM call, clients, quota and retrieval a
         [],
         'alice',
       );
-      expect(recalledHistory.ok && recalledHistory.value).toEqual([]);
+      expect(recalledHistory.ok).toBe(true);
+      if (recalledHistory.ok)
+        expect(
+          recalledHistory.value.every((row) => !row.text.includes(marker)),
+        ).toBe(true);
     }
   } finally {
     for (const key of keys) await closeDialogue('alice', key, 'shutdown');
@@ -3970,3 +3994,620 @@ test('dialogue forwards the same request caller through planner and worker dispa
   expect(mockRun.mock.calls[0][0].caller).toBe(result.value);
   expect(mockRun.mock.calls[0][0].sessionId).toBe(result.value.sessionId);
 });
+
+test.each(['off', 'on'] as const)(
+  'dialogue %s excludes saved transcript history and selects its explicit history source',
+  async (policy) => {
+    mockClientHistory = policy;
+    const caller = isolationCallers[0];
+    const history = new SessionHistoryRouter(
+      new InMemoryRagProvider({ name: 'exclusive-dialogue' }),
+    );
+    mockIsolationHistory = history;
+    const prompts: import('@mcp-abap-adt/llm-agent').Message[][] = [];
+    mockCaptureLlm = async () => {
+      const llm: ILlm = {
+        chat: async (messages) => {
+          prompts.push(messages);
+          return {
+            ok: true,
+            value: { content: 'Plain answer', finishReason: 'stop' },
+          };
+        },
+        async *streamChat(messages, tools, options) {
+          yield await llm.chat(messages, tools, options);
+        },
+      };
+      return llm;
+    };
+    const h = await dialogueFor(caller.userId, caller.sessionId, 'TEST');
+    try {
+      await h.session.send('SERVER_TRANSCRIPT_ONLY');
+      await history.waitForTurns(caller.sessionId);
+      await history.forgetSessionHistory(caller.sessionId);
+      await history.recordTurn({
+        caller,
+        userText: 'Recall',
+        assistantText: 'HISTORY_RAG_ONLY',
+      });
+      prompts.length = 0;
+      const channel = dialogueChat(
+        typedRequest(fakeReq({})),
+        caller.userId,
+        {
+          userId: caller.userId,
+          key: caller.sessionId,
+          createdAt: 0,
+          lastActivity: 0,
+          revived: false,
+        },
+        'TEST',
+        typedResponse(fakeRes()),
+      );
+      const messages =
+        policy === 'on'
+          ? [
+              { role: 'user' as const, content: 'CONSUMER_ONLY' },
+              { role: 'assistant' as const, content: 'Consumer answer' },
+              { role: 'user' as const, content: 'Recall' },
+            ]
+          : [{ role: 'user' as const, content: 'Recall' }];
+      const toolCall: import('@mcp-abap-adt/llm-agent').Message = {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: 'active-read',
+            type: 'function',
+            function: { name: 'read', arguments: '{}' },
+          },
+        ],
+      };
+      const result = await channel.process(
+        [
+          ...messages,
+          toolCall,
+          {
+            role: 'tool',
+            tool_call_id: 'active-read',
+            content: 'CURRENT_CLIENT_LOOP',
+          },
+        ],
+        callOptionsFor(caller),
+      );
+      if (!result.ok) throw result.error;
+      const prompt = JSON.stringify(prompts);
+      expect(prompt).not.toContain('SERVER_TRANSCRIPT_ONLY');
+      expect(prompt.includes('CONSUMER_ONLY')).toBe(policy === 'on');
+      expect(prompt.includes('HISTORY_RAG_ONLY')).toBe(policy === 'off');
+      expect(prompt).toContain('CURRENT_CLIENT_LOOP');
+      expect(prompts.flat()).toContainEqual(toolCall);
+    } finally {
+      await closeDialogue(caller.userId, caller.sessionId, 'ttl');
+    }
+  },
+);
+
+test.each(
+  (['off', 'on'] as const).flatMap((policy) =>
+    [false, true].flatMap((newRequest) =>
+      (['done', 'stall', 'long_running'] as const).map((event) => ({
+        policy,
+        newRequest,
+        event,
+      })),
+    ),
+  ),
+)(
+  'late A $event event retains only A work after B finishes ($policy, new request: $newRequest), without history RAG',
+  async ({ policy, newRequest, event }) => {
+    mockClientHistory = policy;
+    expect(mockIsolationHistory).toBeUndefined();
+    mockLongTaskMs = event === 'long_running' ? 1_234_567 : undefined;
+    const prompts: import('@mcp-abap-adt/llm-agent').Message[][] = [];
+    let stall: (() => void) | undefined;
+    let longRunning: (() => void) | undefined;
+    const originalTimer = global.setTimeout;
+    const timer = jest
+      .spyOn(global, 'setTimeout')
+      .mockImplementation((callback, delay, ...args) => {
+        if (delay === 300_000)
+          stall = AsyncResource.bind(() => callback(...args));
+        if (delay !== undefined && delay > 1_200_000 && delay <= 1_234_567)
+          longRunning = AsyncResource.bind(() => callback(...args));
+        return originalTimer(callback, delay, ...args);
+      });
+    let finish!: () => void;
+    mockRun.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          reportWorkerActivity('tool Read');
+          finish = () => resolve({ output: 'TASK_A_FINISHED' });
+        }),
+    );
+    mockCaptureLlm = async () => {
+      const llm: ILlm = {
+        chat: async (messages) => {
+          prompts.push(structuredClone(messages));
+          const tools = new PlannerToolsClient();
+          if (prompts.length === 1) {
+            const delegated = await tools.callTool('delegate_task', {
+              worker: 'executor',
+              goal: 'IN_FLIGHT_A',
+            });
+            if (!delegated.ok || delegated.value.isError)
+              throw new Error('delegation failed');
+          } else if (prompts.length === 2 && newRequest) {
+            const restarted = await tools.callTool('new_request', {});
+            if (!restarted.ok || restarted.value.isError)
+              throw new Error('new request failed');
+          }
+          const prompt = JSON.stringify(messages);
+          return {
+            ok: true,
+            value: {
+              content: prompt.includes('[task events]')
+                ? 'A_EVENT_ANSWER'
+                : prompt.includes('CLIENT_B')
+                  ? 'B_ANSWER'
+                  : 'A_IN_FLIGHT_ANSWER',
+              finishReason: 'stop',
+            },
+          };
+        },
+        async *streamChat(messages, tools, options) {
+          yield await llm.chat(messages, tools, options);
+        },
+      };
+      return llm;
+    };
+    const { h } = await ready();
+    const clientLoop: import('@mcp-abap-adt/llm-agent').Message[] = [
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: 'a-read',
+            type: 'function',
+            function: { name: 'read', arguments: '{}' },
+          },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'a-read', content: 'A_CLIENT_LOOP' },
+    ];
+    try {
+      const first = await clientTurnMessages.run(
+        [
+          { role: 'user', content: 'A_CONSUMER_HISTORY' },
+          { role: 'assistant', content: 'A_CONSUMER_ANSWER' },
+          {
+            role: 'user',
+            content: 'CLIENT_A ORIGINAL_REQUEST: only read ZSAFE; never write',
+          },
+          ...clientLoop,
+        ],
+        () =>
+          h.session.send(
+            'CLIENT_A ORIGINAL_REQUEST: only read ZSAFE; never write',
+          ),
+      );
+      expect(first.text).toBe('A_IN_FLIGHT_ANSWER');
+      await until(() => !!finish);
+      const second = await h.session.send('CLIENT_B');
+      expect(second.text).toBe('B_ANSWER');
+      const eventStart = prompts.length;
+      if (event === 'stall') {
+        if (!stall) throw new Error('Missing real worker stall callback');
+        stall();
+      } else if (event === 'long_running') {
+        if (!longRunning) throw new Error('Missing real long-running callback');
+        const now = Date.now();
+        const clock = jest.spyOn(Date, 'now').mockReturnValue(now + 1_234_567);
+        try {
+          longRunning();
+        } finally {
+          clock.mockRestore();
+        }
+      } else finish();
+      await until(() =>
+        h.outbox.history().some((message) => message.text === 'A_EVENT_ANSWER'),
+      );
+      await h.outbox.flushed();
+      const eventPrompts = prompts.slice(eventStart);
+      expect(eventPrompts.length).toBeGreaterThan(0);
+      for (const messages of eventPrompts) {
+        const prompt = JSON.stringify(messages);
+        expect(prompt).toContain('CLIENT_A');
+        expect(prompt).toContain(
+          'ORIGINAL_REQUEST: only read ZSAFE; never write',
+        );
+        expect(prompt).toContain('A_IN_FLIGHT_ANSWER');
+        expect(prompt).toContain('IN_FLIGHT_A');
+        expect(prompt).toContain('[task events]');
+        expect(prompt).toContain('A_CLIENT_LOOP');
+        expect(messages).toContainEqual(clientLoop[0]);
+        expect(prompt.includes('A_CONSUMER_HISTORY')).toBe(policy === 'on');
+        expect(prompt.includes('A_CONSUMER_ANSWER')).toBe(policy === 'on');
+        expect(prompt).not.toContain('CLIENT_B');
+        expect(prompt).not.toContain('B_ANSWER');
+      }
+      if (event === 'stall') {
+        expect(h.session.snapshot().tasks[0].state).toBe('running');
+        expect(JSON.stringify(eventPrompts)).toContain('no activity for');
+        expect(JSON.stringify(eventPrompts)).toContain('tool Read');
+      } else if (event === 'long_running') {
+        expect(h.session.snapshot().tasks[0].state).toBe('running');
+        expect(JSON.stringify(eventPrompts)).toContain(
+          'is still running after',
+        );
+      }
+    } finally {
+      mockLongTaskMs = undefined;
+      timer.mockRestore();
+      finish?.();
+    }
+  },
+);
+
+test.each(['direct', 'api', 'api-stream', 'api-disconnect'] as const)(
+  '%s dialogue sends store full turns once, independently of delivery history',
+  async (mode) => {
+    const caller = isolationCallers[0];
+    const history = new SessionHistoryRouter(
+      new InMemoryRagProvider({ name: 'dialogue-history' }),
+    );
+    mockIsolationHistory = history;
+    const record = jest.spyOn(history, 'recordTurn');
+    const res = fakeRes();
+    const finalAnswer = 'Full final answer. '.repeat(700);
+    mockCaptureLlm = async () => {
+      const llm: ILlm = {
+        chat: async () => {
+          if (mode === 'api-disconnect') res.disconnect();
+          return {
+            ok: true,
+            value: { content: finalAnswer, finishReason: 'stop' },
+          };
+        },
+        async *streamChat(messages, tools, options) {
+          yield await llm.chat(messages, tools, options);
+        },
+      };
+      return llm;
+    };
+    const text = 'Full original request. '.repeat(400);
+    const h = await dialogueFor(caller.userId, caller.sessionId, 'TEST');
+    const send = jest.spyOn(h.session, 'send');
+    try {
+      const previous = 'Already stored reply from a previous turn';
+      await h.outbox.upsert([
+        { id: 'previous', text: previous, trigger: 'event', createdAt: 1 },
+      ]);
+      if (mode === 'direct') await h.session.send(text);
+      else {
+        const channel = dialogueChat(
+          typedRequest(fakeReq({})),
+          caller.userId,
+          {
+            userId: caller.userId,
+            key: caller.sessionId,
+            createdAt: 0,
+            lastActivity: 0,
+            revived: false,
+          },
+          'TEST',
+          typedResponse(res),
+        );
+        const messages = [{ role: 'user' as const, content: text }];
+        if (mode === 'api') {
+          const result = await channel.process(
+            messages,
+            callOptionsFor(caller),
+          );
+          if (!result.ok) throw result.error;
+          expect(result.value.content).toContain(previous);
+          expect(result.value.content).toContain(finalAnswer);
+        } else {
+          let delivered = '';
+          for await (const chunk of channel.streamProcess(
+            messages,
+            callOptionsFor(caller),
+          )) {
+            if (!chunk.ok) throw chunk.error;
+            delivered += chunk.value.content ?? '';
+          }
+          expect(delivered).toContain(previous);
+          expect(delivered).toContain(finalAnswer);
+        }
+      }
+      expect(send).toHaveBeenCalledTimes(1);
+      const answer = await send.mock.results[0].value;
+      expect(record).toHaveBeenCalledTimes(1);
+      expect(record).toHaveBeenCalledWith({
+        caller: expect.objectContaining(caller),
+        userText: text,
+        assistantText: answer.text,
+        id: expect.stringMatching(/^dialogue:/),
+      });
+      await history.query(
+        new TextOnlyEmbedding(text),
+        5,
+        callOptionsFor(caller),
+      );
+      expect(await history.listTurns(caller)).toEqual([
+        expect.objectContaining({ userText: text, assistantText: answer.text }),
+      ]);
+      expect(answer.text).toContain(finalAnswer);
+    } finally {
+      await closeDialogue(caller.userId, caller.sessionId, 'ttl');
+    }
+  },
+);
+
+test.each(['NO_MESSAGE', 'Initial reply; work is still running'])(
+  'records the late dialogue final once after send returned %s',
+  async (initialReply) => {
+    const caller = ragCaller;
+    const history = new SessionHistoryRouter(
+      new InMemoryRagProvider({ name: 'late-dialogue-history' }),
+    );
+    mockIsolationHistory = history;
+    const record = jest.spyOn(history, 'recordTurn');
+    let finish!: () => void;
+    mockRun.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve({ output: 'Worker finished' });
+        }),
+    );
+    let calls = 0;
+    const finalAnswer =
+      'FINAL_EVENT_ANSWER: all original constraints were preserved.';
+    mockCaptureLlm = async () => {
+      const llm: ILlm = {
+        chat: async () => {
+          calls++;
+          if (calls === 1) {
+            const delegated = await new PlannerToolsClient().callTool(
+              'delegate_task',
+              {
+                worker: 'executor',
+                goal: 'Read ZSAFE',
+              },
+            );
+            if (!delegated.ok || delegated.value.isError)
+              throw new Error('delegation failed');
+          }
+          return {
+            ok: true,
+            value: {
+              content: calls === 1 ? initialReply : finalAnswer,
+              finishReason: 'stop',
+            },
+          };
+        },
+        async *streamChat(messages, tools, options) {
+          yield await llm.chat(messages, tools, options);
+        },
+      };
+      return llm;
+    };
+    const opened = jest.spyOn(DialogueSession, 'open');
+    const { h } = await ready(caller.userId);
+    const text = 'ORIGINAL_REQUEST: only read table ZSAFE; never write.';
+    try {
+      const first = await clientTurnId.run('stable-late-turn', () =>
+        h.session.send(text),
+      );
+      expect(first.text).toContain(initialReply);
+      await until(() => !!finish);
+      expect(record).not.toHaveBeenCalled();
+      finish();
+      await until(() => record.mock.calls.length === 1);
+      await h.outbox.flushed();
+      const final = h.outbox
+        .history()
+        .find((message) => message.text === finalAnswer);
+      expect(final).toBeDefined();
+      if (!final) throw new Error('late final answer was not delivered');
+      // Delivery replay and a repeated client turn ID must not write another turn.
+      const onMessage = opened.mock.calls.at(-1)?.[0].onMessage;
+      onMessage?.(final);
+      onMessage?.(final);
+      await clientTurnId.run('stable-late-turn', () => h.session.send(text));
+      expect(record).toHaveBeenCalledTimes(1);
+      expect(record).toHaveBeenCalledWith({
+        caller: expect.objectContaining(caller),
+        userText: text,
+        assistantText: finalAnswer,
+        id: 'dialogue:stable-late-turn',
+      });
+      await history.query(
+        new TextOnlyEmbedding(text),
+        5,
+        callOptionsFor(caller),
+      );
+      expect(await history.listTurns(caller)).toEqual([
+        expect.objectContaining({
+          id: 'dialogue:stable-late-turn',
+          userText: text,
+          assistantText: finalAnswer,
+        }),
+      ]);
+    } finally {
+      opened.mockRestore();
+      await closeDialogue(caller.userId, caller.sessionId, 'ttl');
+    }
+  },
+);
+
+test.each(
+  ['NO_MESSAGE', 'Initial reply; work is still running'].flatMap(
+    (initialReply) =>
+      [1, 2].flatMap((taskCount) =>
+        [false, true].map((correctionFails) => ({
+          initialReply,
+          taskCount,
+          correctionFails,
+        })),
+      ),
+  ),
+)(
+  'records each turn once when B consumes A tasks ($taskCount tasks, $initialReply, correction fails: $correctionFails)',
+  async ({ initialReply, taskCount, correctionFails }) => {
+    const caller = ragCaller;
+    const history = new SessionHistoryRouter(
+      new InMemoryRagProvider({ name: 'corrected-dialogue-history' }),
+    );
+    mockIsolationHistory = history;
+    const record = jest.spyOn(history, 'recordTurn');
+    const finishes = new Map<string, () => void>();
+    const taskAnswers = Array.from(
+      { length: taskCount },
+      (_, i) => `TASK_A_${i}: ${'Full worker result. '.repeat(4000)}END_A_${i}`,
+    );
+    mockRun.mockImplementation(
+      (input) =>
+        new Promise((resolve) => {
+          const index = Number(input.task.split(' ').at(-1));
+          finishes.set(input.task, () =>
+            resolve({ output: taskAnswers[index] }),
+          );
+        }),
+    );
+    const prompts: string[] = [];
+    const finalAnswer = 'Final A and B: all work completed.';
+    let calls = 0;
+    let completeTasks = async () => {};
+    mockCaptureLlm = async () => {
+      const llm: ILlm = {
+        chat: async (messages) => {
+          prompts.push(messages.map((message) => message.content).join('\n'));
+          calls++;
+          const tools = new PlannerToolsClient();
+          if (calls === 1) {
+            for (let i = 0; i < taskCount; i++) {
+              const delegated = await tools.callTool('delegate_task', {
+                worker: 'executor',
+                goal: `Read ZSAFE ${i}`,
+              });
+              if (!delegated.ok || delegated.value.isError)
+                throw new Error('delegation failed');
+            }
+          } else if (calls === 2) {
+            await completeTasks();
+            const plan = await tools.callTool('plan_update', {
+              plan: 'Review A results and answer B',
+              status: 'active',
+            });
+            if (!plan.ok || plan.value.isError)
+              throw new Error('plan update failed');
+          } else if (calls === 3) {
+            if (correctionFails) throw new Error('B correction failed');
+            const plan = await tools.callTool('plan_update', {
+              status: 'done',
+            });
+            if (!plan.ok || plan.value.isError)
+              throw new Error('final plan update failed');
+          }
+          return {
+            ok: true,
+            value: {
+              content:
+                calls === 1
+                  ? initialReply
+                  : calls === 2
+                    ? 'Draft B before reviewing task events'
+                    : finalAnswer,
+              finishReason: 'stop',
+            },
+          };
+        },
+        async *streamChat(messages, tools, options) {
+          yield await llm.chat(messages, tools, options);
+        },
+      };
+      return llm;
+    };
+    const { h } = await ready(caller.userId);
+    const events: DialogueEvent[] = [];
+    h.subscribe((event) => events.push(event));
+    completeTasks = async () => {
+      for (let i = 0; i < taskCount; i++) {
+        const goal = `Read ZSAFE ${i}`;
+        await until(() => finishes.has(goal));
+        finishes.get(goal)?.();
+        await until(() =>
+          h.session
+            .snapshot()
+            .tasks.some((task) => task.goal === goal && task.state === 'done'),
+        );
+        expect(record).not.toHaveBeenCalled();
+      }
+    };
+    try {
+      const first = await clientTurnId.run('correction-A', () =>
+        h.session.send('CLIENT_A'),
+      );
+      expect(first.text).toBe(initialReply);
+      expect(record).not.toHaveBeenCalled();
+      const sendB = () =>
+        clientTurnId.run('correction-B', () => h.session.send('CLIENT_B'));
+      if (correctionFails) {
+        await expect(sendB()).rejects.toThrow('B correction failed');
+        expect(record).toHaveBeenCalledTimes(1);
+        expect(record.mock.calls[0][0].userText).toBe('CLIENT_A');
+      }
+      const second = await sendB();
+      expect(second.text).toBe(finalAnswer);
+      expect(calls).toBe(correctionFails ? 4 : 3);
+      expect(prompts[2]).toContain('[check]');
+      expect(prompts[2]).toContain('[task events]');
+      expect(h.state().running).toBe(0);
+      expect(h.state().queuedInputs).toBe(0);
+      expect(
+        events
+          .filter((event) => event.kind === 'turn')
+          .map((event) => event.source),
+      ).toEqual(correctionFails ? ['mcp', 'mcp', 'mcp'] : ['mcp', 'mcp']);
+      expect(record).toHaveBeenCalledTimes(2);
+      const expected = [
+        {
+          id: 'dialogue:correction-A',
+          userText: 'CLIENT_A',
+          assistantText: taskAnswers.join('\n\n'),
+        },
+        {
+          id: 'dialogue:correction-B',
+          userText: 'CLIENT_B',
+          assistantText: finalAnswer,
+        },
+      ];
+      for (const turn of expected)
+        expect(record).toHaveBeenCalledWith({
+          caller: expect.objectContaining(caller),
+          ...turn,
+        });
+      // The task board keeps a bounded preview; A's history keeps every result.
+      expect(h.session.snapshot().tasks[0].output?.length).toBeLessThan(
+        taskAnswers[0].length,
+      );
+      await history.query(
+        new TextOnlyEmbedding('CLIENT_A CLIENT_B'),
+        5,
+        callOptionsFor(caller),
+      );
+      expect(await history.listTurns(caller)).toEqual(
+        expected.map((turn) => expect.objectContaining(turn)),
+      );
+      await clientTurnId.run('correction-A', () => h.session.send('CLIENT_A'));
+      await clientTurnId.run('correction-B', () => h.session.send('CLIENT_B'));
+      await h.drainPending();
+      await h.outbox.flushed();
+      expect(record).toHaveBeenCalledTimes(2);
+    } finally {
+      await closeDialogue(caller.userId, caller.sessionId, 'ttl');
+    }
+  },
+);

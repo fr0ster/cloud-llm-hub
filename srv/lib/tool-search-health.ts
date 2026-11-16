@@ -2,9 +2,38 @@ import { RagError, type RagResult, type Result } from '@mcp-abap-adt/llm-agent';
 import type { RequestHandler } from 'express';
 
 type SearchResult = Result<RagResult[], RagError>;
-type Failure = { message: string; probe: () => Promise<SearchResult> };
+type Failure = { message: string; probe: () => Promise<{ ok: boolean }> };
 const failures = new Map<object, Failure>();
 let probing: Promise<void> | undefined;
+
+/** Cancel one caller's wait without cancelling shared backend work. */
+export async function waitForBackendWork(
+  work: Promise<void>,
+  signal?: AbortSignal,
+): Promise<void> {
+  signal?.throwIfAborted();
+  if (!signal) return work;
+  await new Promise<void>((resolve, reject) => {
+    const aborted = () => {
+      signal.removeEventListener('abort', aborted);
+      reject(new DOMException('Backend wait aborted', 'AbortError'));
+    };
+    signal.addEventListener('abort', aborted, { once: true });
+    work
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener('abort', aborted));
+    if (signal.aborted) aborted();
+  });
+}
+
+/** History writes share the tool-search readiness state and request-driven repair. */
+export function markHubBackendFailure(
+  backend: object,
+  message: string,
+  probe: () => Promise<{ ok: boolean }>,
+): void {
+  failures.set(backend, { message, probe });
+}
 
 export class ToolSearchUnavailableError extends Error {
   readonly statusCode = 503;
@@ -60,12 +89,15 @@ export async function queryToolCorpus(
     };
   }
   // Caller cancellation says nothing about backend availability.
-  if (!result.ok && !signal?.aborted) failures.set(store, { message, probe });
+  if (!result.ok && !signal?.aborted)
+    markHubBackendFailure(store, message, probe);
   return result;
 }
 
 /** One shared probe per arriving request batch; no timer, deadline or cached query vector. */
-export async function assertToolSearchHealthy(): Promise<void> {
+export async function assertToolSearchHealthy(
+  signal?: AbortSignal,
+): Promise<void> {
   if (!failures.size) return;
   if (!probing) {
     probing = (async () => {
@@ -85,7 +117,7 @@ export async function assertToolSearchHealthy(): Promise<void> {
       probing = undefined;
     });
   }
-  await probing;
+  await waitForBackendWork(probing, signal);
   const message = toolSearchFailure();
   if (message) throw new ToolSearchUnavailableError(message);
 }
@@ -104,8 +136,14 @@ export const toolSearchReadinessGuard: RequestHandler = async (
     next();
     return;
   }
+  const disconnected = new AbortController();
+  const cancel = () => {
+    if (!res.writableFinished) disconnected.abort();
+  };
+  req.once('aborted', cancel);
+  res.once('close', cancel);
   try {
-    await assertToolSearchHealthy();
+    await assertToolSearchHealthy(disconnected.signal);
     next();
   } catch (error) {
     res.status(503).json({
@@ -117,5 +155,8 @@ export const toolSearchReadinessGuard: RequestHandler = async (
             : 'Tool search unavailable',
       },
     });
+  } finally {
+    req.removeListener('aborted', cancel);
+    res.removeListener('close', cancel);
   }
 };

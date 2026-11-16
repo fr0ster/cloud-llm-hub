@@ -165,7 +165,9 @@ export function createRagStoreFactory(
       if (backend === 'vector')
         return cls === 'tools'
           ? primaryVectorStore(embedding, opts, true)
-          : vectorStore(embedding, opts);
+          : cls === 'session'
+            ? primaryVectorStore(embedding, opts)
+            : vectorStore(embedding, opts);
       // Programmer-misuse assertion: a hana-vector / pg-vector store is opened
       // through the collection provider, which writes its catalog record. A
       // bare store here would hold rows no record describes (an orphan the

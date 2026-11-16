@@ -28,6 +28,7 @@ import {
 } from './dialogue-sessions';
 import {
   clientTurnId,
+  clientTurnMessages,
   turnSource,
   validatedClientTurnId,
 } from './dialogue-turn-source';
@@ -118,7 +119,7 @@ export function dialogueChat(
     if (!response.writableFinished) disconnected = true;
     resolveResponseEnded();
   });
-  const open = async (caller?: RagCaller) => {
+  const open = async (caller?: RagCaller, messages: Message[] = []) => {
     const handle = await dialogueFor(
       userId,
       session.key,
@@ -159,7 +160,10 @@ export function dialogueChat(
         () =>
           clientTurnId.run(
             validatedClientTurnId(req.headers['x-clh-turn-id']),
-            () => originalSend(text, options),
+            () =>
+              clientTurnMessages.run(messages, () =>
+                originalSend(text, options),
+              ),
           ),
       );
     return {
@@ -187,7 +191,10 @@ export function dialogueChat(
     },
     async process(messages: Message[], opts: AgentCallOptions | undefined) {
       try {
-        const { handle, pending, complete, send } = await open(opts?.caller);
+        const { handle, pending, complete, send } = await open(
+          opts?.caller,
+          messages,
+        );
         const message = messages.filter((m) => m.role === 'user').at(-1);
         const trace = {
           ...opts?.trace,
@@ -258,7 +265,10 @@ export function dialogueChat(
       }
     },
     async *streamProcess(messages, opts) {
-      const { handle, pending, complete, send } = await open(opts?.caller);
+      const { handle, pending, complete, send } = await open(
+        opts?.caller,
+        messages,
+      );
       let hasContent = false;
       let replyUsage: PlannerMessageUsage | undefined;
       for (const message of pending) {

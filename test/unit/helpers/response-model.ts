@@ -6,7 +6,18 @@ import {
   setRoleModels,
 } from '../../../srv/lib/role-model-settings';
 import { liveSession } from './canonical-rag';
-import { type fakeRes, harness } from './channel-harness';
+import { type fakeReq, type fakeRes, harness } from './channel-harness';
+
+export function typedRequest(req: ReturnType<typeof fakeReq>) {
+  return new Proxy(express().request, {
+    get(target, key) {
+      return Reflect.get(key in req ? req : target, key);
+    },
+    set(_target, key, value) {
+      return Reflect.set(req, key, value);
+    },
+  });
+}
 
 export function typedResponse(res: ReturnType<typeof fakeRes>) {
   return new Proxy(express().response, {
