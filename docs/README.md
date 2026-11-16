@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/brand/flywheel-256.png" width="96" alt="Human-AI flywheel symbol"></p>
+
 # Documentation Index
 
 Welcome to Cloud LLM Hub documentation.

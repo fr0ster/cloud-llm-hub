@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/brand/flywheel-256.png" width="128" alt="Human-AI flywheel symbol"></p>
+
 # Cloud LLM Hub 🚀
 
 **Enterprise-ready intelligent agent hub** connecting SAP ABAP systems, reusable project context, MCP tools, AI assistants (Cline, Claude Desktop), and automation tools (n8n, CI/CD, custom apps).
