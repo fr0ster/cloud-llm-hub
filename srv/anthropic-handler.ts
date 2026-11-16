@@ -27,6 +27,11 @@ import {
 } from './lib/role-models-scope';
 import { runWithRequestLlms } from './lib/session-llms';
 import {
+  assertToolSearchHealthy,
+  ToolSearchUnavailableError,
+  toolSearchFailure,
+} from './lib/tool-search-health';
+import {
   measureRequest,
   requestMeasurement,
 } from './lib/usage/request-records';
@@ -186,6 +191,22 @@ async function handleAnthropicMessagesScoped(
   req: Request,
   res: Response,
 ): Promise<void> {
+  try {
+    if (toolSearchFailure()) await assertToolSearchHealthy();
+  } catch (error) {
+    res.status(503).json({
+      type: 'error',
+      error: {
+        message:
+          error instanceof ToolSearchUnavailableError
+            ? error.message
+            : 'Tool search unavailable',
+        type: 'api_error',
+        code: 'tool_search_unavailable',
+      },
+    });
+    return;
+  }
   // Block requests until the providers are built and the agent is available
   if (!isProvidersReady() || !isAgentReady()) {
     const aiCoreAvailable = isAiCoreConfigured();

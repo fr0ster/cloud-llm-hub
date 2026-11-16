@@ -99,11 +99,14 @@ async function loopingRun(
   );
 }
 
-test('maxIterations off lets an executor run past 10 iterations', async () => {
-  const { rounds, result } = await loopingRun('off');
-  expect(rounds).toBe(13);
-  expect(result.ok && result.value.content).toBe('done');
-});
+test.each(['off', undefined] as const)(
+  'maxIterations %s preserves unbounded Infinity through llm-agent 33',
+  async (limit) => {
+    const { rounds, result } = await loopingRun(limit, 32);
+    expect(rounds).toBe(33);
+    expect(result.ok && result.value.content).toBe('done');
+  },
+);
 test('maxIterations 3 ends the executor run after 3 iterations with the existing budget-exhausted result', async () => {
   const { rounds, result } = await loopingRun(3);
   expect(rounds).toBe(3);

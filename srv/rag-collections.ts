@@ -540,6 +540,8 @@ const builtInBackends: Record<string, RagBackend> = {
   vector: {
     create: ({ embedder, breaker }) => {
       if (!embedder) return new InMemoryRag();
+      // Document collections retain embedding and keyword fallback. Tool
+      // corpora are created separately through RagStoreFactory.
       const vectorRag = new VectorRag(embedder, {
         vectorWeight: 0.7,
         keywordWeight: 0.3,

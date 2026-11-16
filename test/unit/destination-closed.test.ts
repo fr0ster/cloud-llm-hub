@@ -34,6 +34,14 @@ jest.mock('../../srv/agent-config', () => ({
     },
     mcp: { destination: 'DEST' },
     agent: { ragType: 'in-memory', mode: 'x', maxIterations: 5 },
+    rag: {
+      embedder: null,
+      backends: {
+        tools: 'in-memory',
+        session: 'in-memory',
+        persistent: 'in-memory',
+      },
+    },
   }),
 }));
 // Also test-controllable, not a fixed `() => []`: the corpus-build-failure

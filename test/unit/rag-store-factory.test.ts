@@ -6,6 +6,7 @@ import {
   QueryEmbedding,
   RagError,
   symmetricEmbedder,
+  VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import { QdrantRag } from '@mcp-abap-adt/qdrant-rag';
 import type { RagConfig } from '../../srv/agent-config';
@@ -75,6 +76,18 @@ describe('RagStoreFactory', () => {
     expect(createRagStoreFactory(inMem, null).createLocal()).toBeInstanceOf(
       InMemoryRag,
     );
+  });
+
+  it('createLocalTools uses a primary local vector store, or in-memory without an embedder', () => {
+    const local = createRagStoreFactory(
+      q,
+      buildEmbedding(emb),
+    ).createLocalTools();
+    expect(local).toBeInstanceOf(VectorRag);
+    expect(local).not.toBeInstanceOf(FallbackRag);
+    expect(
+      createRagStoreFactory(inMem, null).createLocalTools(),
+    ).toBeInstanceOf(InMemoryRag);
   });
 
   it('listStores / countPoints / deleteStore talk to Qdrant REST and map errors to RagError', async () => {
@@ -243,4 +256,48 @@ describe('RagStoreFactory', () => {
     if (!result.ok) expect(result.error).toBeInstanceOf(RagError);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it.each(['vector', 'qdrant'] as const)(
+    '%s non-tool stores retain the default query embedding fallback',
+    async (backend) => {
+      jest
+        .spyOn(global, 'fetch')
+        .mockImplementation(
+          async () => new Response(JSON.stringify({ result: [] })),
+        );
+      const raw = jest.fn(async () => ({ vector: [1, 0] }));
+      const breaker = new CircuitBreaker({ failureThreshold: 30 });
+      const embedder = new CircuitBreakerEmbedder({ embed: raw }, breaker);
+      const embedding = {
+        embedder,
+        retrieval: symmetricEmbedder(embedder),
+        breaker,
+        fingerprint: { provider: 'test', embeddingModel: 'test' },
+      };
+      const factory = createRagStoreFactory(
+        {
+          ...q,
+          backends: { tools: backend, session: backend, persistent: backend },
+        },
+        embedding,
+      );
+      for (const store of [
+        factory.create('session', 'history'),
+        factory.create('persistent', 'facts'),
+        factory.createLocal(),
+      ]) {
+        raw.mockClear();
+        raw.mockRejectedValueOnce(new Error('first embedding failed'));
+        expect(
+          (
+            await store.query(
+              new QueryEmbedding('read', embedding.retrieval),
+              1,
+            )
+          ).ok,
+        ).toBe(true);
+        expect(raw).toHaveBeenCalledTimes(2);
+      }
+    },
+  );
 });

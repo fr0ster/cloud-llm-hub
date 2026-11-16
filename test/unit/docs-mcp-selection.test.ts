@@ -9,6 +9,10 @@ import cds from '@sap/cds';
 import { ExpositionFilteringRag } from '../../srv/agent-manager';
 import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
 import { ExternalMcp, parseExternalMcp } from '../../srv/lib/external-mcp';
+import {
+  assertToolSearchHealthy,
+  toolSearchFailure,
+} from '../../srv/lib/tool-search-health';
 import { parseTrustDefaults } from '../../srv/lib/trust';
 import { TrustResolver } from '../../srv/lib/trust-resolver';
 import { runWithProfileTools } from '../../srv/request-session';
@@ -76,14 +80,26 @@ async function names(rag: IRag, text = 'cds', k = 1) {
   return result.value.map((row) => row.metadata.id);
 }
 
-test.each(['rejected', 'empty'])(
-  '%s query embedding preserves corpus hits and direct candidates',
+let repairSearch = () => {};
+afterEach(async () => {
+  repairSearch();
+  await assertToolSearchHealthy();
+  repairSearch = () => {};
+});
+
+test.each(['rejected', 'empty', 'missing'])(
+  '%s query embedding fails the entire search and requires a fresh successful probe',
   async (failure) => {
+    let failed = true;
+    repairSearch = () => {
+      failed = false;
+    };
     const warn = jest.fn();
     const embedQuery = jest.fn<
       ReturnType<IRetrievalEmbedder['embedQuery']>,
       Parameters<IRetrievalEmbedder['embedQuery']>
     >(async () => {
+      if (!failed) return { vector: [1, 0] };
       if (failure === 'rejected') throw new Error('private query content');
       return { vector: [] };
     });
@@ -102,26 +118,53 @@ test.each(['rejected', 'empty'])(
       }),
       warn,
       Date.now,
-      () => ({ ...embedder, embedQuery }),
+      () =>
+        failure === 'missing' && failed
+          ? undefined
+          : { ...embedder, embedQuery },
     );
+    // Index successfully before the query-only embedder becomes unavailable.
+    failed = false;
     await docs.clients('executor');
+    failed = true;
     const options: Parameters<IRag['query']>[2] = {
       signal: new AbortController().signal,
     };
     const result = await docs
       .withToolsRag(corpus, 'executor')
       .query(new TextOnlyEmbedding('cds'), 1, options);
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw result.error;
-    expect(result.value.map((row) => row.metadata.id)).toEqual([
-      'tool:corpus',
-      'tool:DIRECT__search_cds',
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: 'TOOL_SEARCH_UNAVAILABLE' },
+    });
+    expect(toolSearchFailure()).toContain('external docs MCP (executor)');
+    expect(toolSearchFailure()).not.toContain('private');
+    if (failure !== 'missing') {
+      expect(embedQuery).toHaveBeenCalledTimes(1);
+      expect(embedQuery.mock.calls[0][1]).toBe(options);
+    }
+    expect(warn).not.toHaveBeenCalled();
+    await expect(assertToolSearchHealthy()).rejects.toMatchObject({
+      statusCode: 503,
+    });
+    // Discovery changing the selection must not bypass a failed embedder probe.
+    const mode = jest.spyOn(docs, 'mode').mockReturnValue('direct');
+    try {
+      await expect(assertToolSearchHealthy()).rejects.toMatchObject({
+        statusCode: 503,
+      });
+    } finally {
+      mode.mockRestore();
+    }
+    failed = false;
+    await assertToolSearchHealthy();
+    expect(toolSearchFailure()).toBeUndefined();
+    expect(embedQuery.mock.calls.at(-1)).toEqual([
+      'tool search readiness probe',
+      undefined,
     ]);
-    expect(embedQuery).toHaveBeenCalledTimes(1);
-    expect(embedQuery.mock.calls[0][1]).toBe(options);
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith(
-      'External docs MCP query embedding unavailable; no RAG docs hits',
+    expect(await names(docs.withToolsRag(corpus, 'executor'))).toContain(
+      'tool:DIRECT__search_cds',
     );
   },
 );
@@ -412,20 +455,25 @@ test('skills default to system and correction while collection classes stay info
   ).toEqual([3, 3.5, 4]);
 });
 
-test('failed corpus retains direct docs candidates', async () => {
+test('failed corpus surfaces its error even when direct docs are available', async () => {
   const { docs } = setup('direct');
   await docs.clients('executor');
+  const failure = {
+    ok: false as const,
+    error: new RagError('private corpus content'),
+  };
   const failed: IRag = {
     ...corpus,
-    query: async () => ({
-      ok: false,
-      error: new RagError('private corpus content'),
-    }),
+    query: async () => failure,
   };
-  expect(await names(docs.withToolsRag(failed, 'executor'))).toEqual([
-    'tool:search_cds',
-    'tool:search_ui',
-  ]);
+  expect(
+    await docs
+      .withToolsRag(failed, 'executor')
+      .query(new TextOnlyEmbedding('cds'), 1),
+  ).toBe(failure);
+  await expect(names(docs.withToolsRag(failed, 'executor'))).rejects.toBe(
+    failure.error,
+  );
 });
 
 test('caller abort preserves the corpus failure unchanged', async () => {
@@ -442,8 +490,14 @@ test('caller abort preserves the corpus failure unchanged', async () => {
   ).toBe(failure);
 });
 
-test('failed corpus returns direct and ranked docs only and warns without content', async () => {
+test('failed corpus surfaces through mixed docs selection without logging content', async () => {
   const warn = jest.fn();
+  const info = jest
+    .spyOn(cds.log('external-mcp'), 'info')
+    .mockImplementation(() => {});
+  const errorLog = jest
+    .spyOn(cds.log('external-mcp'), 'error')
+    .mockImplementation(() => {});
   const docs = new ExternalMcp(
     parseExternalMcp({
       LLM_AGENT_EXECUTOR_MCP: 'DIRECT,RAG',
@@ -459,21 +513,31 @@ test('failed corpus returns direct and ranked docs only and warns without conten
     () => embedder,
   );
   await docs.clients('executor');
+  const failure = {
+    ok: false as const,
+    error: new RagError('private corpus content'),
+  };
   const failed: IRag = {
     ...corpus,
-    query: async () => ({
-      ok: false,
-      error: new RagError('private corpus content'),
-    }),
+    query: async () => failure,
   };
-  expect(await names(docs.withToolsRag(failed, 'executor'))).toEqual([
-    'tool:RAG__search_cds',
-    'tool:DIRECT__search_cds',
-    'tool:DIRECT__search_ui',
-  ]);
-  expect(warn.mock.calls).toEqual([
-    ['Tool corpus query unavailable; returning docs candidates only'],
-  ]);
+  try {
+    info.mockClear();
+    expect(
+      await docs
+        .withToolsRag(failed, 'executor')
+        .query(new TextOnlyEmbedding('cds'), 1),
+    ).toBe(failure);
+    await expect(names(docs.withToolsRag(failed, 'executor'))).rejects.toBe(
+      failure.error,
+    );
+    expect(warn).not.toHaveBeenCalled();
+    expect(info).not.toHaveBeenCalled();
+    expect(errorLog).not.toHaveBeenCalled();
+  } finally {
+    info.mockRestore();
+    errorLog.mockRestore();
+  }
 });
 
 test('thrown caller abort propagates unchanged', async () => {

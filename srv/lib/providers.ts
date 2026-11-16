@@ -3,6 +3,7 @@
  * Components receive what is built here; none of them read configuration.
  */
 import {
+  asymmetricEmbedder,
   type CallOptions,
   CircuitBreaker,
   CircuitBreakerEmbedder,
@@ -11,6 +12,7 @@ import {
   type IRagProvider,
   type IRetrievalEmbedder,
   symmetricEmbedder,
+  WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
 import { wrapEmbedder } from '@mcp-abap-adt/llm-agent-libs';
 import {
@@ -49,8 +51,13 @@ export interface Embedding {
    * hub builds is symmetric (one model embeds stored and search text alike).
    */
   retrieval: IRetrievalEmbedder;
+  /** Tool queries retry only rate limits; document writes retain composition. */
+  toolSearchRetrieval?: IRetrievalEmbedder;
+  toolSearchEmbedder?: CircuitBreakerEmbedder;
   breaker: CircuitBreaker;
   fingerprint: EmbedderFingerprint;
+  /** Request-driven tool-search recovery can reach the provider even with an open breaker. */
+  probeQueryEmbedder?: IQueryEmbedder;
 }
 
 /** `sap-ai-sdk` for AI Core keeps the committed bundle's header valid. */
@@ -90,7 +97,10 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
   if (!cfg) return null;
   const usage = usageRuntime()?.recorder;
   const recording = usage ? { usage } : {};
-  const raw = composeEmbedder(createEmbedder());
+  // One provider instance: it makes exactly one request per call, so both
+  // compositions below share it (and its usage recording).
+  const raw = createEmbedder();
+  const composed = composeEmbedder(raw);
   function createEmbedder() {
     switch (cfg?.kind) {
       case 'sap-ai-core':
@@ -133,12 +143,40 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
     failureThreshold: 30,
     recoveryWindowMs: 60_000,
   });
-  const embedder = new CircuitBreakerEmbedder(raw, breaker);
+  const embedder = new CircuitBreakerEmbedder(composed, breaker);
+  // Reuse composeEmbedder's input cap, with general retries disabled. Quota
+  // waits sit inside the shared breaker so a 429 never counts as a failure.
+  const toolSearch = composeEmbedder(raw, {
+    retry: false,
+    throttle: {
+      key: `tool-search-embedding:${JSON.stringify(embedderFingerprint(cfg))}`,
+      strategy: new WaitAsTold({ fallbackBackoffMs: 2000 }),
+    },
+  });
+  const toolSearchEmbedder = new CircuitBreakerEmbedder(toolSearch, breaker);
+  const retrieval = symmetricEmbedder(embedder);
   return {
     embedder,
-    retrieval: symmetricEmbedder(embedder),
+    retrieval,
+    toolSearchEmbedder,
+    toolSearchRetrieval: asymmetricEmbedder({
+      document: embedder,
+      query: toolSearchEmbedder,
+    }),
     breaker,
     fingerprint: embedderFingerprint(cfg),
+    probeQueryEmbedder: {
+      async embedQuery(text, options) {
+        try {
+          const result = await toolSearch.embed(text, options);
+          if (!options?.signal?.aborted) breaker.recordSuccess();
+          return result;
+        } catch (error) {
+          if (!options?.signal?.aborted) breaker.recordFailure();
+          throw error;
+        }
+      },
+    },
   };
 }
 
@@ -149,9 +187,17 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
  */
 export function agentQueryEmbedder(
   e: Embedding,
-  component: 'query-embedder' | 'collection-retrieval' = 'query-embedder',
+  component:
+    | 'query-embedder'
+    | 'collection-retrieval'
+    | 'tool-search' = 'query-embedder',
 ): IQueryEmbedder {
-  const query = symmetricEmbedder(wrapEmbedder(e.embedder));
+  const toolSearch = component === 'tool-search';
+  const query = symmetricEmbedder(
+    wrapEmbedder(
+      toolSearch ? (e.toolSearchEmbedder ?? e.embedder) : e.embedder,
+    ),
+  );
   return {
     embedQuery(
       text: string,
@@ -160,7 +206,12 @@ export function agentQueryEmbedder(
       return query.embedQuery(text, {
         ...options,
         ...(options?.usage
-          ? { usage: options.usage.with({ role: 'embedding', component }) }
+          ? {
+              usage: options.usage.with({
+                role: 'embedding',
+                component: toolSearch ? 'query-embedder' : component,
+              }),
+            }
           : {}),
       });
     },

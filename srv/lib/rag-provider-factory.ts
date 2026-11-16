@@ -121,6 +121,10 @@ export const PROVIDER_DEFAULT_DIMENSION = 1536;
  * `persistent` class is not a persistent kind. `env` carries VCAP_SERVICES.
  * `kind` selects another class's backend (the session history uses the
  * `session` class's). Only the embedding's `retrieval` embedder is used.
+ * HANA/PG 32.1.0 forward `connection.fallbackOnQueryEmbeddingError` to every
+ * handle; neither createCollection nor openCollection accepts a per-store
+ * override. Leave it unset here to preserve session/persistent fallback.
+ * Tools on those backends are currently rejected by parseRagConfig.
  */
 export function createCollectionProvider(
   rag: RagConfig,

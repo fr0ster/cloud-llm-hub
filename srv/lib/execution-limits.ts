@@ -136,7 +136,7 @@ export function runLimitOptions(
   return {
     maxIterations:
       iterations === 'off' ? Infinity : (iterations ?? defaults.maxIterations),
-    // An explicit undefined overrides SmartAgentBuilder's built-in 30-call default.
+    // llm-agent 33 leaves an undefined tool-call limit unbounded.
     maxToolCalls:
       calls === 'off' ? undefined : (calls ?? defaults.maxToolCalls),
   };
