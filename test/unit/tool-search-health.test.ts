@@ -6,6 +6,7 @@ import {
   type IRag,
   QueryEmbedding,
   RagError,
+  resetQuotaGates,
   symmetricEmbedder,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
@@ -22,6 +23,7 @@ import {
   agentQueryEmbedder,
   buildEmbedding,
   type Embedding,
+  prefetchEmbedder,
 } from '../../srv/lib/providers';
 import { createRagStoreFactory } from '../../srv/lib/rag-store-factory';
 import { SapAiCoreEmbedder } from '../../srv/lib/sap-ai-core-embedder';
@@ -36,6 +38,8 @@ import { handleChatCompletions } from '../../srv/openai-handler';
 
 let recover: () => void = () => {};
 afterEach(async () => {
+  jest.useRealTimers();
+  resetQuotaGates();
   recover();
   await assertToolSearchHealthy();
   jest.restoreAllMocks();
@@ -417,7 +421,8 @@ test.each([
 
 test.each([
   Object.assign(new Error('HTTP 400'), { status: 400 }),
-  Object.assign(new Error('HTTP 429'), { status: 429 }),
+  Object.assign(new Error('HTTP 503; request id 429'), { status: 503 }),
+  Object.assign(new Error('request id 429'), { response: { status: 503 } }),
   Object.assign(new Error('HTTP 500'), { status: 500 }),
   Object.assign(new Error('HTTP 502'), { status: 502 }),
   Object.assign(new Error('HTTP 503'), { status: 503 }),
@@ -450,6 +455,395 @@ test.each([
     expect(toolSearchFailure()).toBeUndefined();
   },
 );
+
+describe('production tool-search rate limits and input cap', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-11-16T12:00:00Z'));
+    jest.spyOn(Math, 'random').mockReturnValue(0);
+  });
+
+  function productionTools() {
+    const raw = jest
+      .spyOn(SapAiCoreEmbedder.prototype, 'embed')
+      .mockResolvedValue({ vector: [1, 0] });
+    const embedding = buildEmbedding({ kind: 'sap-ai-core', model: 'test' });
+    const probe = embedding?.probeQueryEmbedder;
+    const retrieval = embedding?.toolSearchRetrieval;
+    if (!embedding || !probe || !retrieval)
+      throw new Error('Missing tool-search embedder');
+    const stores = createRagStoreFactory(
+      {
+        embedder: null,
+        backends: { tools: 'vector', session: 'vector', persistent: 'vector' },
+      },
+      embedding,
+    );
+    const tools = new ExpositionFilteringRag(
+      stores.create('tools', 'reader'),
+      undefined,
+      undefined,
+      3,
+      undefined,
+      agentQueryEmbedder(embedding, 'tool-search'),
+      'off',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'vector',
+      probe,
+    );
+    recover = () => {
+      raw.mockResolvedValue({ vector: [1, 0] });
+    };
+    return { raw, embedding, probe, retrieval, tools };
+  }
+
+  test('long tool queries and recovery probes keep the same input cap as document and session embeddings', async () => {
+    const { raw, embedding, probe, retrieval, tools } = productionTools();
+    const text = 'x'.repeat(30_000);
+    raw.mockImplementation(async (input) => {
+      if (input.length > 24_000) throw new Error('Input too long');
+      return { vector: [1, 0] };
+    });
+    await embedding.retrieval.embedDocument(text);
+    await embedding.retrieval.embedQuery(text);
+    await retrieval.embedQuery(text);
+    expect((await tools.query(new TextOnlyEmbedding(text), 1)).ok).toBe(true);
+    await probe.embedQuery(text);
+    expect(raw.mock.calls.map(([input]) => input.length)).toEqual([
+      24_000, 24_000, 24_000, 24_000, 24_000,
+    ]);
+    expect(toolSearchFailure()).toBeUndefined();
+  });
+
+  test('429 without Retry-After waits two seconds, then succeeds with two calls and healthy status', async () => {
+    const { raw, embedding, tools } = productionTools();
+    const failure = jest.spyOn(embedding.breaker, 'recordFailure');
+    raw.mockRejectedValueOnce(
+      Object.assign(new Error('HTTP 429'), { status: 429 }),
+    );
+    const result = tools.query(new TextOnlyEmbedding('read'), 1);
+    await jest.advanceTimersByTimeAsync(1999);
+    expect(raw).toHaveBeenCalledTimes(1);
+    expect(withToolSearchHealth({ status: 200, body: {} }).status).toBe(200);
+    expect(failure).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    expect((await result).ok).toBe(true);
+    expect(raw).toHaveBeenCalledTimes(2);
+    expect(failure).not.toHaveBeenCalled();
+    expect(toolSearchFailure()).toBeUndefined();
+  });
+
+  test.each(['seconds', 'date', 'headers', 'cause', 'response'] as const)(
+    '429 honors Retry-After from %s headers',
+    async (format) => {
+      const { raw, embedding, tools } = productionTools();
+      const failure = jest.spyOn(embedding.breaker, 'recordFailure');
+      const headers =
+        format === 'headers'
+          ? new Headers({ 'Retry-After': '5' })
+          : {
+              'Retry-After':
+                format === 'date'
+                  ? new Date(Date.now() + 5000).toUTCString()
+                  : '5',
+            };
+      const throttled = Object.assign(new Error('HTTP 429'), {
+        status: 429,
+        ...(format === 'headers' ? { headers } : { response: { headers } }),
+      });
+      raw.mockRejectedValueOnce(
+        format === 'cause'
+          ? new Error('SDK wrapper', { cause: throttled })
+          : format === 'response'
+            ? Object.assign(new Error('SDK failure'), {
+                response: { status: 429, headers },
+              })
+            : throttled,
+      );
+      const result = tools.query(new TextOnlyEmbedding('read'), 1);
+      await jest.advanceTimersByTimeAsync(4999);
+      expect(raw).toHaveBeenCalledTimes(1);
+      expect(failure).not.toHaveBeenCalled();
+      expect(toolSearchFailure()).toBeUndefined();
+      await jest.advanceTimersByTimeAsync(1);
+      expect((await result).ok).toBe(true);
+      expect(raw).toHaveBeenCalledTimes(2);
+      expect(failure).not.toHaveBeenCalled();
+      expect(withToolSearchHealth({ status: 200, body: {} }).status).toBe(200);
+    },
+  );
+
+  test('unnamed 429 waits keep doubling beyond the standard retry limit', async () => {
+    const { raw, embedding, tools } = productionTools();
+    const failure = jest.spyOn(embedding.breaker, 'recordFailure');
+    for (let i = 0; i < 8; i++)
+      raw.mockRejectedValueOnce(
+        Object.assign(new Error('HTTP 429'), { status: 429 }),
+      );
+    const result = tools.query(new TextOnlyEmbedding('read'), 1);
+    await jest.advanceTimersByTimeAsync(0);
+    for (let i = 0; i < 8; i++) {
+      expect(raw).toHaveBeenCalledTimes(i + 1);
+      await jest.advanceTimersByTimeAsync(2000 * 2 ** i);
+      expect(toolSearchFailure()).toBeUndefined();
+      expect(failure).not.toHaveBeenCalled();
+    }
+    expect((await result).ok).toBe(true);
+    expect(raw).toHaveBeenCalledTimes(9);
+  });
+
+  test.each(['query', 'probe'] as const)(
+    'caller abort stops a %s quota wait without recording a failure',
+    async (path) => {
+      const { raw, embedding, probe, tools } = productionTools();
+      const failure = jest.spyOn(embedding.breaker, 'recordFailure');
+      raw.mockRejectedValueOnce(
+        Object.assign(new Error('HTTP 429'), {
+          status: 429,
+          headers: { 'retry-after': '3600' },
+        }),
+      );
+      const controller = new AbortController();
+      const options = { signal: controller.signal };
+      const result =
+        path === 'query'
+          ? tools.query(new TextOnlyEmbedding('read'), 1, options)
+          : probe.embedQuery('read', options).then(
+              () => ({ ok: true }),
+              () => ({ ok: false }),
+            );
+      await jest.advanceTimersByTimeAsync(0);
+      expect(raw).toHaveBeenCalledTimes(1);
+      controller.abort();
+      expect((await result).ok).toBe(false);
+      expect(raw).toHaveBeenCalledTimes(1);
+      expect(failure).not.toHaveBeenCalled();
+      expect(toolSearchFailure()).toBeUndefined();
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
+
+  test('a recovery probe waits through 429 with an open breaker and clears health only on success', async () => {
+    const { raw, embedding, tools } = productionTools();
+    raw.mockRejectedValueOnce(
+      Object.assign(new Error('HTTP 503'), { status: 503 }),
+    );
+    expect((await tools.query(new TextOnlyEmbedding('read'), 1)).ok).toBe(
+      false,
+    );
+    expect(raw).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 30; i++) embedding.breaker.recordFailure();
+    const failure = jest.spyOn(embedding.breaker, 'recordFailure');
+    raw.mockRejectedValueOnce(
+      Object.assign(new Error('HTTP 429'), {
+        status: 429,
+        response: { headers: { 'retry-after': '5' } },
+      }),
+    );
+    const recovery = assertToolSearchHealthy();
+    await jest.advanceTimersByTimeAsync(4999);
+    expect(raw).toHaveBeenCalledTimes(2);
+    expect(failure).not.toHaveBeenCalled();
+    expect(embedding.breaker.state).toBe('open');
+    expect(withToolSearchHealth({ status: 200, body: {} }).status).toBe(503);
+    await jest.advanceTimersByTimeAsync(1);
+    await recovery;
+    expect(raw).toHaveBeenCalledTimes(3);
+    expect(failure).not.toHaveBeenCalled();
+    expect(embedding.breaker.state).toBe('closed');
+    expect(toolSearchFailure()).toBeUndefined();
+  });
+
+  async function httpTools(kind: 'openai' | 'ollama') {
+    const response = () =>
+      new Response(
+        JSON.stringify(
+          kind === 'openai'
+            ? {
+                data: [{ embedding: [1, 0] }],
+                usage: { prompt_tokens: 3, total_tokens: 3 },
+              }
+            : { embedding: [1, 0], prompt_eval_count: 3 },
+        ),
+      );
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockImplementation(async () => response());
+    const config = {
+      kind,
+      model: 'test',
+      url: 'http://embedding.invalid',
+      apiKey: 'test-key',
+    };
+    await prefetchEmbedder(config);
+    const embedding = buildEmbedding(config);
+    const probe = embedding?.probeQueryEmbedder;
+    if (!embedding || !probe) throw new Error('Missing HTTP embedder');
+    const stores = createRagStoreFactory(
+      {
+        embedder: null,
+        backends: { tools: 'vector', session: 'vector', persistent: 'vector' },
+      },
+      embedding,
+    );
+    recover = () => {
+      fetchMock.mockImplementation(async () => response());
+    };
+    const tools = new ExpositionFilteringRag(stores.create('tools', 'reader'));
+    return { fetchMock, embedding, probe, tools };
+  }
+
+  test.each([
+    ['openai', 'query'],
+    ['openai', 'probe'],
+    ['ollama', 'query'],
+    ['ollama', 'probe'],
+  ] as const)(
+    '%s %s preserves HTTP Retry-After and the input cap with exactly two transport calls',
+    async (kind, path) => {
+      const { fetchMock, embedding, probe, tools } = await httpTools(kind);
+      if (path === 'probe')
+        for (let i = 0; i < 30; i++) embedding.breaker.recordFailure();
+      const failure = jest.spyOn(embedding.breaker, 'recordFailure');
+      fetchMock.mockResolvedValueOnce(
+        new Response('rate limited', {
+          status: 429,
+          headers: { 'Retry-After': '5' },
+        }),
+      );
+      const text = 'x'.repeat(30_000);
+      const pending =
+        path === 'query'
+          ? tools.query(new TextOnlyEmbedding(text), 1)
+          : probe.embedQuery(text).then((value) => ({ ok: true, value }));
+      await jest.advanceTimersByTimeAsync(4999);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(failure).not.toHaveBeenCalled();
+      expect(toolSearchFailure()).toBeUndefined();
+      await jest.advanceTimersByTimeAsync(1);
+      expect((await pending).ok).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(failure).not.toHaveBeenCalled();
+      expect(embedding.breaker.state).toBe('closed');
+      expect(toolSearchFailure()).toBeUndefined();
+      expect(fetchMock).toHaveBeenCalledWith(
+        `http://embedding.invalid${kind === 'openai' ? '/embeddings' : '/api/embeddings'}`,
+        expect.objectContaining({
+          body: JSON.stringify({
+            model: 'test',
+            ...(kind === 'openai'
+              ? { input: text.slice(0, 24_000) }
+              : { prompt: text.slice(0, 24_000) }),
+          }),
+          headers: {
+            'Content-Type': 'application/json',
+            ...(kind === 'openai' ? { Authorization: 'Bearer test-key' } : {}),
+          },
+        }),
+      );
+    },
+  );
+
+  test.each([
+    ['openai', 400],
+    ['openai', 503],
+    ['openai', 'network'],
+    ['ollama', 400],
+    ['ollama', 503],
+    ['ollama', 'network'],
+  ] as const)(
+    '%s transport %s fails on the first call and marks health DOWN',
+    async (kind, error) => {
+      const { fetchMock, embedding, tools } = await httpTools(kind);
+      const failure = jest.spyOn(embedding.breaker, 'recordFailure');
+      if (error === 'network')
+        fetchMock.mockRejectedValueOnce(new TypeError('fetch failed'));
+      else fetchMock.mockResolvedValueOnce(new Response('', { status: error }));
+      expect((await tools.query(new TextOnlyEmbedding('read'), 1)).ok).toBe(
+        false,
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(failure).toHaveBeenCalledTimes(1);
+      expect(withToolSearchHealth({ status: 200, body: {} }).status).toBe(503);
+    },
+  );
+
+  test.each(['openai', 'ollama'] as const)(
+    '%s caller abort cancels a transport quota wait without changing health',
+    async (kind) => {
+      const { fetchMock, embedding, tools } = await httpTools(kind);
+      const failure = jest.spyOn(embedding.breaker, 'recordFailure');
+      fetchMock.mockResolvedValueOnce(
+        new Response('rate limited', {
+          status: 429,
+          headers: { 'Retry-After': '3600' },
+        }),
+      );
+      const controller = new AbortController();
+      const pending = tools.query(new TextOnlyEmbedding('read'), 1, {
+        signal: controller.signal,
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ signal: controller.signal }),
+      );
+      controller.abort();
+      expect((await pending).ok).toBe(false);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(failure).not.toHaveBeenCalled();
+      expect(toolSearchFailure()).toBeUndefined();
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
+
+  test.each([
+    ['openai', 'document'],
+    ['openai', 'session'],
+    ['openai', 'persistent'],
+    ['ollama', 'document'],
+    ['ollama', 'session'],
+    ['ollama', 'persistent'],
+  ] as const)(
+    '%s non-tool %s embeddings retain composed retries after HTTP 503',
+    async (kind, path) => {
+      const { fetchMock, embedding } = await httpTools(kind);
+      const failure = jest.spyOn(embedding.breaker, 'recordFailure');
+      fetchMock.mockResolvedValueOnce(new Response('', { status: 503 }));
+      const stores = createRagStoreFactory(
+        {
+          embedder: null,
+          backends: {
+            tools: 'vector',
+            session: 'vector',
+            persistent: 'vector',
+          },
+        },
+        embedding,
+      );
+      const pending =
+        path === 'document'
+          ? embedding.retrieval.embedDocument('read')
+          : stores
+              .create(path, 'empty')
+              .query(new TextOnlyEmbedding('read'), 1);
+      await jest.advanceTimersByTimeAsync(1999);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(failure).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      const result = await pending;
+      if ('ok' in result) expect(result.ok).toBe(true);
+      else expect(result.vector).toEqual([1, 0]);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(failure).not.toHaveBeenCalled();
+      expect(toolSearchFailure()).toBeUndefined();
+    },
+  );
+});
 
 test.each(['session', 'persistent'] as const)(
   'non-tool %s queries retain the production composed retry after HTTP 503',

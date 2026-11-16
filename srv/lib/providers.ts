@@ -12,6 +12,7 @@ import {
   type IRagProvider,
   type IRetrievalEmbedder,
   symmetricEmbedder,
+  WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
 import { wrapEmbedder } from '@mcp-abap-adt/llm-agent-libs';
 import {
@@ -50,7 +51,7 @@ export interface Embedding {
    * hub builds is symmetric (one model embeds stored and search text alike).
    */
   retrieval: IRetrievalEmbedder;
-  /** Tool queries bypass composed retries; document writes retain composition. */
+  /** Tool queries retry only rate limits; document writes retain composition. */
   toolSearchRetrieval?: IRetrievalEmbedder;
   toolSearchEmbedder?: CircuitBreakerEmbedder;
   breaker: CircuitBreaker;
@@ -96,6 +97,8 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
   if (!cfg) return null;
   const usage = usageRuntime()?.recorder;
   const recording = usage ? { usage } : {};
+  // One provider instance: it makes exactly one request per call, so both
+  // compositions below share it (and its usage recording).
   const raw = createEmbedder();
   const composed = composeEmbedder(raw);
   function createEmbedder() {
@@ -141,9 +144,16 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
     recoveryWindowMs: 60_000,
   });
   const embedder = new CircuitBreakerEmbedder(composed, breaker);
-  // composeEmbedder exposes no retry policy option, so tool queries bypass it
-  // entirely (including 429 retries). Share the breaker with non-tool RAG.
-  const toolSearchEmbedder = new CircuitBreakerEmbedder(raw, breaker);
+  // Reuse composeEmbedder's input cap, with general retries disabled. Quota
+  // waits sit inside the shared breaker so a 429 never counts as a failure.
+  const toolSearch = composeEmbedder(raw, {
+    retry: false,
+    throttle: {
+      key: `tool-search-embedding:${JSON.stringify(embedderFingerprint(cfg))}`,
+      strategy: new WaitAsTold({ fallbackBackoffMs: 2000 }),
+    },
+  });
+  const toolSearchEmbedder = new CircuitBreakerEmbedder(toolSearch, breaker);
   const retrieval = symmetricEmbedder(embedder);
   return {
     embedder,
@@ -158,11 +168,11 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
     probeQueryEmbedder: {
       async embedQuery(text, options) {
         try {
-          const result = await raw.embed(text, options);
-          breaker.recordSuccess();
+          const result = await toolSearch.embed(text, options);
+          if (!options?.signal?.aborted) breaker.recordSuccess();
           return result;
         } catch (error) {
-          breaker.recordFailure();
+          if (!options?.signal?.aborted) breaker.recordFailure();
           throw error;
         }
       },
