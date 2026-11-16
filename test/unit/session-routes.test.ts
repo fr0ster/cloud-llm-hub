@@ -91,8 +91,8 @@ jest.mock('../../srv/anthropic-handler', () => ({
   ) => res.json({ reached: 'messages', session: req.longSession?.key ?? null }),
 }));
 
-import express from 'express';
 import { RagError } from '@mcp-abap-adt/llm-agent';
+import express from 'express';
 import { z } from 'zod';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { longSessions } from '../../srv/lib/long-session';

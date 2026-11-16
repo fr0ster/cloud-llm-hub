@@ -28,8 +28,8 @@ import {
 import { runWithRequestLlms } from './lib/session-llms';
 import {
   assertToolSearchHealthy,
-  toolSearchFailure,
   ToolSearchUnavailableError,
+  toolSearchFailure,
 } from './lib/tool-search-health';
 import {
   measureRequest,

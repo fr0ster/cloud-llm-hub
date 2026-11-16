@@ -133,15 +133,18 @@ export function createRagStoreFactory(
     opts?: VectorStoreOptions,
     toolSearch = false,
   ): IRag =>
-    new VectorRag(e.retrieval, {
-      ...(toolSearch ? { fallbackOnQueryEmbeddingError: false } : {}),
-      vectorWeight: 0.7,
-      keywordWeight: 0.3,
-      queryPreprocessors: opts?.queryPreprocessors,
-      documentEnrichers: opts?.documentEnrichers ?? [
-        new NoopDocumentEnricher(),
-      ],
-    });
+    new VectorRag(
+      toolSearch ? (e.toolSearchRetrieval ?? e.retrieval) : e.retrieval,
+      {
+        ...(toolSearch ? { fallbackOnQueryEmbeddingError: false } : {}),
+        vectorWeight: 0.7,
+        keywordWeight: 0.3,
+        queryPreprocessors: opts?.queryPreprocessors,
+        documentEnrichers: opts?.documentEnrichers ?? [
+          new NoopDocumentEnricher(),
+        ],
+      },
+    );
   const vectorStore = (e: Embedding, opts?: VectorStoreOptions): IRag =>
     new FallbackRag(primaryVectorStore(e, opts), new InMemoryRag(), e.breaker);
 
@@ -179,7 +182,10 @@ export function createRagStoreFactory(
       return new QdrantRag({
         url: q.url,
         collectionName: qName(name),
-        embedder: embedding.retrieval,
+        embedder:
+          cls === 'tools'
+            ? (embedding.toolSearchRetrieval ?? embedding.retrieval)
+            : embedding.retrieval,
         ...(cls === 'tools' ? { fallbackOnQueryEmbeddingError: false } : {}),
         ...(q.apiKey ? { credential: apiKeyCredential(q.apiKey) } : {}),
       });

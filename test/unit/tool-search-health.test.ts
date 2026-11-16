@@ -18,7 +18,11 @@ import {
 import { handleAnthropicMessages } from '../../srv/anthropic-handler';
 import { withDialogueRagTools } from '../../srv/lib/dialogue-rag-tools';
 import { ExternalMcp, parseExternalMcp } from '../../srv/lib/external-mcp';
-import { buildEmbedding, type Embedding } from '../../srv/lib/providers';
+import {
+  agentQueryEmbedder,
+  buildEmbedding,
+  type Embedding,
+} from '../../srv/lib/providers';
 import { createRagStoreFactory } from '../../srv/lib/rag-store-factory';
 import { SapAiCoreEmbedder } from '../../srv/lib/sap-ai-core-embedder';
 import {
@@ -330,27 +334,26 @@ test('vector tools fail with an open embedder breaker while non-tool stores reta
 test.each([
   ['vector', 'reader'],
   ['vector', 'writer'],
+  ['vector', 'skills'],
   ['qdrant', 'reader'],
   ['qdrant', 'writer'],
   ['qdrant', 'skills'],
 ] as const)(
-  '%s %s preserves the first embedding failure without retrying and recovers only after a successful probe',
+  '%s %s production composition preserves the first HTTP 503 without retrying and recovers only after a successful probe',
   async (backend, role) => {
     const fetchMock = jest
       .spyOn(global, 'fetch')
       .mockImplementation(
         async () => new Response(JSON.stringify({ result: [] })),
       );
-    const raw = jest.fn(async () => ({ vector: [1, 0] }));
-    raw.mockRejectedValueOnce(new Error('first query embedding failed'));
-    const breaker = new CircuitBreaker({ failureThreshold: 30 });
-    const embedder = new CircuitBreakerEmbedder({ embed: raw }, breaker);
-    const embedding: Embedding = {
-      embedder,
-      breaker,
-      retrieval: symmetricEmbedder(embedder),
-      fingerprint: { provider: 'test', embeddingModel: 'test' },
-    };
+    const raw = jest
+      .spyOn(SapAiCoreEmbedder.prototype, 'embed')
+      .mockResolvedValue({ vector: [1, 0] })
+      .mockRejectedValueOnce(
+        Object.assign(new Error('HTTP 503'), { status: 503 }),
+      );
+    const embedding = buildEmbedding({ kind: 'sap-ai-core', model: 'test' });
+    if (!embedding) throw new Error('Missing embedder');
     const stores = createRagStoreFactory(
       {
         embedder: null,
@@ -367,6 +370,16 @@ test.each([
       role === 'reader' ? store : new InMemoryRag(),
       role === 'writer' ? store : undefined,
       role === 'skills' ? store : undefined,
+      3,
+      undefined,
+      agentQueryEmbedder(embedding, 'tool-search'),
+      'off',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      backend,
+      embedding.probeQueryEmbedder,
     );
     const result = await rag.query(
       new QueryEmbedding('read tool', embedding.retrieval),
@@ -387,7 +400,9 @@ test.each([
     expect(raw).toHaveBeenCalledTimes(2);
     expect(withToolSearchHealth({ status: 200, body: {} }).status).toBe(503);
 
-    raw.mockRejectedValueOnce(new Error('probe failed'));
+    raw.mockRejectedValueOnce(
+      Object.assign(new Error('HTTP 503'), { status: 503 }),
+    );
     await expect(assertToolSearchHealthy()).rejects.toMatchObject({
       statusCode: 503,
     });
@@ -400,9 +415,85 @@ test.each([
   },
 );
 
-test('docs MCP query embedding fails once without retry and stays unhealthy until a fresh probe succeeds', async () => {
-  const embedQuery = jest.fn(async () => ({ vector: [1, 0] }));
-  embedQuery.mockRejectedValueOnce(new Error('first docs embedding failed'));
+test.each([
+  Object.assign(new Error('HTTP 400'), { status: 400 }),
+  Object.assign(new Error('HTTP 429'), { status: 429 }),
+  Object.assign(new Error('HTTP 500'), { status: 500 }),
+  Object.assign(new Error('HTTP 502'), { status: 502 }),
+  Object.assign(new Error('HTTP 503'), { status: 503 }),
+  Object.assign(new Error('HTTP 504'), { status: 504 }),
+  new TypeError('fetch failed'),
+])(
+  'store-owned production tool embeddings propagate %s on the first call',
+  async (error) => {
+    const raw = jest
+      .spyOn(SapAiCoreEmbedder.prototype, 'embed')
+      .mockResolvedValue({ vector: [1, 0] })
+      .mockRejectedValueOnce(error);
+    const embedding = buildEmbedding({ kind: 'sap-ai-core', model: 'test' });
+    if (!embedding) throw new Error('Missing embedder');
+    const stores = createRagStoreFactory(
+      {
+        embedder: null,
+        backends: { tools: 'vector', session: 'vector', persistent: 'vector' },
+      },
+      embedding,
+    );
+    const tools = new ExpositionFilteringRag(stores.create('tools', 'reader'));
+    expect((await tools.query(new TextOnlyEmbedding('read tool'), 1)).ok).toBe(
+      false,
+    );
+    expect(raw).toHaveBeenCalledTimes(1);
+    expect(withToolSearchHealth({ status: 200, body: {} }).status).toBe(503);
+    await assertToolSearchHealthy();
+    expect(raw).toHaveBeenCalledTimes(2);
+    expect(toolSearchFailure()).toBeUndefined();
+  },
+);
+
+test.each(['session', 'persistent'] as const)(
+  'non-tool %s queries retain the production composed retry after HTTP 503',
+  async (cls) => {
+    jest.useFakeTimers();
+    try {
+      const raw = jest
+        .spyOn(SapAiCoreEmbedder.prototype, 'embed')
+        .mockResolvedValue({ vector: [1, 0] })
+        .mockRejectedValueOnce(
+          Object.assign(new Error('HTTP 503'), { status: 503 }),
+        );
+      const embedding = buildEmbedding({ kind: 'sap-ai-core', model: 'test' });
+      if (!embedding) throw new Error('Missing embedder');
+      const stores = createRagStoreFactory(
+        {
+          embedder: null,
+          backends: {
+            tools: 'vector',
+            session: 'vector',
+            persistent: 'vector',
+          },
+        },
+        embedding,
+      );
+      const result = stores
+        .create(cls, 'empty')
+        .query(new TextOnlyEmbedding('read'), 1);
+      await jest.runAllTimersAsync();
+      expect(await result).toEqual({ ok: true, value: [] });
+      expect(raw).toHaveBeenCalledTimes(2);
+      expect(toolSearchFailure()).toBeUndefined();
+    } finally {
+      jest.useRealTimers();
+    }
+  },
+);
+
+test('docs MCP production query embedding fails on the first HTTP 503 and stays unhealthy until a fresh probe succeeds', async () => {
+  const embedQuery = jest
+    .spyOn(SapAiCoreEmbedder.prototype, 'embed')
+    .mockResolvedValue({ vector: [1, 0] });
+  const embedding = buildEmbedding({ kind: 'sap-ai-core', model: 'test' });
+  if (!embedding) throw new Error('Missing embedder');
   const docs = new ExternalMcp(
     parseExternalMcp({
       LLM_AGENT_EXECUTOR_MCP: 'DOCS',
@@ -418,9 +509,14 @@ test('docs MCP query embedding fails once without retry and stays unhealthy unti
     }),
     undefined,
     undefined,
-    () => ({ embedDocument: async () => ({ vector: [1, 0] }), embedQuery }),
+    () => embedding.toolSearchRetrieval,
+    () => embedding.probeQueryEmbedder,
   );
   await docs.clients('executor');
+  embedQuery.mockClear();
+  embedQuery.mockRejectedValueOnce(
+    Object.assign(new Error('HTTP 503'), { status: 503 }),
+  );
   const rag = docs.withToolsRag(new InMemoryRag(), 'executor');
   expect((await rag.query(new TextOnlyEmbedding('docs'), 1)).ok).toBe(false);
   expect(embedQuery).toHaveBeenCalledTimes(1);
@@ -429,7 +525,9 @@ test('docs MCP query embedding fails once without retry and stays unhealthy unti
   expect((await rag.query(new TextOnlyEmbedding('docs'), 1)).ok).toBe(true);
   expect(embedQuery).toHaveBeenCalledTimes(2);
   expect(withToolSearchHealth({ status: 200, body: {} }).status).toBe(503);
-  embedQuery.mockRejectedValueOnce(new Error('docs probe failed'));
+  embedQuery.mockRejectedValueOnce(
+    Object.assign(new Error('HTTP 503'), { status: 503 }),
+  );
   await expect(assertToolSearchHealthy()).rejects.toMatchObject({
     statusCode: 503,
   });

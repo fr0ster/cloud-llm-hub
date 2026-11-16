@@ -3,6 +3,7 @@
  * Components receive what is built here; none of them read configuration.
  */
 import {
+  asymmetricEmbedder,
   type CallOptions,
   CircuitBreaker,
   CircuitBreakerEmbedder,
@@ -49,6 +50,9 @@ export interface Embedding {
    * hub builds is symmetric (one model embeds stored and search text alike).
    */
   retrieval: IRetrievalEmbedder;
+  /** Tool queries bypass composed retries; document writes retain composition. */
+  toolSearchRetrieval?: IRetrievalEmbedder;
+  toolSearchEmbedder?: CircuitBreakerEmbedder;
   breaker: CircuitBreaker;
   fingerprint: EmbedderFingerprint;
   /** Request-driven tool-search recovery can reach the provider even with an open breaker. */
@@ -92,7 +96,8 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
   if (!cfg) return null;
   const usage = usageRuntime()?.recorder;
   const recording = usage ? { usage } : {};
-  const raw = composeEmbedder(createEmbedder());
+  const raw = createEmbedder();
+  const composed = composeEmbedder(raw);
   function createEmbedder() {
     switch (cfg?.kind) {
       case 'sap-ai-core':
@@ -135,10 +140,19 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
     failureThreshold: 30,
     recoveryWindowMs: 60_000,
   });
-  const embedder = new CircuitBreakerEmbedder(raw, breaker);
+  const embedder = new CircuitBreakerEmbedder(composed, breaker);
+  // composeEmbedder exposes no retry policy option, so tool queries bypass it
+  // entirely (including 429 retries). Share the breaker with non-tool RAG.
+  const toolSearchEmbedder = new CircuitBreakerEmbedder(raw, breaker);
+  const retrieval = symmetricEmbedder(embedder);
   return {
     embedder,
-    retrieval: symmetricEmbedder(embedder),
+    retrieval,
+    toolSearchEmbedder,
+    toolSearchRetrieval: asymmetricEmbedder({
+      document: embedder,
+      query: toolSearchEmbedder,
+    }),
     breaker,
     fingerprint: embedderFingerprint(cfg),
     probeQueryEmbedder: {
@@ -163,9 +177,17 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
  */
 export function agentQueryEmbedder(
   e: Embedding,
-  component: 'query-embedder' | 'collection-retrieval' = 'query-embedder',
+  component:
+    | 'query-embedder'
+    | 'collection-retrieval'
+    | 'tool-search' = 'query-embedder',
 ): IQueryEmbedder {
-  const query = symmetricEmbedder(wrapEmbedder(e.embedder));
+  const toolSearch = component === 'tool-search';
+  const query = symmetricEmbedder(
+    wrapEmbedder(
+      toolSearch ? (e.toolSearchEmbedder ?? e.embedder) : e.embedder,
+    ),
+  );
   return {
     embedQuery(
       text: string,
@@ -174,7 +196,12 @@ export function agentQueryEmbedder(
       return query.embedQuery(text, {
         ...options,
         ...(options?.usage
-          ? { usage: options.usage.with({ role: 'embedding', component }) }
+          ? {
+              usage: options.usage.with({
+                role: 'embedding',
+                component: toolSearch ? 'query-embedder' : component,
+              }),
+            }
           : {}),
       });
     },

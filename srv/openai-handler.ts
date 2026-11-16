@@ -33,8 +33,8 @@ import { runWithRequestLlms } from './lib/session-llms';
 import { summarizeToolResult } from './lib/tool-result-summary';
 import {
   assertToolSearchHealthy,
-  toolSearchFailure,
   ToolSearchUnavailableError,
+  toolSearchFailure,
 } from './lib/tool-search-health';
 import {
   measureRequest,

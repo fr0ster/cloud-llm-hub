@@ -583,7 +583,9 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
             analyzer.analyze(embedding.text, getRequestHistory(), options),
           )
         : { text: embedding.text, needsAbapSystem: true, writes: undefined };
-    if (decision.text !== embedding.text) {
+    // Tool searches must use their own retry policy even when the caller's
+    // memoized embedding was built for a non-tool RAG collection.
+    if (this.queryEmbedder || decision.text !== embedding.text) {
       embedding = this.queryEmbedder
         ? new QueryEmbedding(decision.text, this.queryEmbedder, {
             ...options,
@@ -1834,7 +1836,9 @@ export function docsMcp(): ExternalMcp {
     undefined,
     undefined,
     undefined,
-    () => providers?.embedding?.retrieval,
+    () =>
+      providers?.embedding?.toolSearchRetrieval ??
+      providers?.embedding?.retrieval,
     () => providers?.embedding?.probeQueryEmbedder,
   );
   return externalDocs;
@@ -2146,7 +2150,7 @@ export async function loadToolCorpus(
       p.stores.create('tools', names.writer),
       p.stores.createLocalTools(),
       opts.translateQueries === false ? undefined : createToolQueryAnalyzer(),
-      agentQueryEmbedder(p.embedding),
+      agentQueryEmbedder(p.embedding, 'tool-search'),
       opts.toolGate,
       backend,
       p.embedding.probeQueryEmbedder,
@@ -2166,7 +2170,7 @@ export async function loadToolCorpus(
   const store = await createToolsRagStore(
     p.stores,
     opts.translateQueries ?? true,
-    agentQueryEmbedder(p.embedding),
+    agentQueryEmbedder(p.embedding, 'tool-search'),
     opts.toolGate,
     p.embedding.probeQueryEmbedder,
   );
