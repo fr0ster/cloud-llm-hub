@@ -472,7 +472,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
    * caller's Basic auth + client). Used by the active-destination probe.
    *
    * Deliberately does NOT call connect(): a GET needs no CSRF token, and
-   * connect()'s CSRF retry loop would both waste round-trips and violate the
+   * connect()'s CSRF fetch would waste round-trips and violate the
    * "exactly one attempt" rule (retrying a 401/403 risks locking the ABAP
    * user). It seeds the `sap-usercontext` cookie up front so the request hits
    * the configured client (the `X-SAP-Client` header alone is ignored by ABAP),
@@ -633,6 +633,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
     }
 
     const { url } = this.config;
+    if (!url) throw new Error('The destination requires an SAP URL.');
     try {
       const urlObj = new URL(url);
       this.cachedBaseUrl = urlObj.origin;
@@ -670,13 +671,6 @@ export class CloudSdkAbapConnection implements AbapConnection {
     return headers;
   }
 
-  /**
-   * Ensure CSRF token is fresh before making mutation requests
-   *
-   * NOTE: This implementation uses SAP Cloud SDK executeHttpRequest instead of axios.
-   * The retry logic and parameters are synchronized with @mcp-abap-adt/connection
-   * via CSRF_CONFIG, but the HTTP client differs due to BTP Destination Service integration.
-   */
   /**
    * Ensure CSRF token is available. Reuses cached token or fetches a new one.
    * Safe for parallel calls — only one fetch runs at a time.
@@ -731,175 +725,84 @@ export class CloudSdkAbapConnection implements AbapConnection {
     this.csrfToken = await this.csrfRefreshing;
   }
 
-  /**
-   * Fetch CSRF token from SAP ADT discovery endpoint
-   *
-   * Implementation differences from @mcp-abap-adt/connection:
-   * - Uses SAP Cloud SDK executeHttpRequest instead of axios
-   * - Leverages BTP Destination Service for authentication
-   * - Automatic proxy handling via Cloud Connector (if configured)
-   *
-   * Retry logic and parameters are synchronized via CSRF_CONFIG.
-   *
-   * @param url - Original request URL (used for logging context)
-   * @returns CSRF token string
-   */
   private async fetchCsrfToken(url: string): Promise<string> {
-    // Get base URL and build CSRF token endpoint
-    // Connection has base URL, we just need to add CSRF endpoint
     const baseUrl = await this.getBaseUrl();
-    const csrfUrl = `${baseUrl}${CSRF_CONFIG.ENDPOINT}`;
-
-    logger.csrfToken('fetch', `Fetching CSRF token from: ${csrfUrl}`, {
-      baseUrl,
+    const discoveryUrl = baseUrl + CSRF_CONFIG.ENDPOINT;
+    logger.csrfToken('fetch', `Fetching CSRF token from: ${discoveryUrl}`, {
       originalRequestUrl: url,
-      retryCount: CSRF_CONFIG.RETRY_COUNT,
-      retryDelay: CSRF_CONFIG.RETRY_DELAY,
     });
 
-    const retryCount = CSRF_CONFIG.RETRY_COUNT;
-    const retryDelay = CSRF_CONFIG.RETRY_DELAY;
-
-    for (let attempt = 0; attempt <= retryCount; attempt++) {
-      try {
-        if (attempt > 0) {
-          logger.csrfToken(
-            'retry',
-            `Retry attempt ${attempt}/${retryCount} for CSRF token`,
-            {
-              delay: retryDelay,
-            },
-          );
-          await new Promise((resolve) => setTimeout(resolve, retryDelay));
-        }
-
-        // Use executeHttpRequest for CSRF token fetch
-        // This automatically handles:
-        // - Authentication via BTP Destination Service
-        // - Proxy configuration for On-Premise systems
-        // - SSL certificate validation
-        // The CSRF token is client-specific — fetch it in the TARGET client, not
-        // the system default. Seed sap-usercontext before the request.
-        this.enforceClientCookie();
-        const csrfCookie = this.getCookieHeader();
-        // No hub deadline on CSRF preparation; SAP controls its own limits.
-        const response = await executeHttpRequest(await this.sdkDestination(), {
-          method: 'GET',
-          url: csrfUrl,
-          timeout: 0,
-          httpAgent: this.getHttpAgent(),
-          headers: {
-            ...(await this.getAuthHeaders()),
-            ...CSRF_CONFIG.REQUIRED_HEADERS,
-            // Send OUR client-generated stateful-session id on the discovery
-            // fetch too. This is the request where SAP establishes the HTTP
-            // session and sets the app-server-affinity cookie
-            // (SAP_SESSIONID_<sid>_<client>). Without the connection-id here,
-            // SAP established that session under a DIFFERENT context than the
-            // lock chain (which does send it), so the app-server pin did not
-            // carry — the first stateful request (LOCK) scattered and the
-            // GET/UNLOCK 400'd "Session not found" (cold-start orphaned lock).
-            // Binding the discovery to the same connection-id lets the whole
-            // lock→update→unlock chain resume one session on one app-server.
-            'sap-adt-connection-id': this.sessionId,
-            ...(csrfCookie ? { Cookie: csrfCookie } : {}),
-          },
-        });
-
-        // Convert Cloud SDK response to Axios-like format
-        const token = response.headers?.['x-csrf-token'] as string | undefined;
-        if (!token) {
-          logger.csrfToken('error', CSRF_ERROR_MESSAGES.NOT_IN_HEADERS, {
-            headers: Object.keys(response.headers || {}),
-            status: response.status,
-            attempt: attempt + 1,
-            maxAttempts: retryCount + 1,
-          });
-
-          if (attempt < retryCount) {
-            continue;
-          }
-          throw new Error(CSRF_ERROR_MESSAGES.NOT_IN_HEADERS);
-        }
-
-        // Extract cookies from Set-Cookie header (name=value only, no attributes)
-        this.mergeSetCookies(
-          response.headers?.['set-cookie'] as string | string[] | undefined,
-        );
-        // SAP's response often resets sap-usercontext to the system DEFAULT
-        // client — re-enforce our configured client for all subsequent requests.
-        this.enforceClientCookie();
-        if (this.cookieJar.size > 0) {
-          logger.csrfToken('success', 'Cookies extracted from CSRF response', {
-            cookieCount: this.cookieJar.size,
-            cookieNames: [...this.cookieJar.keys()].join(', '),
-          });
-        }
-
-        logger.csrfToken('success', 'CSRF token successfully obtained', {
-          attempt: attempt + 1,
-          tokenLength: token.length,
-        });
-        return token;
-      } catch (error: unknown) {
-        const rawMessage =
-          error instanceof Error ? error.message : String(error);
-        const errorObj = error as {
-          response?: { status?: number; data?: unknown };
-          statusCode?: number;
-        };
-        const status = errorObj?.response?.status ?? errorObj?.statusCode;
-
-        // The bare Cloud SDK / axios message is just "Request failed with
-        // status code NNN", which hides the real cause. The connectivity proxy
-        // puts the actual reason in the response BODY (e.g. an SSL
-        // "certificate_expired" handshake error, or "Anmeldung fehlgeschlagen"
-        // for bad credentials). Surface a trimmed snippet so the diagnosis
-        // reaches the service response instead of an opaque 500.
-        const respData = errorObj?.response?.data;
-        let backendDetail = '';
-        if (typeof respData === 'string') {
-          backendDetail = respData;
-        } else if (respData && typeof respData === 'object') {
-          try {
-            backendDetail = JSON.stringify(respData);
-          } catch {
-            backendDetail = String(respData);
-          }
-        }
-        const errorMessage = backendDetail
-          ? `${rawMessage} — backend: ${backendDetail.slice(0, 300)}`
-          : rawMessage;
-
-        logger.csrfToken('error', `CSRF token error: ${errorMessage}`, {
-          url: csrfUrl,
-          status,
-          attempt: attempt + 1,
-          maxAttempts: retryCount + 1,
-        });
-
-        // Authentication failures (401/403) must NOT be retried: each retry is
-        // another failed ABAP logon and will LOCK the user after a few attempts.
-        // Only transient failures (network/5xx/missing-token) are worth retrying.
-        if (status === 401 || status === 403) {
-          throw new Error(CSRF_ERROR_MESSAGES.FETCH_FAILED(1, errorMessage));
-        }
-
-        if (attempt < retryCount) {
-          continue;
-        }
-
-        // Use synchronized error message format
-        throw new Error(
-          CSRF_ERROR_MESSAGES.FETCH_FAILED(retryCount + 1, errorMessage),
-        );
-      }
+    let response: Awaited<ReturnType<typeof this.requestCsrfToken>>;
+    try {
+      response = await this.requestCsrfToken(discoveryUrl);
+    } catch (error) {
+      const reply =
+        error instanceof Error && 'response' in error
+          ? error.response
+          : undefined;
+      if (
+        !reply ||
+        typeof reply !== 'object' ||
+        !('status' in reply) ||
+        (reply.status !== 404 && reply.status !== 501)
+      )
+        throw error;
+      response = await this.requestCsrfToken(
+        baseUrl + CSRF_CONFIG.FALLBACK_ENDPOINT,
+      );
     }
 
-    // This should never be reached, but TypeScript requires it
-    throw new Error(
-      CSRF_ERROR_MESSAGES.FETCH_FAILED(retryCount + 1, 'Unexpected failure'),
-    );
+    const token = response.headers?.['x-csrf-token'];
+    if (typeof token !== 'string' || !token.trim()) {
+      logger.csrfToken('error', CSRF_ERROR_MESSAGES.NOT_IN_HEADERS, {
+        status: response.status,
+        headers: Object.keys(response.headers ?? {}),
+      });
+      throw new Error(CSRF_ERROR_MESSAGES.NOT_IN_HEADERS);
+    }
+
+    const cookies = response.headers?.['set-cookie'];
+    if (typeof cookies === 'string' || Array.isArray(cookies))
+      this.mergeSetCookies(cookies);
+    // Discovery can reset sap-usercontext to the default client.
+    this.enforceClientCookie();
+    logger.csrfToken('success', 'CSRF token successfully obtained');
+    return token;
+  }
+
+  private async requestCsrfToken(csrfUrl: string) {
+    // Use executeHttpRequest for CSRF token fetch
+    // This automatically handles:
+    // - Authentication via BTP Destination Service
+    // - Proxy configuration for On-Premise systems
+    // - SSL certificate validation
+    // The CSRF token is client-specific — fetch it in the TARGET client, not
+    // the system default. Seed sap-usercontext before the request.
+    this.enforceClientCookie();
+    const csrfCookie = this.getCookieHeader();
+    // No hub deadline on CSRF preparation; SAP controls its own limits.
+    return executeHttpRequest(await this.sdkDestination(), {
+      method: 'GET',
+      url: csrfUrl,
+      timeout: 0,
+      httpAgent: this.getHttpAgent(),
+      headers: {
+        ...(await this.getAuthHeaders()),
+        ...CSRF_CONFIG.REQUIRED_HEADERS,
+        // Send OUR client-generated stateful-session id on the discovery
+        // fetch too. This is the request where SAP establishes the HTTP
+        // session and sets the app-server-affinity cookie
+        // (SAP_SESSIONID_<sid>_<client>). Without the connection-id here,
+        // SAP established that session under a DIFFERENT context than the
+        // lock chain (which does send it), so the app-server pin did not
+        // carry — the first stateful request (LOCK) scattered and the
+        // GET/UNLOCK 400'd "Session not found" (cold-start orphaned lock).
+        // Binding the discovery to the same connection-id lets the whole
+        // lock→update→unlock chain resume one session on one app-server.
+        'sap-adt-connection-id': this.sessionId,
+        ...(csrfCookie ? { Cookie: csrfCookie } : {}),
+      },
+    });
   }
 
   private async sdkDestination() {

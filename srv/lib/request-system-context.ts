@@ -7,7 +7,6 @@ import {
   type SystemContextResolver,
   type SystemContextRules,
 } from '@mcp-abap-adt/lib/request-context';
-import { getSystemContext } from '@mcp-abap-adt/lib/utils';
 import {
   cachedSystemIdentity,
   isCloudSystemIdentity,
@@ -86,7 +85,7 @@ export async function runWithRequestSystem<T>(
     // Inside a scope lib takes `masterLanguage` from the scope alone, so a
     // scope without the key would drop the process language. Nothing sets the
     // language per request here, so the process value is carried in.
-    masterLanguage: getSystemContext().masterLanguage,
+    masterLanguage: process.env.SAP_LANGUAGE,
   };
   return runWithRequestContext(ctx, fn);
 }

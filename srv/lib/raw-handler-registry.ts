@@ -2,8 +2,8 @@ import {
   BackgroundRunHandlersGroup,
   type BaseHandlerGroup,
   CompositeHandlersRegistry,
+  DataHandlersGroup,
   HighLevelHandlersGroup,
-  isArgsOnly,
   NoDedupStrategy,
   noConnectionContext,
   ReadOnlyHandlersGroup,
@@ -11,27 +11,11 @@ import {
   SearchHandlersGroup,
   SystemHandlersGroup,
 } from '@mcp-abap-adt/lib/handlers';
-import { boundHandlerExporter } from './bound-handler-exporter';
 import type { ExpositionLevel } from './exposition';
-import { handlerBatchAvailability } from './handler-batch-availability';
-import type { SystemType } from './system-type';
+import { DATA_TOOL_EXPOSITIONS } from './tool-exposition-map';
 
-type ToolArgument =
-  | string
-  | number
-  | boolean
-  | null
-  | ToolArgument[]
-  | {
-      [key: string]: ToolArgument;
-    };
-
-export function rawHandlerRegistry(
-  exposition: ExpositionLevel[],
-  systemType: SystemType,
-) {
+export function rawHandlerRegistry(exposition: ExpositionLevel[]) {
   const context = noConnectionContext();
-  context.batchAvailability = handlerBatchAvailability;
   const high = exposition.includes('high')
     ? [new HighLevelHandlersGroup(context)]
     : [];
@@ -54,42 +38,14 @@ export function rawHandlerRegistry(
     );
   if (exposition.includes('search'))
     groups.push(new SearchHandlersGroup(context));
-  const registry = new CompositeHandlersRegistry(groups);
-  for (const group of registry.getHandlerGroups()) {
-    const entries = group.getHandlers().map((entry) => {
-      const schema: Record<string, object> = entry.toolDefinition.inputSchema;
-      // lib 23 exposes no long-read metadata. Its schemas are either raw
-      // Zod shapes or JSON Schemas with the arguments under properties.
-      const hasTimeout =
-        Object.hasOwn(schema, 'timeout') ||
-        (schema.properties !== null &&
-          typeof schema.properties === 'object' &&
-          Object.hasOwn(schema.properties, 'timeout'));
-      if (!hasTimeout) return entry;
-      return {
-        ...entry,
-        handler: async (
-          context: Parameters<typeof boundHandlerExporter>[0],
-          args: Record<string, ToolArgument>,
-        ) => {
-          // lib 23 does not declare the system kind on injected long-read
-          // connections. The exporter states it on the actual call connection.
-          const exporter = boundHandlerExporter(context, { systemType });
-          const handler = exporter
-            .getHandlerEntries()
-            .find(
-              (candidate) =>
-                candidate.toolDefinition.name === entry.toolDefinition.name,
-            )?.handler;
-          if (!handler)
-            throw new Error(
-              `Unknown long-read tool: ${entry.toolDefinition.name}`,
-            );
-          return isArgsOnly(handler) ? handler(args) : handler(context, args);
-        },
-      };
-    });
-    group.getHandlers = () => entries;
+  const data = new DataHandlersGroup(context);
+  const dataEntries = data.getHandlers().filter(({ toolDefinition }) => {
+    const level = DATA_TOOL_EXPOSITIONS.get(toolDefinition.name);
+    return level !== undefined && exposition.includes(level);
+  });
+  if (dataEntries.length) {
+    data.getHandlers = () => dataEntries;
+    groups.push(data);
   }
-  return registry;
+  return new CompositeHandlersRegistry(groups);
 }
