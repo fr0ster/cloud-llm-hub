@@ -1,4 +1,8 @@
-﻿import { TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+﻿import {
+  type IQueryEmbedding,
+  type IRag,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import { parseToolGate, parseToolGateTimeoutMs } from '../../srv/agent-config';
 import { ExpositionFilteringRag } from '../../srv/agent-manager';
 import { getReviewSignals } from '../../srv/lib/review-scope';
@@ -234,7 +238,7 @@ it.each(['smart', 'hard'] as const)(
   },
 );
 
-it('shares the first pending gate across parallel searches and translates each text', async () => {
+it('applies independent gate decisions to parallel searches and translates each text', async () => {
   let resolve!: (value: { text: string; needsAbapSystem: boolean }) => void;
   const analyze = jest.fn((text: string) =>
     text === 'first query'
@@ -246,21 +250,33 @@ it('shares the first pending gate across parallel searches and translates each t
           needsAbapSystem: false,
         }),
   );
-  const query = jest.fn().mockResolvedValue({ ok: true, value: rows });
-  const rag = new ExpositionFilteringRag(
-    { query } as any,
-    { query } as any,
-    { query } as any,
-    3,
-    { analyze } as any,
-  );
+  const analyzer = new ToolQueryAnalyzer({
+    chat: jest.fn(),
+    streamChat: jest.fn(),
+  });
+  jest.spyOn(analyzer, 'analyze').mockImplementation(analyze);
+  const query = jest.fn(async (_embedding: IQueryEmbedding) => ({
+    ok: true as const,
+    value: rows.map((row) => ({ ...row, text: row.metadata.id })),
+  }));
+  const store: IRag = {
+    query,
+    healthCheck: async () => ({ ok: true, value: undefined }),
+    getById: async () => ({ ok: true, value: null }),
+  };
+  const rag = new ExpositionFilteringRag(store, store, store, 3, analyzer);
   await runWithSessionId('same-session', async () => {
     const first = rag.query(new TextOnlyEmbedding('first query'), 5);
     const parallel = rag.query(new TextOnlyEmbedding('parallel query'), 5);
     expect(analyze).toHaveBeenCalledTimes(2);
+    expect(await parallel).toEqual({ ok: true, value: [] });
     resolve({ text: 'translated first', needsAbapSystem: true });
-    await Promise.all([first, parallel]);
-    await rag.query(new TextOnlyEmbedding('reselection query'), 5);
+    const firstResult = await first;
+    if (!firstResult.ok) throw firstResult.error;
+    expect(firstResult.value).not.toHaveLength(0);
+    expect(
+      await rag.query(new TextOnlyEmbedding('reselection query'), 5),
+    ).toEqual({ ok: true, value: [] });
     expect(analyze).toHaveBeenCalledTimes(3);
     const texts = query.mock.calls.map(([embedding]) => embedding.text);
     expect(texts).toContain('translated first');
@@ -272,30 +288,6 @@ it('shares the first pending gate across parallel searches and translates each t
   );
   expect(analyze).toHaveBeenCalledTimes(4);
   await next;
-});
-
-it('honours a closed decision on subsequent searches', async () => {
-  const analyze = jest.fn(async (text: string) => ({
-    text: `translated ${text}`,
-    needsAbapSystem: text !== 'first query',
-  }));
-  const query = jest.fn().mockResolvedValue({ ok: true, value: rows });
-  const rag = new ExpositionFilteringRag(
-    { query } as any,
-    undefined,
-    undefined,
-    3,
-    { analyze } as any,
-  );
-  await runWithSessionId('closed', async () => {
-    for (const text of ['first query', 'later query'])
-      expect(await rag.query(new TextOnlyEmbedding(text), 5)).toEqual({
-        ok: true,
-        value: [],
-      });
-  });
-  expect(analyze).toHaveBeenCalledTimes(2);
-  expect(query.mock.calls[1][0].text).toBe('translated later query');
 });
 
 it('isolates execute_step bypass between concurrent requests', async () => {

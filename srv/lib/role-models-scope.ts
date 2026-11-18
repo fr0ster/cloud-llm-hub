@@ -3,6 +3,7 @@ import { deployModel } from './deploy-model';
 import { configuredRoleModel } from './deploy-role-config';
 import { resolveDialogueRoleModel } from './dialogue-role-model';
 import { type ExecutionLimits, withExecutionLimits } from './execution-limits';
+import { configuredMaxTokens } from './max-tokens-config';
 import { parseModelAllowlist } from './model-policy';
 import {
   getRoleModels,
@@ -140,19 +141,18 @@ export function effectiveRoleModels(
     executor: resolve('executor', workerDefault('executor')),
     checker: resolve('checker', workerDefault('checker')),
   };
+  const maxTokens = configuredMaxTokens();
   for (const effective of Object.values(result)) {
     const temperature =
       process.env.LLM_AGENT_TEMPERATURE || process.env.SAP_CORE_AI_TEMPERATURE;
-    const maxTokens =
-      process.env.LLM_AGENT_MAX_TOKENS || process.env.SAP_CORE_AI_MAX_TOKENS;
     effective.params = {
       temperature: {
         value: configuredTemperature() ?? 'off',
         source: temperature ? 'config' : 'default',
       },
       maxOutputTokens: {
-        value: Number.parseInt(maxTokens || '2000', 10),
-        source: maxTokens ? 'config' : 'default',
+        value: maxTokens ?? 'off',
+        source: maxTokens === undefined ? 'default' : 'config',
       },
     };
   }

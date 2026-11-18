@@ -85,7 +85,8 @@ const config: AgentConfig = {
 };
 
 describe('adaptive chat through the real hub build and library pipeline', () => {
-  let scenario: 'hello' | 'throw' | 'invalid' | 'check-write';
+  let scenario: 'hello' | 'throw' | 'invalid' | 'check-write' | 'revise';
+  const revisionCount = 21;
   const checkerScopes: boolean[] = [];
   const calls: string[] = [];
   const controllerPrompts: string[] = [];
@@ -100,6 +101,14 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       controllerPrompts.push(messages.map((m) => m.content).join('\n'));
       if (scenario === 'throw') throw new Error('planning unavailable');
       if (scenario === 'invalid') return 'not JSON';
+      if (scenario === 'revise') {
+        const call = controllerPrompts.length;
+        const step =
+          call <= revisionCount
+            ? { id: `revise-${call}`, kind: 'revise', reason: 'Refine plan' }
+            : { id: 'answer', kind: 'answer', text: 'Plan complete' };
+        return JSON.stringify({ steps: [step] });
+      }
       if (scenario === 'check-write')
         return JSON.stringify({
           steps: [
@@ -254,6 +263,24 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     expect(result.callTool).not.toHaveBeenCalled();
     expect(result.record?.outcome).toBe('answered');
     expect(result.record?.steps.map((s) => s.kind)).toEqual(['answer']);
+  });
+
+  it('finishes an adaptive run beyond the library step, revision and duration defaults', async () => {
+    scenario = 'revise';
+    const now = Date.now();
+    const clock = jest
+      .spyOn(Date, 'now')
+      .mockImplementation(
+        () => now + (controllerPrompts.length > 1 ? 300_001 : 0),
+      );
+    try {
+      const result = await run('adaptive-long-plan', 'Refine the plan');
+      expect(result.text).toBe('Plan complete');
+      expect(result.record?.outcome).toBe('answered');
+      expect(result.record?.steps).toHaveLength(revisionCount + 1);
+    } finally {
+      clock.mockRestore();
+    }
   });
   it('routes a generated executor check to read-only checker and blocks writes before MCP', async () => {
     scenario = 'check-write';

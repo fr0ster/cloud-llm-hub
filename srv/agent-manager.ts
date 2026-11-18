@@ -213,7 +213,6 @@ import {
   isReadOnlyTools,
   isToolGateBypassed,
   profileToolAllowed,
-  requestToolGateDecision,
 } from './request-session';
 
 /** Keep generated verification steps inside the hub's checker tool scope. */
@@ -579,9 +578,7 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     const analyzer = this.analyzer;
     const decision =
       analyzer && embedding.text
-        ? await requestToolGateDecision(embedding.text, () =>
-            analyzer.analyze(embedding.text, getRequestHistory(), options),
-          )
+        ? await analyzer.analyze(embedding.text, getRequestHistory(), options)
         : { text: embedding.text, needsAbapSystem: true, writes: undefined };
     // Tool searches must use their own retry policy even when the caller's
     // memoized embedding was built for a non-tool RAG collection.
@@ -1591,6 +1588,7 @@ export function createToolQueryAnalyzer(): ToolQueryAnalyzer {
           component: 'analyst',
           role: 'classifier',
           model: config.llm.classifierModel,
+          maxTokens: config.llm.maxTokens,
           resourceGroup: config.llm.resourceGroup,
           whenThrottled: config.llm.whenThrottled,
         },
@@ -3624,11 +3622,7 @@ export async function buildAgentForDestination(
         yield* (await coordinatorLlm()).streamChat(...args);
       },
     };
-    const budget = Object.fromEntries(
-      Object.entries(config.agent.planBudget ?? {}).filter(
-        ([, value]) => value !== undefined,
-      ),
-    );
+    const budget = config.agent.planBudget;
     builder.withStepperCoordinator(
       new AdaptiveCoordinatorHandler({
         controller: new CheckerAdaptiveController(
@@ -3639,7 +3633,12 @@ export async function buildAgentForDestination(
         workers,
         finalizer: noticeFinalizer,
         runRecords: adaptiveRunRecordStore(getRunRecordStore()),
-        budget,
+        // The handler merges these values over its finite defaults.
+        budget: {
+          maxSteps: budget?.maxSteps ?? Number.POSITIVE_INFINITY,
+          maxRevisions: budget?.maxRevisions ?? Number.POSITIVE_INFINITY,
+          maxDurationMs: budget?.maxDurationMs,
+        },
         fallbackWorker: 'executor',
       }),
     );

@@ -8,10 +8,7 @@ import {
   type ToolQueryAnalysis,
   ToolQueryAnalyzer,
 } from '../../srv/lib/tool-query-analyzer';
-import {
-  requestToolGateDecision,
-  runWithSessionId,
-} from '../../srv/request-session';
+import { runWithSessionId } from '../../srv/request-session';
 
 function searchWith(analyzeText: (text: string) => Promise<ToolQueryAnalysis>) {
   const analyzer = new ToolQueryAnalyzer({
@@ -100,9 +97,7 @@ it.each([
         }
       }
     });
-    expect(analyze.mock.calls.map(([text]) => text)).toEqual([
-      ...new Set(texts),
-    ]);
+    expect(analyze.mock.calls.map(([text]) => text)).toEqual(texts);
     expect(query.mock.calls.map(([embedding]) => embedding.text)).toEqual(
       texts.map((text) => `Translated ${text}`),
     );
@@ -110,56 +105,7 @@ it.each([
 );
 
 it.each([true, false])(
-  'keeps the first pending gate decision %s while analysing distinct texts',
-  async (needsAbapSystem) => {
-    let resolveFirst!: (analysis: ToolQueryAnalysis) => void;
-    let resolveLater!: (analysis: ToolQueryAnalysis) => void;
-    const firstAnalysis = new Promise<ToolQueryAnalysis>((resolve) => {
-      resolveFirst = resolve;
-    });
-    const laterAnalysis = new Promise<ToolQueryAnalysis>((resolve) => {
-      resolveLater = resolve;
-    });
-    const analyzeFirst = jest.fn(() => firstAnalysis);
-    const analyzeLater = jest.fn(() => laterAnalysis);
-    const firstValue = {
-      text: 'Translated read',
-      needsAbapSystem,
-      writes: false,
-    };
-    const laterValue = {
-      text: 'Translated write',
-      needsAbapSystem: !needsAbapSystem,
-      writes: true,
-    };
-    await runWithSessionId('parallel', async () => {
-      const first = requestToolGateDecision('read', analyzeFirst);
-      const duplicate = requestToolGateDecision('read', analyzeFirst);
-      const later = requestToolGateDecision('write', analyzeLater);
-      expect(analyzeFirst).toHaveBeenCalledTimes(1);
-      expect(analyzeLater).toHaveBeenCalledTimes(1);
-      resolveLater(laterValue);
-      resolveFirst(firstValue);
-      expect(await first).toEqual(firstValue);
-      expect(await duplicate).toEqual(firstValue);
-      expect(await later).toEqual({ ...laterValue, needsAbapSystem });
-      expect(await requestToolGateDecision('write', analyzeLater)).toEqual({
-        ...laterValue,
-        needsAbapSystem,
-      });
-      expect(analyzeLater).toHaveBeenCalledTimes(1);
-    });
-    expect(
-      await runWithSessionId('parallel', () =>
-        requestToolGateDecision('write', analyzeLater),
-      ),
-    ).toEqual(laterValue);
-    expect(analyzeLater).toHaveBeenCalledTimes(2);
-  },
-);
-
-it.each([true, false])(
-  'keeps request-wide gate %s when later searches disagree',
+  'uses each search decision when the first gate is %s',
   async (needsAbapSystem) => {
     const { analyze, query, search } = searchWith(async (text) => ({
       text: `Translated ${text}`,
@@ -167,13 +113,17 @@ it.each([true, false])(
       writes: false,
     }));
     await runWithSessionId('gate', async () => {
-      for (const text of ['first', 'later', 'later']) {
+      for (const [text, needsSystem] of [
+        ['first', needsAbapSystem],
+        ['later', !needsAbapSystem],
+        ['later', !needsAbapSystem],
+      ] as const) {
         expect(await search(text)).toEqual(
-          needsAbapSystem ? ['tool:GetSqlQuery'] : [],
+          needsSystem ? ['tool:GetSqlQuery'] : [],
         );
       }
     });
-    expect(analyze).toHaveBeenCalledTimes(2);
+    expect(analyze).toHaveBeenCalledTimes(3);
     expect(query.mock.calls.map(([embedding]) => embedding.text)).toEqual([
       'Translated first',
       'Translated later',
@@ -181,3 +131,17 @@ it.each([true, false])(
     ]);
   },
 );
+
+it('offers SAP readers after a documentation-only step in the same request', async () => {
+  const documents = 'Find the documentation for ABAP dictionary tables';
+  const sapInspection = 'Inspect the live SAP system and read table MARA';
+  const { search } = searchWith(async (text) => ({
+    text,
+    needsAbapSystem: text === sapInspection,
+    writes: false,
+  }));
+  await runWithSessionId('adaptive-run', async () => {
+    expect(await search(documents)).toEqual([]);
+    expect(await search(sapInspection)).toEqual(['tool:GetSqlQuery']);
+  });
+});

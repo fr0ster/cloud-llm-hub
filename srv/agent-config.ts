@@ -7,6 +7,7 @@ import {
 } from './lib/deploy-role-config';
 import type { ExecutionLimits } from './lib/execution-limits';
 import { type ExternalMcpConfig, parseExternalMcp } from './lib/external-mcp';
+import { configuredMaxTokens } from './lib/max-tokens-config';
 import { validateModelCatalogProvider } from './lib/model-catalog';
 import { configuredTemperature } from './lib/temperature-config';
 import { parseTrustDefaults, type TrustDefaults } from './lib/trust';
@@ -26,7 +27,7 @@ import { parseTrustDefaults, type TrustDefaults } from './lib/trust';
  * Configuration variables:
  * - LLM_AGENT_MODEL: Model name (e.g., 'gpt-4o-mini', 'claude-3-5-sonnet')
  * - LLM_AGENT_TEMPERATURE: Temperature (unset uses the provider/model default; a number overrides it; off explicitly omits the parameter)
- * - LLM_AGENT_MAX_TOKENS: Max tokens (default: 2000)
+ * - LLM_AGENT_MAX_TOKENS: Optional output token limit (unset uses the provider default)
  * - LLM_AGENT_MCP_DESTINATION: Destination name for MCP/ABAP connection (required)
  * - LLM_AGENT_MCP_ENDPOINT: MCP proxy endpoint URL (optional, defaults to local)
  * - LLM_AGENT_MODE: SmartAgent mode: 'smart' | 'pass' | 'hard' (default: 'smart')
@@ -53,11 +54,7 @@ import {
   parseSystemType,
   type SystemType,
 } from './lib/system-type';
-import {
-  DEFAULT_MAX_THROTTLE_WAIT_MS,
-  WaitAsNeeded,
-  WaitIfShortEnough,
-} from './lib/throttle-strategy';
+import { WaitAsNeeded, WaitIfShortEnough } from './lib/throttle-strategy';
 
 export type SmartAgentMode = 'smart' | 'pass' | 'hard';
 export type RagType = 'in-memory' | 'ollama';
@@ -214,8 +211,8 @@ export interface AgentConfig {
     /** Temperature (0.0 - 2.0) */
     temperature: number | undefined;
 
-    /** Maximum tokens in response */
-    maxTokens: number;
+    /** Explicit output token limit */
+    maxTokens?: number;
 
     /** API key for openai/anthropic/deepseek providers */
     apiKey?: string;
@@ -648,12 +645,7 @@ export function loadAgentConfig(): AgentConfig {
     'classifier',
   ] as const)
     configuredPromptCaching(role);
-  const maxTokens = Number.parseInt(
-    process.env.LLM_AGENT_MAX_TOKENS ||
-      process.env.SAP_CORE_AI_MAX_TOKENS ||
-      '2000',
-    10,
-  );
+  const maxTokens = configuredMaxTokens();
   const resourceGroup = process.env.LLM_AGENT_RESOURCE_GROUP;
   const apiKey = process.env.LLM_AGENT_API_KEY || '';
   const baseUrl = process.env.LLM_AGENT_BASE_URL || '';
@@ -812,9 +804,6 @@ export function loadAgentConfig(): AgentConfig {
  * Configuration is loaded once and cached
  */
 let cachedConfig: AgentConfig | null = null;
-
-/** Legacy ceiling export; the hub default now has no total wait ceiling. */
-export const DEFAULT_THROTTLE_MAX_WAIT_MS = DEFAULT_MAX_THROTTLE_WAIT_MS;
 
 /**
  * Read the wait budget from the environment.

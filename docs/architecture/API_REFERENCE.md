@@ -639,11 +639,11 @@ per quota so concurrent callers do not each rediscover the same closed limit.
 
 The hub shares one SAP AI Core account, so the default strategy is
 `WaitAsNeeded` (`wait-as-needed`) both with and without the gatekeeper door.
-A positive server interval is waited exactly, without a total wait cap. SSE
-keep-alives protect streaming callers while queued. Without an interval, the
-strategy backs off from 2 seconds, doubling per unnamed wait, with 20% jitter
-in either direction and a hard 60-second cap per wait. After six unnamed waits
-per call it reports `no-interval`: a missing interval can mean a spend cap.
+The shared quota gate honors every `Retry-After` interval. SSE keep-alives
+protect streaming callers while queued. Without an interval, the strategy
+backs off from 2 seconds, doubling per unnamed wait with 20% jitter and a
+maximum delay of 60 seconds per wait. Retries continue without an attempt
+or total wait cap until caller cancellation or a different provider response.
 
 An explicitly set `LLM_AGENT_THROTTLE_MAX_WAIT_MS` selects `WaitIfShortEnough`
 only without a door. This opt-in ceiling bounds total throttle waiting; zero
