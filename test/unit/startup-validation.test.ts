@@ -378,16 +378,19 @@ describe("server.ts's served listener", () => {
       finish = resolve;
     });
     seedAgentConfiguration.mockImplementationOnce(() => pendingSeed);
-    const actualWait = profileSeeds.waitForAgentProfiles;
+    const createWaiter = profileSeeds.createAgentProfileWaiter;
     let entered = () => {};
     const enteredWait = new Promise<void>((resolve) => {
       entered = resolve;
     });
     const wait = jest
-      .spyOn(profileSeeds, 'waitForAgentProfiles')
-      .mockImplementation((synchronization, signal) => {
-        entered();
-        return actualWait(synchronization, signal);
+      .spyOn(profileSeeds, 'createAgentProfileWaiter')
+      .mockImplementation((synchronization) => {
+        const wait = createWaiter(synchronization);
+        return (signal) => {
+          entered();
+          return wait(signal);
+        };
       });
     const app = express();
     const post = app.post.bind(app);

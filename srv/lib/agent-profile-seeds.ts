@@ -10,22 +10,42 @@ import {
 } from './agent-profile-records';
 import { awaitModelCatalog } from './model-catalog';
 
-export async function waitForAgentProfiles(
+type ProfileSynchronizationResult = { ok: true } | { ok: false; error: Error };
+
+export function createAgentProfileWaiter(
   synchronization: Promise<void>,
-  signal: AbortSignal,
-): Promise<void> {
-  signal.throwIfAborted();
-  let onAbort = () => {};
-  const aborted = new Promise<never>((_resolve, reject) => {
-    onAbort = () => reject(signal.reason);
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
-  try {
-    await Promise.race([synchronization, aborted]);
+): (signal: AbortSignal) => Promise<void> {
+  const waiters = new Set<(result: ProfileSynchronizationResult) => void>();
+  let settled: ProfileSynchronizationResult | undefined;
+  const settle = (result: ProfileSynchronizationResult) => {
+    settled = result;
+    for (const waiter of waiters) waiter(result);
+    waiters.clear();
+  };
+  // Subscribe at startup, outside request context. Requests only join the set.
+  void synchronization.then(
+    () => settle({ ok: true }),
+    (error: Error) => settle({ ok: false, error }),
+  );
+  return async (signal) => {
     signal.throwIfAborted();
-  } finally {
-    signal.removeEventListener('abort', onAbort);
-  }
+    const result =
+      settled ??
+      (await new Promise<ProfileSynchronizationResult>((resolve, reject) => {
+        const complete = (result: ProfileSynchronizationResult) => {
+          signal.removeEventListener('abort', onAbort);
+          resolve(result);
+        };
+        const onAbort = () => {
+          waiters.delete(complete);
+          reject(signal.reason);
+        };
+        waiters.add(complete);
+        signal.addEventListener('abort', onAbort, { once: true });
+      }));
+    signal.throwIfAborted();
+    if (!result.ok) throw result.error;
+  };
 }
 
 export interface AgentProfileSeedStore {

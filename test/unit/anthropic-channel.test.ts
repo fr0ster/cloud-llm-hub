@@ -1,4 +1,9 @@
-import { LlmError, type TokenUsage } from '@mcp-abap-adt/llm-agent';
+import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
+import {
+  LlmError,
+  staticApiKey,
+  type TokenUsage,
+} from '@mcp-abap-adt/llm-agent';
 import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import { bindCaller } from '../../srv/lib/rag-caller';
 import { chatSessionBodyTests } from './helpers/chat-session-body';
@@ -169,6 +174,68 @@ it.each([false, true])(
         usage: expected,
       });
     } else expect(JSON.parse(res.body)).toMatchObject({ usage: expected });
+  },
+);
+
+it.each([false, true])(
+  'retains the provider input when the output-only usage is larger (stream=%s)',
+  async (stream) => {
+    configure();
+    const fetch = jest
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new globalThis.Response(
+          [
+            'event: message_start',
+            'data: {"message":{"usage":{"input_tokens":4,"cache_read_input_tokens":1527,"cache_creation_input_tokens":2,"output_tokens":0}}}',
+            '',
+            'event: message_delta',
+            'data: {"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2000}}',
+            '',
+          ].join('\n'),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+    try {
+      const provider = new AnthropicProvider({
+        credential: staticApiKey('test'),
+        model: 'm',
+      });
+      const chunks = [];
+      for await (const chunk of provider.streamChat([])) chunks.push(chunk);
+      const input = chunks[0]?.usage;
+      const output = chunks[1]?.usage;
+      if (!input || !output) throw new Error('Missing provider usage');
+      expect(input.promptTokens).toBe(1533);
+      expect(output.promptTokens).toBe(0);
+      harness.process = async () => {
+        reportLlmSpend(input, 'm');
+        return { ok: true, value: { content: 'answer', usage: output } };
+      };
+      harness.stream = async function* () {
+        reportLlmSpend(input, 'm');
+        yield { ok: true, value: { content: 'answer', usage: output } };
+        yield { ok: true, value: { content: '', finishReason: 'stop' } };
+      };
+      const { res, done } = call(body(stream));
+      await done;
+      const expected = {
+        input_tokens: 4,
+        output_tokens: 2000,
+        cache_read_input_tokens: 1527,
+        cache_creation_input_tokens: 2,
+        models: { m: { prompt_tokens: 1533, total_tokens: 3533 } },
+      };
+      if (stream) {
+        const delta = res.body
+          .split('\n\n')
+          .find((block) => block.startsWith('event: message_delta\n'))
+          ?.split('\ndata: ')[1];
+        expect(JSON.parse(delta ?? '')).toMatchObject({ usage: expected });
+      } else expect(JSON.parse(res.body)).toMatchObject({ usage: expected });
+    } finally {
+      fetch.mockRestore();
+    }
   },
 );
 

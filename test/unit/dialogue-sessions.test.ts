@@ -600,6 +600,61 @@ test('live subscribers receive summed planner usage on the first user reply emis
   }
 });
 
+test('turn usage includes retrieval before planning once in the reply and outbox', async () => {
+  const setup = jest
+    .spyOn(plannerMemory, 'plannerSessionOptions')
+    .mockResolvedValue({
+      plannerKnowledge: [
+        {
+          name: 'planning',
+          async search() {
+            reportLlmSpend(
+              { promptTokens: 17, completionTokens: 0, totalTokens: 17 },
+              'retrieval-model',
+            );
+            return [];
+          },
+        },
+      ],
+    });
+  try {
+    const { h } = await ready();
+    mockPlanUsage = { promptTokens: 3, completionTokens: 2, totalTokens: 5 };
+    mockPlannerHook = async () => {
+      mockPlan = { plan: 'Read', status: 'done' };
+    };
+    const trace = { traceId: 'retrieval-reply' };
+    h.replies.set(trace, { id: trace.traceId, createdAt: 123 });
+    const answer = await h.session.send('Find details', { trace });
+    const expected = {
+      totalTokens: 22,
+      models: {
+        'retrieval-model': {
+          promptTokens: 17,
+          completionTokens: 0,
+          totalTokens: 17,
+          requests: 1,
+        },
+      },
+    };
+    expect(answer.usage?.planner).toMatchObject(expected);
+    expect(h.outbox.history()[0].usage?.planner).toMatchObject(expected);
+
+    mockPlannerPreparationHook = () => {
+      throw new Error('Planner preparation failed');
+    };
+    await expect(h.session.send('Find more details')).rejects.toThrow();
+    expect(h.failedUsage?.()?.planner).toEqual({
+      promptTokens: 17,
+      completionTokens: 0,
+      totalTokens: 17,
+      models: expected.models,
+    });
+  } finally {
+    setup.mockRestore();
+  }
+});
+
 test('a save during the turn emits no settled', async () => {
   const { h } = await ready();
   mockPlan = { plan: 'Read', status: 'done' };
