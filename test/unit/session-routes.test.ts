@@ -630,11 +630,11 @@ it('mounts the session models routes with caller-owned session isolation', async
   const saved = await fetch(`${base}/v1/session/models`, {
     method: 'PUT',
     headers,
-    body: JSON.stringify({ limits: { historyTokenBudget: 'off' } }),
+    body: JSON.stringify({ limits: { toolResultMaxChars: 'off' } }),
   });
   expect(saved.status).toBe(200);
   expect(await saved.json()).toMatchObject({
-    limits: { historyTokenBudget: 'off' },
+    limits: { toolResultMaxChars: 'off' },
     canEdit: true,
   });
   user.id = 'bob';

@@ -15,7 +15,6 @@ export interface ExecutionLimits {
   executor?: RunLimits;
   checker?: RunLimits;
   toolResultMaxChars?: Limit;
-  historyTokenBudget?: Limit;
   planStepBudget?: Limit;
 }
 const limit = z.union([
@@ -32,7 +31,6 @@ export const executionLimitsSchema = z.strictObject({
   executor: run.optional(),
   checker: run.optional(),
   toolResultMaxChars: limit.optional(),
-  historyTokenBudget: limit.optional(),
   planStepBudget: limit.optional(),
 });
 export type ExecutionLimitsInput = z.input<typeof executionLimitsSchema>;
@@ -74,11 +72,7 @@ export function validateExecutionLimits(
     }
     if (Object.keys(run).length) value[role] = run;
   }
-  for (const name of [
-    'toolResultMaxChars',
-    'historyTokenBudget',
-    'planStepBudget',
-  ] as const) {
+  for (const name of ['toolResultMaxChars', 'planStepBudget'] as const) {
     const limit = parsed.data[name];
     if (limit != null) value[name] = limit;
   }
@@ -119,7 +113,7 @@ export function currentLimit(
   );
 }
 export function currentSessionLimit(
-  name: 'toolResultMaxChars' | 'historyTokenBudget',
+  name: 'toolResultMaxChars',
 ): Limit | undefined {
   return scope.getStore()?.[name] ?? configuredExecutionLimits()[name];
 }
@@ -140,12 +134,6 @@ export function runLimitOptions(
     maxToolCalls:
       calls === 'off' ? undefined : (calls ?? defaults.maxToolCalls),
   };
-}
-export function historyBudgetOptions(): { tokenBudget: number } | undefined {
-  const value = currentSessionLimit('historyTokenBudget');
-  return value === 'off' || value === undefined
-    ? undefined
-    : { tokenBudget: value };
 }
 export function sessionToolResultMaxChars(fallback: number): number {
   const value = currentSessionLimit('toolResultMaxChars');
@@ -195,15 +183,7 @@ export function effectiveExecutionLimits(
   add(
     'toolResultMaxChars',
     settings.toolResultMaxChars,
-    config.toolResultMaxChars,
-    60000,
-  );
-  if (result.toolResultMaxChars.value === 0)
-    result.toolResultMaxChars.value = 'off';
-  add(
-    'historyTokenBudget',
-    settings.historyTokenBudget,
-    config.historyTokenBudget,
+    config.toolResultMaxChars === 0 ? 'off' : config.toolResultMaxChars,
     'off',
   );
   return result;

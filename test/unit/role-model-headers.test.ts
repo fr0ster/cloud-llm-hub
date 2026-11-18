@@ -104,7 +104,7 @@ test('an invalid role header fails the request with 400 naming the header and le
   setRoleModels('headers-user', 'one', { executor: { model: 'first' } });
   const res = await request({
     'x-clh-model-executor': 'other',
-    'x-clh-limits': '{"historyTokenBudget":12}',
+    'x-clh-limits': '{"toolResultMaxChars":12}',
   });
   expect(res.status).toBe(400);
   expect(await res.text()).toContain('x-clh-model-executor');
@@ -204,11 +204,11 @@ test('effective models remain complete JSON beyond 128 characters', async () => 
 test('null limit headers clear one nested override and preserve omitted fields', async () => {
   await request({
     'x-clh-limits':
-      '{"executor":{"maxIterations":"off","maxToolCalls":5},"historyTokenBudget":1234}',
+      '{"executor":{"maxIterations":"off","maxToolCalls":5},"toolResultMaxChars":1234}',
   });
   const res = await request({
     'x-clh-limits':
-      '{"executor":{"maxIterations":null},"historyTokenBudget":null}',
+      '{"executor":{"maxIterations":null},"toolResultMaxChars":null}',
   });
   expect(res.status).toBe(200);
   expect(getExecutionLimits('headers-user', 'one')).toEqual({

@@ -389,7 +389,7 @@ test.each([0, 60000, 4096])(
       undefined,
       cap,
     );
-    await loopReads.run(new ReadDedup(8), async () => {
+    await loopReads.run(new ReadDedup(), async () => {
       let offset = 0;
       let combined = '';
       let pages = 0;

@@ -25,7 +25,6 @@ import {
   createDialogueStateStore,
   DIALOGUE_TOOL_CONTRACT_VERSION,
   deleteDialogueState,
-  dialogueByteLimit,
   getDialogueStoreBackend,
   hasDialogueState,
   initializeDialogueStore,
@@ -161,9 +160,15 @@ it('round-trips planner projection metadata, resolved failures and cache usage',
   await store.save('alice', 'projection', restored);
   expect(await store.load('alice', 'projection')).toEqual(snapshot);
 });
-it('strips legacy archives and closed transcripts while preserving open transcripts', async () => {
+it('strips legacy archives and preserves open and closed request transcripts', async () => {
   const store = new MemoryDialogueStore();
-  const closed = { id: 'r1', openedAt: 1, closedAt: 2, text: 'earlier' };
+  const closed = {
+    id: 'r1',
+    openedAt: 1,
+    closedAt: 2,
+    text: 'earlier',
+    transcript: state.conversation,
+  };
   const open = {
     id: 'r2',
     openedAt: 2,
@@ -179,7 +184,6 @@ it('strips legacy archives and closed transcripts while preserving open transcri
         replies: null,
         closedPlan: 'old',
         transcriptExpired: true,
-        transcript: state.conversation,
       },
       { ...open, replies: ['old'], closedPlan: {}, transcriptExpired: true },
     ],
@@ -385,69 +389,6 @@ it('round trips structured plans and retained task ownership without stripping f
   await store.save('structured', value);
   expect(await store.load('structured')).toEqual(value);
 });
-it('rejects oversized structured fields and ownership maps', async () => {
-  const store = createDialogueStateStore('alice', 'bounded');
-  for (const extra of [
-    {
-      taskSteps: Object.fromEntries(
-        Array.from({ length: 1001 }, (_, i) => [String(i), 'step']),
-      ),
-    },
-    { taskSteps: { task: 'x'.repeat(1001) } },
-    {
-      plan: {
-        version: 1,
-        status: 'active',
-        steps: [
-          {
-            id: 'a',
-            goal: 'Read',
-            state: 'pending',
-            taskIds: [],
-            checkedTaskIds: Object.fromEntries(
-              Array.from({ length: 1001 }, (_, i) => [String(i), 'task']),
-            ),
-          },
-        ],
-      },
-    },
-    {
-      plan: {
-        version: 1,
-        status: 'active',
-        steps: [],
-        question: 'x'.repeat(20001),
-      },
-    },
-    {
-      plan: {
-        version: 1,
-        status: 'active',
-        steps: [
-          {
-            id: 'a',
-            goal: 'Read',
-            state: 'pending',
-            taskIds: [],
-            note: 'x'.repeat(20001),
-          },
-        ],
-      },
-    },
-    {
-      plan: {
-        version: 1,
-        status: 'active',
-        steps: [
-          { id: 'a', goal: 'x'.repeat(20001), state: 'pending', taskIds: [] },
-        ],
-      },
-    },
-  ]) {
-    await store.save('bounded', { ...state, ...extra } as DialogueState);
-    expect(await store.load('bounded')).toBeUndefined();
-  }
-});
 it.each(['active', 'waiting_user', 'done'] as const)(
   'round trips plan status %s',
   async (planStatus) => {
@@ -501,103 +442,50 @@ it('bounds memory, clones state, and applies the TTL backstop and sweep', async 
   }
 });
 it.each([
-  { ...state, conversation: Array(201).fill({ role: 'user', content: 'x' }) },
-  { ...state, conversation: [{ role: 'user', content: 'x'.repeat(20001) }] },
-  { ...state, tasks: Array(51).fill({}) },
-])('rejects invalid or oversized states without truncating', async (value) => {
-  const s = createDialogueStateStore('alice', 'k');
-  await s.save('k', value as DialogueState);
-  expect(await s.load('k')).toBeUndefined();
-});
+  { ...state, savedAt: NaN },
+  { ...state, conversationLeadingActions: [-1] },
+])(
+  'rejects malformed state and preserves the last valid save',
+  async (value) => {
+    const store = createDialogueStateStore('alice', 'invalid');
+    await store.save('invalid', state);
+    await store.save('invalid', value);
+    expect(await store.load('invalid')).toEqual(state);
+  },
+);
 
-it('guards states exceeding the byte limit without replacing the last save', async () => {
+it('round trips large dialogue state with closed request transcripts', async () => {
   const store = new MemoryDialogueStore();
-  await store.save('alice', 'bytes', state);
-  await store.save('alice', 'bytes', {
-    ...state,
-    plan: 'x'.repeat(dialogueByteLimit()),
-  });
-  expect(await store.load('alice', 'bytes')).toEqual(state);
-});
-
-it('raises the byte limit with each configured retention budget', () => {
-  const config = require('../../srv/agent-config');
-  const baseline = dialogueByteLimit();
-  const tasks = jest.spyOn(config, 'dialogueMaxTasks').mockReturnValue(100);
-  const output = jest.spyOn(config, 'dialogueTaskOutputChars');
-  try {
-    expect(dialogueByteLimit()).toBeGreaterThan(baseline);
-    const moreTasks = dialogueByteLimit();
-    output.mockReturnValue(120_000);
-    expect(dialogueByteLimit()).toBeGreaterThan(moreTasks);
-  } finally {
-    tasks.mockRestore();
-    output.mockRestore();
-  }
-});
-
-it('round trips default retention maxima with six-byte JSON escapes and task outputs', async () => {
-  const store = new MemoryDialogueStore();
-  const messageText = '\u0000'.repeat(20_000);
+  const content = '\u0000'.repeat(65_000);
   const value: DialogueState = {
     ...state,
-    conversation: Array.from({ length: 200 }, () => ({
+    conversation: Array.from({ length: 201 }, () => ({
       role: 'user',
-      content: messageText,
+      content,
     })),
-    tasks: Array.from({ length: 50 }, (_, i) => ({
+    requests: Array.from({ length: 201 }, (_, i) => ({
+      id: `r${i}`,
+      openedAt: i,
+      closedAt: i + 1,
+      text: i === 0 ? content : 'request',
+      ...(i === 0 ? { transcript: [{ role: 'user', content }] } : {}),
+    })),
+    tasks: Array.from({ length: 60 }, (_, i) => ({
       id: String(i),
       worker: 'executor',
-      goal: 'read',
-      state: 'done' as const,
+      goal: 'Read',
+      state: 'done',
       createdAt: 1,
-      output: `${'\u0000'.repeat(60_000)}\n[cut: 1 characters omitted]`,
+      output: content,
     })),
-    requestSeq: 200,
-    taskRequests: { task1: 'r200' },
-    requests: Array.from({ length: 200 }, (_, i) => ({
-      id: `r${i + 1}`,
-      openedAt: i,
-      text: messageText,
-      ...(i < 199 ? { closedAt: i + 1 } : {}),
-      ...(i === 199
-        ? {
-            transcript: Array.from({ length: 4 }, () => ({
-              role: 'user' as const,
-              content: '\u0000'.repeat(100_000),
-            })),
-          }
-        : {}),
-    })),
+    plan: {
+      version: 1,
+      steps: [{ id: 'read', goal: content, state: 'done', taskIds: [] }],
+      status: 'done',
+    },
   };
-  expect(Buffer.byteLength(JSON.stringify(value))).toBeGreaterThan(68_400_000);
-  expect(Buffer.byteLength(JSON.stringify(value))).toBeLessThan(
-    dialogueByteLimit(),
-  );
-  await store.save('alice', 'bounds', value);
-  expect(await store.load('alice', 'bounds')).toEqual(value);
-});
-
-it('persists and restores the configured task boundary of 60', async () => {
-  const config = require('../../srv/agent-config');
-  const spy = jest.spyOn(config, 'dialogueMaxTasks').mockReturnValue(60);
-  try {
-    const store = createDialogueStateStore('alice', 'boundary');
-    const value = {
-      ...state,
-      tasks: Array.from({ length: 60 }, (_, i) => ({
-        id: String(i),
-        worker: 'executor',
-        goal: 'read',
-        state: 'done' as const,
-        createdAt: 1,
-      })),
-    };
-    await store.save('boundary', value);
-    expect((await store.load('boundary'))?.tasks).toHaveLength(60);
-  } finally {
-    spy.mockRestore();
-  }
+  await store.save('alice', 'large', value);
+  expect(await store.load('alice', 'large')).toEqual(value);
 });
 
 it('dialogue activity touches persistence at most once per 60 seconds', async () => {

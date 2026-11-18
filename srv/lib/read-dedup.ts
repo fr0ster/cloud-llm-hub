@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
+import { LegacyAccumulateContextStrategy } from '@mcp-abap-adt/llm-agent-libs';
 
 import { parseToolResultMaxChars } from '../agent-config';
 import { sessionToolResultMaxChars } from './execution-limits';
@@ -23,19 +24,9 @@ export function readPage(
   };
 }
 
-/** Loop bookkeeping only: retain hashes and original rounds, never record text. */
+/** Track page hashes for the current tool loop. */
 export class ReadDedup {
-  private round = 0;
-  private readonly reads = new Map<string | object, Map<string, number>>();
-  constructor(private readonly window: number) {}
-  advance(): void {
-    this.round++;
-    for (const pages of this.reads.values()) {
-      for (const [key, round] of pages) {
-        if (this.round - round >= this.window) pages.delete(key);
-      }
-    }
-  }
+  private readonly reads = new Map<string | object, Set<string>>();
   read(
     trace: string | object,
     collection: string,
@@ -46,14 +37,13 @@ export class ReadDedup {
   ) {
     let pages = this.reads.get(trace);
     if (!pages) {
-      pages = new Map();
+      pages = new Set();
       this.reads.set(trace, pages);
     }
     const hash = createHash('sha256').update(text).digest('hex');
     const key = JSON.stringify([collection, id, offset, limit, hash]);
-    const original = pages.get(key);
     const end = Math.min(text.length, offset + limit);
-    if (original !== undefined && this.round - original < this.window) {
+    if (pages.has(key)) {
       return {
         id,
         offset,
@@ -62,7 +52,7 @@ export class ReadDedup {
         note: `already read above in this task: ${id} offset ${offset}–${end}`,
       };
     }
-    pages.set(key, this.round + 1);
+    pages.add(key);
     return readPage(id, text, offset, limit);
   }
 }
@@ -70,6 +60,11 @@ export class ReadDedup {
 // The library invokes the factory synchronously inside each async tool loop.
 // Its async continuation inherits this scope; concurrent loops get separate state.
 export const loopReads = new AsyncLocalStorage<ReadDedup>();
+
+export function createReadDedupContextStrategy(): LegacyAccumulateContextStrategy {
+  loopReads.enterWith(new ReadDedup());
+  return new LegacyAccumulateContextStrategy();
+}
 
 export function readLoopPage(
   trace: string | undefined,

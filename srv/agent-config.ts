@@ -940,7 +940,7 @@ export function parseChatCoordinator(
   );
 }
 
-/** Shared output budget for dialogue sessions and persisted byte validation. */
+/** Optional task-output size setting for dialogue sessions. */
 export function dialogueTaskOutputChars(): number | undefined {
   return readPositiveIntFrom(
     process.env,
@@ -948,7 +948,7 @@ export function dialogueTaskOutputChars(): number | undefined {
   );
 }
 
-/** Shared task limit for TaskBoard and persisted dialogue validation. */
+/** Task limit for the dialogue TaskBoard. */
 export function dialogueMaxTasks(): number {
   return readPositiveIntFrom(process.env, 'LLM_AGENT_DIALOGUE_MAX_TASKS') ?? 50;
 }
@@ -958,7 +958,7 @@ export function parseToolResultMaxChars(
   env: NodeJS.ProcessEnv = process.env,
 ): number {
   const value = configuredLimit('LLM_AGENT_TOOL_RESULT_MAX_CHARS', env);
-  return value === 'off' ? 0 : (value ?? 60000);
+  return value === 'off' ? 0 : (value ?? 0);
 }
 
 /** Per-run tool-call budget; unset preserves the library default. */

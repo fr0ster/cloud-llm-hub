@@ -10,11 +10,9 @@ import type {
   ToolTraceEntry,
 } from '@mcp-abap-adt/llm-agent';
 import { isRagScanner } from '@mcp-abap-adt/llm-agent';
-import { TASK_OUTPUT_CHAR_LIMIT } from '@mcp-abap-adt/llm-agent-libs';
 import cds from '@sap/cds';
 import { z } from 'zod';
 import type { RagConfig } from '../agent-config';
-import { dialogueMaxTasks, dialogueTaskOutputChars } from '../agent-config';
 import { ensureDialogueStore } from './collection-persistence';
 import type { OutboxEntry } from './dialogue-outbox';
 import { guardedTask } from './guarded-task';
@@ -81,26 +79,6 @@ export function migrateDialogueToolContract(
   return migrated;
 }
 
-// JSON worst case is 6 bytes per UTF-16 code unit (escaped controls/surrogates).
-// Open transcript: 400k; conversation: 200 * 20k; request texts: 200 * 20k
-// = 8.4M UTF-16 units, plus maxTasks * (taskOutputChars + 64 units).
-// The library default output budget is 60k; 64 units cover its cut marker,
-// including the omitted-character count. Multiply by 6, then add 8 MiB for metadata.
-// This is a guard, not a target: plans, task goals/errors, pending replies and
-// metadata have no aggregate library bound and can still exceed it.
-export function dialogueByteLimit(): number {
-  return (
-    (8_400_000 +
-      dialogueMaxTasks() *
-        ((dialogueTaskOutputChars() ?? TASK_OUTPUT_CHAR_LIMIT) + 64)) *
-      6 +
-    8 * 1024 * 1024
-  );
-}
-function checkDialogueBytes(text: string): void {
-  if (Buffer.byteLength(text, 'utf8') > dialogueByteLimit())
-    throw new Error('Dialogue state exceeds configured byte limit');
-}
 export interface DialogueStoreBackend {
   storageBytes?(userId: string, sessionId: string): DialogueBytes | undefined;
   load(
@@ -154,7 +132,7 @@ const plannerUsage = z.object({
 });
 const message = z.object({
   role: z.enum(['user', 'assistant', 'system', 'tool']),
-  content: str.max(20000).nullable(),
+  content: str.nullable(),
   tool_call_id: str.optional(),
   tool_calls: z
     .array(
@@ -174,9 +152,7 @@ function planSchema<S extends z.ZodType<Plan>>(
 ): S {
   return schema;
 }
-const boundedText = str.max(20000);
-const id = str.max(1000);
-const ids = z.array(id).max(1000);
+const ids = z.array(str);
 const planStep = z.preprocess(
   (value) => {
     if (typeof value === 'object' && value !== null) {
@@ -219,11 +195,11 @@ const planStep = z.preprocess(
     return value;
   },
   z.object({
-    id,
-    goal: boundedText,
-    items: z.array(boundedText).max(1000).optional(),
+    id: str,
+    goal: str,
+    items: z.array(str).optional(),
     dependsOn: ids.optional(),
-    worker: id.optional(),
+    worker: str.optional(),
     result: z.enum(['report', 'verdict']).optional(),
     state: z.enum([
       'pending',
@@ -234,91 +210,76 @@ const planStep = z.preprocess(
       'blocked',
     ]),
     verdict: z.enum(['pass', 'fail']).optional(),
-    checkedTaskIds: z
-      .record(id, id)
-      .refine((value) => Object.keys(value).length <= 1000, {
-        message: 'Dialogue checked task limit exceeded',
-      })
-      .optional(),
-    workTaskId: id.optional(),
-    successfulWorkTaskId: id.optional(),
+    checkedTaskIds: z.record(str, str).optional(),
+    workTaskId: str.optional(),
+    successfulWorkTaskId: str.optional(),
     taskIds: ids,
-    note: boundedText.optional(),
+    note: str.optional(),
   } satisfies Shape<PlanStep>),
 );
-const structuredPlan = planSchema(
+export const revisionPlanSchema = planSchema(
   z.object({
     scopeConsent: z.boolean().optional(),
     version: z.literal(1),
-    steps: z.array(planStep).max(1000),
+    steps: z.array(planStep),
     status: z.enum(['active', 'waiting_user', 'done']),
-    question: boundedText.optional(),
-    // Restored legacy text plans become this note; use the overall byte limit.
+    question: str.optional(),
     note: str.optional(),
   } satisfies Shape<Plan>),
 );
-export const revisionPlanSchema = structuredPlan.refine(
-  (plan) =>
-    Buffer.byteLength(JSON.stringify(plan), 'utf8') <= dialogueByteLimit(),
-  { message: 'Plan exceeds configured byte limit' },
-);
 
 const plannerMessage = z.object({
-  id,
+  id: str,
   text: str,
   createdAt: num,
   trigger: z.enum(['user', 'event']),
   usage: plannerUsage.optional(),
 } satisfies Shape<DialogueState['pending'][number]>);
-const request = z.preprocess(
-  (value) => {
-    if (
-      typeof value === 'object' &&
-      value !== null &&
-      'closedAt' in value &&
-      value.closedAt !== undefined
-    ) {
-      const { transcript: _transcript, ...record } = {
-        ...value,
-        transcript: undefined,
-      };
-      return record;
-    }
-    return value;
-  },
-  z.object({
-    id,
-    openedAt: num,
-    closedAt: num.optional(),
-    text: boundedText,
-    plan: z
-      .object({
-        status: z.enum(['active', 'waiting_user', 'done']),
-        steps: num,
-        done: num,
-        failed: num,
-        skipped: num,
-      } satisfies Shape<
-        NonNullable<NonNullable<DialogueState['requests']>[number]['plan']>
-      >)
-      .optional(),
-    lastTurnOk: z.boolean().optional(),
-    resolvedFailures: ids.optional(),
-    deliveredTaskIds: ids.optional(),
-    // Request transcripts permit 150k per part plus a truncation marker.
-    // The overall byte guard bounds restored open transcripts.
-    transcript: z
-      .array(
-        message.extend({
-          content: str.nullable(),
-          plannerReference: str.optional(),
-          internalKind: z.enum(['actions', 'events', 'note']).optional(),
-        }),
-      )
-      .optional(),
-    legacy: z.literal(true).optional(),
-  } satisfies Shape<NonNullable<DialogueState['requests']>[number]>),
+const requestTranscript = z.array(
+  message.extend({
+    plannerReference: str.optional(),
+    internalKind: z.enum(['actions', 'events', 'note']).optional(),
+  }),
 );
+const requestFields = z.object({
+  id: str,
+  openedAt: num,
+  closedAt: num.optional(),
+  text: str,
+  plan: z
+    .object({
+      status: z.enum(['active', 'waiting_user', 'done']),
+      steps: num,
+      done: num,
+      failed: num,
+      skipped: num,
+    } satisfies Shape<
+      NonNullable<NonNullable<DialogueState['requests']>[number]['plan']>
+    >)
+    .optional(),
+  lastTurnOk: z.boolean().optional(),
+  resolvedFailures: ids.optional(),
+  deliveredTaskIds: ids.optional(),
+  transcript: requestTranscript.optional(),
+  legacy: z.literal(true).optional(),
+} satisfies Shape<NonNullable<DialogueState['requests']>[number]>);
+const request = z.preprocess((value) => {
+  // Older closed archives could carry obsolete transcript placeholders.
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    'closedAt' in value &&
+    typeof value.closedAt === 'number' &&
+    'transcriptExpired' in value &&
+    value.transcriptExpired === true &&
+    'transcript' in value &&
+    !requestTranscript.safeParse(value.transcript).success
+  ) {
+    const { transcript: _obsolete, ...fields } = value;
+    return fields;
+  }
+  return value;
+}, requestFields);
 // Preserve the published redacted evidence verbatim; legacy tasks omit it.
 const traceFields = {
   sequence: z.number().int().positive(),
@@ -388,40 +349,22 @@ const taskEvent = z.object({
 const schema = z.object({
   conversationLeadingActions: z
     .array(z.number().int().nonnegative())
-    .max(200)
     .optional(),
-  requests: z.array(request).max(200).optional(),
+  requests: z.array(request).optional(),
   requestSeq: num.optional(),
-  taskRequests: z.record(id, id).optional(),
-  conversation: z.array(message).max(200),
-  // Legacy text plans are bounded by the overall state byte limit only.
-  plan: z.union([str, structuredPlan]).optional(),
+  taskRequests: z.record(str, str).optional(),
+  conversation: z.array(message),
+  plan: z.union([str, revisionPlanSchema]).optional(),
   planStatus: z.enum(['active', 'waiting_user', 'done']).optional(),
-  taskSteps: z
-    .record(id, id)
-    .superRefine((value, ctx) => {
-      if (Object.keys(value).length > 1000)
-        ctx.addIssue({
-          code: 'custom',
-          message: 'Dialogue task step limit exceeded',
-        });
-    })
-    .optional(),
-  tasks: z.array(taskRecord).superRefine((tasks, ctx) => {
-    if (tasks.length > dialogueMaxTasks())
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Dialogue task limit exceeded',
-      });
-  }),
+  taskSteps: z.record(str, str).optional(),
+  tasks: z.array(taskRecord),
   // Outcomes deferred while an external coordinator drives the session.
-  pendingEvents: z.array(taskEvent).max(1000).optional(),
+  pendingEvents: z.array(taskEvent).optional(),
   pending: z.array(plannerMessage),
   savedAt: num,
 } satisfies Shape<DialogueState>);
 function stored(record: HubDialogueState): HubDialogueState {
   const text = JSON.stringify(record);
-  checkDialogueBytes(text);
   const raw = JSON.parse(text);
   const state = schema.parse(raw.state ?? raw);
   const outbox = raw.outbox;
@@ -472,7 +415,7 @@ function encode(
   try {
     return stored(record);
   } catch {
-    log.warn('Skipped malformed or oversized dialogue state');
+    log.warn('Skipped malformed dialogue state');
     return undefined;
   }
 }
@@ -610,7 +553,6 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
             row.id !== dialogueId(userId, sessionId)
           )
             throw new Error('Malformed metadata');
-          checkDialogueBytes(row.text);
           stored(JSON.parse(row.text));
         } catch {
           this.index.delete(row.id);
@@ -738,7 +680,6 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
       return undefined;
     }
     try {
-      checkDialogueBytes(row.text);
       const record = stored(JSON.parse(row.text));
       this.index.set(row.id, row.metadata.savedAt);
       if (storageEnabled()) {

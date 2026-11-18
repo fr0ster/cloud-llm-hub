@@ -43,6 +43,7 @@ import { userCollectionId } from '../../srv/collection-ids';
 import { AgentProfileRunner } from '../../srv/lib/agent-profile-runner';
 import { LocalRagMcpClient } from '../../srv/lib/dialogue-rag-tools';
 import * as plannerMemory from '../../srv/lib/planner-memory';
+import type { Providers } from '../../srv/lib/providers';
 import {
   disposeSessionLlms,
   longSessionLlms,
@@ -120,6 +121,7 @@ const mockSource = {
 jest.mock('../../srv/env-setup', () => ({}));
 jest.mock('../../srv/agent-manager', () => ({
   createAgentProfileSource: () => mockSource,
+  getProviders: (): Pick<Providers, 'embedding'> => ({ embedding: null }),
   getSmartAgent: async () => ({
     profileRunner: {
       preparePlanAuthor: async () => ({ ok: true, value: mockAuthorAgent }),
@@ -296,15 +298,11 @@ test('bound revise requires an explicit plan', async () => {
   });
 });
 
-test.each([
-  { ...mockPlan, version: 2 },
-  { ...mockPlan, steps: Array.from({ length: 1001 }, () => mockPlan.steps[0]) },
-  { ...mockPlan, steps: [{ ...mockPlan.steps[0], goal: 'x'.repeat(20001) }] },
-])('bound revise rejects invalid or oversized plans', async (plan) => {
+test('bound revise rejects an invalid plan version', async () => {
   expect(
     await callBoundPlanAuthor('plan_revise', {
       change: 'Read',
-      plan: z.json().parse(plan),
+      plan: z.json().parse({ ...mockPlan, version: 2 }),
     }),
   ).toMatchObject({
     isError: true,

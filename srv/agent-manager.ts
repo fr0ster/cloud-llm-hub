@@ -8,8 +8,6 @@ import {
 } from './lib/coordinator-tools-client';
 import {
   currentLimit,
-  currentSessionLimit,
-  historyBudgetOptions,
   runLimitOptions,
   withExecutionLimits,
 } from './lib/execution-limits';
@@ -83,7 +81,7 @@ import { withToolResultCap } from './lib/tool-result-cap';
  *   (ToolQueryAnalyzer on the classifier-model LLM); no query expander and
  *   no reranker are wired — retrieval is the store's own vector top-K
  * - Resilience: CircuitBreaker for LLM + embedder failures
- * - No tool-result cache: the MCP server owns caching. SessionManager keeps the token budget
+ * - No tool-result cache: the MCP server owns caching
  * - Metrics: InMemoryMetrics for request/tool/RAG/LLM counters and latencies
  */
 
@@ -125,7 +123,6 @@ import {
   DagPlanInterpreter,
   InMemoryMetrics,
   LlmAdaptiveController,
-  SessionManager,
   type SmartAgent,
   SmartAgentBuilder,
   type SmartAgentHandle,
@@ -150,8 +147,8 @@ import {
   getHubRagAccess,
   initHubRagAccess,
 } from './lib/rag-access';
+import { createReadDedupContextStrategy } from './lib/read-dedup';
 import { connectionSystemType } from './lib/system-identity-cache';
-import { createToolLoopWindow } from './lib/tool-loop-window';
 
 export { destinationRequiresCredentials } from './lib/destination-authentication';
 
@@ -180,7 +177,10 @@ import {
   requestSystemContextRules,
 } from './lib/request-system-context';
 import { recordReviewProfile, recordToolScore } from './lib/review-scope';
-import { getRunRecordStore } from './lib/run-record-store';
+import {
+  adaptiveRunRecordStore,
+  getRunRecordStore,
+} from './lib/run-record-store';
 import {
   initSessionHistoryRouter,
   SessionHistoryRouter,
@@ -2995,7 +2995,7 @@ export async function configureDestinationAgentBuilder(
     },
   })
     .withRagAccess(getHubRagAccess().access)
-    .withToolLoopContextStrategyFactory(() => createToolLoopWindow())
+    .withToolLoopContextStrategyFactory(createReadDedupContextStrategy)
     .withToolTrust(builtInToolTrust(roleResolver))
     .withMainLlm(
       mcpAdapter instanceof RecordingMcpClient
@@ -3095,14 +3095,6 @@ export async function configureDestinationAgentBuilder(
     // tools and needs it.
     .withMcpFailureClassifier(outageClassifier);
 
-  const historyBudget = historyBudgetOptions();
-  if (historyBudget)
-    builder.withSessionManager(new SessionManager(historyBudget));
-
-  // Keep library summary writes on executors; controllers still retrieve
-  // complete session turns through the shared history router.
-  if (!opts?.skipRetrieval) builder.withHistorySummarization(20);
-
   // Default hardcoded flow — matches PoC for minimal token overhead.
   // Tools store wrapped with ExpositionFilteringRag to strip ragFilter
   // (tools have no namespace, but opts carry ragFilter for user isolation).
@@ -3194,9 +3186,8 @@ export async function buildPlannerAgent(
     .setToolsRag(docsMcp().withToolsRag(plannerTools, 'planner'))
     .withClassification(false)
     .withMode('hard');
-  // Authors retrieve session history; tool rounds use their separate window.
   if (authorClient)
-    builder.withToolLoopContextStrategyFactory(() => createToolLoopWindow());
+    builder.withToolLoopContextStrategyFactory(createReadDedupContextStrategy);
   const handle = unwrapBuilderResult(await builder.build());
   return handle.agent;
 }
@@ -3600,7 +3591,7 @@ export async function buildAgentForDestination(
         ),
         workers,
         finalizer: noticeFinalizer,
-        runRecords: getRunRecordStore(),
+        runRecords: adaptiveRunRecordStore(getRunRecordStore()),
         budget,
         fallbackWorker: 'executor',
       }),
@@ -3924,12 +3915,7 @@ export async function buildLlmOnlyAgent(
     .withLlmCallStrategy(new FallbackLlmCallStrategy())
     .withMetrics(metrics)
     .setHistoryRag(getSharedHistoryRag())
-    .withHistorySummarization(20)
     .withClientAdapter(new ClineClientAdapter());
-
-  const historyBudget = historyBudgetOptions();
-  if (historyBudget)
-    builder.withSessionManager(new SessionManager(historyBudget));
 
   const e = getProviders().embedding;
   if (e) builder.withEmbedder(agentQueryEmbedder(e));
@@ -4018,8 +4004,7 @@ function scopedLlmOnlyHandle(
 ): SmartAgentHandle {
   const scoped = () =>
     currentLimit('coordinator', 'maxIterations') !== undefined ||
-    currentLimit('coordinator', 'maxToolCalls') !== undefined ||
-    currentSessionLimit('historyTokenBudget') !== undefined;
+    currentLimit('coordinator', 'maxToolCalls') !== undefined;
   return {
     ...handle,
     agent: new Proxy(handle.agent, {
