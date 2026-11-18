@@ -132,6 +132,7 @@ import { evaluateGated } from './step-reviewer';
 import { cachedSystemIdentity } from './system-identity-cache';
 import { createTaskResultStore } from './task-result-store';
 import { type TaskView, taskView } from './task-view';
+import { toolCallDiagnosticsLogger } from './tool-call-diagnostics';
 import { resolverFor, type TrustResolver } from './trust-resolver';
 import { usageRuntime } from './usage/runtime';
 import {
@@ -1542,7 +1543,10 @@ async function open(
         maxTasks: config.agent.dialogue.maxTasks,
         // TaskBoard owns the outer pool slot, including cancellation and release.
         pool: sharedExecutorPool(),
-        baseInput: () => ({ sessionId: key }),
+        baseInput: () => ({
+          sessionId: key,
+          sessionLogger: toolCallDiagnosticsLogger({ channel: 'dialogue' }),
+        }),
         async wrapRun(task, run) {
           // TaskBoard starts execution in the scheduling planner scope; its
           // async context survives pool waits and later user turns.

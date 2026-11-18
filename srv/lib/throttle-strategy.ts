@@ -4,8 +4,8 @@
  * Every caller in this process spends one AI Core account, so a 429 is a queue,
  * not a failure: by default (`WaitAsNeeded`) each caller waits exactly as long
  * as the server named, with no total ceiling. Streaming clients stay connected
- * through SSE keep-alive. A 429 without an interval is answered with bounded
- * exponential backoff, since it may be a spend cap that never clears.
+ * through SSE keep-alive. A 429 without an interval uses exponential backoff
+ * and retries until the caller aborts or a different response arrives.
  * `WaitIfShortEnough` remains the opt-in ceiling (`LLM_AGENT_THROTTLE_MAX_WAIT_MS`).
  *
  * This is deliberately NOT an `AbortSignal` on the call. A signal bounds the
@@ -20,15 +20,10 @@ import type {
   ThrottleDecision,
 } from '@mcp-abap-adt/llm-agent';
 
-/** Legacy default for callers that explicitly construct WaitIfShortEnough. */
-export const DEFAULT_MAX_THROTTLE_WAIT_MS = 20_000;
-
 export class WaitIfShortEnough implements IThrottleStrategy {
   readonly name = 'wait-if-short-enough';
 
-  constructor(
-    private readonly maxWaitMs: number = DEFAULT_MAX_THROTTLE_WAIT_MS,
-  ) {}
+  constructor(private readonly maxWaitMs: number) {}
 
   decide({ retryAfterSeconds, waitedMs }: ThrottleContext): ThrottleDecision {
     const waitMs = (retryAfterSeconds ?? 0) * 1000;
@@ -71,13 +66,11 @@ export class WaitAsNeeded implements IThrottleStrategy {
     if (
       retryAfterSeconds !== undefined &&
       Number.isFinite(retryAfterSeconds) &&
-      retryAfterSeconds > 0
+      retryAfterSeconds >= 0
     )
       return { waitMs: retryAfterSeconds * 1000, retry: true };
     const call = throttleCall.getStore();
     const unnamed = call ? ++call.unnamed : attempt;
-    // A missing interval may be a spend cap. Bound only these speculative waits.
-    if (unnamed > 6) return { waitMs: 0, retry: false, reason: 'no-interval' };
     const base = Math.min(60_000, 2000 * 2 ** Math.max(0, unnamed - 1));
     return {
       waitMs: Math.min(60_000, Math.round(base * (0.8 + Math.random() * 0.4))),

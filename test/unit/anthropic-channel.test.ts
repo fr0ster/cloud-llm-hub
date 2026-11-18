@@ -200,6 +200,7 @@ it.each([false, true])(
       const provider = new AnthropicProvider({
         credential: staticApiKey('test'),
         model: 'm',
+        maxTokens: 1024,
       });
       const chunks = [];
       for await (const chunk of provider.streamChat([])) chunks.push(chunk);

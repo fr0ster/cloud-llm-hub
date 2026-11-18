@@ -157,7 +157,7 @@ it('GET exposes the parameters actually sent for every role with their sources',
     delete process.env.SAP_CORE_AI_MAX_TOKENS;
     const params = {
       temperature: { value: 'off', source: 'default' },
-      maxOutputTokens: { value: 2000, source: 'default' },
+      maxOutputTokens: { value: 'off', source: 'default' },
     };
     expect(await (await call()).json()).toMatchObject({
       effective: Object.fromEntries(
