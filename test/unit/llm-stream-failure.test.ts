@@ -14,11 +14,58 @@ import {
 } from '@mcp-abap-adt/llm-agent-libs';
 import { HubAnthropicProvider, makeHubLlm } from '../../srv/lib/llm-factory';
 import {
+  captureTokenUsage,
   llmFailure,
   observeLlmSpend,
   reliableLlm,
   reportLlmSpend,
 } from '../../srv/lib/llm-failure';
+
+test('provider stream start exposes cache counts and finalizes a single request', async () => {
+  const initial: TokenUsage = {
+    promptTokens: 1531,
+    completionTokens: 0,
+    totalTokens: 1531,
+    cachedInputTokens: 1527,
+    cacheCreationInputTokens: 0,
+  };
+  const provider: ILlm = {
+    model: 'claude',
+    chat: async () => ({
+      ok: true,
+      value: { content: '', finishReason: 'stop' },
+    }),
+    async *streamChat() {
+      yield { ok: true, value: { content: '', usage: initial } };
+      yield { ok: true, value: { content: 'answer' } };
+      yield {
+        ok: true,
+        value: {
+          content: '',
+          usage: { promptTokens: 0, completionTokens: 177, totalTokens: 177 },
+        },
+      };
+    },
+  };
+  const llm = reliableLlm(provider);
+  const spend = captureTokenUsage();
+  await spend.run(async () => {
+    for await (const chunk of llm.streamChat([])) {
+      if (!chunk.ok) throw chunk.error;
+      if (chunk.value.content)
+        expect(spend.streamUsage(undefined, 'claude')?.models?.claude).toEqual({
+          ...initial,
+          requests: 1,
+        });
+    }
+  });
+  expect(spend.usage()?.models?.claude).toEqual({
+    ...initial,
+    completionTokens: 177,
+    totalTokens: 1708,
+    requests: 1,
+  });
+});
 
 function attemptResponse(
   inputTokens: number | undefined,

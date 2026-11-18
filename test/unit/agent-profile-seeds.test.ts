@@ -5,7 +5,31 @@ import {
   loadAgentProfileSeeds,
   parseAgentProfileSeeds,
   seedAgentProfiles,
+  waitForAgentProfiles,
 } from '../../srv/lib/agent-profile-seeds';
+
+test('request waits for the shared profile synchronization, and disconnect only cancels its own wait', async () => {
+  let finish = () => {};
+  const synchronization = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const disconnected = new AbortController();
+  const connected = new AbortController();
+  const register = jest.fn();
+  const waiting = waitForAgentProfiles(synchronization, connected.signal).then(
+    register,
+  );
+  const aborting = waitForAgentProfiles(synchronization, disconnected.signal);
+  await Promise.resolve();
+  expect(register).not.toHaveBeenCalled();
+  disconnected.abort();
+  await expect(aborting).rejects.toBe(disconnected.signal.reason);
+  expect(register).not.toHaveBeenCalled();
+  finish();
+  await waiting;
+  expect(register).toHaveBeenCalledTimes(1);
+});
+
 import {
   decodeRecord,
   encodeAttributes,

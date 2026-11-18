@@ -32,7 +32,7 @@ export const EXECUTE_STEP_DESCRIPTION = [
   '',
   'For multi-step work call `session_open` first, pass its key as `session` in every call, and call `session_close` when done. With `session`, execute_step continues the conversation and ABAP connection (debugger, locks). Calls of one session run one after another. Without `session`, each call is independent as before.',
   '',
-  'Every result with known usage ends with [usage] prompt=<n> completion=<n> total=<n> time=<seconds>s (one decimal) and includes structuredContent.usage. structuredContent.result holds the reply text. EMPTY_RESULT means the executor replied nothing. There is no automatic LLM critic; decide whether to run an explicit check from the plan and user input. Use it to track and budget what the executor spends across your plan.',
+  'Results with usage end with [usage] and a JSON object with per-model input, output, request and provider-reported cache counts and duration_ms. The same object is in structuredContent.usage and structuredContent.result holds the reply text. EMPTY_RESULT means the executor replied nothing. There is no automatic LLM critic; decide whether to run an explicit check from the plan and user input.',
 ].join('\n');
 
 export const executeStepSchema = {

@@ -3,20 +3,22 @@ import {
   type PlannerMessageUsage,
   type TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
+import { reconcileTokenUsage } from './llm-failure';
 
-export interface WireTokens {
+interface WireModelTokens {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
-  models?: Record<
-    string,
-    {
-      prompt_tokens: number;
-      completion_tokens: number;
-      total_tokens: number;
-      requests: number;
-    }
-  >;
+  requests: number;
+  cached_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}
+export interface WireTokens {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  prompt_tokens_details?: { cached_tokens: number };
+  models?: Record<string, WireModelTokens>;
 }
 export type WireAgentUsage = WireTokens & { duration_ms?: number };
 export interface HubUsageBreakdown {
@@ -25,18 +27,50 @@ export interface HubUsageBreakdown {
   subagents?: Array<WireAgentUsage & { task_id: string; worker: string }>;
 }
 export type DialogueUsage = TokenUsage & { x_hub: HubUsageBreakdown };
-export function tokenUsageToWire(usage: TokenUsage): WireTokens;
+
+export function timedUsageToWire(
+  usage: TokenUsage | undefined,
+  duration_ms?: number,
+): WireAgentUsage | undefined {
+  return (
+    usage && {
+      ...tokenUsageToWire(usage),
+      ...(duration_ms === undefined ? {} : { duration_ms }),
+    }
+  );
+}
+export function tokenUsageToWire(usage: TokenUsage, model?: string): WireTokens;
 export function tokenUsageToWire(
   usage: TokenUsage | undefined,
+  model?: string,
 ): WireTokens | undefined;
 export function tokenUsageToWire(
   usage: TokenUsage | undefined,
+  model?: string,
 ): WireTokens | undefined {
   if (!usage) return undefined;
+  const models = Object.entries(usage.models ?? {});
+  const selected =
+    models.length === 0
+      ? usage
+      : model === undefined && models.length === 1
+        ? models[0][1]
+        : models.find(([name]) => name === model)?.[1];
   return {
-    prompt_tokens: usage.promptTokens,
-    completion_tokens: usage.completionTokens,
-    total_tokens: usage.totalTokens,
+    ...(selected
+      ? {
+          prompt_tokens: selected.promptTokens,
+          completion_tokens: selected.completionTokens,
+          total_tokens: selected.totalTokens,
+          ...(selected.cachedInputTokens !== undefined
+            ? {
+                prompt_tokens_details: {
+                  cached_tokens: selected.cachedInputTokens,
+                },
+              }
+            : {}),
+        }
+      : {}),
     ...(usage.models
       ? {
           models: Object.fromEntries(
@@ -47,6 +81,15 @@ export function tokenUsageToWire(
                 completion_tokens: model.completionTokens,
                 total_tokens: model.totalTokens,
                 requests: model.requests,
+                ...(model.cachedInputTokens !== undefined
+                  ? { cached_input_tokens: model.cachedInputTokens }
+                  : {}),
+                ...(model.cacheCreationInputTokens !== undefined
+                  ? {
+                      cache_creation_input_tokens:
+                        model.cacheCreationInputTokens,
+                    }
+                  : {}),
               },
             ]),
           ),
@@ -69,8 +112,9 @@ export function sumPlannerUsage(
       plannerMs = (plannerMs ?? 0) + usage.plannerMs;
     planner = addTokenUsage(planner, usage?.planner);
     for (const task of usage?.tasks ?? []) {
-      const combined = addTokenUsage(tasks.get(task.id)?.usage, task.usage);
-      const previousMs = tasks.get(task.id)?.durationMs;
+      const previous = tasks.get(task.id);
+      const combined = reconcileTokenUsage(previous?.usage, task.usage);
+      const previousMs = previous?.durationMs;
       const durationMs =
         task.durationMs === undefined
           ? previousMs
@@ -117,9 +161,12 @@ export function sumPlannerUsage(
     },
   };
 }
-export function dialogueUsageToWire(usage: DialogueUsage | undefined) {
+export function dialogueUsageToWire(
+  usage: DialogueUsage | undefined,
+  model?: string,
+) {
   if (!usage) return undefined;
-  return { ...tokenUsageToWire(usage), x_hub: usage.x_hub };
+  return { ...tokenUsageToWire(usage, model), x_hub: usage.x_hub };
 }
 function isDialogueUsage(usage: TokenUsage): usage is DialogueUsage {
   return (
@@ -128,10 +175,25 @@ function isDialogueUsage(usage: TokenUsage): usage is DialogueUsage {
 }
 export function responseUsageToWire(
   usage: TokenUsage | undefined,
+  model?: string,
 ): (WireTokens & { x_hub?: HubUsageBreakdown }) | undefined {
   if (!usage) return undefined;
   return {
-    ...tokenUsageToWire(usage),
+    ...tokenUsageToWire(usage, model),
     ...(isDialogueUsage(usage) ? { x_hub: usage.x_hub } : {}),
   };
+}
+
+export const emptyOpenAiUsage = {
+  prompt_tokens: 0,
+  completion_tokens: 0,
+  total_tokens: 0,
+};
+
+export function openAiUsageToWire(
+  usage: TokenUsage | undefined,
+  model: string,
+) {
+  const wire = responseUsageToWire(usage, model);
+  return wire ? { ...emptyOpenAiUsage, ...wire } : undefined;
 }

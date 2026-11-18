@@ -37,6 +37,7 @@ import {
   withCollectionRestScope,
 } from './lib/collection-write-scope';
 import { leaseSession } from './lib/gatekeeper';
+import { captureTokenUsage } from './lib/llm-failure';
 import { bindCaller } from './lib/rag-caller';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import {
@@ -59,6 +60,7 @@ import {
 } from './lib/throttle-surfacing';
 import { requestMeasurement } from './lib/usage/request-records';
 import { usageRuntime } from './lib/usage/runtime';
+import { timedUsageToWire } from './lib/usage-wire';
 import { ensurePresets } from './presets';
 import type { CollectionMeta, CollectionRegistry } from './rag-collections';
 import { sessionCollectionTtlMs } from './rag-collections';
@@ -126,12 +128,21 @@ function isAdmin(): boolean {
   return cds.context?.user?.is('MCP_Admin') ?? false;
 }
 
+const ragSpend = new WeakMap<Response, ReturnType<typeof captureTokenUsage>>();
+
 function json(res: Response, status: number, data: unknown): void {
-  res.status(status).json(data);
+  const usage = timedUsageToWire(ragSpend.get(res)?.usage());
+  res
+    .status(status)
+    .json(
+      usage && data && typeof data === 'object' && !Array.isArray(data)
+        ? { ...data, usage }
+        : data,
+    );
 }
 
 function error(res: Response, status: number, message: string): void {
-  res.status(status).json({ error: { message } });
+  json(res, status, { error: { message } });
 }
 
 /**
@@ -213,9 +224,11 @@ export function registerRagRoutes(
   // Collections
   // -------------------------------------------------------------------
 
-  router.use('/rag', (_req: Request, _res: Response, next) =>
-    withCollectionRestScope(getUserId(), isAdmin(), next),
-  );
+  router.use('/rag', (_req: Request, res: Response, next) => {
+    const spend = captureTokenUsage();
+    ragSpend.set(res, spend);
+    spend.run(() => withCollectionRestScope(getUserId(), isAdmin(), next));
+  });
 
   // Trust setters resolve visibility themselves, including the virtual source.
   const writeTrust = async (req: Request, res: Response, record?: string) => {

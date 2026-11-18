@@ -1,4 +1,4 @@
-import type { IModelInfo } from '@mcp-abap-adt/llm-agent';
+import type { IModelInfo, TokenUsage } from '@mcp-abap-adt/llm-agent';
 import { resetModelCatalog } from '../../srv/lib/model-catalog';
 import {
   parseModelAllowlist,
@@ -137,6 +137,68 @@ function call(
 
 beforeEach(() => harness.reset());
 afterEach(() => configure());
+
+it.each([false, true])(
+  'reports serving model cache and separate embedding usage (stream=%s)',
+  async (stream) => {
+    configure();
+    const usage: TokenUsage = {
+      promptTokens: 1531,
+      completionTokens: 177,
+      totalTokens: 1708,
+      cachedInputTokens: 1527,
+      cacheCreationInputTokens: 0,
+    };
+    const reply = () => {
+      reportLlmSpend(usage, 'm');
+      reportLlmSpend(
+        { promptTokens: 7, completionTokens: 0, totalTokens: 7 },
+        'bge-m3',
+      );
+      return { content: 'answer', usage };
+    };
+    harness.process = async () => ({ ok: true, value: reply() });
+    harness.stream = async function* () {
+      yield { ok: true, value: { ...reply(), finishReason: 'stop' } };
+    };
+    const { res, done } = call(body(stream));
+    await done;
+    const payload = stream
+      ? res.body
+          .split('\n')
+          .find(
+            (line) =>
+              line.startsWith('data: ') &&
+              line.includes('"choices":[],"usage":'),
+          )
+          ?.slice(6)
+      : res.body;
+    expect(JSON.parse(payload ?? '')).toMatchObject({
+      usage: {
+        prompt_tokens: 1531,
+        completion_tokens: 177,
+        total_tokens: 1708,
+        prompt_tokens_details: { cached_tokens: 1527 },
+        models: {
+          m: {
+            prompt_tokens: 1531,
+            completion_tokens: 177,
+            total_tokens: 1708,
+            cached_input_tokens: 1527,
+            cache_creation_input_tokens: 0,
+            requests: 1,
+          },
+          'bge-m3': {
+            prompt_tokens: 7,
+            completion_tokens: 0,
+            total_tokens: 7,
+            requests: 1,
+          },
+        },
+      },
+    });
+  },
+);
 
 describe('/v1/chat/completions at the door', () => {
   it('refuses in the OpenAI envelope, with no Retry-After, after resolving the agent', async () => {

@@ -10,6 +10,24 @@ import {
 } from './agent-profile-records';
 import { awaitModelCatalog } from './model-catalog';
 
+export async function waitForAgentProfiles(
+  synchronization: Promise<void>,
+  signal: AbortSignal,
+): Promise<void> {
+  signal.throwIfAborted();
+  let onAbort = () => {};
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    await Promise.race([synchronization, aborted]);
+    signal.throwIfAborted();
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
 export interface AgentProfileSeedStore {
   /** Must resolve the exact global identity and await backend restoration. */
   ensureGlobal(): Promise<void>;

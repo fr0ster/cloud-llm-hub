@@ -8,6 +8,10 @@ import {
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 import type { Response } from 'express';
+import {
+  anthropicEventWithUsage,
+  anthropicUsageToWire,
+} from './anthropic-usage';
 import { detachedSink } from './detached-sink';
 import {
   type DialogueStreamChunk,
@@ -17,11 +21,7 @@ import {
 import { type LongSession, longSessions } from './long-session';
 import { summarizeToolResult } from './tool-result-summary';
 import { responseMeasurement } from './usage/request-records';
-import {
-  dialogueUsageToWire,
-  sumPlannerUsage,
-  tokenUsageToWire,
-} from './usage-wire';
+import { openAiUsageToWire, sumPlannerUsage } from './usage-wire';
 
 /** One response owns its heartbeat, error and terminal, including queue waits. */
 export function chatStream(
@@ -124,16 +124,7 @@ export async function streamDialogue(opts: {
   let terminalSucceeded = false;
   const deliveredUsage: Array<PlannerMessageUsage | undefined> = [];
   const addDeliveredUsage = (usage: PlannerMessageUsage | undefined) => {
-    if (!usage) return;
-    const deliveredTasks = new Set(
-      deliveredUsage.flatMap(
-        (value) => value?.tasks?.map((task) => task.id) ?? [],
-      ),
-    );
-    deliveredUsage.push({
-      ...usage,
-      tasks: usage.tasks?.filter((task) => !deliveredTasks.has(task.id)),
-    });
+    if (usage) deliveredUsage.push(usage);
   };
   let ready!: () => void;
   const firstChunk = new Promise<void>((resolve) => {
@@ -188,24 +179,25 @@ export async function streamDialogue(opts: {
           source,
           opts.context,
         )) {
-          const usage =
-            event.event === 'message_delta'
+          const total =
+            event.event === 'message_delta' || event.event === 'message_start'
               ? sumPlannerUsage(deliveredUsage, {
                   durationMs: Date.now() - stream.createdAt,
                 })
               : undefined;
-          if (usage) {
-            stream.out.write(
-              `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { input_tokens: usage.promptTokens, output_tokens: usage.completionTokens, x_hub: usage.x_hub } })}\n\n`,
-            );
-          } else {
-            if (event.event === 'message_stop') {
-              terminalSucceeded =
-                !failure && !stream.signal.aborted && !stream.out.detached;
-              if (terminalSucceeded) opts.onEnd?.(text);
-            }
-            stream.out.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
+          if (event.event === 'message_stop') {
+            terminalSucceeded =
+              !failure && !stream.signal.aborted && !stream.out.detached;
+            if (terminalSucceeded) opts.onEnd?.(text);
           }
+          const encoded = anthropicEventWithUsage(
+            event,
+            total,
+            responseModel(),
+          );
+          stream.out.write(
+            `event: ${encoded.event}\ndata: ${encoded.data}\n\n`,
+          );
         }
       } else {
         for await (const chunk of source) {
@@ -214,12 +206,12 @@ export async function streamDialogue(opts: {
           if (chunk.value.usage) usage = chunk.value.usage;
         }
         delta('', 'stop');
-        const wireUsage =
-          dialogueUsageToWire(
-            sumPlannerUsage(deliveredUsage, {
-              durationMs: Date.now() - stream.createdAt,
-            }),
-          ) ?? tokenUsageToWire(usage);
+        const wireUsage = openAiUsageToWire(
+          sumPlannerUsage(deliveredUsage, {
+            durationMs: Date.now() - stream.createdAt,
+          }) ?? usage,
+          responseModel(),
+        );
         if (wireUsage)
           stream.out.write(
             `data: ${JSON.stringify({ ...base, choices: [], usage: wireUsage })}\n\n`,
@@ -235,15 +227,15 @@ export async function streamDialogue(opts: {
       const total = sumPlannerUsage(deliveredUsage, {
         durationMs: Date.now() - stream.createdAt,
       });
-      const wire = dialogueUsageToWire(total) ?? tokenUsageToWire(usage);
-      if (wire) {
+      const spent = total ?? usage;
+      if (spent) {
         if (protocol === 'anthropic')
           stream.out.write(
-            `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: {}, usage: { input_tokens: wire.prompt_tokens, output_tokens: wire.completion_tokens, ...(total ? { x_hub: total.x_hub } : {}) } })}\n\n`,
+            `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: {}, usage: anthropicUsageToWire(spent, responseModel()) })}\n\n`,
           );
         else
           stream.out.write(
-            `data: ${JSON.stringify({ ...base, choices: [], usage: wire })}\n\n`,
+            `data: ${JSON.stringify({ ...base, choices: [], usage: openAiUsageToWire(spent, responseModel()) })}\n\n`,
           );
       }
       stream.error(opts.onError(error));
