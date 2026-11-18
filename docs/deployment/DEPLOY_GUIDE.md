@@ -25,7 +25,7 @@ Edit `.mtaext` and set:
 - **LLM_AGENT_MODEL**: Your LLM model name (e.g., `gpt-4o-mini`, `claude-3-5-sonnet`, `deepseek-chat`)
 - **LLM_AGENT_TEMPERATURE**: Unset uses the provider/model default; set a number to override; `off` explicitly omits the parameter.
 - **LLM_AGENT_PROMPT_CACHING**: `on` (default) or `off`; `true`/`false` are aliases. Optional `LLM_AGENT_COORDINATOR_PROMPT_CACHING`, `LLM_AGENT_PLANNER_PROMPT_CACHING`, `LLM_AGENT_EXECUTOR_PROMPT_CACHING`, `LLM_AGENT_CHECKER_PROMPT_CACHING` and `LLM_AGENT_CLASSIFIER_PROMPT_CACHING` override global for each role (classifier also covers helpers). Empty inherits; invalid values fail startup. See [CONFIG_USAGE](../llm-agent/CONFIG_USAGE.md).
-- **LLM_AGENT_MAX_TOKENS**: Max tokens (default: `2000`)
+- **LLM_AGENT_MAX_TOKENS** sets an optional output token limit. Leave it unset to use the provider/model default.
 - **LLM_AGENT_MCP_DESTINATION**: BTP Destination name for ABAP connection
 
 Example:
@@ -36,7 +36,7 @@ modules:
       LLM_AGENT_MODEL: "gpt-4o-mini"
       # Unset uses the provider/model default; set a number to override; off explicitly omits.
       LLM_AGENT_TEMPERATURE: ""
-      LLM_AGENT_MAX_TOKENS: "2000"
+      LLM_AGENT_MAX_TOKENS: ""
       LLM_AGENT_MCP_DESTINATION: "DEV_ABAP_SYSTEM"
 ```
 

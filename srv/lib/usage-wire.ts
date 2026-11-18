@@ -18,6 +18,7 @@ export interface WireTokens {
   completion_tokens?: number;
   total_tokens?: number;
   prompt_tokens_details?: { cached_tokens: number };
+  cache_creation_input_tokens?: number;
   models?: Record<string, WireModelTokens>;
 }
 export type WireAgentUsage = WireTokens & { duration_ms?: number };
@@ -68,6 +69,9 @@ export function tokenUsageToWire(
                   cached_tokens: selected.cachedInputTokens,
                 },
               }
+            : {}),
+          ...(selected.cacheCreationInputTokens !== undefined
+            ? { cache_creation_input_tokens: selected.cacheCreationInputTokens }
             : {}),
         }
       : {}),

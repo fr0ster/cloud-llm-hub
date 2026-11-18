@@ -1,4 +1,5 @@
 import type { TokenUsage } from '@mcp-abap-adt/llm-agent';
+import { anthropicUsageToWire } from '../../srv/lib/anthropic-usage';
 import {
   dialogueUsageToWire,
   sumPlannerUsage,
@@ -26,6 +27,44 @@ it('maps totals and model entries', () => {
         requests: 1,
       },
     },
+  });
+});
+
+it('preserves cache reads and writes in usage without models', () => {
+  expect(
+    tokenUsageToWire({
+      promptTokens: 10,
+      completionTokens: 2,
+      totalTokens: 12,
+      cachedInputTokens: 4,
+      cacheCreationInputTokens: 3,
+    }),
+  ).toEqual({
+    prompt_tokens: 10,
+    completion_tokens: 2,
+    total_tokens: 12,
+    prompt_tokens_details: { cached_tokens: 4 },
+    cache_creation_input_tokens: 3,
+  });
+});
+
+it('preserves already uncached Anthropic input from split counters', () => {
+  expect(
+    anthropicUsageToWire(
+      {
+        promptTokens: 4,
+        completionTokens: 177,
+        totalTokens: 181,
+        cachedInputTokens: 1527,
+        cacheCreationInputTokens: 2,
+      },
+      'm',
+    ),
+  ).toEqual({
+    input_tokens: 4,
+    output_tokens: 177,
+    cache_read_input_tokens: 1527,
+    cache_creation_input_tokens: 2,
   });
 });
 
@@ -74,6 +113,7 @@ it('reports separate model entries and puts only the serving model in compatibil
     completion_tokens: 2,
     total_tokens: 5,
     prompt_tokens_details: { cached_tokens: 2 },
+    cache_creation_input_tokens: 0,
     models,
   });
 });

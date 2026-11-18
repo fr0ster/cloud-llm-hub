@@ -1,11 +1,14 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { Session } from 'node:inspector';
+import { setImmediate } from 'node:timers/promises';
 import { validateRagAttributes } from '@mcp-abap-adt/llm-agent';
 import type { AgentProfileRecord } from '../../srv/lib/agent-profile-records';
 import {
   type AgentProfileSeedStore,
+  createAgentProfileWaiter,
   loadAgentProfileSeeds,
   parseAgentProfileSeeds,
   seedAgentProfiles,
-  waitForAgentProfiles,
 } from '../../srv/lib/agent-profile-seeds';
 
 test('request waits for the shared profile synchronization, and disconnect only cancels its own wait', async () => {
@@ -16,10 +19,9 @@ test('request waits for the shared profile synchronization, and disconnect only 
   const disconnected = new AbortController();
   const connected = new AbortController();
   const register = jest.fn();
-  const waiting = waitForAgentProfiles(synchronization, connected.signal).then(
-    register,
-  );
-  const aborting = waitForAgentProfiles(synchronization, disconnected.signal);
+  const wait = createAgentProfileWaiter(synchronization);
+  const waiting = wait(connected.signal).then(register);
+  const aborting = wait(disconnected.signal);
   await Promise.resolve();
   expect(register).not.toHaveBeenCalled();
   disconnected.abort();
@@ -28,6 +30,45 @@ test('request waits for the shared profile synchronization, and disconnect only 
   finish();
   await waiting;
   expect(register).toHaveBeenCalledTimes(1);
+});
+
+test('aborting a profile wait releases its request context while synchronization is pending', async () => {
+  let finish = () => {};
+  const synchronization = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const wait = createAgentProfileWaiter(synchronization);
+  const context = new AsyncLocalStorage<{ request: string }>();
+  const disconnected = new AbortController();
+  async function abortRequest() {
+    const { store, waiting } = context.run({ request: 'disconnected' }, () => {
+      const store = context.getStore();
+      if (!store) throw new Error('Missing request context');
+      return {
+        store: new WeakRef(store),
+        waiting: wait(disconnected.signal),
+      };
+    });
+    disconnected.abort();
+    await expect(waiting).rejects.toBe(disconnected.signal.reason);
+    return store;
+  }
+  const inspector = new Session();
+  inspector.connect();
+  try {
+    const reference = await abortRequest();
+    await setImmediate();
+    await new Promise<void>((done, reject) => {
+      inspector.post('HeapProfiler.collectGarbage', (error) => {
+        if (error) reject(error);
+        else done();
+      });
+    });
+    expect(reference.deref()).toBeUndefined();
+  } finally {
+    inspector.disconnect();
+    finish();
+  }
 });
 
 import {

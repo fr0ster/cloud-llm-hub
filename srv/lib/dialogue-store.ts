@@ -258,6 +258,7 @@ const requestFields = z.object({
     >)
     .optional(),
   lastTurnOk: z.boolean().optional(),
+  terminalError: z.object({ code: str, message: str }).optional(),
   resolvedFailures: ids.optional(),
   deliveredTaskIds: ids.optional(),
   transcript: requestTranscript.optional(),
@@ -332,6 +333,7 @@ const taskRecord = z.object({
     ])
     .optional(),
   error: str.optional(),
+  terminalErrorCode: str.optional(),
   createdAt: num,
   startedAt: num.optional(),
   finishedAt: num.optional(),

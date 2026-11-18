@@ -89,6 +89,7 @@ import { clientTurnId, turnSource } from './dialogue-turn-source';
 import { clearExecutionLimits, getExecutionLimits } from './execution-limits';
 import { admitBackground, type PipelineSession } from './gatekeeper';
 import {
+  attributeTokenUsage,
   captureTokenUsage,
   isLlmFailure,
   llmFailure,
@@ -109,6 +110,7 @@ import { runWithRequestSystem } from './request-system-context';
 import { captureReviewProfile } from './review-scope';
 import { clearRoleModels, getRoleModels } from './role-model-settings';
 import {
+  chatResponseModel,
   clearRequestModel,
   currentRoleModel,
   roleOfProfile,
@@ -130,6 +132,7 @@ import { evaluateGated } from './step-reviewer';
 import { cachedSystemIdentity } from './system-identity-cache';
 import { createTaskResultStore } from './task-result-store';
 import { type TaskView, taskView } from './task-view';
+import { toolCallDiagnosticsLogger } from './tool-call-diagnostics';
 import { resolverFor, type TrustResolver } from './trust-resolver';
 import { usageRuntime } from './usage/runtime';
 import {
@@ -437,7 +440,44 @@ async function open(
   let turnFailureCause: string | undefined;
   // Every planner call of the turn, background corrections included.
   let turnPlannerSpend: TokenUsage | undefined;
+  let turnRetrieval: ReturnType<typeof captureTokenUsage> | undefined;
+  const replyRetrieval = new Map<string, TokenUsage>();
   let lastFailureUsage: PlannerMessageUsage | undefined;
+  function observeRetrieval<T>(run: () => T): T {
+    // Retrieval from planner tools is already covered by the planner observer.
+    return turnRetrieval && !plannerTrace.getStore()?.active
+      ? turnRetrieval.run(run)
+      : run();
+  }
+  function addRetrieval(
+    planner: TokenUsage | undefined,
+    retrieval: TokenUsage | undefined,
+  ): TokenUsage | undefined {
+    if (!retrieval) return planner;
+    return addTokenUsage(
+      planner && !planner.models
+        ? attributeTokenUsage(
+            planner,
+            chatResponseModel(selectedModel, config.llm.model, { userId, key }),
+          )
+        : planner,
+      retrieval,
+    );
+  }
+  function withRetrieval(
+    message: PlannerMessage,
+    retrieval: TokenUsage | undefined,
+  ): PlannerMessage {
+    return retrieval
+      ? {
+          ...message,
+          usage: {
+            ...message.usage,
+            planner: addRetrieval(message.usage?.planner, retrieval),
+          },
+        }
+      : message;
+  }
   const environment = () => {
     const connection = longSessionsIfReady()?.get(userId, key)?.connection;
     const identity = connection ? cachedSystemIdentity(connection) : undefined;
@@ -923,10 +963,9 @@ async function open(
         ),
     );
     return {
-      planner: reconcileTokenUsage(
-        turnReplyUsage,
-        turnPlannerSpend,
-        selectedModel,
+      planner: addRetrieval(
+        reconcileTokenUsage(turnReplyUsage, turnPlannerSpend, selectedModel),
+        turnRetrieval?.usage(),
       ),
       tasks: (session?.snapshot().tasks ?? []).flatMap((task) => {
         const usage = task.usage;
@@ -1001,6 +1040,7 @@ async function open(
   const unsubscribeStarted = signals.on(
     'dialogue.turn.started',
     ({ payload: { trigger } }) => {
+      turnRetrieval = captureTokenUsage();
       if (trigger === 'event')
         emit({
           kind: 'turn',
@@ -1015,15 +1055,19 @@ async function open(
   );
   const unsubscribeSettled = signals.on(
     'dialogue.turn.settled',
-    async ({ payload: { outcome, trigger } }) => {
+    async ({ payload: { outcome, trigger, messageId } }) => {
       settledSeq++;
       if (outcome === 'failed') {
         lastFailedSeq = settledSeq;
         lastFailureUsage = failedTurnUsage();
         failureCause = turnFailureCause;
+      } else if (trigger === 'user' && messageId) {
+        const retrieval = turnRetrieval?.usage();
+        if (retrieval) replyRetrieval.set(messageId, retrieval);
       }
       turnFailureCause = undefined;
       turnPlannerSpend = undefined;
+      turnRetrieval = undefined;
       turnReply = undefined;
       turnReplyUsage = undefined;
       await outbox.flushed();
@@ -1395,6 +1439,33 @@ async function open(
       // The coordinator still needs this context for conversational turns that
       // do not invoke plan_create or plan_revise.
       ...retrieval,
+      plannerMemory: retrieval.plannerMemory && {
+        ...retrieval.plannerMemory,
+        rag: new Proxy(retrieval.plannerMemory.rag, {
+          get(target, property) {
+            if (property === 'query') {
+              const query: typeof target.query = (...args) =>
+                observeRetrieval(() => target.query(...args));
+              return query;
+            }
+            const value = Reflect.get(target, property);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        }),
+      },
+      plannerKnowledge: retrieval.plannerKnowledge?.map(
+        (source) =>
+          new Proxy(source, {
+            get(target, property) {
+              if (property === 'search') {
+                const search: typeof target.search = (...args) =>
+                  observeRetrieval(() => target.search(...args));
+                return search;
+              }
+              return Reflect.get(target, property, target);
+            },
+          }),
+      ),
       ...(usage ? { usage } : {}),
       id: boundCaller.value.sessionId,
       // Keep the library's memory/usage identity logical; only the hub bus
@@ -1444,6 +1515,7 @@ async function open(
           const text = stripNoMessage(
             typeof assistant?.content === 'string' ? assistant.content : '',
           );
+          const planner = addRetrieval(turnReplyUsage, turnRetrieval?.usage());
           await outbox.upsert(
             turnReply && text.trim()
               ? [
@@ -1452,9 +1524,7 @@ async function open(
                     createdAt: turnReply.createdAt,
                     text,
                     trigger: 'user',
-                    ...(turnReplyUsage
-                      ? { usage: { planner: turnReplyUsage } }
-                      : {}),
+                    ...(planner ? { usage: { planner } } : {}),
                   },
                 ]
               : [],
@@ -1473,7 +1543,10 @@ async function open(
         maxTasks: config.agent.dialogue.maxTasks,
         // TaskBoard owns the outer pool slot, including cancellation and release.
         pool: sharedExecutorPool(),
-        baseInput: () => ({ sessionId: key }),
+        baseInput: () => ({
+          sessionId: key,
+          sessionLogger: toolCallDiagnosticsLogger({ channel: 'dialogue' }),
+        }),
         async wrapRun(task, run) {
           // TaskBoard starts execution in the scheduling planner scope; its
           // async context survives pool waits and later user turns.
@@ -1584,11 +1657,12 @@ async function open(
       },
       onMessage(message) {
         if (stopped) return;
+        const pending = session?.takePending() ?? [];
         void outbox
           .add(
             withAdditionalTaskUsage([
-              message,
-              ...(session?.takePending() ?? []),
+              withRetrieval(message, turnRetrieval?.usage()),
+              ...pending.filter((entry) => entry.id !== message.id),
             ]),
           )
           .catch(() => {
@@ -1670,8 +1744,11 @@ async function open(
     return llms.run(() =>
       send(text, { ...options, trace })
         .then((reply) => {
-          const usage = withRecordedTaskUsage(reply.usage);
-          return usage === reply.usage ? reply : { ...reply, usage };
+          const retrieval = replyRetrieval.get(reply.id);
+          replyRetrieval.delete(reply.id);
+          const message = withRetrieval(reply, retrieval);
+          const usage = withRecordedTaskUsage(message.usage);
+          return usage === message.usage ? message : { ...message, usage };
         })
         .finally(drainPending),
     );

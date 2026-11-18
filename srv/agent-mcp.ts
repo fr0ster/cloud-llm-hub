@@ -142,6 +142,7 @@ import {
   throttleOf,
   unverifiedWriteFor,
 } from './lib/throttle-surfacing';
+import { logToolCallDiagnostics } from './lib/tool-call-diagnostics';
 import { usageRuntime } from './lib/usage/runtime';
 import { runWithSessionId } from './request-session';
 import { appendToSession } from './session-store';
@@ -538,6 +539,10 @@ async function executeStepRun(
       // sessionLogger; execute_step had none, so skill matching was invisible).
       sessionLogger: {
         logStep(name: string, data: unknown) {
+          logToolCallDiagnostics(name, data, {
+            channel: 'execute_step',
+            destination: targetDestination,
+          });
           if (
             name === 'skills_selected' ||
             name === 'skill_select_rag_fallback'

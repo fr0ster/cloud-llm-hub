@@ -57,7 +57,7 @@ import {
 } from './agent-manager';
 import { createAgentMcpServerForRequest } from './agent-mcp';
 import { handleAnthropicMessages } from './anthropic-handler';
-import { waitForAgentProfiles } from './lib/agent-profile-seeds';
+import { createAgentProfileWaiter } from './lib/agent-profile-seeds';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { getAvailableDestinations } from './lib/btp-destinations';
 import { restoreHealth } from './lib/collection-persistence';
@@ -776,7 +776,7 @@ cds.on('bootstrap', (app: Application) => {
         return;
       }
 
-      await waitForAgentProfiles(agentProfilesReady, disconnected.signal);
+      await waitForAgentProfiles(disconnected.signal);
       const result = await createAgentMcpServerForRequest(req);
       cleanup = result.cleanup;
       if (disconnected.signal.aborted) return;
@@ -1002,7 +1002,7 @@ cds.on('bootstrap', (app: Application) => {
 // IMPORTANT: Do NOT await — vectorization takes 60+ seconds and would block the
 // server from listening on port 8080, causing CF health check timeout (60s).
 // The 503 readiness guard in openai-handler.ts protects against requests before ready.
-let agentProfilesReady: Promise<void> = Promise.resolve();
+let waitForAgentProfiles = createAgentProfileWaiter(Promise.resolve());
 cds.on('served', () => {
   void ensureModelCatalog();
   installThrottleObserver();
@@ -1043,7 +1043,7 @@ cds.on('served', () => {
   // its settings), never an outage: the process exits non-zero so the platform
   // reports it instead of a healthy instance answering 503 forever. An agent
   // warm-up failure can be an outage (AI Core, a destination) and is retried.
-  agentProfilesReady = Promise.resolve()
+  const agentProfilesReady = Promise.resolve()
     .then(
       (): Promise<UsageRuntime | undefined> =>
         initUsage(
@@ -1093,6 +1093,7 @@ cds.on('served', () => {
         );
       log.info('Providers ready');
     });
+  waitForAgentProfiles = createAgentProfileWaiter(agentProfilesReady);
   void agentProfilesReady.then(
     () =>
       initSmartAgents().then(

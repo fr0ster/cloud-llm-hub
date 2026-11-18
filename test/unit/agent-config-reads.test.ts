@@ -45,6 +45,8 @@ describe('agent config: settings read at the point of use before', () => {
       for (const k of [
         'LLM_AGENT_TEMPERATURE',
         'SAP_CORE_AI_TEMPERATURE',
+        'LLM_AGENT_MAX_TOKENS',
+        'SAP_CORE_AI_MAX_TOKENS',
         'LLM_AGENT_TIME_ZONE',
         'LLM_AGENT_CLASSIFIER_MODEL',
         'LLM_AGENT_PLANNER_MODEL',
@@ -103,6 +105,16 @@ describe('agent config: settings read at the point of use before', () => {
       expect(loadAgentConfig().llm.temperature).toBeUndefined();
       process.env.LLM_AGENT_TEMPERATURE = '0';
       expect(loadAgentConfig().llm.temperature).toBe(0);
+    });
+
+    it('leaves output tokens to the provider and honors explicit overrides', () => {
+      expect(loadAgentConfig().llm.maxTokens).toBeUndefined();
+      process.env.LLM_AGENT_MAX_TOKENS = '';
+      expect(loadAgentConfig().llm.maxTokens).toBeUndefined();
+      process.env.SAP_CORE_AI_MAX_TOKENS = '4096';
+      expect(loadAgentConfig().llm.maxTokens).toBe(4096);
+      process.env.LLM_AGENT_MAX_TOKENS = '8192';
+      expect(loadAgentConfig().llm.maxTokens).toBe(8192);
     });
 
     it.each(['invalid', '0.7junk', 'NaN', 'Infinity', '1e999', '   '])(

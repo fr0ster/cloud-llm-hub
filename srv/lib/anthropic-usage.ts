@@ -5,13 +5,13 @@ import { responseUsageToWire } from './usage-wire';
 export function anthropicUsageToWire(usage: TokenUsage, model: string) {
   const wire = responseUsageToWire(usage, model);
   const cached = wire?.prompt_tokens_details?.cached_tokens;
-  const created = wire?.models
-    ? Object.hasOwn(wire.models, model)
-      ? wire.models[model].cache_creation_input_tokens
-      : undefined
-    : usage.cacheCreationInputTokens;
+  const created = wire?.cache_creation_input_tokens;
+  const prompt = wire?.prompt_tokens ?? 0;
+  const cache = (cached ?? 0) + (created ?? 0);
   return {
-    input_tokens: (wire?.prompt_tokens ?? 0) - (cached ?? 0) - (created ?? 0),
+    // Anthropic's normalized prompt includes both cache counters. A split
+    // count that is smaller than its cache counters is already uncached.
+    input_tokens: prompt < cache ? prompt : prompt - cache,
     output_tokens: wire?.completion_tokens ?? 0,
     ...(cached !== undefined ? { cache_read_input_tokens: cached } : {}),
     ...(created !== undefined ? { cache_creation_input_tokens: created } : {}),

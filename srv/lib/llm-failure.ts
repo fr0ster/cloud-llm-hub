@@ -28,7 +28,10 @@ export function reportLlmSpend(usage: TokenUsage, model: string): void {
   spendObserver.getStore()?.record(attributeTokenUsage(usage, model));
 }
 
-function attributeTokenUsage(usage: TokenUsage, model: string): TokenUsage {
+export function attributeTokenUsage(
+  usage: TokenUsage,
+  model: string,
+): TokenUsage {
   return {
     ...usage,
     models: usage.models ?? {
@@ -64,12 +67,8 @@ export function reconcileTokenUsage(
   const models = new Map(Object.entries(reported));
   for (const [name, entry] of Object.entries(observed.models ?? {})) {
     const previous = models.get(name);
-    const latest =
-      previous && previous.totalTokens > entry.totalTokens ? previous : entry;
     models.set(name, {
-      ...previous,
-      ...entry,
-      ...latest,
+      ...mergeStreamUsage(previous, entry),
       requests: Math.max(previous?.requests ?? 0, entry.requests),
     });
   }
@@ -356,15 +355,21 @@ export function failureMessage(error: unknown): string {
 }
 
 /**
- * One model call may report usage in several chunks: split (input at the start,
- * output at the end) or cumulative. The larger value per field covers both.
+ * Merge split or cumulative snapshots of the same usage. Input and its cache
+ * counters are one observation, independent of how much output was reported.
  */
 export function mergeStreamUsage(
   previous: TokenUsage | undefined,
   next: TokenUsage,
 ): TokenUsage {
   if (!previous) return next;
-  const promptTokens = Math.max(previous.promptTokens, next.promptTokens);
+  const input =
+    next.promptTokens > previous.promptTokens ||
+    (next.promptTokens === previous.promptTokens &&
+      (next.cachedInputTokens !== undefined ||
+        next.cacheCreationInputTokens !== undefined))
+      ? next
+      : previous;
   const completionTokens = Math.max(
     previous.completionTokens,
     next.completionTokens,
@@ -372,15 +377,14 @@ export function mergeStreamUsage(
   return {
     ...previous,
     ...next,
-    cachedInputTokens: next.cachedInputTokens ?? previous.cachedInputTokens,
-    cacheCreationInputTokens:
-      next.cacheCreationInputTokens ?? previous.cacheCreationInputTokens,
-    promptTokens,
+    cachedInputTokens: input.cachedInputTokens,
+    cacheCreationInputTokens: input.cacheCreationInputTokens,
+    promptTokens: input.promptTokens,
     completionTokens,
     totalTokens: Math.max(
       previous.totalTokens,
       next.totalTokens,
-      promptTokens + completionTokens,
+      input.promptTokens + completionTokens,
     ),
   };
 }
