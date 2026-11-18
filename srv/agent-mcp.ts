@@ -439,7 +439,6 @@ async function executeStepRun(
       currentRoleModel('executor') !== undefined ||
         currentLimit('executor', 'maxIterations') !== undefined ||
         currentLimit('executor', 'maxToolCalls') !== undefined ||
-        currentSessionLimit('historyTokenBudget') !== undefined ||
         currentSessionLimit('toolResultMaxChars') !== undefined,
     );
     const agentHandle = handle as ExecutorAgentHandle;

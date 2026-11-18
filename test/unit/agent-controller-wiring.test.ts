@@ -7,7 +7,7 @@ const taskCaller = {
 };
 
 import { HandlerExporter } from '@mcp-abap-adt/lib/handlers';
-import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
+import type { IMcpClient, IRunRecordStore } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
 import {
   MCPClientWrapper,
@@ -128,8 +128,6 @@ function makeChainableBuilder() {
   builder.withToolSelectionStrategy = chainable(jest.fn());
   builder.withToolCache = chainable(withToolCache);
   builder.withMetrics = chainable(jest.fn());
-  builder.withSessionManager = chainable(jest.fn());
-  builder.withHistorySummarization = chainable(jest.fn());
   builder.withClientAdapter = chainable(jest.fn());
   builder.withRequestLogger = chainable(withRequestLogger);
   builder.withCoordinator = chainable(withCoordinator);
@@ -174,6 +172,7 @@ import type { AgentConfig } from '../../srv/agent-config';
 // full destination-initialization path.
 import * as agentManager from '../../srv/agent-manager';
 import { FixedExecutorPlanner } from '../../srv/lib/fixed-executor-planner';
+import { turnOwner } from '../../srv/lib/history-turn';
 import { outageClassifier } from '../../srv/lib/mcp-outage';
 import { NoticeFinalizer } from '../../srv/lib/notice-finalizer';
 import { startProviders } from '../../srv/lib/providers';
@@ -305,7 +304,27 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
       // The adaptive controller resolves its LLM per request; the finalizer keeps the critic.
       expect(deps.controller.inner.llm).not.toBe(deps.finalizer.criticLlm);
       expect(typeof deps.controller.inner.llm.streamChat).toBe('function');
-      expect(deps.runRecords).toBe(getRunRecordStore());
+      const runRecords: IRunRecordStore = deps.runRecords;
+      const load = jest.spyOn(getRunRecordStore(), 'load');
+      try {
+        await runWithSessionId(
+          taskCaller.sessionId,
+          async () => {
+            await runRecords.load(
+              turnOwner(taskCaller.userId, taskCaller.sessionId),
+            );
+            await runRecords.load(
+              turnOwner('another-user', taskCaller.sessionId),
+            );
+          },
+          undefined,
+          taskCaller.userId,
+        );
+        expect(load).toHaveBeenCalledTimes(1);
+        expect(load).toHaveBeenCalledWith(taskCaller.sessionId);
+      } finally {
+        load.mockRestore();
+      }
       expect(deps.budget).toEqual(expectedBudget);
       expect(deps.fallbackWorker).toBe('executor');
       expect([...deps.workers.keys()]).toEqual(['executor', 'checker']);
@@ -444,7 +463,6 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
       }),
     );
     expect(instances[0].withSkillManager).toHaveBeenCalledTimes(1);
-    expect(instances[0].withHistorySummarization).toHaveBeenCalledWith(20);
     expect(instances[1].setToolsRag).not.toHaveBeenCalled();
     expect(instances[1].addRagCollection).not.toHaveBeenCalled();
     expect(instances[1].setHistoryRag).toHaveBeenCalledTimes(1);
@@ -452,7 +470,6 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
       instances[0].withEmbedder.mock.calls.length,
     );
     expect(instances[1].withSkillManager).not.toHaveBeenCalled();
-    expect(instances[1].withHistorySummarization).not.toHaveBeenCalled();
   });
 
   it('runs the real controller with zero retrieval, translation, embedding or LLM calls before planning', async () => {

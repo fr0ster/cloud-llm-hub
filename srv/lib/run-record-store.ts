@@ -8,6 +8,7 @@ import type {
   RunRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { isRagScanner } from '@mcp-abap-adt/llm-agent';
+import { callerIdentityKey } from '@mcp-abap-adt/llm-agent-libs';
 import cds from '@sap/cds';
 import { z } from 'zod';
 import type { RagConfig } from '../agent-config';
@@ -380,6 +381,29 @@ export async function sweepRunRecords(): Promise<void> {
 export function getRunRecordStore(): DeletableRunRecordStore {
   if (!singleton) singleton = new MemoryRunRecordStore();
   return singleton;
+}
+
+/** Map the coordinator's caller key to the hub's persisted session key. */
+export function adaptiveRunRecordStore(
+  store: IRunRecordStore,
+): IRunRecordStore {
+  const sessionFor = (key: string): string | undefined => {
+    const userId = getRequestUserId();
+    const sessionId = getRequestSessionId();
+    if (userId && sessionId && callerIdentityKey({ userId, sessionId }) === key)
+      return sessionId;
+    return undefined;
+  };
+  return {
+    async load(key) {
+      const sessionId = sessionFor(key);
+      return sessionId === undefined ? undefined : store.load(sessionId);
+    },
+    async save(key, record) {
+      const sessionId = sessionFor(key);
+      if (sessionId !== undefined) await store.save(sessionId, record);
+    },
+  };
 }
 
 /** Synchronous retention probe; provider records are indexed on save and load. */

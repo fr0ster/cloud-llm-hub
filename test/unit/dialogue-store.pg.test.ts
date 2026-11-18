@@ -171,7 +171,13 @@ it('loads legacy persisted archives and saves only current request fields', asyn
   expect(restored).toEqual({ ...record, requests: [closed, open] });
   if (!restored) throw new Error('missing restored state');
   await store.save('alice', 'legacy', restored);
-  expect(await store.load('alice', 'legacy')).toEqual(restored);
+  const saved = await opened.value.rag.getById(dialogueId('alice', 'legacy'));
+  if (!saved.ok) throw saved.error;
+  if (!saved.value) throw new Error('missing saved state');
+  expect(JSON.parse(saved.value.text)).toEqual({
+    state: { ...record, requests: [closed, open] },
+    outbox: [],
+  });
 });
 it('provider load of an unknown session returns undefined', async () => {
   expect(await newStore().load('unknown')).toBeUndefined();
@@ -199,50 +205,41 @@ it('round trips a multibyte conversation larger than the former 2 MiB limit', as
   expect(await store.load('alice', 'large')).toEqual(value);
 });
 
-it.each([
-  '{bad',
-  '{}',
-  JSON.stringify({
-    ...record,
-    conversation: [{ role: 'user', content: 'x'.repeat(20001) }],
-  }),
-  JSON.stringify({
-    ...record,
-    conversation: Array(201).fill({ role: 'user', content: 'x' }),
-  }),
-  JSON.stringify({ ...record, tasks: Array(51).fill({}) }),
-])('malformed or oversized row is ignored with a warning: %#', async (text) => {
-  const p = newProvider();
-  const store = scopedStore(
-    new ProviderDialogueStore(p, {
-      dimension: DIM,
-      log: { warn },
-    }),
-  );
-  await store.save('bad', record);
-  const catalog = await p.describeCollections();
-  if (!catalog.ok) throw catalog.error;
-  const catalogRecord = catalog.value.records.find(
-    (r) => r.storeName === 'h_dialogue',
-  );
-  if (!catalogRecord) throw new Error('missing catalog record');
-  const opened = await p.openCollection(catalogRecord);
-  if (!opened.ok) throw opened.error;
-  const writer = opened.value.rag.writer?.();
-  if (!writer?.upsertPrecomputedRaw) throw new Error('missing writer');
-  const w = await writer.upsertPrecomputedRaw(
-    dialogueId('alice', 'bad'),
-    text,
-    Array(DIM).fill(0),
-    { authorUserId: 'alice', hubSessionId: 'bad', savedAt: Date.now() },
-  );
-  if (!w.ok) throw w.error;
-  expect(await store.load('bad')).toBeUndefined();
-  expect(warn).toHaveBeenCalledWith('Skipped a malformed dialogue state', {
-    id: dialogueId('alice', 'bad'),
-  });
-});
-const warn = jest.fn();
+it.each(['{bad', '{}', JSON.stringify({ ...record, tasks: [{}] })])(
+  'malformed row is ignored with a warning: %#',
+  async (text) => {
+    const p = newProvider();
+    const warn = jest.fn();
+    const store = scopedStore(
+      new ProviderDialogueStore(p, {
+        dimension: DIM,
+        log: { warn },
+      }),
+    );
+    await store.save('bad', record);
+    const catalog = await p.describeCollections();
+    if (!catalog.ok) throw catalog.error;
+    const catalogRecord = catalog.value.records.find(
+      (r) => r.storeName === 'h_dialogue',
+    );
+    if (!catalogRecord) throw new Error('missing catalog record');
+    const opened = await p.openCollection(catalogRecord);
+    if (!opened.ok) throw opened.error;
+    const writer = opened.value.rag.writer?.();
+    if (!writer?.upsertPrecomputedRaw) throw new Error('missing writer');
+    const w = await writer.upsertPrecomputedRaw(
+      dialogueId('alice', 'bad'),
+      text,
+      Array(DIM).fill(0),
+      { authorUserId: 'alice', hubSessionId: 'bad', savedAt: Date.now() },
+    );
+    if (!w.ok) throw w.error;
+    expect(await store.load('bad')).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith('Skipped a malformed dialogue state', {
+      id: dialogueId('alice', 'bad'),
+    });
+  },
+);
 it('collection restore and expiry leave h_dialogue alone', async () => {
   await newStore().save('session', record);
   const persistence = createCollectionPersistence(newProvider(), 'test');

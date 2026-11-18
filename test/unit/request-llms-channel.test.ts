@@ -247,7 +247,7 @@ for (const [channel, handler] of channels) {
           model: currentRoleModel('executor'),
           iterations: currentLimit('coordinator', 'maxIterations'),
           calls: currentLimit('coordinator', 'maxToolCalls'),
-          history: currentSessionLimit('historyTokenBudget'),
+          toolResult: currentSessionLimit('toolResultMaxChars'),
         });
       };
       harness.process = async () => {
@@ -263,7 +263,7 @@ for (const [channel, handler] of channels) {
           'x-clh-model-executor': 'm',
           'x-clh-limits': JSON.stringify({
             coordinator: { maxIterations: 3, maxToolCalls: 'off' },
-            historyTokenBudget: 'off',
+            toolResultMaxChars: 'off',
           }),
         });
         await call(handler, session, stream);
@@ -271,13 +271,13 @@ for (const [channel, handler] of channels) {
         if ('refused' in next) throw new Error(next.refused);
         await call(handler, next, stream);
         expect(seen).toEqual([
-          { model: 'm', iterations: 3, calls: 'off', history: 'off' },
-          { model: 'm', iterations: 3, calls: 'off', history: 'off' },
+          { model: 'm', iterations: 3, calls: 'off', toolResult: 'off' },
+          { model: 'm', iterations: 3, calls: 'off', toolResult: 'off' },
           {
             model: undefined,
             iterations: undefined,
             calls: undefined,
-            history: undefined,
+            toolResult: undefined,
           },
         ]);
       } finally {

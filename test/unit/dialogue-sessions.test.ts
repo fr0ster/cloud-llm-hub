@@ -3948,7 +3948,7 @@ test('closing the session clears its settings', async () => {
     '../../srv/lib/execution-limits'
   );
   setRoleModels('alice', 'key', { executor: { model: 'gpt-5' } });
-  setExecutionLimits('alice', 'key', { historyTokenBudget: 'off' });
+  setExecutionLimits('alice', 'key', { toolResultMaxChars: 'off' });
   setRoleModels('bob', 'bob-key', { checker: { model: 'gpt-5' } });
   await closeDialogue('alice', 'key', 'explicit');
   expect(getRoleModels('alice', 'key')).toEqual({});

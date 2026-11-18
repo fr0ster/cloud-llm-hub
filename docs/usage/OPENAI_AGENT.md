@@ -207,9 +207,9 @@ Unchecking `off` prefills the config/default value when numeric. Select model
 - `x-clh-params-<role>`: JSON model parameters. Stage 1 refuses these with a
   field-specific reason; parameter support follows in stage 2.
 - `x-clh-limits`: JSON execution limits, for example
-  `{"executor":{"maxIterations":"off","maxToolCalls":30},"historyTokenBudget":8000}`.
-  Per-run roles are coordinator, executor and checker. Session-wide fields
-  are `toolResultMaxChars` and `historyTokenBudget`. `planStepBudget` is
+  `{"executor":{"maxIterations":"off","maxToolCalls":30},"toolResultMaxChars":"off"}`.
+  Per-run roles are coordinator, executor and checker. `toolResultMaxChars`
+  applies across the session. `planStepBudget` is
   refused in stage 1. `off` removes the hub limit; stop the task or close the
   session to stop a run. A limit value of `null` clears that individual session
   override and restores its config/default source, for example

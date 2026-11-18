@@ -51,8 +51,6 @@ function makeChainableBuilder() {
   builder.withToolSelectionStrategy = chainable(jest.fn());
   builder.withToolCache = chainable(withToolCache);
   builder.withMetrics = chainable(jest.fn());
-  builder.withSessionManager = chainable(jest.fn());
-  builder.withHistorySummarization = chainable(jest.fn());
   builder.withClientAdapter = chainable(jest.fn());
   builder.withRequestLogger = chainable(withRequestLogger);
   builder.withCoordinator = chainable(withCoordinator);
