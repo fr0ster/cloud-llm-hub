@@ -1,5 +1,9 @@
 # Response token usage — design
 
+This document records the original design. The current response schema, including
+per-model caches, embedding usage and orchestration tasks, is documented in the
+[API reference](../../architecture/API_REFERENCE.md#3-openai-compatible-chat-completions).
+
 ## Intent
 
 Every hub answer tells the client how many tokens it cost. A direct executor run (agent MCP

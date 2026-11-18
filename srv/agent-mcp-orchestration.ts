@@ -16,7 +16,7 @@ export {
 } from './lib/orchestration-tool-definitions';
 
 import { randomUUID } from 'node:crypto';
-import type { McpToolResult } from '@mcp-abap-adt/llm-agent';
+import type { McpToolResult, TaskRecord } from '@mcp-abap-adt/llm-agent';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import cds from '@sap/cds';
 import type { Request } from 'express';
@@ -26,16 +26,18 @@ import {
   runWithCallerExposition,
 } from './agent-manager';
 import type { StepCaller } from './agent-mcp';
-import { ragTextResult } from './agent-mcp-rag';
+import { mcpUsageResult, ragTextResult } from './agent-mcp-rag';
 import { headlessDialogueFor } from './lib/dialogue-sessions';
 import { revisionPlanSchema } from './lib/dialogue-store';
 import { leaseSession } from './lib/gatekeeper';
+import { captureTokenUsage } from './lib/llm-failure';
 import { longSessions } from './lib/long-session';
 import type { LongSessionRequest } from './lib/session-connection';
 import { resolveSession } from './lib/session-lifecycle';
 import { isRefusal } from './lib/session-retention';
 import { requestMeasurement } from './lib/usage/request-records';
 import { usageRuntime } from './lib/usage/runtime';
+import { timedUsageToWire, type WireAgentUsage } from './lib/usage-wire';
 import { runWithSessionId } from './request-session';
 import { resolveSessionKey } from './session-id';
 
@@ -146,10 +148,10 @@ export async function executeOrchestrationTool(
       );
       if (!boundCaller.ok)
         return ragTextResult(boundCaller.error.message, true);
-      const usage = usageRuntime()
+      const recorder = usageRuntime()
         ?.forSession({ sessionId, userId: caller.userId, destination })
         .with({ requestId: trace.traceId, traceId: trace.traceId });
-      requestMeasurement(req)?.bind(usage, {
+      requestMeasurement(req)?.bind(recorder, {
         sessionId,
         userId: caller.userId,
         destination,
@@ -167,22 +169,64 @@ export async function executeOrchestrationTool(
             );
             const options = {
               signal,
-              usage,
+              usage: recorder,
               trace,
               ...callOptionsFor(handle.caller),
             };
-            const result = await handle.session.callTool(
-              name,
-              name === 'plan_revise'
-                ? Object.fromEntries(
-                    Object.entries(input).filter(([key]) => key !== 'plan'),
-                  )
-                : input,
-              options,
+            const started = Date.now();
+            const spend = captureTokenUsage();
+            const result = await spend.run(() =>
+              handle.session.callTool(
+                name,
+                name === 'plan_revise'
+                  ? Object.fromEntries(
+                      Object.entries(input).filter(([key]) => key !== 'plan'),
+                    )
+                  : input,
+                options,
+              ),
             );
-            return result.ok
-              ? ragTextResult(toolText(result.value), result.value.isError)
-              : ragTextResult(result.error.message, true);
+            const usage = timedUsageToWire(spend.usage(), Date.now() - started);
+            if (!result.ok)
+              return mcpUsageResult(result.error.message, usage, true);
+            const content = toolText(result.value);
+            if (result.value.isError)
+              return mcpUsageResult(content, usage, true);
+            if (name === 'list_tasks') {
+              const tasks = new Map(
+                handle.session.snapshot().tasks.map((task) => [task.id, task]),
+              );
+              const list = z
+                .array(z.object({ id: z.string() }).catchall(z.json()))
+                .parse(JSON.parse(content))
+                .map((item) => ({ ...item, ...taskUsage(tasks.get(item.id)) }));
+              return {
+                ...ragTextResult(JSON.stringify(list)),
+                structuredContent: { tasks: list },
+              };
+            }
+            if (name === 'get_task' || name === 'delegate_task' || usage) {
+              const payload = z
+                .record(z.string(), z.json())
+                .parse(JSON.parse(content));
+              const id = name === 'get_task' ? input.task_id : payload.task_id;
+              const task =
+                typeof id === 'string'
+                  ? handle.session
+                      .snapshot()
+                      .tasks.find((task) => task.id === id)
+                  : undefined;
+              const report = {
+                ...payload,
+                ...taskUsage(task),
+                ...(usage ? { usage } : {}),
+              };
+              return {
+                ...ragTextResult(JSON.stringify(report)),
+                structuredContent: { result: content, ...report },
+              };
+            }
+            return ragTextResult(content);
           }),
         undefined,
         caller.userId,
@@ -232,6 +276,19 @@ export async function executeOrchestrationTool(
       true,
     );
   }
+}
+
+function taskUsage(task: TaskRecord | undefined): {
+  usage?: WireAgentUsage;
+  duration_ms?: number;
+} {
+  if (!task) return {};
+  const duration_ms =
+    task.startedAt === undefined || task.finishedAt === undefined
+      ? undefined
+      : Math.max(0, task.finishedAt - task.startedAt);
+  const usage = timedUsageToWire(task.usage, duration_ms);
+  return usage ? { usage } : duration_ms === undefined ? {} : { duration_ms };
 }
 
 function toolText(result: McpToolResult): string {

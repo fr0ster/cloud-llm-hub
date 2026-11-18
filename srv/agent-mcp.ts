@@ -41,6 +41,7 @@ import {
   listDestinationsDefinition,
 } from './lib/coordinator-tool-definitions';
 import { runExecutorStep } from './lib/executor-step';
+import { captureTokenUsage } from './lib/llm-failure';
 import { requestStart } from './lib/request-start';
 import type { LongSessionRequest } from './lib/session-connection';
 import {
@@ -48,7 +49,7 @@ import {
   requestMeasurement,
 } from './lib/usage/request-records';
 import type { UsageSession } from './lib/usage/storage-snapshot';
-import { tokenUsageToWire } from './lib/usage-wire';
+import { timedUsageToWire } from './lib/usage-wire';
 /**
  * Planner/controller MCP surface — a SEPARATE MCP endpoint that exposes
  * tools for an external planner (e.g. Claude Code):
@@ -91,6 +92,7 @@ import {
   runWithRequestConnection,
 } from './agent-manager';
 import {
+  mcpUsageResult,
   type RagMcpTool,
   registerRagMcpTools,
   ragTextResult as textResult,
@@ -382,6 +384,7 @@ async function executeStepRun(
   longSession: LongSession,
 ) {
   const stepStartedAt = requestStart(req);
+  const spend = captureTokenUsage();
   const measurement = requestMeasurement(req);
   const log = cds.log('agent-mcp');
   const { userId, exposition } = caller;
@@ -550,44 +553,46 @@ async function executeStepRun(
     // Prior session turns enter only through the pipeline history RAG stage.
     const history: Message[] = [];
     const conn = connection;
-    const r = await admitted.run(() => {
-      // Admitted, right before the run: this step's responsible person and
-      // master system, visible to it alone — see `lib/request-system-context.ts`.
-      const system = resolveRequestSystem(req.headers);
-      return runWithRequestSystem(system, () =>
-        runWithSessionId(
-          sessionId,
-          () =>
-            runWithRequestConnection(
-              conn,
-              async () => {
-                // An external agent uses this hub as its subagent: the executor
-                // runs alone, no controller. The honesty check the controller's
-                // NoticeFinalizer gives chat runs here instead, with the same
-                // inputs and the same trailing NOTICE.
-                return runExecutorStep(
-                  createAgentProfileSource,
-                  agentHandle,
-                  userId,
-                  task,
-                  worker,
-                  opts,
-                  history,
-                  model,
-                );
-              },
-              dumpScope,
-              exposition,
-            ),
-          history,
-          userId,
-          {
-            admin: cds.context?.user?.is('MCP_Admin') ?? false,
-            channel: 'mcp-agent',
-          },
-        ),
-      );
-    });
+    const r = await spend.run(() =>
+      admitted.run(() => {
+        // Admitted, right before the run: this step's responsible person and
+        // master system, visible to it alone — see `lib/request-system-context.ts`.
+        const system = resolveRequestSystem(req.headers);
+        return runWithRequestSystem(system, () =>
+          runWithSessionId(
+            sessionId,
+            () =>
+              runWithRequestConnection(
+                conn,
+                async () => {
+                  // An external agent uses this hub as its subagent: the executor
+                  // runs alone, no controller. The honesty check the controller's
+                  // NoticeFinalizer gives chat runs here instead, with the same
+                  // inputs and the same trailing NOTICE.
+                  return runExecutorStep(
+                    createAgentProfileSource,
+                    agentHandle,
+                    userId,
+                    task,
+                    worker,
+                    opts,
+                    history,
+                    model,
+                  );
+                },
+                dumpScope,
+                exposition,
+              ),
+            history,
+            userId,
+            {
+              admin: cds.context?.user?.is('MCP_Admin') ?? false,
+              channel: 'mcp-agent',
+            },
+          ),
+        );
+      }),
+    );
 
     if (!r.ok) {
       if (isOutageError(r.error)) {
@@ -604,8 +609,9 @@ async function executeStepRun(
           ? `${unverified} ${throttleMessage(limit)}`
           : unverified
         : failureText(r.error);
-      return textResult(
+      return mcpUsageResult(
         `ERROR on destination "${targetDestination}": ${message}`,
+        timedUsageToWire(spend.usage(), Date.now() - stepStartedAt),
         true,
       );
     }
@@ -631,31 +637,16 @@ async function executeStepRun(
     }
     if (longSession && takeRevivalNotice(longSession)) notice = 'revived';
     const durationMs = Date.now() - stepStartedAt;
-    const tokens = tokenUsageToWire(r.value.usage);
-    const wireUsage = tokens
-      ? { ...tokens, duration_ms: durationMs }
-      : undefined;
+    const wireUsage = timedUsageToWire(
+      spend.usage(r.value.usage, model),
+      durationMs,
+    );
     const emptyResult = !/\S/.test(rawContent);
     const reply = emptyResult
       ? `EMPTY_RESULT on destination "${targetDestination}": The executor finished without a reply. The system state of the step is unknown and must be verified by a separate read step.${r.value.iterations !== undefined ? ` iterations=${r.value.iterations}` : ''}${r.value.toolCallCount !== undefined ? ` toolCallCount=${r.value.toolCallCount}` : ''}${r.value.stopReason !== undefined ? ` stopReason=${r.value.stopReason}` : ''}`
       : rawContent;
     const content = notice ? `${notice}\n${reply}` : reply;
-    return {
-      ...textResult(
-        wireUsage
-          ? `${content}\n[usage]${wireUsage ? ` prompt=${wireUsage.prompt_tokens} completion=${wireUsage.completion_tokens} total=${wireUsage.total_tokens}` : ''} time=${(durationMs / 1000).toFixed(1)}s`
-          : content,
-        emptyResult,
-      ),
-      ...(wireUsage
-        ? {
-            structuredContent: {
-              result: content,
-              ...(wireUsage ? { usage: wireUsage } : {}),
-            },
-          }
-        : {}),
-    };
+    return mcpUsageResult(content, wireUsage, emptyResult);
   } catch (err) {
     if (targetDestination && isOutageError(err)) {
       closeDestination(targetDestination, describeCause(err));
@@ -665,7 +656,11 @@ async function executeStepRun(
       unverified ?? (err instanceof Error ? err.message : String(err));
     measurement?.end('error');
     log.warn('execute_step failed', { destination, error: message });
-    return textResult(`ERROR: ${message}`, true);
+    return mcpUsageResult(
+      `ERROR: ${message}`,
+      timedUsageToWire(spend.usage(), Date.now() - stepStartedAt),
+      true,
+    );
   } finally {
     // Drain calls before releasing the connection, pipeline slot and semaphore.
     // The long session keeps its connection until session close. Refused/closed

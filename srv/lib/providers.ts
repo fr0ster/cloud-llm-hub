@@ -7,10 +7,13 @@ import {
   type CallOptions,
   CircuitBreaker,
   CircuitBreakerEmbedder,
+  type IEmbedder,
   type IEmbedResult,
   type IQueryEmbedder,
   type IRagProvider,
   type IRetrievalEmbedder,
+  isBatchEmbedder,
+  isBatchSizeLimited,
   symmetricEmbedder,
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
@@ -28,6 +31,7 @@ import {
   type DestinationSource,
 } from './destination-source';
 import { apiKeyCredential } from './llm-factory';
+import { observeEmbeddingUsage } from './llm-failure';
 import { createCollectionProvider } from './rag-provider-factory';
 import {
   createRagStoreFactory,
@@ -99,7 +103,24 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
   const recording = usage ? { usage } : {};
   // One provider instance: it makes exactly one request per call, so both
   // compositions below share it (and its usage recording).
-  const raw = createEmbedder();
+  const provider: IEmbedder = createEmbedder();
+  const optionsWithObserver = (options?: CallOptions): CallOptions => ({
+    ...options,
+    usage: observeEmbeddingUsage(options?.usage ?? usage),
+  });
+  const raw = {
+    embed: (text: string, options?: CallOptions) =>
+      provider.embed(text, optionsWithObserver(options)),
+    ...(isBatchEmbedder(provider)
+      ? {
+          embedBatch: (texts: string[], options?: CallOptions) =>
+            provider.embedBatch(texts, optionsWithObserver(options)),
+        }
+      : {}),
+    ...(isBatchSizeLimited(provider)
+      ? { maxBatchSize: provider.maxBatchSize }
+      : {}),
+  };
   const composed = composeEmbedder(raw);
   function createEmbedder() {
     switch (cfg?.kind) {

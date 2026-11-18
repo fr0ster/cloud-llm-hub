@@ -709,6 +709,39 @@ it.each(['NO_MESSAGE', 'NO_MESSAGE answer NO_MESSAGE'])(
   },
 );
 
+it.each([false, true])(
+  'retains usage for a planner turn without a message (stream=%s)',
+  async (stream) => {
+    emptyPending = true;
+    send.mockResolvedValue({
+      text: 'NO_MESSAGE',
+      usage: {
+        planner: { promptTokens: 9, completionTokens: 1, totalTokens: 10 },
+      },
+    });
+    const req = Object.assign(
+      Object.defineProperties(
+        express().request,
+        Object.getOwnPropertyDescriptors(
+          fakeReq(
+            {
+              model: 'm',
+              stream,
+              messages: [{ role: 'user', content: 'hi' }],
+            },
+            session.key,
+          ),
+        ),
+      ),
+      { longSession: session },
+    );
+    const res = fakeRes();
+    await handleChatCompletions(req, typedResponse(res));
+    expect(res.body).toContain('"prompt_tokens":9,"completion_tokens":1');
+    expect(res.body).not.toContain('NO_MESSAGE');
+  },
+);
+
 for (const sessionTrust of [undefined, 4])
   for (const anthropic of [false, true])
     for (const stream of [false, true])

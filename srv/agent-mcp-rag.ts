@@ -104,10 +104,26 @@ type Args = {
   limit?: number;
 };
 type ValidatedArgs = Args & { scope?: 'user' | 'session' };
+
+import { captureTokenUsage } from './lib/llm-failure';
+import { timedUsageToWire, type WireAgentUsage } from './lib/usage-wire';
+
 export function ragTextResult(text: string, isError = false) {
   return {
     content: [{ type: 'text' as const, text }],
     ...(isError ? { isError: true } : {}),
+  };
+}
+
+export function mcpUsageResult(
+  text: string,
+  usage: WireAgentUsage | undefined,
+  isError = false,
+) {
+  if (!usage) return ragTextResult(text, isError);
+  return {
+    ...ragTextResult(`${text}\n[usage] ${JSON.stringify(usage)}`, isError),
+    structuredContent: { result: text, usage },
   };
 }
 interface WriteFields {
@@ -164,7 +180,9 @@ type WriteResult =
   | RecordDeleteResult
   | TrustSetResult;
 type Result = ReturnType<typeof ragTextResult> & {
-  structuredContent?: WriteResult;
+  structuredContent?: (WriteResult | { result: string; error?: never }) & {
+    usage?: WireAgentUsage;
+  };
 };
 function writeResult(value: WriteResult): Result {
   return {
@@ -1416,7 +1434,7 @@ export async function executeRagTool(
 }
 
 /** External MCP preserves argument/header precedence and queue admission. */
-export function executeRagMcpTool(
+export async function executeRagMcpTool(
   req: Pick<Request, 'headers'>,
   userId: string,
   name: RagMcpTool,
@@ -1424,20 +1442,36 @@ export function executeRagMcpTool(
   traceId?: string,
   registry?: CollectionRegistry,
 ): Promise<Result> {
-  return executeRagTool(
-    {
-      userId,
-      registry,
-      admin: cds.context?.user?.is('MCP_Admin') ?? false,
-      sessionKey: resolveSessionKey(req).key,
-      internal: false,
-      trustedAdmission: false,
-      permissions: { allows: profileToolAllowed },
-      readOnly: isReadOnlyTools(),
-      traceId,
-      channel: 'mcp-agent',
-    },
-    name,
-    input,
+  const started = Date.now();
+  const spend = captureTokenUsage();
+  const result = await spend.run(() =>
+    executeRagTool(
+      {
+        userId,
+        registry,
+        admin: cds.context?.user?.is('MCP_Admin') ?? false,
+        sessionKey: resolveSessionKey(req).key,
+        internal: false,
+        trustedAdmission: false,
+        permissions: { allows: profileToolAllowed },
+        readOnly: isReadOnlyTools(),
+        traceId,
+        channel: 'mcp-agent',
+      },
+      name,
+      input,
+    ),
   );
+  const usage = timedUsageToWire(spend.usage(), Date.now() - started);
+  if (!usage) return result;
+  return {
+    ...result,
+    content: result.content.map((block) => ({
+      ...block,
+      text: `${block.text}\n[usage] ${JSON.stringify(usage)}`,
+    })),
+    structuredContent: result.structuredContent
+      ? Object.assign({}, result.structuredContent, { usage })
+      : { result: result.content[0].text, usage },
+  };
 }
