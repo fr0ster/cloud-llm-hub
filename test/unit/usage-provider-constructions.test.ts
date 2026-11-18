@@ -34,6 +34,7 @@ import type { EmbedderConfig } from '../../srv/agent-config';
 import { executeStep } from '../../srv/agent-mcp';
 import { handleAnthropicMessages } from '../../srv/anthropic-handler';
 import { makeHubLlm, resetLlmCredentials } from '../../srv/lib/llm-factory';
+import { captureTokenUsage } from '../../srv/lib/llm-failure';
 import {
   LongSessionRegistry,
   setLongSessionsForTest,
@@ -50,6 +51,38 @@ import { readUsageConfig } from '../../srv/lib/usage/config';
 import { initUsage, setUsageRuntimeForTest } from '../../srv/lib/usage/runtime';
 import { handleChatCompletions } from '../../srv/openai-handler';
 import { harness } from './helpers/channel-harness';
+
+test('Ollama batch tokens are captured once with usage storage disabled', async () => {
+  const config: EmbedderConfig = { kind: 'ollama', model: 'bge-m3' };
+  await prefetchEmbedder(config);
+  const embedding = buildEmbedding(config);
+  if (!embedding?.retrieval.embedDocuments)
+    throw new Error('Expected batch embedding');
+  const fetch = jest
+    .spyOn(globalThis, 'fetch')
+    .mockResolvedValue(
+      Response.json({ embeddings: [[1], [2]], prompt_eval_count: 17 }),
+    );
+  try {
+    const { retrieval } = embedding;
+    const spend = captureTokenUsage();
+    const vectors = await spend.run(() =>
+      retrieval.embedDocuments?.(['first', 'second']),
+    );
+    expect(vectors).toEqual([{ vector: [1] }, { vector: [2] }]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(spend.usage()?.models).toEqual({
+      'bge-m3': {
+        promptTokens: 17,
+        completionTokens: 0,
+        totalTokens: 17,
+        requests: 1,
+      },
+    });
+  } finally {
+    fetch.mockRestore();
+  }
+});
 
 jest.mock('../../srv/lib/logging-config', (): object => ({
   applyLoggingConfig(): void {},

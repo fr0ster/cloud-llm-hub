@@ -71,6 +71,13 @@ export type DialogueStreamChunk = LlmStreamChunk & {
 };
 
 const failedResponses = new WeakSet<Response>();
+const failedResponseUsage = new WeakMap<OrchestratorError, DialogueUsage>();
+
+export function failedDialogueUsage(
+  error: OrchestratorError,
+): DialogueUsage | undefined {
+  return failedResponseUsage.get(error);
+}
 
 /** SSE failures keep HTTP 200 but do not confirm an outbox delivery. */
 export function failDialogueResponse(response: Response): void {
@@ -186,6 +193,7 @@ export function dialogueChat(
         : undefined;
     },
     async process(messages: Message[], opts: AgentCallOptions | undefined) {
+      let readFailedUsage: (() => PlannerMessageUsage | undefined) | undefined;
       try {
         const { handle, pending, complete, send } = await open(opts?.caller);
         const message = messages.filter((m) => m.role === 'user').at(-1);
@@ -203,6 +211,10 @@ export function dialogueChat(
         const replyId = randomUUID();
         const createdAt = Date.now();
         handle.replies.set(trace, { id: replyId, createdAt });
+        readFailedUsage = () =>
+          handle.state().lastFailedSeq > since
+            ? handle.failedUsage?.()
+            : undefined;
         const answer = await send(userText(message), {
           ...plannerObservers(handle),
           ...(handle.usage
@@ -245,7 +257,7 @@ export function dialogueChat(
           value: {
             content: carried.map((m) => m.text).join('\n\n'),
             usage: sumPlannerUsage(
-              carried.map((m) => m.usage),
+              [...pending.map((m) => m.usage), answer.usage],
               { durationMs: Date.now() - requestStartedAt },
             ),
             stopReason: 'stop',
@@ -254,7 +266,12 @@ export function dialogueChat(
           },
         };
       } catch (error) {
-        return { ok: false, error: plannerError(error) };
+        const failure = plannerError(error);
+        const usage = sumPlannerUsage([readFailedUsage?.()], {
+          durationMs: Date.now() - requestStartedAt,
+        });
+        if (usage) failedResponseUsage.set(failure, usage);
+        return { ok: false, error: failure };
       }
     },
     async *streamProcess(messages, opts) {
@@ -412,6 +429,8 @@ export function dialogueChat(
           ok: true,
           value: { content: '', clhMessageEnd: replyId, clhUsage: replyUsage },
         };
+      else if (replyUsage)
+        yield { ok: true, value: { content: '', clhUsage: replyUsage } };
       yield { ok: true, value: { content: '', clhTurnEnd: true } };
       if (handle.state().status) followHandle = handle;
       complete();

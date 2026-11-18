@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import express from 'express';
+import express, { type Request, type Response } from 'express';
 
 /**
  * A malformed gatekeeper variable stops the service before it takes traffic.
@@ -32,8 +32,11 @@ jest.mock(
   { virtual: true },
 );
 jest.mock('../../srv/env-setup', () => ({}));
+const agentProfiles = { collectionId: 'agents', plannerRecord: 'coordinator' };
+let profiles: typeof agentProfiles | undefined;
 const getAgentConfig = jest.fn(() => ({
   rag: { backends: { session: 'vector' } },
+  profiles,
 }));
 jest.mock('../../srv/agent-config', () => ({
   ensureAiCoreCredentials,
@@ -48,6 +51,15 @@ const restoreStatus: { value: { state: string; error?: string } } = {
 const providersFailure: { error?: Error } = {};
 const agentsFailure: { error?: Error } = {};
 const migrationFailure = { failed: false };
+const seedAgentConfiguration = jest.fn(async () => {});
+const createAgentMcpServerForRequest = jest.fn(async () => ({
+  transport: {
+    async handleRequest(_req: Request, res: Response) {
+      res.json({ ready: true });
+    },
+  },
+  async cleanup() {},
+}));
 jest.mock('../../srv/lib/rag-migration', () => ({
   isRagMigrationReady: () =>
     order.includes('migrateRagData') && !migrationFailure.failed,
@@ -77,6 +89,7 @@ jest.mock('../../srv/agent-manager', () => ({
   },
   getCollectionRegistry: () => ({
     sweepExpiredSessions: () => {},
+    seedAgentConfiguration,
   }),
   startCollectionRestore: () => {
     order.push('startCollectionRestore');
@@ -84,7 +97,7 @@ jest.mock('../../srv/agent-manager', () => ({
   },
   collectionsRestoreStatus: () => restoreStatus.value,
 }));
-jest.mock('../../srv/agent-mcp', () => ({}));
+jest.mock('../../srv/agent-mcp', () => ({ createAgentMcpServerForRequest }));
 jest.mock('../../srv/anthropic-handler', () => ({}));
 jest.mock('../../srv/openai-handler', () => ({}));
 jest.mock('../../srv/rag-handler', () => ({
@@ -356,6 +369,83 @@ describe('the /v1/rag gate', () => {
 });
 
 describe("server.ts's served listener", () => {
+  it('holds the agent MCP HTTP request until built-in profiles finish synchronizing', async () => {
+    const profileSeeds = await import('../../srv/lib/agent-profile-seeds');
+    const route = '/mcp/agent/stream/http';
+    profiles = agentProfiles;
+    let finish = () => {};
+    const pendingSeed = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    seedAgentConfiguration.mockImplementationOnce(() => pendingSeed);
+    const createWaiter = profileSeeds.createAgentProfileWaiter;
+    let entered = () => {};
+    const enteredWait = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const wait = jest
+      .spyOn(profileSeeds, 'createAgentProfileWaiter')
+      .mockImplementation((synchronization) => {
+        const wait = createWaiter(synchronization);
+        return (signal) => {
+          entered();
+          return wait(signal);
+        };
+      });
+    const app = express();
+    const post = app.post.bind(app);
+    const use = app.use.bind(app);
+    const useSpy = jest
+      .spyOn(app, 'use')
+      .mockReturnValue(app)
+      .mockImplementationOnce(use);
+    const postSpy = jest
+      .spyOn(app, 'post')
+      .mockImplementation((path, ...callbacks) =>
+        path === route ? post(path, ...callbacks) : app,
+      );
+    const getSpy = jest.spyOn(app, 'get').mockReturnValue(app);
+    const optionsSpy = jest.spyOn(app, 'options').mockReturnValue(app);
+    const server = createServer(app);
+    try {
+      handlers.bootstrap(app);
+      useSpy.mockRestore();
+      postSpy.mockRestore();
+      getSpy.mockRestore();
+      optionsSpy.mockRestore();
+      handlers.served();
+      await new Promise<void>((resolve) =>
+        server.listen(0, '127.0.0.1', resolve),
+      );
+      const address = server.address();
+      if (!address || typeof address === 'string')
+        throw new Error('Missing address');
+      const response = fetch(`http://127.0.0.1:${address.port}${route}`, {
+        method: 'POST',
+      });
+      await Promise.race([
+        enteredWait,
+        response.then(() => {
+          throw new Error('HTTP request returned before waiting for profiles');
+        }),
+      ]);
+      expect(createAgentMcpServerForRequest).not.toHaveBeenCalled();
+      finish();
+      expect((await response).status).toBe(200);
+      expect(seedAgentConfiguration).toHaveBeenCalledWith(
+        'agents',
+        'coordinator',
+      );
+      expect(createAgentMcpServerForRequest).toHaveBeenCalledTimes(1);
+    } finally {
+      finish();
+      wait.mockRestore();
+      profiles = undefined;
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it('starts both session sweeps even when initialisation fails', async () => {
     // Started inside the success path, neither sweep ever ran on an instance
     // whose first initialisation failed: expired session collections and

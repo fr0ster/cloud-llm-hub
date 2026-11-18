@@ -23,6 +23,7 @@ import type {
   ISmartAgent,
   ISubAgent,
   ISubAgentInput,
+  TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
 import {
   DialogueSession,
@@ -42,6 +43,7 @@ import {
 import { userCollectionId } from '../../srv/collection-ids';
 import { AgentProfileRunner } from '../../srv/lib/agent-profile-runner';
 import { LocalRagMcpClient } from '../../srv/lib/dialogue-rag-tools';
+import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import * as plannerMemory from '../../srv/lib/planner-memory';
 import type { Providers } from '../../srv/lib/providers';
 import {
@@ -60,14 +62,20 @@ const mockPlan: DialoguePlan = {
   status: 'active',
   steps: [{ id: 'read', goal: 'Read', state: 'pending', taskIds: [] }],
 };
-const mockCreate: IPlanAuthor['create'] = jest.fn(async () => ({
-  ok: true as const,
-  value: structuredClone(mockPlan),
-}));
-const mockRevise: IPlanAuthor['revise'] = jest.fn(async (input) => ({
-  ok: true as const,
-  value: input.plan,
-}));
+const mockCreate: IPlanAuthor['create'] = jest.fn(async () => {
+  reportLlmSpend(
+    { promptTokens: 20, completionTokens: 3, totalTokens: 23 },
+    'author',
+  );
+  return { ok: true as const, value: structuredClone(mockPlan) };
+});
+const mockRevise: IPlanAuthor['revise'] = jest.fn(async (input) => {
+  reportLlmSpend(
+    { promptTokens: 31, completionTokens: 4, totalTokens: 35 },
+    'author',
+  );
+  return { ok: true as const, value: input.plan };
+});
 const mockAuthorAgent: ISmartAgent = {
   process: async () => ({
     ok: true,
@@ -90,9 +98,13 @@ const mockHeadless = jest.fn(async () => ({
 }));
 const mockRelease = jest.fn();
 const mockLongSession = { userId: 'alice', key: 'owned', destination: 'TEST' };
-const mockRun = jest.fn(async (_input: ISubAgentInput) => ({
-  output: 'read done',
-}));
+const mockRun = jest.fn(
+  async (
+    _input: ISubAgentInput,
+  ): Promise<{ output: string; usage?: TokenUsage }> => ({
+    output: 'read done',
+  }),
+);
 const mockWorker: ISubAgent = {
   name: 'executor',
   capabilities: { contextPolicy: 'optional' },
@@ -335,7 +347,30 @@ test('session plan_create delegates and reads a completed task with MCP identity
   mockRun.mockImplementation(async () => {
     expect(getRequestUserId()).toBe('alice');
     expect(getRagCallerIdentity().channel).toBe('mcp-agent');
-    return { output: 'read done' };
+    return {
+      output: 'read done',
+      usage: {
+        promptTokens: 19,
+        completionTokens: 4,
+        totalTokens: 23,
+        models: {
+          executor: {
+            promptTokens: 15,
+            completionTokens: 4,
+            totalTokens: 19,
+            requests: 2,
+            cachedInputTokens: 10,
+            cacheCreationInputTokens: 0,
+          },
+          embedder: {
+            promptTokens: 4,
+            completionTokens: 0,
+            totalTokens: 4,
+            requests: 1,
+          },
+        },
+      },
+    };
   });
   const result = await call('delegate_task', {
     session: 'owned',
@@ -344,20 +379,73 @@ test('session plan_create delegates and reads a completed task with MCP identity
     step_id: 'read',
   });
   expect(result).not.toMatchObject({ isError: true });
-  for (
-    let i = 0;
-    i < 50 && mockSession.snapshot().tasks[0]?.state !== 'done';
-    i++
+  while (
+    mockSession
+      .snapshot()
+      .tasks.some((task) => task.state === 'queued' || task.state === 'running')
   )
     await new Promise<void>((resolve) => setImmediate(resolve));
   const task = mockSession.snapshot().tasks[0];
   expect(task.state).toBe('done');
-  expect(
-    await call('get_task', { session: 'owned', task_id: task.id }),
-  ).toMatchObject({
+  const usage = {
+    duration_ms: (task.finishedAt ?? 0) - (task.startedAt ?? 0),
+    models: {
+      executor: {
+        prompt_tokens: 15,
+        completion_tokens: 4,
+        total_tokens: 19,
+        requests: 2,
+        cached_input_tokens: 10,
+        cache_creation_input_tokens: 0,
+      },
+      embedder: {
+        prompt_tokens: 4,
+        completion_tokens: 0,
+        total_tokens: 4,
+        requests: 1,
+      },
+    },
+  };
+  const get = await call('get_task', { session: 'owned', task_id: task.id });
+  expect(get).toMatchObject({
     content: [{ text: expect.stringContaining('read done') }],
+    structuredContent: { usage },
   });
+  expect(JSON.parse(get.content[0].text)).toMatchObject({ usage });
+  const list = await call('list_tasks', { session: 'owned' });
+  expect(list).toMatchObject({
+    structuredContent: { tasks: [{ id: task.id, usage }] },
+  });
+  expect(JSON.parse(list.content[0].text)).toMatchObject([
+    { id: task.id, usage },
+  ]);
   expect(mockRelease).toHaveBeenCalled();
+});
+
+test('plan tools report only their own model calls', async () => {
+  const created = await call('plan_create', { session: 'owned', goal: 'Read' });
+  const revised = await call('plan_revise', {
+    session: 'owned',
+    change: 'Keep',
+  });
+  for (const [result, prompt_tokens, completion_tokens] of [
+    [created, 20, 3],
+    [revised, 31, 4],
+  ] as const) {
+    const usage = {
+      duration_ms: expect.any(Number),
+      models: {
+        author: {
+          prompt_tokens,
+          completion_tokens,
+          total_tokens: prompt_tokens + completion_tokens,
+          requests: 1,
+        },
+      },
+    };
+    expect(result).toMatchObject({ structuredContent: { usage } });
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ usage });
+  }
 });
 test('a busy shared dialogue refuses MCP tools and retains its plan', async () => {
   await call('plan_create', { session: 'owned', goal: 'Read' });

@@ -8,7 +8,7 @@ import {
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
 import { getExecutionLimits } from './lib/execution-limits';
-import { failureMessage, observeLlmSpend } from './lib/llm-failure';
+import { captureTokenUsage, failureMessage } from './lib/llm-failure';
 import { capabilitiesFor } from './lib/model-capabilities';
 import { awaitModelCatalog, ensureModelCatalog } from './lib/model-catalog';
 import {
@@ -40,7 +40,7 @@ import {
   measureRequest,
   requestMeasurement,
 } from './lib/usage/request-records';
-import { responseUsageToWire } from './lib/usage-wire';
+import { emptyOpenAiUsage, openAiUsageToWire } from './lib/usage-wire';
 /**
  * OpenAI-compatible HTTP handlers for SmartAgent.
  *
@@ -54,7 +54,6 @@ import { responseUsageToWire } from './lib/usage-wire';
 
 import { randomUUID } from 'node:crypto';
 import {
-  addTokenUsage,
   type Message,
   normalizeAndValidateExternalTools,
   type TokenUsage,
@@ -81,7 +80,7 @@ import {
 } from './agent-manager';
 import { getAvailableModels } from './lib/ai-core-models';
 import { detachedSink } from './lib/detached-sink';
-import { dialogueChat } from './lib/dialogue-chat';
+import { dialogueChat, failedDialogueUsage } from './lib/dialogue-chat';
 import { describeCaller, type ExpositionLevel } from './lib/exposition';
 import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
@@ -1272,37 +1271,19 @@ async function serveChatCompletions(
       let finishReasonSent = false;
       let accumulatedContent = ''; // Accumulate full response for session history
       let streamSucceeded = false;
-      let lastUsage: {
-        prompt_tokens: number;
-        completion_tokens: number;
-        total_tokens: number;
-        models?: Record<string, unknown>;
-      } | null = null;
-
-      // Model spend observed below the agent: a failed chunk carries no usage, so
-      // a failed stream reports what was already spent.
-      let observedSpend: TokenUsage | undefined;
-      const recordSpend = (usage: TokenUsage) => {
-        observedSpend = addTokenUsage(observedSpend, usage);
-      };
-      const keepSpend = () => {
-        if (
-          observedSpend &&
-          observedSpend.totalTokens > (lastUsage?.total_tokens ?? 0)
-        )
-          lastUsage = {
-            prompt_tokens: observedSpend.promptTokens,
-            completion_tokens: observedSpend.completionTokens,
-            total_tokens: observedSpend.totalTokens,
-          };
-      };
+      let lastUsage: TokenUsage | undefined;
+      const spend = captureTokenUsage();
 
       let usageSent = false;
       const writeUsage = () => {
-        if (!lastUsage || usageSent) return;
+        const usage = openAiUsageToWire(
+          spend.usage(lastUsage, responseModel),
+          responseModel,
+        );
+        if (!usage || usageSent) return;
         usageSent = true;
         out.write(
-          `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: responseModel, choices: [], usage: lastUsage })}\n\n`,
+          `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: responseModel, choices: [], usage })}\n\n`,
         );
       };
 
@@ -1323,7 +1304,7 @@ async function serveChatCompletions(
               // here, not before the queue wait — see `inRequestSystem`.
               () =>
                 inRequestSystem(() =>
-                  observeLlmSpend(async () => {
+                  spend.run(async () => {
                     const stream = chatAgent.streamProcess(
                       normalizedMessages,
                       opts,
@@ -1373,7 +1354,6 @@ async function serveChatCompletions(
                             : limit
                               ? `${failureMessage(err)}. ${throttleMessage(limit)}`
                               : failureMessage(err);
-                          keepSpend();
                           writeUsage();
                           out.write(
                             `data: ${jsonError(userMessage, 'server_error')}\n\n`,
@@ -1403,16 +1383,7 @@ async function serveChatCompletions(
                           out.write(`: status ${JSON.stringify(v.status)}\n\n`);
                           continue;
                         }
-                        if (v.usage) {
-                          lastUsage = {
-                            prompt_tokens: v.usage.promptTokens,
-                            completion_tokens: v.usage.completionTokens,
-                            total_tokens: v.usage.totalTokens,
-                            ...(v.usage.models
-                              ? { models: v.usage.models }
-                              : {}),
-                          };
-                        }
+                        if (v.usage) lastUsage = v.usage;
                         if (v.timing) {
                           log.info('Pipeline stage timing', {
                             timing: v.timing,
@@ -1530,7 +1501,6 @@ async function serveChatCompletions(
                         : streamLimit
                           ? `${failureMessage(err)}. ${throttleMessage(streamLimit)}`
                           : failureMessage(err);
-                      keepSpend();
                       writeUsage();
                       out.write(
                         `data: ${jsonError(userMessage, 'server_error')}\n\n`,
@@ -1542,7 +1512,7 @@ async function serveChatCompletions(
                     if (lastUsage?.models) {
                       log.info('Token usage by model', lastUsage.models);
                     }
-                  }, recordSpend),
+                  }),
                 ),
             ),
           priorTurns,
@@ -1637,22 +1607,25 @@ async function serveChatCompletions(
     // --- Non-streaming (with rate-limit retry) ---
     // Bind the caller and session for canonical host RAG execution.
     // The wrapper encloses the whole retry block so the context stays alive across retries.
-    const result = await pipeline.run(() =>
-      runWithSessionId(
-        sessionId,
-        () =>
-          withRequestConnectionAuthorized(
-            requestConnection,
-            requestDumpScope,
-            // Admitted — see `inRequestSystem`.
-            () =>
-              inRequestSystem(async () =>
-                chatAgent.process(normalizedMessages, opts),
-              ),
-          ),
-        priorTurns,
-        userId,
-        ragIdentity,
+    const spend = captureTokenUsage();
+    const result = await spend.run(() =>
+      pipeline.run(() =>
+        runWithSessionId(
+          sessionId,
+          () =>
+            withRequestConnectionAuthorized(
+              requestConnection,
+              requestDumpScope,
+              // Admitted — see `inRequestSystem`.
+              () =>
+                inRequestSystem(async () =>
+                  chatAgent.process(normalizedMessages, opts),
+                ),
+            ),
+          priorTurns,
+          userId,
+          ragIdentity,
+        ),
       ),
     );
 
@@ -1684,17 +1657,20 @@ async function serveChatCompletions(
       ? mapStopReason(result.value.stopReason)
       : 'stop';
 
-    let finalUsage = null;
-    if (result.ok && result.value.usage) {
-      finalUsage = {
-        prompt_tokens: result.value.usage.promptTokens,
-        completion_tokens: result.value.usage.completionTokens,
-        total_tokens: result.value.usage.totalTokens,
-        ...(result.value.usage.models
-          ? { models: result.value.usage.models }
-          : {}),
-      };
-    }
+    const model =
+      useDialogue && s
+        ? chatResponseModel(requestedModel, responseModel, {
+            userId,
+            key: s.key,
+          })
+        : responseModel;
+    const resultUsage = result.ok
+      ? result.value.usage
+      : failedDialogueUsage(result.error);
+    const finalUsage = openAiUsageToWire(
+      useDialogue ? resultUsage : spend.usage(resultUsage, model),
+      model,
+    );
 
     // Save conversation turn to server session
     if (
@@ -1734,13 +1710,7 @@ async function serveChatCompletions(
         id: `chatcmpl-${randomUUID()}`,
         object: 'chat.completion',
         created: Math.floor(Date.now() / 1000),
-        model:
-          useDialogue && s
-            ? chatResponseModel(requestedModel, responseModel, {
-                userId,
-                key: s.key,
-              })
-            : responseModel,
+        model,
         choices: [
           {
             index: 0,
@@ -1748,13 +1718,7 @@ async function serveChatCompletions(
             finish_reason: finalFinishReason,
           },
         ],
-        usage: (useDialogue && result.ok
-          ? responseUsageToWire(result.value.usage)
-          : finalUsage) || {
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0,
-        },
+        usage: finalUsage ?? emptyOpenAiUsage,
       }),
     );
   } finally {
