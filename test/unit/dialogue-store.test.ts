@@ -76,6 +76,40 @@ it.each<NonNullable<DialogueState['tasks'][number]['checkerVerdict']>>([
     expect(await store.load('alice', 'task-results')).toEqual(snapshot);
   },
 );
+it('round-trips terminal request errors and terminal task error codes', async () => {
+  const store = new MemoryDialogueStore();
+  const snapshot: DialogueState = {
+    ...state,
+    requests: [
+      {
+        id: 'r1',
+        openedAt: 1,
+        text: 'describe',
+        terminalError: {
+          code: 'LLM_OUTPUT_TRUNCATED',
+          message: 'Provider stopped at the output token limit',
+        },
+      },
+    ],
+    tasks: [
+      {
+        id: 't1',
+        worker: 'executor',
+        goal: 'read',
+        state: 'failed',
+        createdAt: 1,
+        error: 'Provider stopped at the output token limit',
+        terminalErrorCode: 'LLM_OUTPUT_TRUNCATED',
+      },
+    ],
+  };
+  await store.save('alice', 'terminal', snapshot);
+  const restored = await store.load('alice', 'terminal');
+  expect(restored).toEqual(snapshot);
+  if (!restored) throw new Error('missing restored state');
+  await store.save('alice', 'terminal', restored);
+  expect(await store.load('alice', 'terminal')).toEqual(snapshot);
+});
 it('round-trips planner projection metadata, resolved failures and cache usage', async () => {
   const store = new MemoryDialogueStore();
   const usage = {

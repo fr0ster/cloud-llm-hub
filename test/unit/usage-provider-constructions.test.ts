@@ -741,6 +741,8 @@ test.each(['construction', 'override', 'off'])(
             apiKey: 'test',
             model: 'test',
             contextCapture: 'off',
+            // Explicit: transport counts exclude model metadata discovery.
+            maxTokens: 1024,
             baseURL:
               provider === 'anthropic'
                 ? 'https://anthropic.example'

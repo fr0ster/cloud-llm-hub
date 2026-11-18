@@ -110,6 +110,8 @@ test.each(['api_error', 'stop'] as const)(
         {
           provider: 'anthropic',
           apiKey: 'spend-retry-test',
+          // Explicit: these attempts are about spend, not model metadata.
+          maxTokens: 1024,
           model: 'test',
           whenThrottled: {
             name: 'test',
@@ -199,6 +201,8 @@ test('keeps retry spend separate for two actual models in one observer', async (
             {
               provider: 'anthropic',
               apiKey: 'spend-two-models-test',
+              // Explicit: these attempts are about spend, not model metadata.
+              maxTokens: 1024,
               model,
               whenThrottled: {
                 name: 'test',
@@ -308,6 +312,8 @@ test.each(['http', 'sse', 'success', 'partial-failure'])(
         {
           provider: 'anthropic',
           apiKey: `usage-free-${scenario}`,
+          // Explicit: these attempts are about spend, not model metadata.
+          maxTokens: 1024,
           model: 'test',
           whenThrottled: {
             name: 'test',
@@ -381,6 +387,7 @@ test('an override model throttle does not gate the default model in one session'
   const provider = new HubAnthropicProvider({
     model: 'model-A',
     credential: staticApiKey('model-isolation-test'),
+    maxTokens: 1024,
     quotaScope: 'model-isolation-session',
     whenThrottled: { name: 'test', decide },
   });
@@ -457,6 +464,7 @@ test.each(['alternating', 'http', 'sse'])(
     const provider = new HubAnthropicProvider({
       model: 'gpt-4o-mini',
       credential: staticApiKey('test'),
+      maxTokens: 1024,
       whenThrottled: { name: 'test', decide },
     });
     try {

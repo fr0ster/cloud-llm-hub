@@ -3633,11 +3633,17 @@ export async function buildAgentForDestination(
         workers,
         finalizer: noticeFinalizer,
         runRecords: adaptiveRunRecordStore(getRunRecordStore()),
-        // The handler merges these values over its finite defaults.
+        // Only explicit limits reach the handler; unset means no limit.
         budget: {
-          maxSteps: budget?.maxSteps ?? Number.POSITIVE_INFINITY,
-          maxRevisions: budget?.maxRevisions ?? Number.POSITIVE_INFINITY,
-          maxDurationMs: budget?.maxDurationMs,
+          ...(budget?.maxSteps !== undefined
+            ? { maxSteps: budget.maxSteps }
+            : {}),
+          ...(budget?.maxRevisions !== undefined
+            ? { maxRevisions: budget.maxRevisions }
+            : {}),
+          ...(budget?.maxDurationMs !== undefined
+            ? { maxDurationMs: budget.maxDurationMs }
+            : {}),
         },
         fallbackWorker: 'executor',
       }),
