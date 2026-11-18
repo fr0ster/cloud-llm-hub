@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { ILlm, TokenUsage } from '@mcp-abap-adt/llm-agent';
+import type { ILlm, IUsageRecorder, TokenUsage } from '@mcp-abap-adt/llm-agent';
 import {
+  addTokenUsage,
   findThrottled,
   LlmError,
   preserveThrottled,
@@ -10,17 +11,25 @@ import { reportWorkerActivity } from './worker-activity';
 
 // A failed planner result has no usage field. Observe completed model calls
 // here so already-spent tokens survive the library's failed-result envelope.
-const spendObserver = new AsyncLocalStorage<(usage: TokenUsage) => void>();
+const spendObserver = new AsyncLocalStorage<{
+  record: (usage: TokenUsage) => void;
+  preview?: (call: symbol, usage?: TokenUsage) => void;
+}>();
 export function observeLlmSpend<T>(
   run: () => T,
   record: (usage: TokenUsage) => void,
+  preview?: (call: symbol, usage?: TokenUsage) => void,
 ): T {
-  return spendObserver.run(record, run);
+  return spendObserver.run({ record, preview }, run);
 }
 
 /** Attribute one provider attempt, preserving an existing per-model breakdown. */
 export function reportLlmSpend(usage: TokenUsage, model: string): void {
-  spendObserver.getStore()?.({
+  spendObserver.getStore()?.record(attributeTokenUsage(usage, model));
+}
+
+function attributeTokenUsage(usage: TokenUsage, model: string): TokenUsage {
+  return {
     ...usage,
     models: usage.models ?? {
       [model]: {
@@ -28,9 +37,99 @@ export function reportLlmSpend(usage: TokenUsage, model: string): void {
         completionTokens: usage.completionTokens,
         totalTokens: usage.totalTokens,
         requests: 1,
+        ...(usage.cachedInputTokens !== undefined
+          ? { cachedInputTokens: usage.cachedInputTokens }
+          : {}),
+        ...(usage.cacheCreationInputTokens !== undefined
+          ? { cacheCreationInputTokens: usage.cacheCreationInputTokens }
+          : {}),
       },
     },
-  });
+  };
+}
+
+/** Reconcile two views of the same calls, retaining provider-only model entries. */
+export function reconcileTokenUsage(
+  fallback: TokenUsage | undefined,
+  observed: TokenUsage | undefined,
+  model?: string,
+): TokenUsage | undefined {
+  if (!observed) return fallback;
+  if (!fallback) return observed;
+  const reported =
+    fallback.models ??
+    (model ? attributeTokenUsage(fallback, model).models : undefined);
+  if (!reported)
+    return observed.totalTokens >= fallback.totalTokens ? observed : fallback;
+  const models = new Map(Object.entries(reported));
+  for (const [name, entry] of Object.entries(observed.models ?? {})) {
+    const previous = models.get(name);
+    const latest =
+      previous && previous.totalTokens > entry.totalTokens ? previous : entry;
+    models.set(name, {
+      ...previous,
+      ...entry,
+      ...latest,
+      requests: Math.max(previous?.requests ?? 0, entry.requests),
+    });
+  }
+  let usage: TokenUsage | undefined;
+  for (const [name, entry] of models) {
+    usage = addTokenUsage(usage, { ...entry, models: { [name]: entry } });
+  }
+  return usage;
+}
+
+export function captureTokenUsage() {
+  let observed: TokenUsage | undefined;
+  const active = new Map<symbol, TokenUsage>();
+  return {
+    run<T>(run: () => T): T {
+      return observeLlmSpend(
+        run,
+        (usage) => {
+          observed = addTokenUsage(observed, usage);
+        },
+        (call, usage) => {
+          if (usage) active.set(call, usage);
+          else active.delete(call);
+        },
+      );
+    },
+    usage(fallback?: TokenUsage, model?: string) {
+      return reconcileTokenUsage(fallback, observed, model);
+    },
+    streamUsage(fallback: TokenUsage | undefined, model: string) {
+      let usage = observed;
+      for (const preview of active.values())
+        usage = addTokenUsage(usage, preview);
+      return reconcileTokenUsage(fallback, usage, model);
+    },
+  };
+}
+
+/** Ollama reports embedding tokens through the provider recorder. */
+export function observeEmbeddingUsage(
+  recorder?: IUsageRecorder,
+): IUsageRecorder {
+  return {
+    record(input) {
+      if (input.kind === 'embedding.call' && input.inputTokens !== undefined) {
+        reportLlmSpend(
+          {
+            promptTokens: input.inputTokens,
+            completionTokens: 0,
+            totalTokens: input.inputTokens,
+          },
+          input.model,
+        );
+      }
+      recorder?.record(input);
+    },
+    with(context) {
+      return observeEmbeddingUsage(recorder?.with(context));
+    },
+  };
 }
 
 const anthropicErrorCodes = new Set([
@@ -175,6 +274,9 @@ export function reliableLlm(inner: ILlm): ILlm {
             reportWorkerActivity('llm call');
             const iterator = target.streamChat(...args)[Symbol.asyncIterator]();
             const next = throttleCallScope();
+            const preview = spendObserver.getStore()?.preview;
+            const call = Symbol();
+            const model = target.model ?? 'unknown';
             return (async function* () {
               let spent: TokenUsage | undefined;
               let reported = false;
@@ -183,9 +285,10 @@ export function reliableLlm(inner: ILlm): ILlm {
               const report = () => {
                 if (reported || !spent) return;
                 reported = true;
+                preview?.(call);
                 // The adapter's configured model serves the call; it deliberately
                 // ignores client-facing model aliases in CallOptions.
-                reportLlmSpend(spent, target.model ?? 'unknown');
+                reportLlmSpend(spent, model);
               };
               try {
                 while (true) {
@@ -200,8 +303,10 @@ export function reliableLlm(inner: ILlm): ILlm {
                     };
                     return;
                   }
-                  if (result.value.usage)
+                  if (result.value.usage) {
                     spent = mergeStreamUsage(spent, result.value.usage);
+                    preview?.(call, attributeTokenUsage(spent, model));
+                  }
                   yield result;
                 }
               } catch (error) {
@@ -267,6 +372,9 @@ export function mergeStreamUsage(
   return {
     ...previous,
     ...next,
+    cachedInputTokens: next.cachedInputTokens ?? previous.cachedInputTokens,
+    cacheCreationInputTokens:
+      next.cacheCreationInputTokens ?? previous.cacheCreationInputTokens,
     promptTokens,
     completionTokens,
     totalTokens: Math.max(

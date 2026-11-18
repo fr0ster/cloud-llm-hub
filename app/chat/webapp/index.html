@@ -608,20 +608,16 @@
             if (!view || !usage) return;
             if (view.requestTotal && !requestTotal) return;
             if (requestTotal) view.requestTotal = true;
-            const total = u => u.total_tokens ?? ((u.prompt_tokens || 0) + (u.completion_tokens || 0));
-            let html = `<div class="stats-bar"><span>TOKENS: <span class="val">${total(usage)}</span> (in: ${usage.prompt_tokens || 0} / out: ${usage.completion_tokens || 0})</span>`;
-            if (usage.models && typeof usage.models === 'object') {
-                const parts = Object.entries(usage.models).map(([model, u]) => {
-                    const short = model.replace(/^anthropic--/, '').replace(/^.*--/, '');
-                    return `${short}: ${u.prompt_tokens ?? u.promptTokens ?? 0}+${u.completion_tokens ?? u.completionTokens ?? 0}`;
-                });
-                if (parts.length > 1) html += `<span style="color:#666;font-size:11px">[${escapeHtml(parts.join(' | '))}]</span>`;
-            }
+            let html = `<div class="stats-bar">${tokenUsageMarkup(usage)}`;
             if (usage.x_hub) {
                 const parts = [];
                 const planner = usage.x_hub.planner;
-                if (planner && (planner.total_tokens !== undefined || planner.prompt_tokens !== undefined || planner.completion_tokens !== undefined)) parts.push('planner: ' + total(planner));
-                for (const task of usage.x_hub.subagents || []) parts.push(task.task_id + '\u00b7' + task.worker + ': ' + total(task));
+                const plannerUsage = planner && tokenUsageText(planner);
+                if (plannerUsage) parts.push('planner: ' + plannerUsage);
+                for (const task of usage.x_hub.subagents || []) {
+                    const taskUsage = tokenUsageText(task);
+                    if (taskUsage) parts.push(task.task_id + '\u00b7' + task.worker + ': ' + taskUsage);
+                }
                 if (parts.length) html += `<span style="color:#666;font-size:11px">[${escapeHtml(parts.join(' | '))}]</span>`;
             }
             if (usage.x_hub) {
@@ -646,6 +642,29 @@
             view.usageHtml = html + '</div>';
             view.node.querySelector('.stats-bar')?.remove();
             view.node.insertAdjacentHTML('beforeend', view.usageHtml);
+        }
+
+        function tokenUsageText(usage) {
+            const counts = counters => {
+                const cacheRead = counters.cached_input_tokens ?? counters.cachedInputTokens ?? counters.prompt_tokens_details?.cached_tokens;
+                const cacheWrite = counters.cache_creation_input_tokens ?? counters.cacheCreationInputTokens;
+                return `in: ${counters.prompt_tokens ?? counters.promptTokens ?? 0} / out: ${counters.completion_tokens ?? counters.completionTokens ?? 0}`
+                    + (cacheRead === undefined ? '' : ` / cache read: ${cacheRead}`)
+                    + (cacheWrite === undefined ? '' : ` / cache write: ${cacheWrite}`);
+            };
+            const models = Object.entries(usage.models || {});
+            if (models.length) return models.map(([model, counters]) => `${model} (${counts(counters)})`).join(' | ');
+            if (usage.prompt_tokens !== undefined || usage.completion_tokens !== undefined || usage.total_tokens !== undefined)
+                return counts(usage);
+            return '';
+        }
+
+        function tokenUsageMarkup(usage) {
+            const text = tokenUsageText(usage);
+            if (!text) return '';
+            if (Object.keys(usage.models || {}).length) return `<span>TOKENS: ${escapeHtml(text)}</span>`;
+            const total = usage.total_tokens ?? ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0));
+            return `<span>TOKENS: <span class="val">${total}</span> (${escapeHtml(text)})</span>`;
         }
         function renderMessageVersion(key, id, text, complete) {
             const viewKey = key + ':' + id;
@@ -2439,20 +2458,7 @@
 
                 const durationSec = ((Date.now() - t0) / 1000).toFixed(1);
                 let usageHtml = `<div class="stats-bar"><span>TIME: <span class="val">${durationSec}s</span></span>`;
-                if (usage) {
-                    const total = usage.total_tokens ?? ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0));
-                    usageHtml += `<span>TOKENS: <span class="val">${total}</span> (in: ${usage.prompt_tokens || 0} / out: ${usage.completion_tokens || 0})</span>`;
-                    // Per-model breakdown (classifier, embedder, main)
-                    if (usage.models && typeof usage.models === 'object') {
-                        const parts = Object.entries(usage.models).map(([model, u]) => {
-                            const short = model.replace(/^anthropic--/, '').replace(/^.*--/, '');
-                            return `${short}: ${u.prompt_tokens ?? u.promptTokens ?? 0}+${u.completion_tokens ?? u.completionTokens ?? 0}`;
-                        });
-                        if (parts.length > 1) {
-                            usageHtml += `<span style="color:#666;font-size:11px">[${parts.join(' | ')}]</span>`;
-                        }
-                    }
-                }
+                if (usage) usageHtml += tokenUsageMarkup(usage);
                 if (namedTools.length > 0) {
                     usageHtml += `<span>TOOLS: <span class="val">${toolCallNames.size} unique / ${namedTools.length} calls</span></span>`;
                 }

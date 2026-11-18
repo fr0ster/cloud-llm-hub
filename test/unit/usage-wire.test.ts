@@ -28,6 +28,55 @@ it('maps totals and model entries', () => {
     },
   });
 });
+
+it('reports separate model entries and puts only the serving model in compatibility fields', () => {
+  const mixed: TokenUsage = {
+    promptTokens: 10,
+    completionTokens: 2,
+    totalTokens: 12,
+    cachedInputTokens: 2,
+    models: {
+      m: {
+        promptTokens: 3,
+        completionTokens: 2,
+        totalTokens: 5,
+        requests: 1,
+        cachedInputTokens: 2,
+        cacheCreationInputTokens: 0,
+      },
+      embedder: {
+        promptTokens: 7,
+        completionTokens: 0,
+        totalTokens: 7,
+        requests: 1,
+      },
+    },
+  };
+  const models = {
+    m: {
+      prompt_tokens: 3,
+      completion_tokens: 2,
+      total_tokens: 5,
+      requests: 1,
+      cached_input_tokens: 2,
+      cache_creation_input_tokens: 0,
+    },
+    embedder: {
+      prompt_tokens: 7,
+      completion_tokens: 0,
+      total_tokens: 7,
+      requests: 1,
+    },
+  };
+  expect(tokenUsageToWire(mixed)).toEqual({ models });
+  expect(tokenUsageToWire(mixed, 'm')).toEqual({
+    prompt_tokens: 3,
+    completion_tokens: 2,
+    total_tokens: 5,
+    prompt_tokens_details: { cached_tokens: 2 },
+    models,
+  });
+});
 it('sums every delivered planner and task with task identity', () => {
   const result = dialogueUsageToWire(
     sumPlannerUsage([
@@ -92,7 +141,13 @@ it('sums planner durations and takes the maximum duration per task', () => {
   expect(result?.x_hub).toMatchObject({
     duration_ms: 900,
     planner: { duration_ms: 300 },
-    subagents: [{ task_id: 't1', duration_ms: 300 }],
+    subagents: [
+      {
+        task_id: 't1',
+        duration_ms: 300,
+        models: { m: { requests: 1, prompt_tokens: 3 } },
+      },
+    ],
   });
 });
 it('omits unknown durations and preserves known zero durations', () => {

@@ -110,7 +110,8 @@ for line in sse.splitlines():
 print(''.join(out))
 if usage:
     print(f'---')
-    print(f'usage: prompt={usage.get(\"prompt_tokens\")} completion={usage.get(\"completion_tokens\")} total={usage.get(\"total_tokens\")}')
+    for name, counts in (usage.get('models') or {'serving model': usage}).items():
+        print(f'usage {name}: {json.dumps(counts)}')
 "
 ```
 

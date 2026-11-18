@@ -974,9 +974,12 @@ const tokenUsage = (total: number) => ({
 test('dialogue final stream usage belongs to the last message including follow usage', async () => {
   const ui = harness();
   const usage = {
-    ...tokenUsage(30),
     models: {
-      'anthropic--planner': tokenUsage(10),
+      'anthropic--planner': {
+        ...tokenUsage(10),
+        cached_input_tokens: 5,
+        cache_creation_input_tokens: 0,
+      },
       'hub--worker': tokenUsage(20),
     },
     x_hub: {
@@ -996,12 +999,11 @@ test('dialogue final stream usage belongs to the last message including follow u
   expect(ui.nodes[0].innerHTML).not.toContain('stats-bar');
   expect(ui.nodes[1].innerHTML).toContain('follow answer');
   expect(ui.nodes[1].innerHTML).toContain(
-    'TOKENS: <span class="val">30</span> (in: 28 / out: 2)',
+    'TOKENS: anthropic--planner (in: 8 / out: 2 / cache read: 5 / cache write: 0) | hub--worker (in: 18 / out: 2)',
   );
   expect(ui.nodes[1].innerHTML).toContain(
-    'planner: 10 | &lt;task&gt;\u00b7worker: 20',
+    'planner: in: 8 / out: 2 | &lt;task&gt;\u00b7worker: in: 18 / out: 2',
   );
-  expect(ui.nodes[1].innerHTML).toContain('planner: 8+2 | worker: 18+2');
   expect(ui.nodes[1].innerHTML).not.toContain('TIME:');
   expect(ui.nodes[1].innerHTML.match(/class="stats-bar"/g)).toHaveLength(1);
 });
