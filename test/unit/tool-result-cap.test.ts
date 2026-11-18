@@ -136,7 +136,7 @@ test('chat and recording worker return the same size-limit error and metadata', 
   });
 });
 test('configuration defaults, zero and strict nonnegative integer validation', () => {
-  expect(parseToolResultMaxChars({})).toBe(60000);
+  expect(parseToolResultMaxChars({})).toBe(0);
   expect(
     parseToolResultMaxChars({ LLM_AGENT_TOOL_RESULT_MAX_CHARS: '0' }),
   ).toBe(0);

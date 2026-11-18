@@ -809,7 +809,6 @@ test.each(
                     'x-clh-model-coordinator': 'A',
                     'x-clh-limits': JSON.stringify({
                       coordinator: { maxIterations: 3, maxToolCalls: 'off' },
-                      historyTokenBudget: 'off',
                     }),
                   }
                 : {}),

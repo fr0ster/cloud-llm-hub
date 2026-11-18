@@ -14,7 +14,6 @@ import {
   currentSessionLimit,
   effectiveExecutionLimits,
   getExecutionLimits,
-  historyBudgetOptions,
   runLimitOptions,
   setExecutionLimits,
   validateExecutionLimits,
@@ -141,41 +140,6 @@ test('toolResultMaxChars off returns the full tool result; a number caps it', as
             ),
       );
     });
-});
-test('historyTokenBudget off builds the SessionManager without a token budget', async () => {
-  await withExecutionLimits({ historyTokenBudget: 'off' }, async () => {
-    const { buildLlmOnlyAgent, initProviders, closeSmartAgent } = await import(
-      '../../srv/agent-manager'
-    );
-    const { getAgentConfig, clearAgentConfig } = await import(
-      '../../srv/agent-config'
-    );
-    const { startProviders } = await import('../../srv/lib/providers');
-    const saved = { ...process.env };
-    process.env.LLM_AGENT_PROVIDER = 'openai';
-    process.env.LLM_AGENT_MODEL = 'test';
-    clearAgentConfig();
-    const config = getAgentConfig();
-    initProviders(await startProviders(config));
-    const manager = jest.spyOn(
-      SmartAgentBuilder.prototype,
-      'withSessionManager',
-    );
-    const build = jest.spyOn(SmartAgentBuilder.prototype, 'build');
-    try {
-      const handle = await buildLlmOnlyAgent(config, 'waiting');
-      expect(handle.agent['deps'].sessionManager).toBeUndefined();
-      expect(build).toHaveBeenCalled();
-      expect(manager).not.toHaveBeenCalled();
-    } finally {
-      manager.mockRestore();
-      build.mockRestore();
-      await closeSmartAgent();
-      process.env = saved;
-      clearAgentConfig();
-    }
-  });
-  expect(historyBudgetOptions()).toBeUndefined();
 });
 test('planStepBudget is refused with the stage 2 reason while libraryLimitsEnabled is false', () => {
   expect(
@@ -309,7 +273,6 @@ test('validation names invalid and unknown fields without changing stored limits
   for (const input of [
     { executor: { maxIterations: 0 } },
     { executor: { maxToolCalls: -1 } },
-    { historyTokenBudget: 1.5 },
     { planner: { maxIterations: 2 } },
   ]) {
     const result = validateExecutionLimits(input, {
@@ -347,7 +310,6 @@ test('null limit values normalize to absent overrides without changing siblings'
     validateExecutionLimits(
       {
         executor: { maxIterations: null, maxToolCalls: 7 },
-        historyTokenBudget: null,
       },
       { libraryLimitsEnabled: false },
     ),

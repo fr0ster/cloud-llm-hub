@@ -1152,7 +1152,7 @@ graph TB
 | `LLM_AGENT_MODEL` | `agent-config.ts` | LLM model name (e.g., `gpt-4o-mini`, `claude-3-5-sonnet`) |
 | `LLM_AGENT_TEMPERATURE` | `agent-config.ts` | Unset uses the provider/model default; set a number to override; `off` explicitly omits the parameter. |
 | `LLM_AGENT_PROMPT_CACHING` | `lib/deploy-role-config.ts`, `lib/llm-factory.ts` | `on` (default) or `off`; also accepts `true`/`false`. Passed to every LLM provider as an on/off switch; invalid values fail startup. |
-| `LLM_AGENT_COORDINATOR_PROMPT_CACHING`, `LLM_AGENT_PLANNER_PROMPT_CACHING`, `LLM_AGENT_EXECUTOR_PROMPT_CACHING`, `LLM_AGENT_CHECKER_PROMPT_CACHING`, `LLM_AGENT_CLASSIFIER_PROMPT_CACHING` | `lib/deploy-role-config.ts`, `agent-manager.ts` | Override global per role; empty inherits. Classifier covers helper clients and query translation; history summarization reuses the main LLM's role setting. Resolved caching participates in shared/session client identity independently of model choice. |
+| `LLM_AGENT_COORDINATOR_PROMPT_CACHING`, `LLM_AGENT_PLANNER_PROMPT_CACHING`, `LLM_AGENT_EXECUTOR_PROMPT_CACHING`, `LLM_AGENT_CHECKER_PROMPT_CACHING`, `LLM_AGENT_CLASSIFIER_PROMPT_CACHING` | `lib/deploy-role-config.ts`, `agent-manager.ts` | Override global per role; empty inherits. The classifier setting covers helper clients and query translation. Resolved caching participates in shared/session client identity independently of model choice. |
 | `LLM_AGENT_MAX_TOKENS` | `agent-config.ts` | Max response tokens (default: 2000) |
 | `LLM_AGENT_MCP_DESTINATION` | `agent-config.ts`, `agent-manager.ts` | BTP Destination with two roles: (1) a "warm this first" startup hint (NOT privileged; does not block startup), and (2) the **implicit default destination** `getSmartAgent()` uses when a request passes no destination (`requestedDestination \|\| config.mcp.destination`, `agent-manager.ts`). Unset → LLM-only mode at startup |
 | `LLM_AGENT_DESTINATION_INIT_WAIT_MS` | `agent-manager.ts` | Legacy parser only; destination preparation now waits for completion without a hub deadline. |
@@ -1593,8 +1593,7 @@ An invalid configured worker model fails startup naming the variable.
 | `LLM_AGENT_CHECKER_MODEL` | Coordinator chooses the checker model when unset |
 | `LLM_AGENT_<ROLE>_MAX_ITERATIONS` | Falls back to `LLM_AGENT_MAX_ITERATIONS`, then off (unlimited) |
 | `LLM_AGENT_<ROLE>_MAX_TOOL_CALLS` | Falls back to `LLM_AGENT_MAX_TOOL_CALLS`, then off (unlimited; overrides the library default) |
-| `LLM_AGENT_TOOL_RESULT_MAX_CHARS` | 60000; legacy `0` also disables the limit |
-| `LLM_AGENT_HISTORY_TOKEN_BUDGET` | Off when unset; a positive integer enables the budget |
+| `LLM_AGENT_TOOL_RESULT_MAX_CHARS` | Off by default. A positive integer enables the limit. `0` also disables it. |
 
 `<ROLE>` is `COORDINATOR`, `EXECUTOR`, or `CHECKER`. Every limit listed here,
 including `LLM_AGENT_MAX_ITERATIONS` and `LLM_AGENT_MAX_TOOL_CALLS`, accepts

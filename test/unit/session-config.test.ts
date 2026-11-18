@@ -99,7 +99,6 @@ describe('loadSessionConfig', () => {
 import { loadAgentConfig } from '../../srv/agent-config';
 import {
   effectiveExecutionLimits,
-  historyBudgetOptions,
   runLimitOptions,
   withExecutionLimits,
 } from '../../srv/lib/execution-limits';
@@ -163,19 +162,14 @@ describe('deploy configuration parity', () => {
       effectiveExecutionLimits('user', 'key')['executor.maxIterations'],
     ).toEqual({ value: 'off', source: 'config', baseValue: 'off' });
   });
-  it('LLM_AGENT_HISTORY_TOKEN_BUDGET unset disables the budget', () => {
-    loadAgentConfig();
-    expect(historyBudgetOptions()).toBeUndefined();
-  });
   it('unset and blank limits are off for every role and in the settings API', () => {
     for (const value of [undefined, '', '   ']) {
       process.env.LLM_AGENT_MAX_ITERATIONS = value;
       process.env.LLM_AGENT_MAX_TOOL_CALLS = value;
-      process.env.LLM_AGENT_HISTORY_TOKEN_BUDGET = value;
       const config = loadAgentConfig();
       expect(config.agent.maxIterations).toBe(Infinity);
       expect(config.agent.maxToolCalls).toBeUndefined();
-      expect(historyBudgetOptions()).toBeUndefined();
+      expect(config.agent.toolResultMaxChars).toBe(0);
       const effective = effectiveExecutionLimits('user', 'defaults');
       for (const role of ['coordinator', 'executor', 'checker'] as const) {
         const options = runLimitOptions(role, config.agent);
@@ -191,12 +185,11 @@ describe('deploy configuration parity', () => {
             baseValue: 'off',
           });
       }
-      expect(effective.historyTokenBudget).toEqual({
+      expect(effective.toolResultMaxChars).toEqual({
         value: 'off',
         source: 'default',
         baseValue: 'off',
       });
-      expect(effective.toolResultMaxChars.value).toBe(60000);
     }
   });
   it.each(['coordinator', 'executor', 'checker'] as const)(
@@ -237,16 +230,6 @@ describe('deploy configuration parity', () => {
       );
     },
   );
-  it('numeric history budgets apply from env and session, including session off', () => {
-    process.env.LLM_AGENT_HISTORY_TOKEN_BUDGET = '4321';
-    expect(historyBudgetOptions()).toEqual({ tokenBudget: 4321 });
-    withExecutionLimits({ historyTokenBudget: 123 }, () => {
-      expect(historyBudgetOptions()).toEqual({ tokenBudget: 123 });
-    });
-    withExecutionLimits({ historyTokenBudget: 'off' }, () => {
-      expect(historyBudgetOptions()).toBeUndefined();
-    });
-  });
   it('no new variable is required: only LLM_AGENT_MODEL set still starts', () => {
     process.env = { LLM_AGENT_MODEL: 'main' };
     expect(loadAgentConfig().llm.model).toBe('main');
@@ -255,7 +238,6 @@ describe('deploy configuration parity', () => {
     'LLM_AGENT_MAX_ITERATIONS',
     'LLM_AGENT_MAX_TOOL_CALLS',
     'LLM_AGENT_TOOL_RESULT_MAX_CHARS',
-    'LLM_AGENT_HISTORY_TOKEN_BUDGET',
     ...['COORDINATOR', 'EXECUTOR', 'CHECKER'].flatMap((role) => [
       `LLM_AGENT_${role}_MAX_ITERATIONS`,
       `LLM_AGENT_${role}_MAX_TOOL_CALLS`,
@@ -306,16 +288,14 @@ describe('deploy configuration parity', () => {
       ).toEqual({ value: 'off', source: 'config', baseValue: 'off' });
     }
   });
-  it('session limits override configuration per value and history off removes the budget', () => {
+  it('session limits override configuration per value', () => {
     process.env.LLM_AGENT_EXECUTOR_MAX_ITERATIONS = '4';
     process.env.LLM_AGENT_EXECUTOR_MAX_TOOL_CALLS = '9';
-    process.env.LLM_AGENT_HISTORY_TOKEN_BUDGET = 'off';
     withExecutionLimits({ executor: { maxIterations: 2 } }, () => {
       expect(runLimitOptions('executor', { maxIterations: 10 })).toEqual({
         maxIterations: 2,
         maxToolCalls: 9,
       });
-      expect(historyBudgetOptions()).toBeUndefined();
     });
   });
 });

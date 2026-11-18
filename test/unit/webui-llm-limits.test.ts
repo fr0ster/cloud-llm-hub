@@ -33,9 +33,9 @@ test.each([undefined, 4321])(
       }
       return element;
     };
-    const number = node('llm-limit-historyTokenBudget');
+    const number = node('llm-limit-toolResultMaxChars');
     number.value = '';
-    const off = node('llm-off-historyTokenBudget');
+    const off = node('llm-off-toolResultMaxChars');
     off.checked = true;
     const snapshot = {
       canEdit: true,
@@ -47,9 +47,9 @@ test.each([undefined, 4321])(
           { source: 'default' },
         ]),
       ),
-      limits: { historyTokenBudget: 'off' },
+      limits: { toolResultMaxChars: 'off' },
       effectiveLimits: {
-        historyTokenBudget: { value: 'off', source: 'user', baseValue },
+        toolResultMaxChars: { value: 'off', source: 'user', baseValue },
       },
     };
     const send = jest.fn(async (_url: string, _options: { body: string }) => ({
@@ -82,7 +82,7 @@ test.each([undefined, 4321])(
     );
     await save;
     expect(JSON.parse(send.mock.calls[0][1].body)).toMatchObject({
-      limits: { historyTokenBudget: null },
+      limits: { toolResultMaxChars: null },
       executor: 'auto',
     });
     expect(node('llm-fields').innerHTML).toContain(' \u00b7 source:');

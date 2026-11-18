@@ -101,7 +101,7 @@ import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { parseToolOutcome } from '../../srv/lib/reviewer-core';
 
 test.each(['chat', 'planner', 'executor', 'checker'])(
-  '%s real model boundary tags once after size-limit rejection',
+  '%s real model boundary tags once after an explicitly configured size-limit rejection',
   async () => {
     const seen: Message[][] = [];
     const response: ILlm['chat'] = async (messages) => {
@@ -144,7 +144,7 @@ test.each(['chat', 'planner', 'executor', 'checker'])(
     const { agent } = unwrapBuilderResult(
       await new SmartAgentBuilder({
         skipModelValidation: true,
-        agent: { mode: 'hard', classificationEnabled: false, maxIterations: 4 },
+        agent: { mode: 'hard', classificationEnabled: false },
       })
         .withRagAccess(testAccess([ragCaller, sessionCaller1]))
         .withMainLlm(llm)
@@ -160,18 +160,25 @@ test.each(['chat', 'planner', 'executor', 'checker'])(
       onToolTrace: (entry) => collector.observe(entry),
     });
     expect(result.ok).toBe(true);
-    const model = seen.flat().filter((m) => m.role === 'tool');
-    const sap = model.find((m) => m.tool_call_id === 'sap');
+    const model = seen.flat();
+    const calls = model.flatMap((m) => m.tool_calls ?? []);
+    const resultFor = (name: string) => {
+      const call = calls.find((call) => call.function.name === name);
+      if (!call) throw new Error(`Missing model-visible call for ${name}`);
+      return model.find((m) => m.role === 'tool' && m.tool_call_id === call.id);
+    };
+    const sap = resultFor('GetClass');
     expect(sap?.content).toContain('[source: target:GetClass; trust 4.3]\n');
     expect(String(sap?.content).match(/\[source:/g)).toHaveLength(1);
     expect(sap?.content).toContain(
       'returned 80 characters, exceeding the limit of 20',
     );
     expect(sap?.content).not.toContain('x'.repeat(20));
-    for (const id of ['rag', 'hub'])
-      expect(model.find((m) => m.tool_call_id === id)?.content).not.toContain(
-        '[source:',
-      );
+    for (const name of ['rag_read', 'get_task']) {
+      const content = resultFor(name)?.content;
+      expect(content).toContain('returned 80 characters');
+      expect(content).not.toContain('[source:');
+    }
     const records = recording.getToolRecords('raw');
     expect(records).toHaveLength(3);
     for (const record of records) {

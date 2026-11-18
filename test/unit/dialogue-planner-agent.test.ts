@@ -1080,34 +1080,3 @@ test('coordinator agents apply session limits without mutating shared configurat
     expect(config.agent).toEqual(original);
   }
 });
-
-test('LLM-only agents omit the history manager for off and honor numeric session budgets', async () => {
-  const model = llm('history-limits');
-  jest.mocked(makeHubLlm).mockResolvedValue(model.agent);
-  initProviders(await startProviders(config));
-  await bindTestCaller(taskCaller);
-  const install = jest.spyOn(SmartAgentBuilder.prototype, 'withSessionManager');
-  await withRoleModels(
-    {},
-    async () => {
-      await buildLlmOnlyAgent(config, 'waiting');
-      expect(install).not.toHaveBeenCalled();
-    },
-    { historyTokenBudget: 'off' },
-  );
-  await withRoleModels(
-    {},
-    async () => {
-      await buildLlmOnlyAgent(config, 'waiting');
-      const manager = install.mock.calls.at(-1)?.[0];
-      if (!manager) throw new Error('Expected a history manager');
-      manager.addTokens(2);
-      expect(manager.isOverBudget()).toBe(true);
-    },
-    { historyTokenBudget: 2 },
-  );
-  install.mockClear();
-  const handle = await buildLlmOnlyAgent(config, 'waiting');
-  expect(install).not.toHaveBeenCalled();
-  expect(handle.agent['deps'].sessionManager).toBeUndefined();
-});
