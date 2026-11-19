@@ -88,9 +88,12 @@ import { withToolResultCap } from './lib/tool-result-cap';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { HandlerContext } from '@mcp-abap-adt/lib/handlers';
-import { HandlerExporter, isArgsOnly } from '@mcp-abap-adt/lib/handlers';
-import { setSystemContext } from '@mcp-abap-adt/lib/utils';
+import {
+  type HandlerContext,
+  HandlerExporter,
+  type ToolArgs,
+  type ToolResultLike,
+} from '@mcp-abap-adt/lib/handlers';
 import {
   type AdaptiveStep,
   type CallOptions,
@@ -138,9 +141,7 @@ import {
   type RagBackendKind,
 } from './agent-config';
 import { runOutsideAdmission, trackCall } from './lib/admission-scope';
-import { boundHandlerExporter } from './lib/bound-handler-exporter';
 import { destinationRequiresCredentials } from './lib/destination-authentication';
-import { handlerBatchAvailability } from './lib/handler-batch-availability';
 import {
   createHubRagAccess,
   getHubRagAccess,
@@ -948,7 +949,6 @@ export function setRequestConnection(
   const context: HandlerContext = {
     connection,
     logger: loggerAdapter,
-    batchAvailability: handlerBatchAvailability,
   };
   connectionALS.enterWith({ connection, context, dumpScope, exposition });
 }
@@ -972,7 +972,6 @@ export function runWithRequestConnection<T>(
   const context: HandlerContext = {
     connection,
     logger: loggerAdapter,
-    batchAvailability: handlerBatchAvailability,
   };
   return connectionALS.run({ connection, context, dumpScope, exposition }, fn);
 }
@@ -1019,40 +1018,13 @@ import { systemToolTrust } from './lib/system-tool-trust';
 import { skillDescriptionsRag, trustedSkillResults } from './lib/trusted-skill';
 import { CollectionRegistry } from './rag-collections';
 
-/**
- * Convert inputSchema from HandlerExporter to JSON Schema.
- *
- * HandlerExporter returns Zod raw shapes (Record<string, ZodType>),
- * not JSON Schema. The MCP SDK converts them automatically in listTools,
- * but our embedded MCP path bypasses that conversion.
- */
-function toJsonSchema(inputSchema: unknown): Record<string, unknown> {
-  if (!inputSchema || typeof inputSchema !== 'object') {
-    return { type: 'object', properties: {} };
-  }
-
-  // Already JSON Schema (from high-level handlers that define it directly)
-  if (
-    (inputSchema as Record<string, unknown>).type === 'object' &&
-    (inputSchema as Record<string, unknown>).properties
-  ) {
-    return inputSchema as Record<string, unknown>;
-  }
-
-  // Zod raw shape: Record<string, ZodType> — wrap in z.object() and convert
-  // Uses Zod v4 built-in toJSONSchema, then strips $schema and additionalProperties
-  // which SAP AI Core Orchestration API doesn't expect in tool parameter schemas
-  try {
-    // biome-ignore lint/suspicious/noExplicitAny: Zod raw shape type varies between handler groups
-    const zodObj = z.object(inputSchema as any);
-    const result = z.toJSONSchema(zodObj) as Record<string, unknown>;
-    delete result.$schema;
-    delete result.additionalProperties;
-    return result;
-  } catch {
-    // Fallback: return empty schema
-    return { type: 'object', properties: {} };
-  }
+function toJsonSchema(inputSchema: z.ZodObject) {
+  // SAP AI Core Orchestration expects the parameter schema without these keys.
+  const { $schema, additionalProperties, ...schema } = z.toJSONSchema(
+    inputSchema,
+    { io: 'input' },
+  );
+  return schema;
 }
 
 // NOTE: Custom stage handlers (CustomClassifyHandler, CustomToolSelectHandler,
@@ -1668,20 +1640,27 @@ type ToolDocBasicEntry = {
   text: string;
 };
 
-function toolParamNames(inputSchema: unknown): string {
-  return Object.keys(
-    (toJsonSchema(inputSchema).properties as
-      | Record<string, unknown>
-      | undefined) ?? {},
-  ).join(', ');
+function toolParamNames(inputSchema: ToolDocInput['inputSchema']): string {
+  if (inputSchema instanceof z.ZodObject)
+    return Object.keys(inputSchema.shape).join(', ');
+  if (!inputSchema || typeof inputSchema !== 'object') return '';
+  if ('properties' in inputSchema) {
+    const properties = inputSchema.properties;
+    return properties && typeof properties === 'object'
+      ? Object.keys(properties).join(', ')
+      : '';
+  }
+  return Object.entries(inputSchema)
+    .filter(([, value]) => value instanceof z.ZodType)
+    .map(([name]) => name)
+    .join(', ');
 }
 
 /**
  * The base "Tool / Description / Parameters" text of one tool — the text the
  * intent generator enriches and caches (`srv/tool-intents.json`, `text`), so
  * the generator and runtime must build it the same way. Parameters are the
- * input schema's PROPERTY names, read through `toJsonSchema` so a Zod raw shape
- * and a JSON Schema give the same list.
+ * input schema's property names, whether it comes from Zod or MCP JSON Schema.
  */
 export function baseToolText(t: ToolDocInput): string {
   const paramNames = toolParamNames(t.inputSchema);
@@ -1811,6 +1790,7 @@ export function getHandlerExporterConfig() {
     includeReadOnly: true,
     includeHighLevel: true,
     includeSystem: true,
+    includeData: true,
     includeSearch: true,
     logger: loggerAdapter,
   };
@@ -1871,16 +1851,21 @@ export function getSystemToolTrust() {
   return builtInToolTrust(currentTrustResolver());
 }
 
-function listToolDefsFromExporter(): ToolDocInput[] {
+function agentToolDescription(description: string): string {
+  // The exporter describes a server-owned fresh session for long reads.
+  return description.replace(
+    ' Runs on an ABAP session of its own and answers its result in the call.',
+    '',
+  );
+}
+
+export function listToolDefsFromExporter(): ToolDocInput[] {
   const exporter = new HandlerExporter(getHandlerExporterConfig());
   const coreTools = exporter.getHandlerEntries().map((e) => ({
     name: e.toolDefinition.name,
     annotations: toolDefinitionAnnotations(e.toolDefinition),
     description: agentToolDescription(e.toolDefinition.description),
-    inputSchema: agentToolSchema(
-      e.toolDefinition.name,
-      toJsonSchema(e.toolDefinition.inputSchema),
-    ),
+    inputSchema: toJsonSchema(e.toolDefinition.inputSchema),
   }));
   return mergeCloudLocalTools(coreTools);
 }
@@ -2654,26 +2639,6 @@ export function clearDestinationStatesForTest(): void {
  * then wraps them in MCPClientWrapper with `transport: 'embedded'`.
  * Connection is resolved from BTP Destination and injected as handler context.
  */
-function agentToolSchema(
-  name: string,
-  schema: ReturnType<typeof toJsonSchema>,
-) {
-  const copy = structuredClone(schema);
-  if (copy.properties) {
-    delete (copy.properties as Record<string, unknown>).timeout;
-    if (name === 'RuntimeRunClass' || name === 'RuntimeRunProgram')
-      delete (copy.properties as Record<string, unknown>).background;
-  }
-  if (Array.isArray(copy.required))
-    copy.required = copy.required.filter((key) => key !== 'timeout');
-  return copy;
-}
-
-function agentToolDescription(description: string | undefined) {
-  // v20 appends this advice for its server-only long-call orchestration.
-  return description?.split(' Runs on an ABAP session of its own.')[0];
-}
-
 export async function buildEmbeddedMcpAdapter(
   destinationName: string,
 ): Promise<McpClientAdapter> {
@@ -2686,8 +2651,6 @@ export async function buildEmbeddedMcpAdapter(
     metadataOnly: true,
   });
 
-  setSystemContext({});
-
   // Load ALL tool handlers — role-based filtering happens at RAG query time
   // via ExpositionFilteringRag (post-filter by exposition metadata).
   const exporter = new HandlerExporter(getHandlerExporterConfig());
@@ -2695,9 +2658,7 @@ export async function buildEmbeddedMcpAdapter(
   const entries = exporter.getHandlerEntries();
 
   // Cache tool names for discovery; dispatch creates call-local handlers.
-  const handlerMap = new Map(
-    entries.map((e) => [e.toolDefinition.name, e.handler]),
-  );
+  const toolNames = new Set(entries.map((entry) => entry.toolDefinition.name));
 
   log.info('Building embedded MCP client', {
     destination: destinationName,
@@ -2708,14 +2669,16 @@ export async function buildEmbeddedMcpAdapter(
 
   // Named dispatcher so cloud-local tools can recurse by name (GetDumpSection
   // fetches the formatted dump via RuntimeGetDumpById through this same path).
-  // biome-ignore lint/suspicious/noExplicitAny: MCP tool args are untyped at this boundary
-  async function invokeEmbeddedTool(name: string, args: any): Promise<unknown> {
+  async function invokeEmbeddedTool(
+    name: string,
+    args: ToolArgs,
+  ): Promise<ToolResultLike> {
     // AUTHORIZATION FIRST — before any dispatch, including the cloud-local
     // branch below and the recursive RuntimeGetDumpById call it makes.
     //
     // The RAG exposition filter only decides what is OFFERED to the model; it
     // cannot stop a model that asks for a tool by name because the user put
-    // that name in the prompt. handlerMap holds every tool and is cached per
+    // that name in the prompt. toolNames holds every tool and is cached per
     // destination, so without this check any caller could reach any tool.
     assertToolAllowed(
       name,
@@ -2724,12 +2687,12 @@ export async function buildEmbeddedMcpAdapter(
       getToolAnnotations().get(name),
     );
 
-    // Cloud-local tool: NOT in handlerMap, so branch BEFORE the unknown-tool
+    // Cloud-local tool: branch before the unknown-tool
     // check. Principal-scoped via the ALS dumpScope; the raw login is never in
     // the key/log — only its hash.
     // Only intercept when core does NOT own this name — consistent with the
     // corpus/listTools dedupe where a future core GetDumpSection wins.
-    if (name === 'GetDumpSection' && !handlerMap.has('GetDumpSection')) {
+    if (name === 'GetDumpSection' && !toolNames.has('GetDumpSection')) {
       const dumpScope = connectionALS.getStore()?.dumpScope;
       log.info('GetDumpSection dispatch', {
         destination: destinationName,
@@ -2737,7 +2700,10 @@ export async function buildEmbeddedMcpAdapter(
         hasScope: !!dumpScope,
       });
       return handleGetDumpSectionCall(
-        { dumpId: args?.dump_id, section: args?.section },
+        {
+          dumpId: typeof args.dump_id === 'string' ? args.dump_id : undefined,
+          section: typeof args.section === 'string' ? args.section : undefined,
+        },
         {
           dumpScope,
           buffer: getDumpBuffer(),
@@ -2751,8 +2717,7 @@ export async function buildEmbeddedMcpAdapter(
       );
     }
 
-    let handler = handlerMap.get(name);
-    if (!handler) {
+    if (!toolNames.has(name)) {
       throw new Error(`Unknown MCP tool: ${name}`);
     }
     if (args != null && Object.hasOwn(args, 'timeout')) {
@@ -2761,7 +2726,7 @@ export async function buildEmbeddedMcpAdapter(
         content: [
           {
             type: 'text',
-            text: 'agent_timeout_unavailable: timeout is not supported on the agent transport; omit timeout or use the raw MCP transport for cancellable long reads.',
+            text: 'agent_timeout_unavailable: omit the timeout argument.',
           },
         ],
       };
@@ -2790,31 +2755,23 @@ export async function buildEmbeddedMcpAdapter(
         ],
       };
     }
-    // Each call owns its groups for its entire lifetime, including resolver awaits.
-    // Long reads use the request connection and trackCall; no server timeout or
-    // fresh-session orchestration is applied on the agent transport.
-    const callExporter = boundHandlerExporter(effectiveContext, {
+    // The exporter applies the request connection's system type and resolver.
+    const callExporter = new HandlerExporter({
       ...getHandlerExporterConfig(),
       systemType: connectionSystemType(effectiveContext.connection),
     });
-    handler = callExporter
+    const entry = callExporter
       .getHandlerEntries()
-      .find((e) => e.toolDefinition.name === name)?.handler;
-    if (!handler) throw new Error(`Unknown MCP tool: ${name}`);
+      .find((e) => e.toolDefinition.name === name);
+    if (!entry) throw new Error(`Unknown MCP tool: ${name}`);
     try {
-      // Handlers from HandlerExporter have two signatures:
-      // - length >= 2: (context, args) => ... (direct handlers)
-      // - length === 1: (args) => ... (closure-based, uses group.context)
-      // Match BaseMcpServer.registerHandlers() logic (line 283-301)
       reportWorkerActivity(`tool ${name}`);
-      const toolCall = isArgsOnly(handler)
-        ? handler(args)
-        : handler(effectiveContext, args);
+      const toolCall = entry.call(effectiveContext, args);
 
       // Registered before it is awaited. An ADT call is asynchronous in
       // substance: the slot, and the ADT session, must outlive it even when
       // everything waiting on it has stopped.
-      const result = await trackCall(Promise.resolve(toolCall));
+      const result = await trackCall(toolCall);
 
       // Most ABAP handlers never throw: `@mcp-abap-adt/lib`'s error answer
       // catches the connector's tagged failure and RETURNS
@@ -2828,7 +2785,6 @@ export async function buildEmbeddedMcpAdapter(
       log.info('MCP tool call', {
         destination: destinationName,
         tool: name,
-        handlerType: handler.length >= 2 ? 'direct' : 'closure',
         argsKeys: Object.keys(args || {}),
         args: JSON.stringify(args).slice(0, 300),
         resultLength: resultStr.length,
@@ -2859,10 +2815,7 @@ export async function buildEmbeddedMcpAdapter(
           name: e.toolDefinition.name,
           annotations: toolDefinitionAnnotations(e.toolDefinition),
           description: agentToolDescription(e.toolDefinition.description),
-          inputSchema: agentToolSchema(
-            e.toolDefinition.name,
-            toJsonSchema(e.toolDefinition.inputSchema),
-          ),
+          inputSchema: toJsonSchema(e.toolDefinition.inputSchema),
         }));
       // Append cloud-local GetDumpSection unless a core tool already claims the
       // name (same dedupe policy as the corpus). Its inputSchema is already a

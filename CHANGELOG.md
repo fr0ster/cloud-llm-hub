@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
+- Upgrade to `@mcp-abap-adt/lib` 24.0.0 and align its ADT dependencies. Embedded calls use schema-validated handler entries and raw MCP uses lib-managed fresh connections. The catalogue adds `GetObjectDraft` and `GetObjectOutline`. Use `GetObjectOutline` and `GetWhereUsed` for structure and references previously covered by the removed ABAP analysis tools. Rebuild the tool corpus before deploying with a vector backend.
 - Upgrade llm-agent, llm-agent-libs and llm-agent-server-libs to 34.0.0. Dialogue persistence removes the byte limit and retains full conversation and request transcripts, including closed requests, with schema validation. Tool loops retain all rounds. Remove the history token budget, automatic history summarization wiring and the tool-loop window setting.
 
 - Tool retrieval splits by explicit read-only effect, preserving exposition permissions. Version/local include tools and table types now have object clusters. The existing analyzer call returns strict step `writes`, with UNKNOWN fallback.

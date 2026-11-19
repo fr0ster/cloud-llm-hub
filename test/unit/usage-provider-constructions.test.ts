@@ -52,6 +52,10 @@ import { initUsage, setUsageRuntimeForTest } from '../../srv/lib/usage/runtime';
 import { handleChatCompletions } from '../../srv/openai-handler';
 import { harness } from './helpers/channel-harness';
 
+const ollamaModelInfo = {
+  model_info: { 'general.architecture': 'bert', 'bert.context_length': 8192 },
+} satisfies { model_info: Record<string, string | number> };
+
 test('Ollama batch tokens are captured once with usage storage disabled', async () => {
   const config: EmbedderConfig = { kind: 'ollama', model: 'bge-m3' };
   await prefetchEmbedder(config);
@@ -60,9 +64,13 @@ test('Ollama batch tokens are captured once with usage storage disabled', async 
     throw new Error('Expected batch embedding');
   const fetch = jest
     .spyOn(globalThis, 'fetch')
-    .mockResolvedValue(
-      Response.json({ embeddings: [[1], [2]], prompt_eval_count: 17 }),
-    );
+    .mockImplementation(async (input) => {
+      const url = input.toString();
+      if (url.endsWith('/api/show')) return Response.json(ollamaModelInfo);
+      if (url.endsWith('/api/embed'))
+        return Response.json({ embeddings: [[1], [2]], prompt_eval_count: 17 });
+      throw new Error(`Unexpected Ollama transport URL: ${url}`);
+    });
   try {
     const { retrieval } = embedding;
     const spend = captureTokenUsage();
@@ -70,7 +78,11 @@ test('Ollama batch tokens are captured once with usage storage disabled', async 
       retrieval.embedDocuments?.(['first', 'second']),
     );
     expect(vectors).toEqual([{ vector: [1] }, { vector: [2] }]);
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(
+      fetch.mock.calls.filter(([input]) =>
+        input.toString().endsWith('/api/embed'),
+      ),
+    ).toHaveLength(1);
     expect(spend.usage()?.models).toEqual({
       'bge-m3': {
         promptTokens: 17,
@@ -628,8 +640,9 @@ test.each(['construction', 'override', 'off'])(
       .mockImplementation(
         async (input: string | URL | Request): Promise<Response> => {
           const url = input.toString();
-          if (url.includes('/api/'))
-            return Response.json({ embedding: [1, 2], embeddings: [[1, 2]] });
+          if (url.endsWith('/api/show')) return Response.json(ollamaModelInfo);
+          if (url.endsWith('/api/embed'))
+            return Response.json({ embeddings: [[1, 2]] });
           if (url.includes('embeddings'))
             return Response.json({ data: [{ index: 0, embedding: [1, 2] }] });
           throw new Error(`Unexpected embedding transport URL: ${url}`);
@@ -703,7 +716,10 @@ test.each(['construction', 'override', 'off'])(
       expected++;
       expect(
         axiosCalls.length +
-          transport.mock.calls.length +
+          // Model metadata discovery does not record an embedding request.
+          transport.mock.calls.filter(
+            ([input]) => !input.toString().endsWith('/api/show'),
+          ).length +
           sdkLlm.mock.calls.length +
           sdkEmbed.mock.calls.length,
       ).toBe(expected);

@@ -519,6 +519,8 @@ it('keeps URL and client in every principal row', () => {
     { sapConfig: { url: 'https://sap', authType: 'basic', username: 'LOGIN' } },
   ];
   for (const row of rows) {
+    if (row.sapConfig.connectionType === 'rfc')
+      throw new Error('Expected an HTTP configuration');
     const key = systemIdentitySession(row)?.key;
     expect(key).toBeDefined();
     for (const change of [{ url: 'https://other' }, { client: '200' }])

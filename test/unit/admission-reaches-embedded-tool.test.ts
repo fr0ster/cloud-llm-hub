@@ -1,3 +1,5 @@
+import { HandlerExporter } from '@mcp-abap-adt/lib/handlers';
+import { getSystemInformation } from '@mcp-abap-adt/lib/utils';
 import { bindTestCaller } from './helpers/bind-test-caller';
 
 /**
@@ -56,29 +58,20 @@ jest.mock('../../srv/lib/btp-destinations', () => ({
 }));
 // The real exporter, so the real tool names and exposition groups; only the
 // handlers are replaced, each by one that holds its promise open.
-jest.mock('@mcp-abap-adt/lib/handlers', () => {
-  const actual = jest.requireActual('@mcp-abap-adt/lib/handlers');
-  class HandlerExporter extends actual.HandlerExporter {
-    getHandlerEntries() {
-      return super
-        .getHandlerEntries()
-        .map((e: { toolDefinition: { name: string } }) => ({
-          ...e,
-          handler: async (_context: unknown, _args: unknown) => {
-            mockTool.calls.push(e.toolDefinition.name);
-            mockTool.seen.push(
-              await jest
-                .requireActual('@mcp-abap-adt/lib/utils')
-                .getSystemInformation(),
-            );
-            await mockTool.gate;
-            return { content: [{ type: 'text', text: 'written' }] };
-          },
-        }));
-    }
-  }
-  return { ...actual, HandlerExporter };
-});
+const getHandlerEntries = HandlerExporter.prototype.getHandlerEntries;
+jest
+  .spyOn(HandlerExporter.prototype, 'getHandlerEntries')
+  .mockImplementation(function (this: HandlerExporter) {
+    return getHandlerEntries.call(this).map((entry) => ({
+      ...entry,
+      call: async () => {
+        mockTool.calls.push(entry.toolDefinition.name);
+        mockTool.seen.push(await getSystemInformation());
+        await mockTool.gate;
+        return { content: [{ type: 'text', text: 'written' }] };
+      },
+    }));
+  });
 // One LLM for every role, answering by what it is offered: a call to the first
 // offered tool until a tool result is in the conversation, plain text otherwise.
 jest.mock('../../srv/lib/llm-factory', () => {

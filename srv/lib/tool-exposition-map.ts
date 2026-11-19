@@ -14,6 +14,7 @@
 import {
   BackgroundRunHandlersGroup,
   HighLevelHandlersGroup,
+  noConnectionContext,
   ReadOnlyHandlersGroup,
   RuntimeRunHandlersGroup,
   SearchHandlersGroup,
@@ -45,9 +46,15 @@ export const HANDLER_GROUPS: readonly ExpositionLevel[] = [
   'system',
 ] as const;
 
+export const DATA_TOOL_EXPOSITIONS: ReadonlyMap<string, ExpositionLevel> =
+  new Map([
+    ['GetTableContents', 'readonly'],
+    ['GetSqlQuery', 'system'],
+  ]);
+
 /**
  * Build the map. Pure: no network, no connection — the groups are constructed
- * with a null connection purely to enumerate their tool names.
+ * with a placeholder connection purely to enumerate their tool names.
  *
  * A tool present in several groups keeps the FIRST group that claimed it, which
  * is why {@link HANDLER_GROUPS} order matters.
@@ -56,10 +63,7 @@ export function buildToolExpositionMap(
   cloudLocalExpositions: Record<string, string> = {},
   logger: QuietLogger = NOOP_LOGGER,
 ): Map<string, ExpositionLevel> {
-  const ctx = {
-    connection: null,
-    logger,
-  } as unknown as ConstructorParameters<typeof ReadOnlyHandlersGroup>[0];
+  const ctx = { ...noConnectionContext(), logger };
 
   const groups: Array<{ name: ExpositionLevel; group: HandlerGroupLike }> = [
     { name: 'readonly', group: new ReadOnlyHandlersGroup(ctx) },
@@ -76,6 +80,7 @@ export function buildToolExpositionMap(
       if (!map.has(tool)) map.set(tool, name);
     }
   }
+  for (const [tool, level] of DATA_TOOL_EXPOSITIONS) map.set(tool, level);
 
   // Tools this codebase adds itself.
   for (const [tool, level] of Object.entries(cloudLocalExpositions)) {

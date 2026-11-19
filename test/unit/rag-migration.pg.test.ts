@@ -56,6 +56,13 @@ test('user collection documents without userId keep their owner after migration'
   });
   if (!created.ok) throw created.error;
   await client.query(
+    `ALTER TABLE "${pgl.schema}"."rag_documents"
+       DROP CONSTRAINT rag_documents_pkey,
+       DROP COLUMN fragment_ordinal,
+       ALTER COLUMN text SET NOT NULL,
+       ADD PRIMARY KEY (collection, id)`,
+  );
+  await client.query(
     `INSERT INTO "${pgl.schema}"."rag_documents" (collection, id, text, vector, metadata) VALUES ($1, $2, $3, $4::vector, $5::jsonb)`,
     [
       'notes',
@@ -74,6 +81,13 @@ test('user collection documents without userId keep their owner after migration'
     ok: true,
     value: undefined,
   });
+  expect(
+    (
+      await client.query(
+        `SELECT fragment_ordinal FROM "${pgl.schema}"."rag_documents"`,
+      )
+    ).rows,
+  ).toEqual([{ fragment_ordinal: 0 }]);
   const catalog = await provider.describeCollections();
   if (!catalog.ok) throw catalog.error;
   const record = catalog.value.records.find((row) => row.storeName === 'notes');

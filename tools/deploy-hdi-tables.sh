@@ -4,6 +4,7 @@
 #
 #   tools/deploy-hdi-tables.sh [hdi-service-name]     (default: hdi-llm)
 #   tools/deploy-hdi-tables.sh --dry-run [hdi-service-name]
+#   tools/deploy-hdi-tables.sh [--dry-run] --mtaext <descriptor>
 #
 # --dry-run prints what would be run and touches neither cf nor the network.
 # Exits non-zero when the deployment fails or does not finish in 5 minutes.
@@ -14,7 +15,25 @@ if [ "${1:-}" = "--dry-run" ]; then
   DRY_RUN=1
   shift
 fi
-SERVICE="${1:-hdi-llm}"
+if [ "${1:-}" = "--mtaext" ]; then
+  SERVICE=$(node - "${2:?Provide the MTA extension descriptor}" <<'MTAEXT'
+const fs = require('node:fs');
+const yaml = require('js-yaml');
+const descriptor = yaml.load(fs.readFileSync(process.argv[2], 'utf8'));
+const resource = descriptor.resources?.find(({ name }) => name === `${descriptor.extends}-hdi`);
+if (resource?.active === true) {
+  const service = resource.parameters?.['service-name'];
+  if (typeof service !== 'string' || !service.trim() || service.includes('<')) {
+    throw new Error('Set parameters.service-name on the active HDI resource in the MTA extension.');
+  }
+  process.stdout.write(service);
+}
+MTAEXT
+  )
+  if [ -z "$SERVICE" ]; then exit 0; fi
+else
+  SERVICE="${1:-hdi-llm}"
+fi
 APP="cloud-llm-hub-hdi-deployer"
 POLL_TIMEOUT=300   # seconds to wait for "Deployment to container ... done"
 POLL_STEP=10

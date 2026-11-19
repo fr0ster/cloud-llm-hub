@@ -216,5 +216,5 @@ Sensitive configuration (like LLM model names, destination names) should not be 
 3. Build and deploy:
    ```bash
    npm run build:mta   # mbt build -t gen/mta_archives --mtar cloud-llm-hub.mtar
-   npm run deploy      # cf deploy gen/mta_archives/cloud-llm-hub.mtar -e .mtaext
+   npm run deploy      # deploys HDI artifacts when enabled, then deploys the MTA
    ```

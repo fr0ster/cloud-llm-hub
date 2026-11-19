@@ -414,9 +414,8 @@ export async function createMCPServerForRequest(
       const mcpServer = new EmbeddableMcpServer({
         connection,
         logger: loggerAdapter,
-        exposition,
         systemType,
-        handlersRegistry: rawHandlerRegistry(exposition, systemType),
+        handlersRegistry: rawHandlerRegistry(exposition),
         systemContextResolver: requestSystemContextResolver,
         systemContextRules: requestSystemContextRules,
         // A transport belongs to one HTTP request; the hub owns session teardown.

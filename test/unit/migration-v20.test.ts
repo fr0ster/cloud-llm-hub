@@ -1,6 +1,5 @@
-﻿import { HandlerExporter, isArgsOnly } from '@mcp-abap-adt/lib/handlers';
+﻿import { HandlerExporter } from '@mcp-abap-adt/lib/handlers';
 import { createConnection } from '../../srv/connections/connectionFactory';
-import { boundHandlerExporter } from '../../srv/lib/bound-handler-exporter';
 import { resolveExposition } from '../../srv/lib/exposition';
 import { outageFromToolResult } from '../../srv/lib/mcp-outage';
 import { rawHandlerRegistry } from '../../srv/lib/raw-handler-registry';
@@ -18,9 +17,7 @@ it('reader receives GetClass with part and developer receives one copy', () => {
     }).getHandlerEntries();
     const reads = entries.filter((e) => e.toolDefinition.name === 'GetClass');
     expect(reads).toHaveLength(1);
-    expect(reads[0].toolDefinition.inputSchema.properties).toHaveProperty(
-      'part',
-    );
+    expect(reads[0].toolDefinition.inputSchema.shape).toHaveProperty('part');
     expect(entries.some((e) => e.toolDefinition.name === 'SessionOpen')).toBe(
       false,
     );
@@ -65,14 +62,12 @@ it.each(['tunnel_timeout', 'no_scc_registration'])(
       throw new Error(`network failed [${status}]`);
     };
     const context = { connection };
-    const entry = boundHandlerExporter(context, { systemType: 'onprem' })
+    const entry = new HandlerExporter({ systemType: 'onprem' })
       .getHandlerEntries()
       .find((e) => e.toolDefinition.name === 'GetClass');
     if (!entry) throw new Error('GetClass missing');
     const args = { class_name: 'ZCL_X' };
-    const result = await (isArgsOnly(entry.handler)
-      ? entry.handler(args)
-      : entry.handler(context, args));
+    const result = await entry.call(context, args);
     expect(JSON.stringify(result)).toContain('connection');
     expect(outageFromToolResult(result, 'SAP')?.status).toBe(status);
   },
@@ -126,9 +121,8 @@ it('a listed long read opens and closes a fresh session, leaving the main connec
   const server = new EmbeddableMcpServer({
     connection,
     systemType: 'onprem',
-    handlersRegistry: rawHandlerRegistry(['readonly'], 'onprem'),
+    handlersRegistry: rawHandlerRegistry(['readonly']),
     freshConnection,
-    exposition: ['readonly'],
     transportCloseEndsSession: false,
   });
   const client = new Client({ name: 'test', version: '1' });

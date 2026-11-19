@@ -101,9 +101,9 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
   if (!cfg) return null;
   const usage = usageRuntime()?.recorder;
   const recording = usage ? { usage } : {};
-  // One provider instance: it makes exactly one request per call, so both
-  // compositions below share it (and its usage recording).
+  // Both compositions share the provider's model metadata and usage recording.
   const provider: IEmbedder = createEmbedder();
+  const getMaxInputChars = provider.getMaxInputChars?.bind(provider);
   const optionsWithObserver = (options?: CallOptions): CallOptions => ({
     ...options,
     usage: observeEmbeddingUsage(options?.usage ?? usage),
@@ -119,6 +119,12 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
       : {}),
     ...(isBatchSizeLimited(provider)
       ? { maxBatchSize: provider.maxBatchSize }
+      : {}),
+    ...(getMaxInputChars
+      ? {
+          getMaxInputChars: (options?: CallOptions) =>
+            getMaxInputChars(optionsWithObserver(options)),
+        }
       : {}),
   };
   const composed = composeEmbedder(raw);

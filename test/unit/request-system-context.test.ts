@@ -11,7 +11,10 @@ const systemAnswer = (
 
 import { getSystemInformation as lookup } from '@mcp-abap-adt/adt-clients/core';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
-import { withResolvedSystemContext } from '@mcp-abap-adt/lib/request-context';
+import {
+  runWithRequestContext,
+  withResolvedSystemContext,
+} from '@mcp-abap-adt/lib/request-context';
 /**
  * The SAP responsible person and master system, scoped to one request.
  *
@@ -24,11 +27,7 @@ import { withResolvedSystemContext } from '@mcp-abap-adt/lib/request-context';
  */
 
 import { getRequestContext } from '@mcp-abap-adt/lib/request-context';
-import {
-  getSystemContext,
-  getSystemInformation,
-  setSystemContext,
-} from '@mcp-abap-adt/lib/utils';
+import { getSystemInformation } from '@mcp-abap-adt/lib/utils';
 import {
   requestSystemContextResolver,
   requestSystemContextRules,
@@ -48,14 +47,6 @@ function deferred() {
   });
   return { promise, resolve };
 }
-
-afterEach(() => {
-  setSystemContext({
-    responsible: undefined,
-    masterSystem: undefined,
-    masterLanguage: undefined,
-  });
-});
 
 describe('the values come from the request headers', () => {
   it('x-sap-responsible is the stated responsible, x-sap-login the login — both uppercased', () => {
@@ -100,7 +91,6 @@ describe('the values come from the request headers', () => {
 
 describe('delivery through the installed @mcp-abap-adt/lib request scope', () => {
   it('gives two concurrent runs their own responsible person and master system', async () => {
-    setSystemContext({ responsible: 'PROCESS', masterSystem: 'PRC' });
     const bothEntered = deferred();
     let entered = 0;
     const run = (responsible: string, masterSystem: string) =>
@@ -120,11 +110,12 @@ describe('delivery through the installed @mcp-abap-adt/lib request scope', () =>
     expect(bob).toEqual({ systemID: 'QAS', userName: 'BOB' });
   });
 
-  it('a run with no responsible person does not inherit the process one', async () => {
-    setSystemContext({ responsible: 'PROCESS', masterSystem: 'PRC' });
-    const seen = await runWithRequestSystem(
-      { responsible: undefined, masterSystem: 'DEV' },
-      getSystemInformation,
+  it('a request with no responsible person does not inherit the outer scope', async () => {
+    const seen = await runWithRequestContext({ responsible: 'OUTER' }, () =>
+      runWithRequestSystem(
+        { responsible: undefined, masterSystem: 'DEV' },
+        getSystemInformation,
+      ),
     );
     expect(seen?.userName).toBeUndefined();
     expect(seen?.systemID).toBe('DEV');
@@ -153,31 +144,22 @@ describe('delivery through the installed @mcp-abap-adt/lib request scope', () =>
     expect(seen?.userName).toBe('OWNER');
   });
 
-  it('a stated process responsible never stands in for a request with only a login', async () => {
-    setSystemContext({ responsible: 'PROCESS' });
-    const seen = await runWithRequestSystem(
-      resolveRequestSystem({ 'x-sap-login': 'developer' }),
-      getSystemInformation,
-    );
-    expect(seen?.userName).toBeUndefined();
-  });
-
-  it('outside a run, lib sees the process values', async () => {
-    setSystemContext({ responsible: 'PROCESS', masterSystem: 'PRC' });
-    expect(await getSystemInformation()).toEqual({
-      systemID: 'PRC',
-      userName: 'PROCESS',
-    });
-    expect(getSystemContext().responsible).toBe('PROCESS');
-  });
-
-  it('carries the process master language into the run', async () => {
-    setSystemContext({ masterLanguage: 'EN' });
-    const scope = await runWithRequestSystem(
-      { responsible: 'ALICE' },
-      async () => getRequestContext(),
-    );
-    expect(scope).toMatchObject({ responsible: 'ALICE', masterLanguage: 'EN' });
+  it('carries the configured master language into the run', async () => {
+    const savedLanguage = process.env.SAP_LANGUAGE;
+    process.env.SAP_LANGUAGE = 'EN';
+    try {
+      const scope = await runWithRequestSystem(
+        { responsible: 'ALICE' },
+        async () => getRequestContext(),
+      );
+      expect(scope).toMatchObject({
+        responsible: 'ALICE',
+        masterLanguage: 'EN',
+      });
+    } finally {
+      if (savedLanguage === undefined) delete process.env.SAP_LANGUAGE;
+      else process.env.SAP_LANGUAGE = savedLanguage;
+    }
   });
 });
 

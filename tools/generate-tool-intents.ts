@@ -13,10 +13,8 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { HandlerExporter } from '@mcp-abap-adt/lib/handlers';
 import { IntentEnricher } from '@mcp-abap-adt/llm-agent';
-import { baseToolText } from '../srv/agent-manager';
-import { CLOUD_LOCAL_TOOLS } from '../srv/lib/cloud-local-tools';
+import { baseToolText, listToolDefsFromExporter } from '../srv/agent-manager';
 import { makeHubLlm } from '../srv/lib/llm-factory';
 
 type LlmProvider = 'sap-ai-sdk' | 'openai' | 'anthropic' | 'deepseek';
@@ -40,36 +38,10 @@ async function main() {
     `Generating tool intents with model=${MODEL}, provider=${PROVIDER}`,
   );
 
-  // Match the runtime exposition set used by srv/agent-manager.ts so that
-  // pre-cached intents cover exactly the tools the agent will see at runtime.
-  const exporter = new HandlerExporter({
-    includeReadOnly: true,
-    includeHighLevel: true,
-    includeSystem: true,
-    includeSearch: true,
-  });
-  const entries = exporter.getHandlerEntries();
-  console.log(`Tools: ${entries.length}`);
-
-  // Build tool texts (same format as vectorizeTools)
-  const tools = entries.map((e) => {
-    const def = e.toolDefinition;
-    const text = baseToolText({
-      name: def.name as string,
-      description: def.description as string,
-      inputSchema: def.inputSchema,
-    });
-    return { name: def.name as string, text };
-  });
-
-  // Merge cloud-local tools (mirrors the shared corpus in agent-manager.ts via
-  // mergeCloudLocalTools). Without this, GetDumpSection is invisible here and the
-  // purge pass below would delete any GetDumpSection intent as an "unknown" tool.
-  // Cloud-local inputSchema is already JSON Schema, so read `.properties` directly.
-  for (const cl of CLOUD_LOCAL_TOOLS) {
-    if (tools.some((t) => t.name === cl.name)) continue;
-    tools.push({ name: cl.name, text: baseToolText(cl) });
-  }
+  const tools = listToolDefsFromExporter().map((tool) => ({
+    name: tool.name,
+    text: baseToolText(tool),
+  }));
   console.log(`Tools (incl. cloud-local): ${tools.length}`);
 
   // Reproducible retrieval intents from upstream, without model credentials.
