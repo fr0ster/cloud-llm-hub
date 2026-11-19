@@ -2,7 +2,9 @@ import {
   CircuitBreaker,
   CircuitBreakerEmbedder,
   symmetricEmbedder,
+  VectorRag,
 } from '@mcp-abap-adt/llm-agent';
+import { z } from 'zod';
 import {
   agentQueryEmbedder,
   buildEmbedding,
@@ -123,6 +125,44 @@ describe('embedder roles (llm-agent 30)', () => {
     });
     expect(typeof e?.retrieval.embedDocument).toBe('function');
     expect(typeof e?.retrieval.embedQuery).toBe('function');
+  });
+
+  it('stores a full record using fragments within the Ollama model capacity', async () => {
+    const cfg = { kind: 'ollama', model: 'small' } as const;
+    await prefetchEmbedder(cfg);
+    const embedding = buildEmbedding(cfg);
+    if (!embedding) throw new Error('Expected embedder');
+    const embedded: string[][] = [];
+    const signal = new AbortController().signal;
+    const request = z.object({
+      input: z.array(z.string().max(4)),
+      truncate: z.literal(false),
+    });
+    const fetch = jest
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (input, options) => {
+        expect(options?.signal).toBe(signal);
+        const url = input.toString();
+        if (url.endsWith('/api/show'))
+          return Response.json({ model_info: { 'small.context_length': 18 } });
+        if (!url.endsWith('/api/embed') || typeof options?.body !== 'string')
+          throw new Error(`Unexpected Ollama request: ${url}`);
+        const { input: fragments } = request.parse(JSON.parse(options.body));
+        embedded.push(fragments);
+        return Response.json({ embeddings: fragments.map(() => [1, 2]) });
+      });
+    try {
+      const store = new VectorRag(embedding.retrieval);
+      const text = 'abcdefghij';
+      const written = await store.upsert(text, {}, { signal });
+      if (!written.ok) throw written.error;
+      expect(embedded).toEqual([['abcd', 'efgh', 'ij']]);
+      const result = await store.scan({});
+      if (!result.ok) throw result.error;
+      expect(result.value.records).toMatchObject([{ text }]);
+    } finally {
+      fetch.mockRestore();
+    }
   });
 
   it("meters the agent's query embeddings in the request log", async () => {

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -27,6 +27,36 @@ test('deploy-hdi-tables dry run lists all eight artifacts', () => {
   expect(output).toContain('hana-vector-rag/ddl/.hdiconfig');
   expect(output).toContain('up to 300 s');
 });
+
+test.each(['cloud-llm-hub', 'cloud-llm-hub-staging'])(
+  'deploy-hdi-tables uses the active service from the %s extension',
+  (mta) => {
+    const work = mkdtempSync(path.join(tmpdir(), 'hdi-extension-'));
+    const descriptor = path.join(work, 'deploy.mtaext');
+    const run = () =>
+      execFileSync(
+        'bash',
+        ['tools/deploy-hdi-tables.sh', '--dry-run', '--mtaext', descriptor],
+        { encoding: 'utf8' },
+      );
+    try {
+      writeFileSync(
+        descriptor,
+        `extends: ${mta}\nresources:\n  - name: ${mta}-hdi\n    active: false\n`,
+      );
+      expect(run()).toBe('');
+      writeFileSync(
+        descriptor,
+        `extends: ${mta}\nresources:\n  - name: ${mta}-hdi\n    active: true\n    parameters: { service-name: fixture-hdi }\n`,
+      );
+      const output = run();
+      expect(output).toContain('RAG_DOCUMENTS.hdbtable');
+      expect(output).toContain('--var hdi_service=fixture-hdi');
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  },
+);
 
 test('HDI config merge retains shipped table and usage index plugins', () => {
   const script = readFileSync('tools/deploy-hdi-tables.sh', 'utf8');

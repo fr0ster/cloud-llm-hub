@@ -29,13 +29,50 @@ type Env = Record<string, string | undefined>;
 export interface RagCtors {
   HanaVectorRagProvider: new (cfg: HanaVectorRagProviderConfig) => IRagProvider;
   PgVectorRagProvider: new (cfg: PgVectorRagProviderConfig) => IRagProvider;
-  QdrantRagProvider: new (cfg: QdrantRagProviderConfig) => IRagProvider;
+  QdrantRagProvider: new (
+    cfg: QdrantRagProviderConfig,
+    prefix: string,
+  ) => IRagProvider;
+}
+
+class HubQdrantRagProvider extends QdrantRagProvider {
+  constructor(
+    cfg: QdrantRagProviderConfig,
+    private readonly prefix: string,
+  ) {
+    super(cfg);
+  }
+
+  override async listCollections() {
+    // The library's access migration uses this list to rewrite record owners.
+    // Scope it to this catalog and this hub's physical collection namespace.
+    const listed = await super.listCollections();
+    if (!listed.ok) return listed;
+    const catalog = await this.describeCollections();
+    if (!catalog.ok) return catalog;
+    const registered = new Set(
+      [...catalog.value.records, ...catalog.value.rejected].map(
+        ({ storeName }) => storeName,
+      ),
+    );
+    return {
+      ok: true as const,
+      value: listed.value.filter(
+        (name) =>
+          registered.has(name) ||
+          (name.startsWith(`${this.prefix}_`) &&
+            /^(?:c_[a-f0-9]{40}|h_(?:history|trust|dialogue|runs|sessions|planner_memory|hist_[a-f0-9]{32}))$/.test(
+              name.slice(this.prefix.length + 1),
+            )),
+      ),
+    };
+  }
 }
 
 export const defaultCtors: RagCtors = {
   HanaVectorRagProvider,
   PgVectorRagProvider,
-  QdrantRagProvider,
+  QdrantRagProvider: HubQdrantRagProvider,
 };
 
 type VectorDimension = (
@@ -168,13 +205,16 @@ export function createCollectionProvider(
     case 'qdrant': {
       const q = rag.qdrant;
       if (!q) throw new Error('qdrant is configured but rag.qdrant is missing');
-      const provider = new ctors.QdrantRagProvider({
-        name: 'hub-collections',
-        url: q.url,
-        embedder,
-        ...(q.apiKey ? { credential: apiKeyCredential(q.apiKey) } : {}),
-        catalogCollection: `${q.prefix}-collections-catalog`,
-      });
+      const provider = new ctors.QdrantRagProvider(
+        {
+          name: 'hub-collections',
+          url: q.url,
+          embedder,
+          ...(q.apiKey ? { credential: apiKeyCredential(q.apiKey) } : {}),
+          catalogCollection: `${q.prefix}-collections-catalog`,
+        },
+        q.prefix,
+      );
       // Only missing collections share the dimension for new stores.
       let dimension: Promise<number> | undefined;
       const positiveDimension = z.number().int().positive().safe();

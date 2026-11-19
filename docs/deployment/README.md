@@ -89,13 +89,14 @@ The script:
 - verifies the CF target matches the deploy branch (APPROUTER_HOST vs CF org);
 - merges the fork's `main` into the deploy branch;
 - injects AICORE_* secrets from `.env` via `cf set-env` (only when there is no binding);
-- builds the MTA and deploys it with the `.mtaext`.
+- builds the MTA, updates the active HDI service from the extension descriptor, and deploys the MTA.
 
 ### Manual deploy
 
 ```bash
 git merge main
 npx mbt build
+bash tools/deploy-hdi-tables.sh --mtaext .mtaext
 cf deploy mta_archives/cloud-llm-hub_*.mtar -e .mtaext
 ```
 
@@ -149,6 +150,10 @@ git fetch upstream --tags
 git switch main && git merge --ff-only <new-release-tag> && git push
 git switch deploy/<subaccount> && tools/deploy.sh
 ```
+
+The llm-agent 35 upgrade applies the Qdrant and PostgreSQL storage migrations at startup. The
+deploy scripts update the SAP HANA Cloud artifacts before startup. For the manual SAP AI Core
+bundle regeneration step, see [Upgrading the RAG storage layout](DEPLOY_GUIDE.md#upgrading-the-rag-storage-layout-for-llm-agent-35).
 
 ## Quick Links
 

@@ -165,6 +165,7 @@ cp "$MBT_SRC" "$MBT_DIR/"
 MTAR=$(ls -t mta_archives/*.mtar 2>/dev/null | head -1)
 echo ""
 echo "[4/4] Deploy $MTAR..."
+bash tools/deploy-hdi-tables.sh --mtaext "$MTAEXT"
 cf deploy "$MTAR" -e "$MTAEXT"
 
 if [ -n "$SECRETS_AFTER_DEPLOY" ]; then

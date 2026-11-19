@@ -89,7 +89,7 @@
     "format": "npx biome format --write --config-path . srv tools test",
     "build": "npx cds b",
     "build:mta": "npx mbt build -t gen/mta_archives --mtar cloud-llm-hub.mtar",
-    "deploy": "cf deploy gen/mta_archives/cloud-llm-hub.mtar -e .mtaext --abort-on-error --delete-services -f",
+    "deploy": "bash tools/deploy-hdi-tables.sh --mtaext .mtaext && cf deploy gen/mta_archives/cloud-llm-hub.mtar -e .mtaext --abort-on-error --delete-services -f",
     "cf-env": "cf e cloud-llm-hub-srv",
     "get:key": "node tools/get-mcp-service-key.js",
     "proxy": "bash scripts/start-proxy.sh",

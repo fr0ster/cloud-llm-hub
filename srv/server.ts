@@ -90,6 +90,7 @@ import {
   mcpDestinationRefusal,
 } from './lib/mcp-destination-guard';
 import { needsSapConnection } from './lib/mcp-request';
+import { PLANNER_MEMORY_STORE } from './lib/planner-context';
 import { type Providers, startProviders } from './lib/providers';
 import { requireMcpRole } from './lib/require-mcp-role';
 import { initializeRunRecordStore } from './lib/run-record-store';
@@ -111,6 +112,7 @@ import {
 } from './lib/session-middleware';
 import { createSessionRecordStore } from './lib/session-record-store';
 import { openAiSessionRefusal } from './lib/throttle-surfacing';
+import { toolStoreName } from './lib/tool-corpus';
 import {
   toolSearchReadinessGuard,
   withToolSearchHealth,
@@ -1028,9 +1030,6 @@ cds.on('served', () => {
     guardedTask('Empty session forget', log, () => forgetEmptySessions()),
     5 * 60 * 1000,
   ).unref();
-  // Every minute: long sessions idle past their TTL are closed, and records
-  // nobody came back for after a restart are deleted.
-  startSessionSweep();
   log.info(
     'Starting providers, then pre-initializing SmartAgent (MCP connect + tool vectorization) — non-blocking',
   );
@@ -1078,10 +1077,20 @@ cds.on('served', () => {
           provider: historyProvider(sessionKind),
           kind: sessionKind,
         });
-      const migration = await migrateHubRagProviders(migrations, (line) =>
-        log.info(line),
+      const qdrant = getAgentConfig().rag.qdrant;
+      const standaloneCollections = [
+        ...(p.stores.backendOf('tools') === 'qdrant'
+          ? [toolStoreName('reader'), toolStoreName('writer')]
+          : []),
+        ...(sessionKind === 'qdrant' ? [PLANNER_MEMORY_STORE] : []),
+      ].map((name) => p.stores.qdrantCollection(name));
+      const migration = await migrateHubRagProviders(
+        migrations,
+        (line) => log.info(line),
+        qdrant ? { config: qdrant, standaloneCollections } : undefined,
       );
       if (!migration.ok) throw migration.error;
+      startSessionSweep();
       registerRagRoutes(ragRouter, getCollectionRegistry());
       // Restore and validate configuration before initializing agents.
       await startCollectionRestore();
