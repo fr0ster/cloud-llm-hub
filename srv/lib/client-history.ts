@@ -6,6 +6,14 @@ import { BuildValidationError } from './build-validation-error';
 
 export type ClientHistory = 'off' | 'on';
 
+/** The hub's legacy zero value means an unbounded client history window. */
+export function clientHistoryWindow(
+  policy: ClientHistory | undefined,
+  window: number | undefined,
+): number | undefined {
+  return policy === 'on' && window ? window : undefined;
+}
+
 /** Tool-result continuations retain the same user boundary. Include the prefix
  * so a later user message with identical text is still a different turn.
  * Compute before applying the client history policy. */

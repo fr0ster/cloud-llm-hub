@@ -7,6 +7,7 @@ import { BuildValidationError } from '../../srv/lib/build-validation-error';
 import {
   clientHistoryMessages,
   clientHistoryTurnId,
+  clientHistoryWindow,
   configuredClientHistory,
   hasPendingClientTools,
 } from '../../srv/lib/client-history';
@@ -85,7 +86,7 @@ test.each([
   [1, 1],
   [0, 3],
 ] as const)(
-  'on retains library recency semantics: window=%s',
+  'on retains hub recency semantics: window=%s',
   async (window, count) => {
     const caller = { userId: 'user', sessionId: 'recency', isAdmin: false };
     const history: Message[] = [
@@ -112,7 +113,7 @@ test.each([
         agent: {
           classificationEnabled: false,
           ragTranslateEnabled: false,
-          historyRecencyWindow: window,
+          historyRecencyWindow: clientHistoryWindow('on', window),
         },
       })
         .withMainLlm(llm)

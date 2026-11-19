@@ -4644,10 +4644,7 @@ test.each(
           caller: expect.objectContaining(caller),
           ...turn,
         });
-      // The task board keeps a bounded preview; A's history keeps every result.
-      expect(h.session.snapshot().tasks[0].output?.length).toBeLessThan(
-        taskAnswers[0].length,
-      );
+      expect(h.session.snapshot().tasks[0].output).toBe(taskAnswers[0]);
       await history.query(
         new TextOnlyEmbedding('CLIENT_A CLIENT_B'),
         5,

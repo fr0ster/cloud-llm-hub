@@ -3,10 +3,10 @@ import {
   type IRagBackendWriter,
   RagError,
   resetQuotaGates,
-  symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
+import { OpenAiEmbedder } from '@mcp-abap-adt/openai-embedder';
 import { QdrantRag } from '@mcp-abap-adt/qdrant-rag';
-import { buildEmbedding } from '../../srv/lib/providers';
+import { buildEmbedding, prefetchEmbedder } from '../../srv/lib/providers';
 import { getHubRagAccess } from '../../srv/lib/rag-access';
 import { createRagStoreFactory } from '../../srv/lib/rag-store-factory';
 import { SapAiCoreEmbedder } from '../../srv/lib/sap-ai-core-embedder';
@@ -17,6 +17,10 @@ import {
   toolSearchFailure,
   withToolSearchHealth,
 } from '../../srv/lib/tool-search-health';
+import {
+  qdrantCollectionInfo,
+  qdrantMultivectorConfig,
+} from './helpers/qdrant-fetch';
 import { historyTestProvider } from './helpers/session-history-fixture';
 
 const caller = { userId: 'writer', sessionId: 'write-session', isAdmin: false };
@@ -96,17 +100,32 @@ test('production embedding composition waits through 429 for document writes', a
   expect(embed).toHaveBeenCalledTimes(2);
 });
 
-test('real Qdrant transport preserves Retry-After before the provider discards HTTP metadata', async () => {
+test('Qdrant retries a fragmented history record using its Retry-After', async () => {
+  const config = {
+    kind: 'openai',
+    model: 'history-embedding',
+    apiKey: 'test',
+  } as const;
+  await prefetchEmbedder(config);
+  const batch = jest
+    .spyOn(OpenAiEmbedder.prototype, 'embedBatch')
+    .mockImplementation(async (texts) => texts.map(() => ({ vector: [1, 2] })));
+  const embedding = buildEmbedding(config);
+  if (!embedding) throw new Error('Missing embedding');
+
   jest.useFakeTimers();
   let refused = false;
   let firstRefusal = () => {};
   const throttled = new Promise<void>((resolve) => {
     firstRefusal = resolve;
   });
+  const isWrite = (input: RequestInfo | URL, init?: RequestInit) =>
+    init?.method === 'PUT' &&
+    new URL(String(input)).pathname.endsWith('/points');
   const transport = jest
     .spyOn(globalThis, 'fetch')
-    .mockImplementation(async (input) => {
-      if (String(input).endsWith('/points') && !refused) {
+    .mockImplementation(async (input, init) => {
+      if (isWrite(input, init) && !refused) {
         refused = true;
         firstRefusal();
         return new Response('', {
@@ -114,33 +133,40 @@ test('real Qdrant transport preserves Retry-After before the provider discards H
           headers: { 'Retry-After': '5' },
         });
       }
-      return new Response(
-        JSON.stringify({
-          result: { config: { params: { vectors: { size: 2 } } } },
-        }),
-      );
+      return qdrantCollectionInfo(qdrantMultivectorConfig(2));
     });
   const rag = new QdrantRag({
     url: 'http://history.test',
     collectionName: 'turns',
-    embedder: symmetricEmbedder({ embed: async () => ({ vector: [1, 2] }) }),
+    embedder: embedding.retrieval,
   });
   const router = new SessionHistoryRouter(historyTestProvider(rag), {
     storeUrl: 'http://history.test',
     storageBackend: 'qdrant',
   });
-  const stored = router.recordTurn(turn);
-  await throttled;
+  const assistantText = 'complete answer '.repeat(280);
+  const stored = router.recordTurn({ ...turn, assistantText });
+  await Promise.race([
+    throttled,
+    stored.then(() => {
+      throw new Error('History write finished before reaching Qdrant upsert');
+    }),
+  ]);
   await jest.advanceTimersByTimeAsync(4999);
   expect(
-    transport.mock.calls.filter(([input]) => String(input).endsWith('/points')),
+    transport.mock.calls.filter(([input, init]) => isWrite(input, init)),
   ).toHaveLength(1);
   expect(toolSearchFailure()).toBeUndefined();
   await jest.advanceTimersByTimeAsync(1);
   await expect(stored).resolves.toBe(true);
-  expect(
-    transport.mock.calls.filter(([input]) => String(input).endsWith('/points')),
-  ).toHaveLength(2);
+  const writes = transport.mock.calls.filter(([input, init]) =>
+    isWrite(input, init),
+  );
+  expect(writes).toHaveLength(2);
+  expect(writes[1][1]?.body).toBe(writes[0][1]?.body);
+  expect(writes[0][1]?.body).toContain(assistantText);
+  expect(batch).toHaveBeenCalledTimes(1);
+  expect(batch.mock.calls[0]?.[0].length).toBeGreaterThan(1);
 });
 
 test('real vector history fails on the first embedding 503 and replays after repair without keyword write fallback', async () => {

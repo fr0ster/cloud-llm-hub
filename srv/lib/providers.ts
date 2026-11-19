@@ -186,26 +186,43 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
   });
   const toolSearchEmbedder = new CircuitBreakerEmbedder(toolSearch, breaker);
   // Both readiness probes must reach the provider through an open shared breaker.
-  const probeEmbedder = {
-    async embed(text: string, options?: CallOptions) {
-      try {
-        const result = await toolSearch.embed(text, options);
-        if (!options?.signal?.aborted) breaker.recordSuccess();
-        return result;
-      } catch (error) {
-        if (!options?.signal?.aborted) breaker.recordFailure();
-        throw error;
-      }
-    },
-  };
+  async function probeEmbedding<T>(
+    run: () => Promise<T>,
+    options?: CallOptions,
+  ) {
+    try {
+      const result = await run();
+      if (!options?.signal?.aborted) breaker.recordSuccess();
+      return result;
+    } catch (error) {
+      if (!options?.signal?.aborted) breaker.recordFailure();
+      throw error;
+    }
+  }
   const documentEmbedder = {
     embed: (text: string, options?: CallOptions) =>
-      (sessionHistoryWrite.getStore()
-        ? sessionHistoryRepair.getStore()
-          ? probeEmbedder
-          : toolSearchEmbedder
-        : embedder
-      ).embed(text, options),
+      sessionHistoryRepair.getStore()
+        ? probeEmbedding(() => toolSearch.embed(text, options), options)
+        : (sessionHistoryWrite.getStore()
+            ? toolSearchEmbedder
+            : embedder
+          ).embed(text, options),
+    getMaxInputChars: embedder.getMaxInputChars,
+    maxBatchSize: embedder.maxBatchSize,
+    ...(isBatchEmbedder(toolSearch)
+      ? {
+          embedBatch: (texts: string[], options?: CallOptions) =>
+            sessionHistoryRepair.getStore()
+              ? probeEmbedding(
+                  () => toolSearch.embedBatch(texts, options),
+                  options,
+                )
+              : (sessionHistoryWrite.getStore()
+                  ? toolSearchEmbedder
+                  : embedder
+                ).embedBatch(texts, options),
+        }
+      : {}),
   };
   const retrieval = asymmetricEmbedder({
     document: documentEmbedder,
@@ -222,7 +239,8 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
     breaker,
     fingerprint: embedderFingerprint(cfg),
     probeQueryEmbedder: {
-      embedQuery: (text, options) => probeEmbedder.embed(text, options),
+      embedQuery: (text, options) =>
+        probeEmbedding(() => toolSearch.embed(text, options), options),
     },
   };
 }
