@@ -14,11 +14,58 @@ import {
 } from '@mcp-abap-adt/llm-agent-libs';
 import { HubAnthropicProvider, makeHubLlm } from '../../srv/lib/llm-factory';
 import {
+  captureTokenUsage,
   llmFailure,
   observeLlmSpend,
   reliableLlm,
   reportLlmSpend,
 } from '../../srv/lib/llm-failure';
+
+test('provider stream start exposes cache counts and finalizes a single request', async () => {
+  const initial: TokenUsage = {
+    promptTokens: 1531,
+    completionTokens: 0,
+    totalTokens: 1531,
+    cachedInputTokens: 1527,
+    cacheCreationInputTokens: 0,
+  };
+  const provider: ILlm = {
+    model: 'claude',
+    chat: async () => ({
+      ok: true,
+      value: { content: '', finishReason: 'stop' },
+    }),
+    async *streamChat() {
+      yield { ok: true, value: { content: '', usage: initial } };
+      yield { ok: true, value: { content: 'answer' } };
+      yield {
+        ok: true,
+        value: {
+          content: '',
+          usage: { promptTokens: 0, completionTokens: 177, totalTokens: 177 },
+        },
+      };
+    },
+  };
+  const llm = reliableLlm(provider);
+  const spend = captureTokenUsage();
+  await spend.run(async () => {
+    for await (const chunk of llm.streamChat([])) {
+      if (!chunk.ok) throw chunk.error;
+      if (chunk.value.content)
+        expect(spend.streamUsage(undefined, 'claude')?.models?.claude).toEqual({
+          ...initial,
+          requests: 1,
+        });
+    }
+  });
+  expect(spend.usage()?.models?.claude).toEqual({
+    ...initial,
+    completionTokens: 177,
+    totalTokens: 1708,
+    requests: 1,
+  });
+});
 
 function attemptResponse(
   inputTokens: number | undefined,
@@ -63,6 +110,8 @@ test.each(['api_error', 'stop'] as const)(
         {
           provider: 'anthropic',
           apiKey: 'spend-retry-test',
+          // Explicit: these attempts are about spend, not model metadata.
+          maxTokens: 1024,
           model: 'test',
           whenThrottled: {
             name: 'test',
@@ -152,6 +201,8 @@ test('keeps retry spend separate for two actual models in one observer', async (
             {
               provider: 'anthropic',
               apiKey: 'spend-two-models-test',
+              // Explicit: these attempts are about spend, not model metadata.
+              maxTokens: 1024,
               model,
               whenThrottled: {
                 name: 'test',
@@ -261,6 +312,8 @@ test.each(['http', 'sse', 'success', 'partial-failure'])(
         {
           provider: 'anthropic',
           apiKey: `usage-free-${scenario}`,
+          // Explicit: these attempts are about spend, not model metadata.
+          maxTokens: 1024,
           model: 'test',
           whenThrottled: {
             name: 'test',
@@ -334,6 +387,7 @@ test('an override model throttle does not gate the default model in one session'
   const provider = new HubAnthropicProvider({
     model: 'model-A',
     credential: staticApiKey('model-isolation-test'),
+    maxTokens: 1024,
     quotaScope: 'model-isolation-session',
     whenThrottled: { name: 'test', decide },
   });
@@ -410,6 +464,7 @@ test.each(['alternating', 'http', 'sse'])(
     const provider = new HubAnthropicProvider({
       model: 'gpt-4o-mini',
       credential: staticApiKey('test'),
+      maxTokens: 1024,
       whenThrottled: { name: 'test', decide },
     });
     try {

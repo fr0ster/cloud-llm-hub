@@ -29,7 +29,8 @@ parameters:
   # For openai provider: API key and base URL — set via cf set-env (secrets!)
   # cf set-env cloud-llm-hub-srv LLM_AGENT_API_KEY "sk-..."
   # cf set-env cloud-llm-hub-srv LLM_AGENT_BASE_URL "https://api.openai.com/v1"
-  LLM_AGENT_MAX_TOKENS:
+  # Empty uses the provider/model default.
+  LLM_AGENT_MAX_TOKENS: ""
   LLM_AGENT_PLANNER_MCP: ""
   LLM_AGENT_EXECUTOR_MCP: ""
   LLM_AGENT_CHECKER_MCP: ""

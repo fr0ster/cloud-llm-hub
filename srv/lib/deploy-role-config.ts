@@ -108,7 +108,6 @@ export function configuredExecutionLimits(
   const maxToolCalls = configuredLimit('LLM_AGENT_MAX_TOOL_CALLS', env);
   const limits: ExecutionLimits = {
     toolResultMaxChars: configuredLimit('LLM_AGENT_TOOL_RESULT_MAX_CHARS', env),
-    historyTokenBudget: configuredLimit('LLM_AGENT_HISTORY_TOKEN_BUDGET', env),
   };
   for (const role of ['coordinator', 'executor', 'checker'] as const) {
     limits[role] = {

@@ -89,7 +89,7 @@ tool vectors, and a SAP destination from an env variable. See
 
 The proxy listens on `http://localhost:4004`. Development mode enables Basic authentication with mock users (`alice`, `bob`).
 
-Tool-loop iteration and tool-call limits, and the history token budget, are off by default. Set `LLM_AGENT_MAX_ITERATIONS`, `LLM_AGENT_MAX_TOOL_CALLS` or `LLM_AGENT_HISTORY_TOKEN_BUDGET` to a positive integer to enable a limit, or `off` to disable it explicitly. Per-role `LLM_AGENT_<ROLE>_MAX_ITERATIONS` / `MAX_TOOL_CALLS` override global values (`ROLE`: `COORDINATOR`, `EXECUTOR`, `CHECKER`); per-session settings override configuration per value. `LLM_AGENT_TOOL_RESULT_MAX_CHARS` defaults to `60000` (`0` or `off` disables it). Oversized results return an error naming the tool, size and limit and asking for a narrower request, without partial data. See [configuration reference](docs/llm-agent/CONFIG_USAGE.md).
+Tool-loop iteration and tool-call limits are off by default. Set `LLM_AGENT_MAX_ITERATIONS` or `LLM_AGENT_MAX_TOOL_CALLS` to a positive integer to enable a limit, or `off` to disable it explicitly. Per-role `LLM_AGENT_<ROLE>_MAX_ITERATIONS` / `MAX_TOOL_CALLS` override global values (`ROLE`: `COORDINATOR`, `EXECUTOR`, `CHECKER`); per-session settings override configuration per value. `LLM_AGENT_TOOL_RESULT_MAX_CHARS` defaults to `60000` (`0` or `off` disables it). Oversized results return an error naming the tool, size and limit and asking for a narrower request, without partial data. See [configuration reference](docs/llm-agent/CONFIG_USAGE.md).
 
 ## Streamable HTTP & Session Handling
 
@@ -216,5 +216,5 @@ Sensitive configuration (like LLM model names, destination names) should not be 
 3. Build and deploy:
    ```bash
    npm run build:mta   # mbt build -t gen/mta_archives --mtar cloud-llm-hub.mtar
-   npm run deploy      # cf deploy gen/mta_archives/cloud-llm-hub.mtar -e .mtaext
+   npm run deploy      # deploys HDI artifacts when enabled, then deploys the MTA
    ```

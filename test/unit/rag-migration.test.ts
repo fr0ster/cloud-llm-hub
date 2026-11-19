@@ -16,9 +16,11 @@ jest.mock('@mcp-abap-adt/qdrant-rag', () => ({
   ...jest.requireActual<typeof import('@mcp-abap-adt/qdrant-rag')>(
     '@mcp-abap-adt/qdrant-rag',
   ),
+  migrateQdrantMultivectors: jest.fn(),
   migrateQdrantVectorRagAccess: jest.fn(),
 }));
 
+import { createServer } from 'node:http';
 import {
   HanaVectorRagProvider,
   migrateHanaVectorRagAccess,
@@ -29,12 +31,18 @@ import {
   symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  fragmentOrdinalMigrationSql,
   migratePgVectorRagAccess,
   PgVectorRagProvider,
 } from '@mcp-abap-adt/pg-vector-rag';
 import {
+  migrateQdrantMultivectors,
   migrateQdrantVectorRagAccess,
   QdrantRagProvider,
+  RAG_MIGRATION_PRECONDITION,
+  RAG_MIGRATION_REJECTED,
+  RAG_MIGRATION_UNCONFIRMED,
+  RAG_MIGRATION_VERIFICATION,
 } from '@mcp-abap-adt/qdrant-rag';
 import { restampHubStores } from '../../srv/lib/hub-store-restamp';
 import {
@@ -42,42 +50,365 @@ import {
   migrateHubRagProviders,
   migrateRagData,
 } from '../../srv/lib/rag-migration';
+import { createCollectionProvider } from '../../srv/lib/rag-provider-factory';
 import { migrateSharedHistory } from '../../srv/lib/session-history-collection';
+
+const embedder = symmetricEmbedder({ embed: async () => ({ vector: [1] }) });
+const queryPg = jest.fn(async () => ({ rows: [], rowCount: 0 }));
 
 function provider() {
   return new PgVectorRagProvider({
     name: 'test',
-    connection: 'postgres://localhost/test',
-    embedder: symmetricEmbedder({ embed: async () => ({ vector: [1] }) }),
+    connection: { collectionName: 'test', schema: 'hub', layout: 'shared' },
+    layout: 'shared',
+    embedder,
+    clientFactory: () => ({ query: queryPg, end: async () => {} }),
   });
 }
 
-test('dispatches the HANA and Qdrant backend migrations', async () => {
-  const embedder = symmetricEmbedder({ embed: async () => ({ vector: [1] }) });
-  const hana = new HanaVectorRagProvider({
+const queryHana = jest.fn(
+  async (): Promise<{ COLUMN_NAME: string }[]> => [
+    { COLUMN_NAME: 'FRAGMENT_ORDINAL' },
+  ],
+);
+const execHana = jest.fn(async () => ({ rowCount: 0 }));
+
+function hanaProvider() {
+  return new HanaVectorRagProvider({
     name: 'hana',
     embedder,
     connection: {
       host: 'localhost',
       collectionName: 'test',
       credential: staticLogin('test', 'test'),
+      layout: 'shared',
+      schema: 'HUB_HDI',
     },
+    layout: 'shared',
+    clientFactory: () => ({
+      query: queryHana,
+      exec: execHana,
+      close: async () => {},
+    }),
   });
-  const qdrant = new QdrantRagProvider({
-    name: 'qdrant',
-    url: 'http://localhost:6333',
-    embedder,
-  });
+}
+
+test('checks the HDI column before migrating HANA records', async () => {
+  const hana = hanaProvider();
   jest
     .mocked(migrateHanaVectorRagAccess)
     .mockResolvedValue({ ok: true, value: { reported: [] } });
-  jest
-    .mocked(migrateQdrantVectorRagAccess)
-    .mockResolvedValue({ ok: true, value: { reported: [] } });
   expect((await migrateRagData(hana, 'hana-vector', jest.fn())).ok).toBe(true);
-  expect((await migrateRagData(qdrant, 'qdrant', jest.fn())).ok).toBe(true);
+  expect(queryHana).toHaveBeenCalledWith(
+    expect.stringContaining("COLUMN_NAME = 'FRAGMENT_ORDINAL'"),
+    ['HUB_HDI', 'RAG_DOCUMENTS'],
+  );
+  expect(queryHana.mock.invocationCallOrder[0]).toBeLessThan(
+    jest.mocked(restampHubStores).mock.invocationCallOrder[0],
+  );
+  expect(execHana).not.toHaveBeenCalled();
   expect(migrateHanaVectorRagAccess).toHaveBeenCalledWith(hana);
-  expect(migrateQdrantVectorRagAccess).toHaveBeenCalledWith(qdrant);
+});
+
+test('a stale HANA table blocks startup with an HDI deployment diagnostic', async () => {
+  queryHana.mockResolvedValueOnce([]);
+  const log = jest.fn();
+  const result = await migrateHubRagProviders(
+    [{ provider: hanaProvider(), kind: 'hana-vector' }],
+    log,
+  );
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error('Expected a schema failure');
+  expect(result.error.message).toContain('RAG_DOCUMENTS.FRAGMENT_ORDINAL');
+  expect(isRagMigrationReady()).toBe(false);
+  expect(log).toHaveBeenCalledWith(
+    expect.stringContaining(
+      'RAG_DOCUMENTS.FRAGMENT_ORDINAL is missing. Deploy the updated HDI artifacts',
+    ),
+  );
+  expect(execHana).not.toHaveBeenCalled();
+  expect(restampHubStores).not.toHaveBeenCalled();
+  expect(migrateHanaVectorRagAccess).not.toHaveBeenCalled();
+});
+
+const qdrantConfig = {
+  url: 'http://localhost:6333',
+  prefix: 'hub',
+  apiKey: 'key',
+};
+
+test('migrates standalone, catalogued and physical Qdrant collections in one call', async () => {
+  const collection = `hub_c_${'a'.repeat(40)}`;
+  const server = createServer((req, res) => {
+    const path = req.url?.split('?')[0];
+    res.setHeader('Content-Type', 'application/json');
+    if (path === '/collections/hub-collections-catalog') {
+      res.end(JSON.stringify({ result: {} }));
+    } else if (path === '/collections/hub-collections-catalog/points/scroll') {
+      res.end(
+        JSON.stringify({
+          result: {
+            points: ['provider-created', 'hub_h_history'].map((name) => ({
+              payload: {
+                store_name: name,
+                collection_name: name,
+                scope: 'global',
+                attributes_json: '{}',
+              },
+            })),
+          },
+        }),
+      );
+    } else if (path === '/collections') {
+      res.end(
+        JSON.stringify({
+          result: {
+            collections: [
+              'hub-collections-catalog',
+              'hub-catalog',
+              'hub-collections-catalog_rag_roles',
+              'hub_h_other-collections-catalog',
+              'hub_h_trust',
+              'provider-created',
+              'unrelated',
+              '__rag_multivector_migration__backup',
+              collection,
+            ].map((name) => ({ name })),
+          },
+        }),
+      );
+    } else {
+      res.writeHead(500).end(`Unexpected request ${path}`);
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === 'string')
+      throw new Error('Expected a Qdrant stub address');
+    const config = { ...qdrantConfig, url: `http://127.0.0.1:${address.port}` };
+    const qdrant = createCollectionProvider(
+      {
+        backends: { tools: 'qdrant', persistent: 'qdrant', session: 'qdrant' },
+        embedder: null,
+        qdrant: config,
+      },
+      { retrieval: embedder },
+    );
+    if (!qdrant) throw new Error('Expected Qdrant provider');
+    const session = emptyQdrantProvider();
+    jest.mocked(session.listCollections).mockResolvedValue({
+      ok: true,
+      value: ['hub_h_dialogue', 'hub_h_trust'],
+    });
+    const expectedCollections = [
+      'hub-tools-reader',
+      'hub-tools-writer',
+      'hub-planner-memory',
+      'provider-created',
+      'hub_h_history',
+      'hub_h_trust',
+      collection,
+      'hub_h_dialogue',
+    ];
+    jest.mocked(migrateQdrantMultivectors).mockResolvedValue(
+      expectedCollections.map((name) => ({
+        collection: name,
+        temporaryCollection: 'backup',
+        action:
+          name === 'hub_h_history'
+            ? 'resume'
+            : name === 'hub-tools-writer'
+              ? 'absent'
+              : 'already-migrated',
+      })),
+    );
+    const log = jest.fn();
+    expect(
+      (
+        await migrateHubRagProviders(
+          [
+            { provider: qdrant, kind: 'qdrant' },
+            { provider: session, kind: 'qdrant' },
+          ],
+          log,
+          {
+            config,
+            standaloneCollections: [
+              'hub-tools-reader',
+              'hub-tools-writer',
+              'hub-planner-memory',
+            ],
+          },
+        )
+      ).ok,
+    ).toBe(true);
+    expect(migrateQdrantMultivectors).toHaveBeenCalledTimes(1);
+    const [[options]] = jest.mocked(migrateQdrantMultivectors).mock.calls;
+    expect(options.collections).toEqual(expectedCollections);
+    expect(options.url).toBe(config.url);
+    expect(await options.credential?.secret()).toBe('key');
+    expect(isRagMigrationReady()).toBe(true);
+    const actions = log.mock.calls
+      .flat()
+      .filter((line) => line.startsWith('RAG migration qdrant/multivectors:'));
+    expect(actions).toHaveLength(expectedCollections.length);
+    expect(log).toHaveBeenCalledWith(
+      'RAG migration qdrant/multivectors: collection=hub-tools-writer action=absent',
+    );
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('collection=hub_h_history action=resume'),
+    );
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('collection=hub_h_trust action=already-migrated'),
+    );
+    expect(migrateQdrantVectorRagAccess).toHaveBeenCalledWith(qdrant);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+function emptyQdrantProvider() {
+  const qdrant = new QdrantRagProvider({
+    name: 'hub-collections',
+    url: qdrantConfig.url,
+    embedder,
+  });
+  jest.spyOn(qdrant, 'describeCollections').mockResolvedValue({
+    ok: true,
+    value: { records: [], rejected: [] },
+  });
+  jest
+    .spyOn(qdrant, 'listCollections')
+    .mockResolvedValue({ ok: true, value: [] });
+  return qdrant;
+}
+
+test('an empty Qdrant list still runs recovery once', async () => {
+  const qdrant = emptyQdrantProvider();
+  const collection = `hub_c_${'b'.repeat(40)}`;
+  jest
+    .mocked(migrateQdrantMultivectors)
+    .mockResolvedValueOnce([
+      { collection, temporaryCollection: 'backup', action: 'resume' },
+    ]);
+  const log = jest.fn();
+  const result = await migrateHubRagProviders(
+    [{ provider: qdrant, kind: 'qdrant' }],
+    log,
+    { config: qdrantConfig, standaloneCollections: [] },
+  );
+  expect(migrateQdrantMultivectors).toHaveBeenCalledTimes(1);
+  expect(migrateQdrantMultivectors).toHaveBeenCalledWith({
+    url: qdrantConfig.url,
+    credential: expect.anything(),
+    collections: [],
+  });
+  expect(result.ok).toBe(true);
+  expect(log).toHaveBeenCalledWith(
+    `RAG migration qdrant/multivectors: collection=${collection} action=resume`,
+  );
+});
+
+test.each([
+  RAG_MIGRATION_UNCONFIRMED,
+  RAG_MIGRATION_REJECTED,
+  RAG_MIGRATION_VERIFICATION,
+  RAG_MIGRATION_PRECONDITION,
+])('%s stops startup and preserves the Qdrant library error', async (code) => {
+  const message =
+    'Qdrant could not migrate hub-tools-reader.\nFull operation details.';
+  const error = new RagError(message, code);
+  jest.mocked(migrateQdrantMultivectors).mockRejectedValueOnce(error);
+  const log = jest.fn();
+  const qdrant = emptyQdrantProvider();
+  jest
+    .mocked(qdrant.listCollections)
+    .mockResolvedValue({ ok: true, value: ['hub_h_trust'] });
+  const result = await migrateHubRagProviders(
+    [
+      { provider: qdrant, kind: 'qdrant' },
+      { provider: provider(), kind: 'pg-vector' },
+    ],
+    log,
+    { config: qdrantConfig, standaloneCollections: ['hub-tools-reader'] },
+  );
+  if (result.ok) throw new Error('Expected a Qdrant migration failure');
+  expect(result.error).toBe(error);
+  expect(result.error.code).toBe(code);
+  expect(result.error.message).toBe(message);
+  expect(log.mock.calls).toEqual([
+    [`RAG migration qdrant/multivectors: ${code}: ${message}`],
+  ]);
+  expect(isRagMigrationReady()).toBe(false);
+  expect(migrateQdrantMultivectors).toHaveBeenCalledTimes(1);
+  expect(migrateQdrantVectorRagAccess).not.toHaveBeenCalled();
+  expect(restampHubStores).not.toHaveBeenCalled();
+  expect(migrateSharedHistory).not.toHaveBeenCalled();
+  expect(queryPg).not.toHaveBeenCalled();
+  expect(migratePgVectorRagAccess).not.toHaveBeenCalled();
+});
+
+test('an absent provider collection blocks startup', async () => {
+  const qdrant = emptyQdrantProvider();
+  const collection = 'hub_h_trust';
+  jest
+    .mocked(qdrant.listCollections)
+    .mockResolvedValue({ ok: true, value: [collection] });
+  jest
+    .mocked(migrateQdrantMultivectors)
+    .mockResolvedValueOnce([
+      { collection, temporaryCollection: 'backup', action: 'absent' },
+    ]);
+  const result = await migrateHubRagProviders(
+    [{ provider: qdrant, kind: 'qdrant' }],
+    jest.fn(),
+    { config: qdrantConfig, standaloneCollections: [] },
+  );
+  if (result.ok)
+    throw new Error('Expected a missing provider collection failure');
+  expect(result.error.code).toBe(RAG_MIGRATION_PRECONDITION);
+  expect(isRagMigrationReady()).toBe(false);
+  expect(migrateQdrantVectorRagAccess).not.toHaveBeenCalled();
+});
+
+test('a retained Qdrant backup blocks startup until cleanup can be rerun', async () => {
+  jest.mocked(migrateQdrantMultivectors).mockResolvedValueOnce([
+    {
+      collection: 'hub-tools-reader',
+      temporaryCollection: 'backup',
+      action: 'migrate',
+      temporaryCollectionRetained: true,
+    },
+  ]);
+  const result = await migrateHubRagProviders(
+    [{ provider: provider(), kind: 'pg-vector' }],
+    jest.fn(),
+    { config: qdrantConfig, standaloneCollections: ['hub-tools-reader'] },
+  );
+  if (result.ok) throw new Error('Expected a retained backup failure');
+  expect(result.error.code).toBe(RAG_MIGRATION_UNCONFIRMED);
+  expect(result.error.message).toContain('backup');
+  expect(isRagMigrationReady()).toBe(false);
+  expect(migrateQdrantMultivectors).toHaveBeenCalledTimes(1);
+  expect(migratePgVectorRagAccess).not.toHaveBeenCalled();
+});
+
+test('an unexpected Qdrant failure blocks readiness without logging its contents', async () => {
+  jest
+    .mocked(migrateQdrantMultivectors)
+    .mockRejectedValueOnce(new Error('private credentials'));
+  const log = jest.fn();
+  const result = await migrateHubRagProviders([], log, {
+    config: qdrantConfig,
+    standaloneCollections: ['hub-tools-reader'],
+  });
+  expect(result.ok).toBe(false);
+  expect(isRagMigrationReady()).toBe(false);
+  expect(log).toHaveBeenCalledWith(
+    expect.stringContaining('qdrant/multivectors: QDRANT_MULTIVECTOR_ERROR'),
+  );
+  expect(log.mock.calls.flat().join(' ')).not.toContain('private credentials');
 });
 
 test('history errors prevent backend migration', async () => {
@@ -91,7 +422,7 @@ test('history errors prevent backend migration', async () => {
   expect(migratePgVectorRagAccess).not.toHaveBeenCalled();
 });
 
-test('a failed provider keeps readiness false while other providers report findings', async () => {
+test('a failed provider stops migration before the next provider', async () => {
   const log = jest.fn();
   jest.mocked(migratePgVectorRagAccess).mockResolvedValue({
     ok: true,
@@ -108,12 +439,21 @@ test('a failed provider keeps readiness false while other providers report findi
       )
     ).ok,
   ).toBe(false);
-  expect(migratePgVectorRagAccess).toHaveBeenCalledTimes(2);
+  expect(migratePgVectorRagAccess).toHaveBeenCalledTimes(1);
+  expect(queryPg).toHaveBeenCalledTimes(1);
   expect(isRagMigrationReady()).toBe(false);
 });
 
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.mocked(migrateQdrantMultivectors).mockReset();
+  jest
+    .mocked(migrateQdrantVectorRagAccess)
+    .mockReset()
+    .mockResolvedValue({
+      ok: true,
+      value: { reported: [] },
+    });
   jest
     .mocked(restampHubStores)
     .mockResolvedValue({ ok: true, value: { rewritten: 1 } });
@@ -125,8 +465,12 @@ beforeEach(() => {
     .mockResolvedValue({ ok: true, value: { reported: [] } });
 });
 
-test('runs restamp, history move, backend migration in that order', async () => {
+test('upgrades the configured PG schema before restamp, history move and access migration', async () => {
   const order: string[] = [];
+  queryPg.mockImplementationOnce(async () => {
+    order.push('layout');
+    return { rows: [], rowCount: 0 };
+  });
   jest.mocked(restampHubStores).mockImplementation(async () => {
     order.push('restamp');
     return { ok: true, value: { rewritten: 1 } };
@@ -142,7 +486,25 @@ test('runs restamp, history move, backend migration in that order', async () => 
   expect((await migrateRagData(provider(), 'pg-vector', jest.fn())).ok).toBe(
     true,
   );
-  expect(order).toEqual(['restamp', 'history', 'backend']);
+  expect(queryPg.mock.calls).toEqual([
+    [fragmentOrdinalMigrationSql('rag_documents', 'shared', 'hub'), undefined],
+  ]);
+  expect(order).toEqual(['layout', 'restamp', 'history', 'backend']);
+});
+
+test('a PG layout failure prevents record migration and readiness', async () => {
+  queryPg.mockRejectedValueOnce(new Error('DDL failed'));
+  const log = jest.fn();
+  const result = await migrateHubRagProviders(
+    [{ provider: provider(), kind: 'pg-vector' }],
+    log,
+  );
+  expect(result.ok).toBe(false);
+  expect(isRagMigrationReady()).toBe(false);
+  expect(log).toHaveBeenCalledWith(
+    expect.stringContaining('pg-vector/storage layout'),
+  );
+  expect(restampHubStores).not.toHaveBeenCalled();
 });
 
 test('a reported finding fails the start and is logged', async () => {

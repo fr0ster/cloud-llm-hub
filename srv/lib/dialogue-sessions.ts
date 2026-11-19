@@ -94,7 +94,14 @@ import {
 } from './dialogue-turn-source';
 import { clearExecutionLimits, getExecutionLimits } from './execution-limits';
 import { admitBackground, type PipelineSession } from './gatekeeper';
-import { isLlmFailure, llmFailure, observeLlmSpend } from './llm-failure';
+import {
+  attributeTokenUsage,
+  captureTokenUsage,
+  isLlmFailure,
+  llmFailure,
+  observeLlmSpend,
+  reconcileTokenUsage,
+} from './llm-failure';
 import { longSessionsIfReady } from './long-session';
 import { withModelCatalog } from './model-catalog';
 import { parseModelAllowlist, resolveRequestModel } from './model-policy';
@@ -109,6 +116,7 @@ import { runWithRequestSystem } from './request-system-context';
 import { captureReviewProfile } from './review-scope';
 import { clearRoleModels, getRoleModels } from './role-model-settings';
 import {
+  chatResponseModel,
   clearRequestModel,
   currentRoleModel,
   roleOfProfile,
@@ -131,6 +139,7 @@ import { evaluateGated } from './step-reviewer';
 import { cachedSystemIdentity } from './system-identity-cache';
 import { createTaskResultStore } from './task-result-store';
 import { type TaskView, taskView } from './task-view';
+import { toolCallDiagnosticsLogger } from './tool-call-diagnostics';
 import { resolverFor, type TrustResolver } from './trust-resolver';
 import { usageRuntime } from './usage/runtime';
 import {
@@ -451,7 +460,44 @@ async function open(
   let turnFailureCause: string | undefined;
   // Every planner call of the turn, background corrections included.
   let turnPlannerSpend: TokenUsage | undefined;
+  let turnRetrieval: ReturnType<typeof captureTokenUsage> | undefined;
+  const replyRetrieval = new Map<string, TokenUsage>();
   let lastFailureUsage: PlannerMessageUsage | undefined;
+  function observeRetrieval<T>(run: () => T): T {
+    // Retrieval from planner tools is already covered by the planner observer.
+    return turnRetrieval && !plannerTrace.getStore()?.active
+      ? turnRetrieval.run(run)
+      : run();
+  }
+  function addRetrieval(
+    planner: TokenUsage | undefined,
+    retrieval: TokenUsage | undefined,
+  ): TokenUsage | undefined {
+    if (!retrieval) return planner;
+    return addTokenUsage(
+      planner && !planner.models
+        ? attributeTokenUsage(
+            planner,
+            chatResponseModel(selectedModel, config.llm.model, { userId, key }),
+          )
+        : planner,
+      retrieval,
+    );
+  }
+  function withRetrieval(
+    message: PlannerMessage,
+    retrieval: TokenUsage | undefined,
+  ): PlannerMessage {
+    return retrieval
+      ? {
+          ...message,
+          usage: {
+            ...message.usage,
+            planner: addRetrieval(message.usage?.planner, retrieval),
+          },
+        }
+      : message;
+  }
   const environment = () => {
     const connection = longSessionsIfReady()?.get(userId, key)?.connection;
     const identity = connection ? cachedSystemIdentity(connection) : undefined;
@@ -805,7 +851,7 @@ async function open(
     savedState?.ackMode,
   );
   const drainPending = async () => {
-    await outbox.add(withFailedWorkerUsage(session?.takePending() ?? []));
+    await outbox.add(withAdditionalTaskUsage(session?.takePending() ?? []));
   };
   const signals = dialogueSignals();
   const dialogueIdentity = (): RagCallerIdentity => {
@@ -997,9 +1043,20 @@ async function open(
   );
   // Snapshot before settlement clears the live reply; a later successful turn
   // must not erase the spend belonging to the retained failure sequence.
-  // TaskBoard passes wrapRun a copy and drops usage on rejection. Success
-  // records remain authoritative; retain only rejected runs as a fallback.
-  const failedWorkerSpend = new Map<string, TokenUsage>();
+  // TaskBoard stores a successful worker's usage. Rejections and result-store
+  // embeddings occur outside that accounting.
+  const additionalTaskSpend = new Map<string, TokenUsage>();
+  const tasksWithoutRecordedWorkerUsage = new Set<string>();
+  const addTaskSpend = (id: string, usage: TokenUsage | undefined) => {
+    const spent = addTokenUsage(additionalTaskSpend.get(id), usage);
+    if (spent) additionalTaskSpend.set(id, spent);
+  };
+  const withTaskSpend = (task: TaskRecord): TaskRecord => {
+    const additional = additionalTaskSpend.get(task.id);
+    return additional
+      ? { ...task, usage: addTokenUsage(task.usage, additional) }
+      : task;
+  };
   function failedTurnUsage(): PlannerMessageUsage {
     const accountedTasks = new Set(
       outbox
@@ -1009,13 +1066,12 @@ async function open(
         ),
     );
     return {
-      planner:
-        turnPlannerSpend &&
-        turnPlannerSpend.totalTokens > (turnReplyUsage?.totalTokens ?? 0)
-          ? turnPlannerSpend
-          : turnReplyUsage,
+      planner: addRetrieval(
+        reconcileTokenUsage(turnReplyUsage, turnPlannerSpend, selectedModel),
+        turnRetrieval?.usage(),
+      ),
       tasks: (session?.snapshot().tasks ?? []).flatMap((task) => {
-        const usage = task.usage ?? failedWorkerSpend.get(task.id);
+        const usage = task.usage;
         return usage && !accountedTasks.has(task.id)
           ? [
               {
@@ -1034,9 +1090,27 @@ async function open(
       }),
     };
   }
-  function withFailedWorkerUsage(messages: PlannerMessage[]): PlannerMessage[] {
+  function withRecordedTaskUsage(usage: PlannerMessageUsage | undefined) {
+    if (!usage?.tasks?.some((task) => additionalTaskSpend.has(task.id)))
+      return usage;
+    return {
+      ...usage,
+      tasks: usage.tasks.map((task) => {
+        const additional = additionalTaskSpend.get(task.id);
+        return additional
+          ? {
+              ...task,
+              usage: addTokenUsage(task.usage, additional) ?? task.usage,
+            }
+          : task;
+      }),
+    };
+  }
+  function withAdditionalTaskUsage(
+    messages: PlannerMessage[],
+  ): PlannerMessage[] {
     const available = (failedTurnUsage().tasks ?? []).filter((task) =>
-      failedWorkerSpend.has(task.id),
+      tasksWithoutRecordedWorkerUsage.has(task.id),
     );
     const unique = new Map(messages.map((message) => [message.id, message]));
     return [...unique.values()].map((message) => {
@@ -1046,18 +1120,19 @@ async function open(
         outbox.history().find((entry) => entry.id === message.id)?.usage
           ?.tasks ?? [];
       const extras = [
-        ...retained.filter((task) => failedWorkerSpend.has(task.id)),
+        ...retained.filter((task) => additionalTaskSpend.has(task.id)),
         ...available.splice(0),
       ].filter(
         (task) =>
           !message.usage?.tasks?.some((existing) => existing.id === task.id),
       );
-      return extras.length
+      const usage = withRecordedTaskUsage(message.usage);
+      return extras.length || usage !== message.usage
         ? {
             ...message,
             usage: {
-              ...message.usage,
-              tasks: [...(message.usage?.tasks ?? []), ...extras],
+              ...usage,
+              tasks: [...(usage?.tasks ?? []), ...extras],
             },
           }
         : message;
@@ -1068,6 +1143,7 @@ async function open(
   const unsubscribeStarted = signals.on(
     'dialogue.turn.started',
     ({ payload: { trigger } }) => {
+      turnRetrieval = captureTokenUsage();
       if (trigger === 'event')
         emit({
           kind: 'turn',
@@ -1082,7 +1158,7 @@ async function open(
   );
   const unsubscribeSettled = signals.on(
     'dialogue.turn.settled',
-    async ({ payload: { outcome, trigger } }) => {
+    async ({ payload: { outcome, trigger, messageId } }) => {
       const request = session
         ?.snapshot()
         .requests?.find((item) => item.closedAt === undefined);
@@ -1121,9 +1197,13 @@ async function open(
         lastFailedSeq = settledSeq;
         lastFailureUsage = failedTurnUsage();
         failureCause = turnFailureCause;
+      } else if (trigger === 'user' && messageId) {
+        const retrieval = turnRetrieval?.usage();
+        if (retrieval) replyRetrieval.set(messageId, retrieval);
       }
       turnFailureCause = undefined;
       turnPlannerSpend = undefined;
+      turnRetrieval = undefined;
       turnReply = undefined;
       turnReplyUsage = undefined;
       await outbox.flushed();
@@ -1200,6 +1280,10 @@ async function open(
         // current when they end, so their own capability does not leak forward.
         let reviewedGeneration: number | undefined;
         try {
+          const recordSpend = (usage: TokenUsage) => {
+            spent = addTokenUsage(spent, usage);
+            turnPlannerSpend = addTokenUsage(turnPlannerSpend, usage);
+          };
           let result = await observeLlmSpend(
             () =>
               runWithContextCapture(
@@ -1236,10 +1320,7 @@ async function open(
                     caller.identity,
                   ),
               ),
-            (usage) => {
-              spent = addTokenUsage(spent, usage);
-              turnPlannerSpend = addTokenUsage(turnPlannerSpend, usage);
-            },
+            recordSpend,
           );
           if (result.ok && result.value.content) {
             turn.reviewing = true;
@@ -1284,6 +1365,11 @@ async function open(
           }
           // The library appends this successful result before its final save.
           if (result.ok) {
+            result.value.usage = reconcileTokenUsage(
+              result.value.usage,
+              spent,
+              selectedModel,
+            );
             turnReply = reply;
             const trace = options.trace;
             const usage =
@@ -1398,12 +1484,16 @@ async function open(
       caller: boundCaller.value,
       resultStore: {
         ...taskResultStore,
-        put(task, options) {
-          // TaskRecord.output is bounded; retain the canonical full result for
-          // history before a later turn can consume its completion event.
-          for (const turn of taskHistoryTurns.get(task.id) ?? [])
-            turn.taskAnswers.set(task.id, task.output);
-          return taskResultStore.put(task, options);
+        async put(entry, options) {
+          const spend = captureTokenUsage();
+          try {
+            // Keep the final task output before a correction consumes its event.
+            for (const turn of taskHistoryTurns.get(entry.id) ?? [])
+              turn.taskAnswers.set(entry.id, entry.output);
+            return await spend.run(() => taskResultStore.put(entry, options));
+          } finally {
+            addTaskSpend(entry.id, spend.usage());
+          }
         },
       },
       toolTrust: (name) =>
@@ -1525,6 +1615,33 @@ async function open(
       // The coordinator still needs this context for conversational turns that
       // do not invoke plan_create or plan_revise.
       ...retrieval,
+      plannerMemory: retrieval.plannerMemory && {
+        ...retrieval.plannerMemory,
+        rag: new Proxy(retrieval.plannerMemory.rag, {
+          get(target, property) {
+            if (property === 'query') {
+              const query: typeof target.query = (...args) =>
+                observeRetrieval(() => target.query(...args));
+              return query;
+            }
+            const value = Reflect.get(target, property);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        }),
+      },
+      plannerKnowledge: retrieval.plannerKnowledge?.map(
+        (source) =>
+          new Proxy(source, {
+            get(target, property) {
+              if (property === 'search') {
+                const search: typeof target.search = (...args) =>
+                  observeRetrieval(() => target.search(...args));
+                return search;
+              }
+              return Reflect.get(target, property, target);
+            },
+          }),
+      ),
       ...(usage ? { usage } : {}),
       id: boundCaller.value.sessionId,
       // Keep the library's memory/usage identity logical; only the hub bus
@@ -1556,6 +1673,7 @@ async function open(
           clearUnusableCheckerFailures(state);
           savedState = {
             ...state,
+            tasks: state.tasks.map(withTaskSpend),
             coordinatorModel: selectedModel,
             toolContractVersion: DIALOGUE_TOOL_CONTRACT_VERSION,
             ...(savedState?.agentsCollectionId !== undefined
@@ -1585,6 +1703,7 @@ async function open(
                 : '',
             );
           }
+          const planner = addRetrieval(turnReplyUsage, turnRetrieval?.usage());
           await outbox.upsert(
             turnReply && text.trim()
               ? [
@@ -1593,13 +1712,11 @@ async function open(
                     createdAt: turnReply.createdAt,
                     text,
                     trigger: 'user',
-                    ...(turnReplyUsage
-                      ? { usage: { planner: turnReplyUsage } }
-                      : {}),
+                    ...(planner ? { usage: { planner } } : {}),
                   },
                 ]
               : [],
-            withFailedWorkerUsage(state.pending),
+            withAdditionalTaskUsage(state.pending),
           );
         },
         delete: async () => {},
@@ -1614,7 +1731,10 @@ async function open(
         maxTasks: config.agent.dialogue.maxTasks,
         // TaskBoard owns the outer pool slot, including cancellation and release.
         pool: sharedExecutorPool(),
-        baseInput: () => ({ sessionId: key }),
+        baseInput: () => ({
+          sessionId: key,
+          sessionLogger: toolCallDiagnosticsLogger({ channel: 'dialogue' }),
+        }),
         async wrapRun(task, run) {
           // TaskBoard starts execution in the scheduling planner scope; its
           // async context survives pool waits and later user turns.
@@ -1685,9 +1805,12 @@ async function open(
               !result.stopped &&
               result.status !== 'awaiting-external';
             state = healthy ? 'done' : result.stopped ? 'stopped' : 'failed';
-            return result;
+            const usage = reconcileTokenUsage(result.usage, spent, task.model);
+            if (!usage) tasksWithoutRecordedWorkerUsage.add(task.id);
+            return usage ? { ...result, usage } : result;
           } catch (error) {
-            if (spent) failedWorkerSpend.set(task.id, spent);
+            tasksWithoutRecordedWorkerUsage.add(task.id);
+            addTaskSpend(task.id, spent);
             throw error;
           } finally {
             runningWorkers--;
@@ -1723,9 +1846,13 @@ async function open(
       onMessage(message) {
         if (stopped) return;
         historyAnswer(message.text);
+        const pending = session?.takePending() ?? [];
         void outbox
           .add(
-            withFailedWorkerUsage([message, ...(session?.takePending() ?? [])]),
+            withAdditionalTaskUsage([
+              withRetrieval(message, turnRetrieval?.usage()),
+              ...pending.filter((entry) => entry.id !== message.id),
+            ]),
           )
           .catch(() => {
             /* Retain in memory and retry persistence on next save. */
@@ -1747,7 +1874,7 @@ async function open(
     return {
       ...state,
       tasks: state.tasks.map((task) => ({
-        ...task,
+        ...withTaskSpend(task),
         ...withQueueActivity(task),
       })),
     };
@@ -1836,7 +1963,15 @@ async function open(
       identity: dialogueIdentity(),
     });
     return llms.run(() =>
-      send(text, { ...options, trace }).finally(drainPending),
+      send(text, { ...options, trace })
+        .then((reply) => {
+          const retrieval = replyRetrieval.get(reply.id);
+          replyRetrieval.delete(reply.id);
+          const message = withRetrieval(reply, retrieval);
+          const usage = withRecordedTaskUsage(message.usage);
+          return usage === message.usage ? message : { ...message, usage };
+        })
+        .finally(drainPending),
     );
   };
   return {

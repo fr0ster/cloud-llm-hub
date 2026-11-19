@@ -35,6 +35,10 @@ import {
   withToolSearchHealth,
 } from '../../srv/lib/tool-search-health';
 import { handleChatCompletions } from '../../srv/openai-handler';
+import {
+  qdrantMultivectorConfig,
+  qdrantQueryFetch,
+} from './helpers/qdrant-fetch';
 
 let recover: () => void = () => {};
 afterEach(async () => {
@@ -354,9 +358,7 @@ test.each([
   async (backend, role) => {
     const fetchMock = jest
       .spyOn(global, 'fetch')
-      .mockImplementation(
-        async () => new Response(JSON.stringify({ result: [] })),
-      );
+      .mockImplementation(qdrantQueryFetch(qdrantMultivectorConfig(2)));
     const raw = jest
       .spyOn(SapAiCoreEmbedder.prototype, 'embed')
       .mockResolvedValue({ vector: [1, 0] })
@@ -665,24 +667,35 @@ describe('production tool-search rate limits and input cap', () => {
   });
 
   async function httpTools(kind: 'openai' | 'ollama') {
+    const url = 'http://embedding.invalid';
+    const contextLength = 8192;
     const response = () =>
-      new Response(
-        JSON.stringify(
-          kind === 'openai'
-            ? {
-                data: [{ embedding: [1, 0] }],
-                usage: { prompt_tokens: 3, total_tokens: 3 },
-              }
-            : { embedding: [1, 0], prompt_eval_count: 3 },
-        ),
+      Response.json(
+        kind === 'openai'
+          ? {
+              data: [{ embedding: [1, 0] }],
+              usage: { prompt_tokens: 3, total_tokens: 3 },
+            }
+          : { embeddings: [[1, 0]], prompt_eval_count: 3 },
       );
-    const fetchMock = jest
-      .spyOn(global, 'fetch')
-      .mockImplementation(async () => response());
+    const fetchMock = jest.fn<
+      ReturnType<typeof fetch>,
+      Parameters<typeof fetch>
+    >(async () => response());
+    jest.spyOn(global, 'fetch').mockImplementation(async (input, init) => {
+      if (kind === 'ollama' && String(input) === `${url}/api/show`)
+        return Response.json({
+          model_info: {
+            'general.architecture': 'bert',
+            'bert.context_length': contextLength,
+          },
+        });
+      return fetchMock(input, init);
+    });
     const config = {
       kind,
       model: 'test',
-      url: 'http://embedding.invalid',
+      url,
       apiKey: 'test-key',
     };
     await prefetchEmbedder(config);
@@ -700,7 +713,7 @@ describe('production tool-search rate limits and input cap', () => {
       fetchMock.mockImplementation(async () => response());
     };
     const tools = new ExpositionFilteringRag(stores.create('tools', 'reader'));
-    return { fetchMock, embedding, probe, tools };
+    return { fetchMock, embedding, probe, tools, url, contextLength };
   }
 
   test.each([
@@ -711,7 +724,8 @@ describe('production tool-search rate limits and input cap', () => {
   ] as const)(
     '%s %s preserves HTTP Retry-After and the input cap with exactly two transport calls',
     async (kind, path) => {
-      const { fetchMock, embedding, probe, tools } = await httpTools(kind);
+      const { fetchMock, embedding, probe, tools, url, contextLength } =
+        await httpTools(kind);
       if (path === 'probe')
         for (let i = 0; i < 30; i++) embedding.breaker.recordFailure();
       const failure = jest.spyOn(embedding.breaker, 'recordFailure');
@@ -736,14 +750,19 @@ describe('production tool-search rate limits and input cap', () => {
       expect(failure).not.toHaveBeenCalled();
       expect(embedding.breaker.state).toBe('closed');
       expect(toolSearchFailure()).toBeUndefined();
+      const input = text.slice(0, 24_000);
       expect(fetchMock).toHaveBeenCalledWith(
-        `http://embedding.invalid${kind === 'openai' ? '/embeddings' : '/api/embeddings'}`,
+        `${url}${kind === 'openai' ? '/embeddings' : '/api/embed'}`,
         expect.objectContaining({
           body: JSON.stringify({
             model: 'test',
             ...(kind === 'openai'
-              ? { input: text.slice(0, 24_000) }
-              : { prompt: text.slice(0, 24_000) }),
+              ? { input }
+              : {
+                  input: [input],
+                  truncate: false,
+                  options: { num_ctx: contextLength },
+                }),
           }),
           headers: {
             'Content-Type': 'application/json',

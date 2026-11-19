@@ -700,7 +700,7 @@ graph LR
 
 ## 7. Request Lifecycle — Agent / LLM Flow
 
-ToolQueryAnalyzer translates the current request and decides whether answering needs the ABAP system in one classifier-model call, using up to six recent user/assistant messages (500 characters each) as decision context. The first tool search of a request of at least 3 characters waits for this call, English included, before tool search uses its translation. English is returned verbatim; other languages, including transliterated text, are translated with no language heuristic. Shorter requests skip the call and keep tools. One call per request; later re-selection searches in the same request reuse its decision and search untranslated. Concurrent first searches share the pending decision in request scope, independent of session identity. Hard mode (`LLM_AGENT_MODE=hard`) always keeps tools and skills. `LLM_AGENT_TOOL_GATE_TIMEOUT_MS` bounds factory creation plus chat (default 4000 ms, positive integer; invalid values warn and use the default). Timeout or external abort keeps tools and the original text, is not cached, and clears pending analysis so the next request retries; underlying chat is aborted where supported. A confident negative suppresses both MCP tools and skills; doubts, errors and invalid answers keep them. Results are cached by request and history. Delegated execute_step calls bypass the gate, as do unconfigured analyzers; LLM_AGENT_TOOL_GATE=off still runs the same call for translation but ignores its decision.
+Each tool search asks `ToolQueryAnalyzer` to translate and classify its query. The analyzer uses one classifier-model call and up to six recent user or assistant messages (500 characters each) as context. Matching queries can share valid or pending analysis when the context and quota scope also match. A confident negative suppresses MCP tools and skills for that search. Short queries, uncertain results, errors and cancellation keep tools. Hard mode, delegated `execute_step` and `LLM_AGENT_TOOL_GATE=off` bypass the gate and still use the translation. Analysis waits for completion or caller cancellation.
 
 
 > This is the flow through the **primary** agent surfaces — `/mcp/agent/stream/http` (`execute_step`), `/v1/chat/completions`, `/v1/messages`. The two `/v1/*` handlers build their per-request connection via `establishRequestConnection` (`request-connection.ts`); `/mcp/agent/stream/http` builds its own via the local `buildConnectionForDestination` in `agent-mcp.ts`. All three then call `getSmartAgent` directly, enter the per-request ALS scope through `runWithRequestConnection` (exported from `agent-manager.ts`), then the chat surfaces converge on the selected chat coordinator shown in Step 4, and `execute_step` on its executor (Step 4 explains why).
@@ -769,7 +769,7 @@ Adaptive registers two `SmartAgentSubAgent` workers, `executor` and `checker`, o
 
 If initial planning throws or returns invalid plan JSON, the handler falls back to one executor work step plus an answer step. An abort is propagated instead. Completed answers pass through `NoticeFinalizer` at the end, using the same captured tool results; asking, stopping or awaiting external tools does not invoke that finalizer.
 
-Adaptive execution is bounded by `LLM_AGENT_PLAN_MAX_STEPS`, `LLM_AGENT_PLAN_MAX_REVISIONS` and `LLM_AGENT_PLAN_MAX_DURATION_MS` (library defaults: 20 step records, 3 revisions, 300000 ms). The interpreter checks step and elapsed-time limits between steps and also enforces per-step run limits; the duration is not a timeout on the initial planning call or an in-flight worker call. Exceeding a budget produces a stop report.
+Adaptive execution has optional run-wide limits in `LLM_AGENT_PLAN_MAX_STEPS`, `LLM_AGENT_PLAN_MAX_REVISIONS` and `LLM_AGENT_PLAN_MAX_DURATION_MS`. Each unset value leaves that limit disabled. The interpreter checks configured step and elapsed-time limits between steps and enforces the library's per-step run limits separately. Exceeding a limit produces a stop report.
 
 Run records (`srv/lib/run-record-store.ts`) keep the latest run per authenticated user and session, including its plan, step results, verdicts and outcome; each step output is truncated to 4000 characters on save. With `LLM_AGENT_SESSION_STORE=hana-vector` or `pg-vector`, records use the dedicated `h_runs` hub store on HANA or PostgreSQL. Other session-store settings use memory bounded by `LLM_AGENT_MAX_SESSIONS`. The adaptive handler retains previous runs for bookkeeping; the hub excludes them from planning prompts in both history modes. Both identity components come from request scope; a missing authenticated user, missing session, or library session ID mismatch makes load/save a no-op. Both Anthropic processing paths pass the trusted request session ID. Provider row IDs hash the user/session tuple and loads verify owner metadata. Session deletion, plain-history timer expiry, retention forgetting and long-session expiry delete the owner-scoped run record (`session-store.ts`, `session-state.ts`, `session-lifecycle.ts`). Save timestamps provide a session-TTL backstop on load, and memory saves sweep expired records. Provider stores also scan h_runs once at startup and every minute through the session sweep, deleting expired records even when no session is accessed after restart. These guarded background passes skip overlaps, warn on failure and retry on the next tick; malformed rows are left intact with a warning.
 
@@ -1153,8 +1153,8 @@ graph TB
 | `LLM_AGENT_TEMPERATURE` | `agent-config.ts` | Unset uses the provider/model default; set a number to override; `off` explicitly omits the parameter. |
 | `LLM_AGENT_CLIENT_HISTORY` | `lib/client-history.ts`, `agent-manager.ts` | `off` (default): current client turn, including tool messages; earlier complete turns come from session history RAG. `on`: all client messages, subject to `LLM_AGENT_HISTORY_RECENCY_WINDOW`, without history RAG retrieval. Both modes record completed turns. Invalid values fail startup. History retrieval uses `LLM_AGENT_RAG_QUERY_K` (code 5, base deployment 15), without record truncation. |
 | `LLM_AGENT_PROMPT_CACHING` | `lib/deploy-role-config.ts`, `lib/llm-factory.ts` | `on` (default) or `off`; also accepts `true`/`false`. Passed to every LLM provider as an on/off switch; invalid values fail startup. |
-| `LLM_AGENT_COORDINATOR_PROMPT_CACHING`, `LLM_AGENT_PLANNER_PROMPT_CACHING`, `LLM_AGENT_EXECUTOR_PROMPT_CACHING`, `LLM_AGENT_CHECKER_PROMPT_CACHING`, `LLM_AGENT_CLASSIFIER_PROMPT_CACHING` | `lib/deploy-role-config.ts`, `agent-manager.ts` | Override global per role; empty inherits. Classifier covers helper clients and query translation; history summarization reuses the main LLM's role setting. Resolved caching participates in shared/session client identity independently of model choice. |
-| `LLM_AGENT_MAX_TOKENS` | `agent-config.ts` | Max response tokens (default: 2000) |
+| `LLM_AGENT_COORDINATOR_PROMPT_CACHING`, `LLM_AGENT_PLANNER_PROMPT_CACHING`, `LLM_AGENT_EXECUTOR_PROMPT_CACHING`, `LLM_AGENT_CHECKER_PROMPT_CACHING`, `LLM_AGENT_CLASSIFIER_PROMPT_CACHING` | `lib/deploy-role-config.ts`, `agent-manager.ts` | Override global per role; empty inherits. The classifier setting covers helper clients and query translation. Resolved caching participates in shared/session client identity independently of model choice. |
+| `LLM_AGENT_MAX_TOKENS` | `agent-config.ts` | Optional output token limit. Unset uses the provider/model default. |
 | `LLM_AGENT_MCP_DESTINATION` | `agent-config.ts`, `agent-manager.ts` | BTP Destination with two roles: (1) a "warm this first" startup hint (NOT privileged; does not block startup), and (2) the **implicit default destination** `getSmartAgent()` uses when a request passes no destination (`requestedDestination \|\| config.mcp.destination`, `agent-manager.ts`). Unset → LLM-only mode at startup |
 | `LLM_AGENT_DESTINATION_INIT_WAIT_MS` | `agent-manager.ts` | Legacy parser only; destination preparation now waits for completion without a hub deadline. |
 | `LLM_AGENT_MCP_ENDPOINT` | `agent-config.ts` | **Inert.** Read into `config.mcp.endpoint` and logged at startup, but no runtime path consumes it — the agent calls embedded handlers, not an MCP URL. Setting it changes nothing |
@@ -1459,11 +1459,11 @@ overloaded AI service.
 
 The hub shares one SAP AI Core account, so the default strategy is
 `WaitAsNeeded` (`wait-as-needed`) both with and without the gatekeeper door.
-A positive server interval is waited exactly, without a total wait cap. SSE
-keep-alives protect streaming callers while queued. Without an interval, the
-strategy backs off from 2 seconds, doubling per unnamed wait, with 20% jitter
-in either direction and a hard 60-second cap per wait. After six unnamed waits
-per call it reports `no-interval`: a missing interval can mean a spend cap.
+The shared quota gate honors every `Retry-After` interval. SSE keep-alives
+protect streaming callers while queued. Without an interval, the strategy
+backs off from 2 seconds, doubling per unnamed wait with 20% jitter and a
+maximum delay of 60 seconds per wait. Retries continue without an attempt
+or total wait cap until caller cancellation or a different provider response.
 
 An explicitly set `LLM_AGENT_THROTTLE_MAX_WAIT_MS` selects `WaitIfShortEnough`
 only without a door. This opt-in ceiling bounds total throttle waiting; zero
@@ -1594,8 +1594,7 @@ An invalid configured worker model fails startup naming the variable.
 | `LLM_AGENT_CHECKER_MODEL` | Coordinator chooses the checker model when unset |
 | `LLM_AGENT_<ROLE>_MAX_ITERATIONS` | Falls back to `LLM_AGENT_MAX_ITERATIONS`, then off (unlimited) |
 | `LLM_AGENT_<ROLE>_MAX_TOOL_CALLS` | Falls back to `LLM_AGENT_MAX_TOOL_CALLS`, then off (unlimited; overrides the library default) |
-| `LLM_AGENT_TOOL_RESULT_MAX_CHARS` | 60000; legacy `0` also disables the limit |
-| `LLM_AGENT_HISTORY_TOKEN_BUDGET` | Off when unset; a positive integer enables the budget |
+| `LLM_AGENT_TOOL_RESULT_MAX_CHARS` | Off by default. A positive integer enables the limit. `0` also disables it. |
 
 `<ROLE>` is `COORDINATOR`, `EXECUTOR`, or `CHECKER`. Every limit listed here,
 including `LLM_AGENT_MAX_ITERATIONS` and `LLM_AGENT_MAX_TOOL_CALLS`, accepts

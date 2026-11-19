@@ -7,7 +7,7 @@ const taskCaller = {
 };
 
 import { HandlerExporter } from '@mcp-abap-adt/lib/handlers';
-import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
+import type { IMcpClient, IRunRecordStore } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
 import {
   MCPClientWrapper,
@@ -128,8 +128,6 @@ function makeChainableBuilder() {
   builder.withToolSelectionStrategy = chainable(jest.fn());
   builder.withToolCache = chainable(withToolCache);
   builder.withMetrics = chainable(jest.fn());
-  builder.withSessionManager = chainable(jest.fn());
-  builder.withHistorySummarization = chainable(jest.fn());
   builder.withClientAdapter = chainable(jest.fn());
   builder.withRequestLogger = chainable(withRequestLogger);
   builder.withCoordinator = chainable(withCoordinator);
@@ -173,7 +171,9 @@ import type { AgentConfig } from '../../srv/agent-config';
 // this wiring contract can be driven directly, without going through the
 // full destination-initialization path.
 import * as agentManager from '../../srv/agent-manager';
+import { consumerHistoryRag } from '../../srv/lib/client-history';
 import { FixedExecutorPlanner } from '../../srv/lib/fixed-executor-planner';
+import { turnOwner } from '../../srv/lib/history-turn';
 import { outageClassifier } from '../../srv/lib/mcp-outage';
 import { NoticeFinalizer } from '../../srv/lib/notice-finalizer';
 import { startProviders } from '../../srv/lib/providers';
@@ -305,7 +305,27 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
       // The adaptive controller resolves its LLM per request; the finalizer keeps the critic.
       expect(deps.controller.inner.llm).not.toBe(deps.finalizer.criticLlm);
       expect(typeof deps.controller.inner.llm.streamChat).toBe('function');
-      expect(deps.runRecords).toBe(getRunRecordStore());
+      const runRecords: IRunRecordStore = deps.runRecords;
+      const load = jest.spyOn(getRunRecordStore(), 'load');
+      try {
+        await runWithSessionId(
+          taskCaller.sessionId,
+          async () => {
+            await runRecords.load(
+              turnOwner(taskCaller.userId, taskCaller.sessionId),
+            );
+            await runRecords.load(
+              turnOwner('another-user', taskCaller.sessionId),
+            );
+          },
+          undefined,
+          taskCaller.userId,
+        );
+        expect(load).toHaveBeenCalledTimes(1);
+        expect(load).toHaveBeenCalledWith(taskCaller.sessionId);
+      } finally {
+        load.mockRestore();
+      }
       expect(deps.budget).toEqual(expectedBudget);
       expect(deps.fallbackWorker).toBe('executor');
       expect([...deps.workers.keys()]).toEqual(['executor', 'checker']);
@@ -430,8 +450,13 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
   it.each([undefined, 'off', 'on'] as const)(
     'keeps tool retrieval and skills on the worker alone (clientHistory=%s)',
     async (clientHistory) => {
-      const toolsRag = {} as never;
-      await agentManager.buildAgentForDestination({} as never, toolsRag, {
+      const mcpAdapter = new McpClientAdapter(
+        new MCPClientWrapper({ url: 'http://localhost' }),
+      );
+      const toolsRag = new agentManager.ExpositionFilteringRag(
+        new InMemoryRag(),
+      );
+      await agentManager.buildAgentForDestination(mcpAdapter, toolsRag, {
         ...config,
         agent: { ...config.agent, clientHistory },
       });
@@ -449,13 +474,6 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
         }),
       );
       expect(instances[0].withSkillManager).toHaveBeenCalledTimes(1);
-      if (clientHistory === 'on')
-        expect(instances[0].withHistorySummarization).toHaveBeenCalledWith(20);
-      else expect(instances[0].withHistorySummarization).not.toHaveBeenCalled();
-      for (const [options] of jest.mocked(SmartAgentBuilder).mock.calls)
-        expect(options?.agent?.historyAutoSummarizeLimit).toBe(
-          clientHistory === 'on' ? undefined : Infinity,
-        );
       expect(instances[1].setToolsRag).not.toHaveBeenCalled();
       expect(instances[1].addRagCollection).not.toHaveBeenCalled();
       expect(instances[1].setHistoryRag).toHaveBeenCalledTimes(1);
@@ -463,7 +481,11 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
         instances[0].withEmbedder.mock.calls.length,
       );
       expect(instances[1].withSkillManager).not.toHaveBeenCalled();
-      expect(instances[1].withHistorySummarization).not.toHaveBeenCalled();
+      const historyRag =
+        clientHistory === 'on'
+          ? consumerHistoryRag
+          : agentManager.getSharedHistoryRag();
+      expect(setHistoryRag.mock.calls).toEqual([[historyRag], [historyRag]]);
     },
   );
 

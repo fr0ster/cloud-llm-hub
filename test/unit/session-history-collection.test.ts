@@ -187,7 +187,7 @@ test('session deletion waits for a write already waiting on binding or storage',
   });
 });
 
-test('the real builder forwards the trusted caller to history query and upsert', async () => {
+test('the real builder forwards the trusted caller to history retrieval and semantic turn indexing', async () => {
   const llm: ILlm = {
     chat: async () => ({
       ok: true,
@@ -214,7 +214,6 @@ test('the real builder forwards the trusted caller to history query and upsert',
       .withHelperLlm(llm)
       .withRagAccess(getHubRagAccess().access)
       .setHistoryRag(router)
-      .withHistorySummarization(1)
       .build(),
   );
   const response = await agent.agent.process(
@@ -233,7 +232,7 @@ test('the real builder forwards the trusted caller to history query and upsert',
   });
   expect(upsert).toHaveBeenCalled();
   expect(upsert.mock.calls[0][3]).toMatchObject({ caller: a, sessionId: 's1' });
-  expect(await router.listTurns(a)).toHaveLength(0); // Library summaries use their own text format.
+  expect(await router.listTurns(a)).toHaveLength(0); // Semantic index records use a separate format.
   const recalled = await router.query(
     new TextOnlyEmbedding('remember'),
     10,

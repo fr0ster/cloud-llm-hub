@@ -220,6 +220,33 @@ test('coordinator model switches and classifier analysis keep their own caching 
   ]);
 });
 
+test.each([undefined, 8192])(
+  'tool query analyzer forwards the configured output limit %s',
+  async (maxTokens) => {
+    process.env.LLM_AGENT_PROVIDER = 'openai';
+    process.env.LLM_AGENT_API_KEY = 'test';
+    delete process.env.SAP_CORE_AI_MAX_TOKENS;
+    if (maxTokens !== undefined)
+      process.env.LLM_AGENT_MAX_TOKENS = String(maxTokens);
+    const chat = jest
+      .spyOn(OpenAIProvider.prototype, 'chat')
+      .mockImplementation(async function (this: OpenAIProvider) {
+        expect(this.config.maxTokens).toBe(maxTokens);
+        return {
+          content:
+            '{"translation":"Inspect MARA","needsAbapSystem":true,"writes":false}',
+          finishReason: 'stop',
+        };
+      });
+    expect(await createToolQueryAnalyzer().analyze('Inspect MARA')).toEqual({
+      text: 'Inspect MARA',
+      needsAbapSystem: true,
+      writes: false,
+    });
+    expect(chat).toHaveBeenCalledTimes(1);
+  },
+);
+
 test('LLM-only guard uses classifier caching with the selected generation model', async () => {
   process.env.LLM_AGENT_PROVIDER = 'openai';
   process.env.LLM_AGENT_MODEL = 'guard-main';

@@ -58,6 +58,7 @@ export function systemIdentitySession(input: {
   jwt?: string;
 }): SessionKey | undefined {
   const { sapConfig, destinationName, authenticationType, jwt } = input;
+  if (!sapConfig.url) return undefined;
   let systemUrl: string;
   try {
     const url = new URL(sapConfig.url);

@@ -193,9 +193,7 @@ describe('the calls that dispatch are the ones that register', () => {
   });
 
   it('tracks the embedded tool dispatch', () => {
-    expect(src).toMatch(
-      /await\s+trackCall\(\s*Promise\.resolve\(\s*toolCall\s*\)\s*\)/,
-    );
+    expect(src).toMatch(/await\s+trackCall\(\s*toolCall\s*\)/);
   });
 
   it('starts the shared single-flight builds outside any admission scope', () => {

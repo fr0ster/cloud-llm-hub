@@ -285,17 +285,13 @@ test('canonical tool candidates deduplicate imported names and obey the read cei
     ).toEqual({ type: 'object' });
 });
 
-import { createToolLoopWindow } from '../../srv/lib/tool-loop-window';
+import { createReadDedupContextStrategy } from '../../srv/lib/read-dedup';
 
-test('local rag_read uses loop pointers and restores text after eviction or another-page change', async () => {
+test('local rag_read uses loop pointers and returns text after a record change', async () => {
   const { client } = setup();
   await inSession(async () => {
-    const strategy = createToolLoopWindow(1);
+    createReadDedupContextStrategy();
     const options = { trace: { traceId: 'read-loop' } };
-    const emptyRound = {
-      assistant: { role: 'assistant' as const, content: '' },
-      results: [],
-    };
     const created = await client.callTool(
       'collection_create',
       { name: 'pages', scope: 'user' },
@@ -316,13 +312,8 @@ test('local rag_read uses loop pointers and restores text after eviction or anot
     expect(await read()).toMatchObject({
       value: { content: expect.stringContaining('"next":32000') },
     });
-    await strategy.record(emptyRound);
     expect(await read()).toMatchObject({
       value: { content: expect.stringContaining('"alreadyRead":true') },
-    });
-    await strategy.record(emptyRound);
-    expect(await read()).toMatchObject({
-      value: { content: expect.stringContaining('"text":') },
     });
     await client.callTool(
       'record_update',

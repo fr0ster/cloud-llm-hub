@@ -20,6 +20,7 @@ it.each([
   ['GetProgramVersionSource', 'program'],
   ['UpdateTableType', 'tableType'],
   ['GetObjectVersions', null],
+  ['GetWhereUsed', null],
   ['GetLocalTypes', 'class'],
   ['CreateCdsUnitTest', 'unitTest'],
   ['GetSqlQuery', null],

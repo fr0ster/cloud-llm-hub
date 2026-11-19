@@ -26,7 +26,7 @@ Edit `.mtaext` and set:
 - **LLM_AGENT_TEMPERATURE**: Unset uses the provider/model default; set a number to override; `off` explicitly omits the parameter.
 - **LLM_AGENT_CLIENT_HISTORY**: `off` (default) keeps the last user message and following assistant/tool messages; `on` forwards all client messages, subject to `LLM_AGENT_HISTORY_RECENCY_WINDOW`. Only off retrieves earlier complete turns from session history RAG using `LLM_AGENT_RAG_QUERY_K` (code 5; base deployment 15). Only `off` and `on` are accepted; invalid values fail startup. See [CONFIG_USAGE](../llm-agent/CONFIG_USAGE.md).
 - **LLM_AGENT_PROMPT_CACHING**: `on` (default) or `off`; `true`/`false` are aliases. Optional `LLM_AGENT_COORDINATOR_PROMPT_CACHING`, `LLM_AGENT_PLANNER_PROMPT_CACHING`, `LLM_AGENT_EXECUTOR_PROMPT_CACHING`, `LLM_AGENT_CHECKER_PROMPT_CACHING` and `LLM_AGENT_CLASSIFIER_PROMPT_CACHING` override global for each role (classifier also covers helpers). Empty inherits; invalid values fail startup. See [CONFIG_USAGE](../llm-agent/CONFIG_USAGE.md).
-- **LLM_AGENT_MAX_TOKENS**: Max tokens (default: `2000`)
+- **LLM_AGENT_MAX_TOKENS** sets an optional output token limit. Leave it unset to use the provider/model default.
 - **LLM_AGENT_MCP_DESTINATION**: BTP Destination name for ABAP connection
 
 Example:
@@ -37,7 +37,7 @@ modules:
       LLM_AGENT_MODEL: "gpt-4o-mini"
       # Unset uses the provider/model default; set a number to override; off explicitly omits.
       LLM_AGENT_TEMPERATURE: ""
-      LLM_AGENT_MAX_TOKENS: "2000"
+      LLM_AGENT_MAX_TOKENS: ""
       LLM_AGENT_MCP_DESTINATION: "DEV_ABAP_SYSTEM"
 ```
 
@@ -50,7 +50,7 @@ The repository already ships these — do not redefine them:
 ```bash
 npm run build      # npx cds b
 npm run build:mta  # npx mbt build -t gen/mta_archives --mtar cloud-llm-hub.mtar
-npm run deploy     # cf deploy gen/mta_archives/cloud-llm-hub.mtar -e .mtaext --abort-on-error --delete-services -f
+npm run deploy     # deploys HDI artifacts when enabled, then deploys the MTA
 ```
 
 Run `build:mta` then `deploy`. Note that `deploy` already passes `-e .mtaext`, so the extension
@@ -70,6 +70,7 @@ mbt build -t gen/mta_archives --mtar cloud-llm-hub.mtar -e .mtaext
 #### 2. Deploy to Cloud Foundry
 
 ```bash
+bash tools/deploy-hdi-tables.sh --mtaext .mtaext
 cf deploy gen/mta_archives/cloud-llm-hub.mtar -e .mtaext --abort-on-error --delete-services
 ```
 
@@ -114,24 +115,16 @@ it once, for example `cf create-service hana hdi-shared hdi-llm`. The MTA binds 
 - two `.hdbconstraint` files with their foreign keys: `rag_role_assignments_role_fk`,
   `rag_collection_roles_role_fk`.
 
-Deploy them into the container before the hub starts. Its startup migration needs the access tables.
-Deploy with:
-
-```bash
-npm ci
-cf login ...                              # target the space that holds the container
-tools/deploy-hdi-tables.sh hdi-llm        # service name, default hdi-llm
-tools/deploy-hdi-tables.sh --dry-run      # print the steps without calling cf
-```
-
-The script pushes a throwaway `@sap/hdi-deploy` app bound to the container, waits up to 5 minutes for
-`Deployment to container ... done` in its logs, then deletes the app (retrying while an unbind is in
-progress). It exits non-zero on failure. The vector column is fixed at `REAL_VECTOR(1536)`.
+`tools/deploy.sh` and `npm run deploy` apply the artifacts and the usage tables to the active HDI
+service in the extension descriptor before deploying the new runtime. The helper starts a temporary
+`@sap/hdi-deploy` app and waits for a successful deployment. Use
+`bash tools/deploy-hdi-tables.sh --dry-run --mtaext <descriptor>` to preview the operation.
+The vector column is fixed at `REAL_VECTOR(1536)`.
 
 **3. `.mtaext`.** `mta.yaml` declares the resource `cloud-llm-hub-hdi` as an inactive, optional
 `org.cloudfoundry.existing-service` with a placeholder `service-name`, so nothing changes by default. An
 extension descriptor cannot change a resource type, so the `.mtaext` only switches the resource on and
-names the container from step 2. Every template in `docs/deployment/templates/` carries this block
+names the existing container. Every template in `docs/deployment/templates/` carries this block
 commented out:
 
 ```yaml
@@ -148,8 +141,8 @@ of its own: with a shared catalog it would restore and serve production's collec
 
 If you want the MTA to **create** the container instead of binding an existing one, that is a change to
 `mta.yaml` itself, not to `.mtaext`: set the resource's `type: com.sap.xs.hdi-container` with
-`parameters: { service: hana, service-plan: hdi-shared }`, then deploy the tables (step 2) into the
-container the MTA created.
+`parameters: { service: hana, service-plan: hdi-shared }`. The standard deploy scripts expect the
+HDI service to exist before the application deploy.
 
 **4. Secrets.** The embedder key (`LLM_AGENT_EMBEDDER_API_KEY`) is not an MTA parameter: put it in the
 fork's `.env`, which `tools/deploy.sh` applies with `cf set-env`. HANA credentials come from the service
@@ -179,6 +172,25 @@ log line `Persistent collections` shows the configured dimension. Behaviour and 
 
 HANA is reachable only from Cloud Foundry, so there is no local run against it; use PGlite, Qdrant or
 the in-memory providers for local work.
+
+## Upgrading the RAG storage layout for llm-agent 35
+
+- **Qdrant.** Startup converts Hub-managed data collections to `max_sim` multivectors before admitting
+  requests. Each collection's action appears in the startup log. Restarting resumes an interrupted
+  conversion. Keep other writers off the target collections during the upgrade and use a single
+  runtime instance for the first start.
+- **PostgreSQL.** Startup applies the package's idempotent `fragment_ordinal` migration to
+  `rag_documents` in the configured schema. The Hub's database login needs permission to alter the
+  table. Existing rows get ordinal `0`.
+- **SAP HANA Cloud.** The deploy scripts apply the updated `RAG_DOCUMENTS.hdbtable` through HDI.
+  Startup verifies `RAG_DOCUMENTS.FRAGMENT_ORDINAL` and fails if the column is missing.
+
+The manual release step for SAP AI Core is to regenerate the precomputed tool-embeddings bundle
+with real SAP AI Core access and the target configuration. Run
+`npx tsx tools/generate-tool-embeddings.ts --mtaext <descriptor>` with the credentials available to
+the build, or pass `--aicore-key <file>`. Verify the generated bundle matches the entire tool corpus
+and include it in the release. A stale bundle on the `vector` tools backend leaves requests for SAP
+ABAP destinations returning HTTP 503. See [Tool corpus and the embedding bundle](../contributors/TOOL_CORPUS.md).
 
 ## Multi-Destination Support (v2.2+)
 

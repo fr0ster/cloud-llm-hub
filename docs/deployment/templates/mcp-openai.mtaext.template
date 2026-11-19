@@ -47,7 +47,8 @@ parameters:
   LLM_AGENT_MODEL: "gpt-4o"
   # Unset uses the provider/model default; set a number to override; off explicitly omits.
   LLM_AGENT_TEMPERATURE: ""
-  LLM_AGENT_MAX_TOKENS: "32000"
+  # Empty uses the provider/model default.
+  LLM_AGENT_MAX_TOKENS: ""
 
   # MCP Configuration — SAP system destination(s)
   LLM_AGENT_MCP_DESTINATION: "S4HANA_DEV"

@@ -9,6 +9,8 @@ import {
 } from '@mcp-abap-adt/llm-agent-libs';
 import { recordPolicy } from './record-policy';
 
+export const PLANNER_MEMORY_STORE = 'planner-memory';
+
 export function plannerMemoryStore(options: {
   kind: string;
   create: (scope: 'session', name: string) => IRag;
@@ -17,7 +19,7 @@ export function plannerMemoryStore(options: {
   if (options.kind === 'in-memory') return undefined;
   return options.kind === 'hana-vector' || options.kind === 'pg-vector'
     ? options.persistent()
-    : options.create('session', 'planner-memory');
+    : options.create('session', PLANNER_MEMORY_STORE);
 }
 
 export async function plannerContext(options: {

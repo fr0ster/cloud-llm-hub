@@ -48,7 +48,7 @@ test.each(['onprem', 'cloud'] as const)(
     const server = new EmbeddableMcpServer({
       connection,
       systemType,
-      handlersRegistry: rawHandlerRegistry(['readonly', 'high'], systemType),
+      handlersRegistry: rawHandlerRegistry(['readonly', 'high']),
     });
     const client = new Client({ name: 'include-tools-test', version: '1' });
     const [clientTransport, serverTransport] =
@@ -146,7 +146,7 @@ test.each(writes)(
   },
 );
 
-test('include tools are on-premise only and CreateProgram no longer offers include', () => {
+test('include tools are on-premise only and CreateProgram has no program type argument', () => {
   const entries = new HandlerExporter().getHandlerEntries();
   for (const name of [...writes, 'GetMainPrograms']) {
     const entry = entries.find((tool) => tool.toolDefinition.name === name);
@@ -155,9 +155,10 @@ test('include tools are on-premise only and CreateProgram no longer offers inclu
   const program = entries.find(
     (tool) => tool.toolDefinition.name === 'CreateProgram',
   );
-  expect(
-    program?.toolDefinition.inputSchema.properties.program_type.enum,
-  ).not.toContain('include');
+  if (!program) throw new Error('Missing CreateProgram');
+  expect(program.toolDefinition.inputSchema.shape).not.toHaveProperty(
+    'program_type',
+  );
   expect(map.get('GetMainPrograms')).toBe('readonly');
   expect(() =>
     assertToolAllowed(

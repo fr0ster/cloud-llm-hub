@@ -27,6 +27,10 @@ import { createTaskResultStore } from '../../srv/lib/task-result-store';
 import { withToolResultCap } from '../../srv/lib/tool-result-cap';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { liveSession } from './helpers/canonical-rag';
+import {
+  type QdrantVectorConfig,
+  qdrantCollectionInfo,
+} from './helpers/qdrant-fetch';
 
 const scope = { userId: 'alice', sessionKey: 'result-session' };
 const physical = sessionCollectionId(
@@ -389,7 +393,7 @@ test.each([0, 60000, 4096])(
       undefined,
       cap,
     );
-    await loopReads.run(new ReadDedup(8), async () => {
+    await loopReads.run(new ReadDedup(), async () => {
       let offset = 0;
       let combined = '';
       let pages = 0;
@@ -463,18 +467,32 @@ test.each([
       throw new Error('Embedding unavailable');
     return { vector: Array<number>(dimension).fill(0) };
   });
-  const points = z.object({
+  const payload = z.record(z.string(), z.json());
+  const catalogWrite = z.object({
     points: z.array(
       z.object({
         vector: z.array(z.number()),
-        payload: z.record(z.string(), z.json()),
+        payload,
       }),
     ),
   });
-  let catalogPoints: z.infer<typeof points>['points'] = [];
-  let documentPoints: z.infer<typeof points>['points'] = [];
+  const documentWrite = z.object({
+    points: z.array(
+      z.object({
+        vector: z.array(z.array(z.number())),
+        payload,
+      }),
+    ),
+  });
+  let catalogPoints: z.infer<typeof catalogWrite>['points'] = [];
+  let documentPoints: z.infer<typeof documentWrite>['points'] = [];
+  const layouts = new Map<string, QdrantVectorConfig>([
+    ['/collections/test-collections-catalog', { size: 1, distance: 'Dot' }],
+    ['/collections/knowledge', { size: dimension, distance: 'Cosine' }],
+    ['/collections/other', { size: 3072, distance: 'Cosine' }],
+  ]);
   const sizes: number[] = [];
-  const vectors: number[][] = [];
+  const vectors: number[][][] = [];
   let listCalls = 0;
   const fetchMock = jest
     .spyOn(globalThis, 'fetch')
@@ -498,18 +516,17 @@ test.each([
         });
       }
       if (
-        path.endsWith('/collections/knowledge') ||
-        path.endsWith('/collections/other')
-      )
-        return Response.json({
-          result: {
-            config: {
-              params: {
-                vectors: { size: path.endsWith('/other') ? 3072 : dimension },
-              },
-            },
-          },
-        });
+        (!init?.method || init.method === 'GET') &&
+        /^\/collections\/[^/]+$/.test(path)
+      ) {
+        const layout = layouts.get(path);
+        return layout
+          ? qdrantCollectionInfo(layout)
+          : Response.json(
+              { status: { error: 'Collection not found' } },
+              { status: 404 },
+            );
+      }
       if (init?.method === 'PUT') {
         if (typeof init.body !== 'string') throw new Error('Missing JSON body');
         if (path.endsWith('/index')) {
@@ -519,18 +536,27 @@ test.each([
           });
           return Response.json({ result: { status: 'completed' } });
         }
-        if (path.includes('/points')) {
-          const body = points.parse(JSON.parse(init.body));
-          if (catalog) catalogPoints = body.points;
+        if (path.endsWith('/points')) {
+          if (catalog)
+            catalogPoints = catalogWrite.parse(JSON.parse(init.body)).points;
           else {
-            documentPoints = body.points;
-            vectors.push(...body.points.map((point) => point.vector));
+            documentPoints = documentWrite.parse(JSON.parse(init.body)).points;
+            vectors.push(...documentPoints.map((point) => point.vector));
           }
         } else {
           const body = z
-            .object({ vectors: z.object({ size: z.number() }) })
+            .object({
+              vectors: z.object({
+                size: z.number(),
+                distance: z.literal('Cosine'),
+                multivector_config: z.object({
+                  comparator: z.literal('max_sim'),
+                }),
+              }),
+            })
             .parse(JSON.parse(init.body));
-          if (!catalog) sizes.push(body.vectors.size);
+          layouts.set(path, body.vectors);
+          sizes.push(body.vectors.size);
         }
         return Response.json({ result: { status: 'completed' } });
       }
@@ -608,7 +634,7 @@ test.each([
     }
     if (!written.ok) throw new Error(written.error.message);
     expect(sizes).toEqual([dimension]);
-    expect(vectors).toEqual([Array<number>(dimension).fill(0)]);
+    expect(vectors).toEqual([[Array<number>(dimension).fill(0)]]);
     catalogPoints = [];
     const second = await createTaskResultStore(registry, {
       ...scope,
@@ -730,6 +756,9 @@ test.each([768, 3072])(
   'HANA SQL accepts an unembedded task result at dimension %i',
   async (dimension) => {
     const { HanaVectorRag } = await import('@mcp-abap-adt/hana-vector-rag');
+    type HanaClient = NonNullable<
+      ConstructorParameters<typeof HanaVectorRag>[1]
+    >;
     const { staticLogin } = await import('@mcp-abap-adt/llm-agent');
     const { addPersistentDocument } = await import(
       '../../srv/lib/collection-persistence'
@@ -737,14 +766,13 @@ test.each([768, 3072])(
     const embed = jest.fn(async () => {
       throw new Error('Embedding must not be called');
     });
-    const exec = jest.fn(async (sql: string) => {
-      const match = sql.match(/TO_REAL_VECTOR\('\[([^\]]*)\]'\)/);
-      if (!match) throw new Error('Missing vector literal');
-      expect(match[1].split(',').map(Number)).toEqual(
-        Array<number>(dimension).fill(0),
-      );
-      return { rowCount: 1 };
-    });
+    const exec = jest.fn(async (_sql: string) => ({ rowCount: 1 }));
+    const client: HanaClient = {
+      exec,
+      query: async () => [],
+      close: async () => {},
+      transaction: async (work) => work(client),
+    };
     const rag = new HanaVectorRag(
       {
         collectionName: 'task_results',
@@ -753,7 +781,7 @@ test.each([768, 3072])(
         autoCreateSchema: false,
         embedder: symmetricEmbedder({ embed }),
       },
-      { exec, query: async () => [], close: async () => {} },
+      client,
     );
     const stored = {
       meta: {
@@ -788,7 +816,17 @@ test.each([768, 3072])(
       }),
     ).toMatchObject({ id: entry.id, text: entry.output });
     expect(stored.meta.documentCount).toBe(1);
-    expect(exec).toHaveBeenCalledTimes(1);
+    expect(exec).toHaveBeenCalledTimes(2);
+    const [[upsert], [removeFragments]] = exec.mock.calls;
+    expect(upsert).toMatch(/^UPSERT /);
+    const match = upsert.match(/TO_REAL_VECTOR\('\[([^\]]*)\]'\)/);
+    if (!match) throw new Error('Missing vector literal');
+    expect(match[1].split(',').map(Number)).toEqual(
+      Array<number>(dimension).fill(0),
+    );
+    expect(removeFragments).toMatch(
+      /^DELETE FROM .+ WHERE "ID" = \? AND "FRAGMENT_ORDINAL" > 0$/,
+    );
     expect(embed).not.toHaveBeenCalled();
   },
 );

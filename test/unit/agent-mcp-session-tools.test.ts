@@ -443,9 +443,11 @@ it('execute_step returns executor usage and ends with the footer with recording 
         },
       },
     });
-    expect(result.content[0]?.text).toMatch(
-      /^done\n\[usage\] prompt=7 completion=4 total=11 time=\d+\.\ds$/,
-    );
+    const [text, usage] = result.content[0].text.split('\n[usage] ');
+    expect(text).toBe('done');
+    expect(result).toMatchObject({
+      structuredContent: { usage: JSON.parse(usage) },
+    });
   } finally {
     if (previous === undefined) delete process.env.LLM_AGENT_USAGE;
     else process.env.LLM_AGENT_USAGE = previous;
@@ -501,11 +503,9 @@ it.each(['', ' \n\t'])(
       'system state of the step is unknown and must be verified by a separate read step',
     );
     expect(text).toContain('iterations=2 toolCallCount=0 stopReason=stop');
-    expect(text).toMatch(
-      /\n\[usage\] prompt=7 completion=4 total=11 time=\d+\.\ds$/,
-    );
+    const [message, usage] = text.split('\n[usage] ');
     expect(result).toMatchObject({
-      structuredContent: { result: text?.split('\n[usage]')[0] },
+      structuredContent: { result: message, usage: JSON.parse(usage) },
     });
   },
 );
@@ -998,16 +998,16 @@ test('execute_step honours a session executor maxIterations and another session 
 
 test('session_set_models accepts null to restore a default limit', async () => {
   const session = await opened();
-  setExecutionLimits('alice', session, { historyTokenBudget: 'off' });
+  setExecutionLimits('alice', session, { toolResultMaxChars: 'off' });
   const result = await call('session_set_models', {
     session,
-    limits: { historyTokenBudget: null },
+    limits: { toolResultMaxChars: null },
   });
   expect(result.isError).not.toBe(true);
   expect(getExecutionLimits('alice', session)).toEqual({});
   expect(JSON.parse(result.content[0].text)).toMatchObject({
     effectiveLimits: {
-      historyTokenBudget: {
+      toolResultMaxChars: {
         source: expect.stringMatching(/^(config|default)$/),
       },
     },

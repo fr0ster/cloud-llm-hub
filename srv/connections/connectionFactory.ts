@@ -122,6 +122,8 @@ export function createConnection(options: ConnectionOptions): AbapConnection {
   // Priority 2: Direct connection (Basic/JWT via axios)
   // Use provided logger or default loggerAdapter from mcp-abap-adt
   const effectiveLogger = logger || loggerAdapter;
+  if (!sapConfig.url)
+    throw new Error('A direct connection requires an SAP URL.');
   const wire = { client: sapConfig.client, baseUrl: sapConfig.url };
 
   let credential: BasicAuthProvider | TokenAuthProvider;

@@ -1,4 +1,9 @@
-import { LlmError } from '@mcp-abap-adt/llm-agent';
+import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
+import {
+  LlmError,
+  staticApiKey,
+  type TokenUsage,
+} from '@mcp-abap-adt/llm-agent';
 import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import { bindCaller } from '../../srv/lib/rag-caller';
 import { chatSessionBodyTests } from './helpers/chat-session-body';
@@ -110,6 +115,133 @@ beforeEach(() => harness.reset());
 afterEach(() => configure());
 
 clientToolHistoryTests('anthropic', body, call);
+
+it.each([false, true])(
+  'reports uncached input and cache reads and writes (stream=%s)',
+  async (stream) => {
+    configure();
+    const input: TokenUsage = {
+      promptTokens: 1531,
+      completionTokens: 0,
+      totalTokens: 1531,
+      cachedInputTokens: 1527,
+      cacheCreationInputTokens: 2,
+    };
+    const usage: TokenUsage = {
+      ...input,
+      completionTokens: 177,
+      totalTokens: 1708,
+    };
+    harness.process = async () => {
+      reportLlmSpend(usage, 'm');
+      return { ok: true, value: { content: 'answer', usage } };
+    };
+    harness.stream = async function* () {
+      yield { ok: true, value: { content: 'answer', usage: input } };
+      reportLlmSpend(usage, 'm');
+      yield { ok: true, value: { content: '', usage, finishReason: 'stop' } };
+    };
+    const { res, done } = call(body(stream));
+    await done;
+    const expected = {
+      input_tokens: 2,
+      output_tokens: 177,
+      cache_read_input_tokens: 1527,
+      cache_creation_input_tokens: 2,
+      models: {
+        m: {
+          prompt_tokens: 1531,
+          completion_tokens: 177,
+          cached_input_tokens: 1527,
+          cache_creation_input_tokens: 2,
+        },
+      },
+    };
+    if (stream) {
+      const event = (name: string) =>
+        res.body
+          .split('\n\n')
+          .find((block) => block.startsWith(`event: ${name}\n`))
+          ?.split('\ndata: ')[1];
+      expect(JSON.parse(event('message_start') ?? '')).toMatchObject({
+        message: {
+          usage: {
+            input_tokens: 2,
+            output_tokens: 0,
+            cache_read_input_tokens: 1527,
+            cache_creation_input_tokens: 2,
+          },
+        },
+      });
+      expect(JSON.parse(event('message_delta') ?? '')).toMatchObject({
+        usage: expected,
+      });
+    } else expect(JSON.parse(res.body)).toMatchObject({ usage: expected });
+  },
+);
+
+it.each([false, true])(
+  'retains the provider input when the output-only usage is larger (stream=%s)',
+  async (stream) => {
+    configure();
+    const fetch = jest
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new globalThis.Response(
+          [
+            'event: message_start',
+            'data: {"message":{"usage":{"input_tokens":4,"cache_read_input_tokens":1527,"cache_creation_input_tokens":2,"output_tokens":0}}}',
+            '',
+            'event: message_delta',
+            'data: {"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2000}}',
+            '',
+          ].join('\n'),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      );
+    try {
+      const provider = new AnthropicProvider({
+        credential: staticApiKey('test'),
+        model: 'm',
+        maxTokens: 1024,
+      });
+      const chunks = [];
+      for await (const chunk of provider.streamChat([])) chunks.push(chunk);
+      const input = chunks[0]?.usage;
+      const output = chunks[1]?.usage;
+      if (!input || !output) throw new Error('Missing provider usage');
+      expect(input.promptTokens).toBe(1533);
+      expect(output.promptTokens).toBe(0);
+      harness.process = async () => {
+        reportLlmSpend(input, 'm');
+        return { ok: true, value: { content: 'answer', usage: output } };
+      };
+      harness.stream = async function* () {
+        reportLlmSpend(input, 'm');
+        yield { ok: true, value: { content: 'answer', usage: output } };
+        yield { ok: true, value: { content: '', finishReason: 'stop' } };
+      };
+      const { res, done } = call(body(stream));
+      await done;
+      const expected = {
+        input_tokens: 4,
+        output_tokens: 2000,
+        cache_read_input_tokens: 1527,
+        cache_creation_input_tokens: 2,
+        models: { m: { prompt_tokens: 1533, total_tokens: 3533 } },
+      };
+      if (stream) {
+        const delta = res.body
+          .split('\n\n')
+          .find((block) => block.startsWith('event: message_delta\n'))
+          ?.split('\ndata: ')[1];
+        expect(JSON.parse(delta ?? '')).toMatchObject({ usage: expected });
+      } else expect(JSON.parse(res.body)).toMatchObject({ usage: expected });
+    } finally {
+      fetch.mockRestore();
+    }
+  },
+);
 
 describe('/v1/messages at the door', () => {
   it("refuses with Anthropic's overloaded_error under 529, and no Retry-After", async () => {

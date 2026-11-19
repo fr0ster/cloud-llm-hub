@@ -222,6 +222,18 @@ const RETIRED_ENV_MENTIONS = new Map([
     'docs/superpowers/plans/2026-10-21-agent-latency.md',
     { LLM_AGENT_SAP_RELEVANCE_SCORE: 2 },
   ],
+  [
+    'docs/superpowers/plans/2026-11-02-release-token-efficiency.md',
+    { LLM_AGENT_TOOL_LOOP_WINDOW: 1 },
+  ],
+  [
+    'docs/superpowers/specs/2026-11-02-release-token-efficiency-design.md',
+    { LLM_AGENT_TOOL_LOOP_WINDOW: 1 },
+  ],
+  [
+    'docs/superpowers/plans/2026-11-09-session-role-models-stage1.md',
+    { LLM_AGENT_HISTORY_TOKEN_BUDGET: 2 },
+  ],
 ]);
 
 function checkEnvNames(file, lines, known) {

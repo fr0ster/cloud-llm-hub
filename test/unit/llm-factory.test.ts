@@ -387,15 +387,22 @@ test('spend is reported before the failure reaches the consumer, split usage sum
   }
 });
 
-test('concurrent provider streams have independent unnamed retry budgets', async () => {
+test('concurrent provider streams keep independent unnamed backoff past six waits', async () => {
   const strategy = new WaitAsNeeded();
   const stream = jest
     .spyOn(OpenAIProvider.prototype, 'streamChat')
     .mockImplementation(async function* () {
-      for (let attempt = 1; attempt <= 6; attempt++) {
-        expect(
-          strategy.decide({ source: 'response', attempt, waitedMs: 0 }).retry,
-        ).toBe(true);
+      for (let attempt = 1; attempt <= 8; attempt++) {
+        const unnamed = strategy.decide({
+          source: 'response',
+          attempt: attempt + 20,
+          waitedMs: 0,
+        });
+        expect(unnamed.retry).toBe(true);
+        if (attempt === 1) {
+          expect(unnamed.waitMs).toBeGreaterThanOrEqual(1_600);
+          expect(unnamed.waitMs).toBeLessThanOrEqual(2_400);
+        }
         expect(
           strategy.decide({
             source: 'response',
@@ -406,9 +413,6 @@ test('concurrent provider streams have independent unnamed retry budgets', async
         ).toBe(90000);
         yield { content: '' };
       }
-      expect(
-        strategy.decide({ source: 'response', attempt: 7, waitedMs: 0 }).reason,
-      ).toBe('no-interval');
     });
   try {
     const llm = await makeHubLlm(

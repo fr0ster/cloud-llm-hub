@@ -1,6 +1,10 @@
 import { isDeepStrictEqual } from 'node:util';
 import { normalizeAndValidateExternalTools } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
+import {
+  anthropicEventWithUsage,
+  anthropicUsageToWire,
+} from './lib/anthropic-usage';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import {
   clientHistoryMessages,
@@ -14,7 +18,11 @@ import {
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
 import { getExecutionLimits } from './lib/execution-limits';
-import { failureMessage, observeLlmSpend } from './lib/llm-failure';
+import {
+  captureTokenUsage,
+  failureMessage,
+  mergeStreamUsage,
+} from './lib/llm-failure';
 import { awaitModelCatalog } from './lib/model-catalog';
 import { ignoredModelHeader } from './lib/model-policy';
 import { bindCaller, callOptionsFor } from './lib/rag-caller';
@@ -41,7 +49,6 @@ import {
   requestMeasurement,
 } from './lib/usage/request-records';
 import { usageRuntime } from './lib/usage/runtime';
-import { responseUsageToWire } from './lib/usage-wire';
 /**
  * Anthropic Messages API handler for SmartAgent.
  *
@@ -59,8 +66,6 @@ import { randomUUID } from 'node:crypto';
 import {
   AdapterValidationError,
   AnthropicApiAdapter,
-  type ApiRequestContext,
-  addTokenUsage,
   type NormalizedRequest,
   type TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
@@ -79,7 +84,7 @@ import {
   runWithRequestConnection,
 } from './agent-manager';
 import { detachedSink } from './lib/detached-sink';
-import { dialogueChat } from './lib/dialogue-chat';
+import { dialogueChat, failedDialogueUsage } from './lib/dialogue-chat';
 import { describeCaller } from './lib/exposition';
 import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
@@ -865,23 +870,13 @@ async function serveMessages(
       let explicitMessages = false;
       let heldStop = undefined as { event?: string; data: string } | undefined;
       let spentUsage: TokenUsage | undefined;
-      // Model spend observed below the agent: a failed chunk carries no usage, so
-      // a failed stream reports what was already spent.
-      let observedSpend: TokenUsage | undefined;
-      const recordSpend = (usage: TokenUsage) => {
-        observedSpend = addTokenUsage(observedSpend, usage);
-      };
-      const largerSpend = (): TokenUsage | undefined =>
-        observedSpend &&
-        observedSpend.totalTokens > (spentUsage?.totalTokens ?? 0)
-          ? observedSpend
-          : spentUsage;
+      const spend = captureTokenUsage();
       try {
         // The adapter consumes failed chunks as a normal close. Keep its usage
         // event, hold message_stop, and insert an explicit safe error before it.
         let streamError: unknown;
         await runAgent(() =>
-          observeLlmSpend(async () => {
+          spend.run(async () => {
             const source = chatAgent.streamProcess(messages, agentOpts);
             const observed = (async function* () {
               for await (const chunk of source) {
@@ -890,19 +885,11 @@ async function serveMessages(
                 if (!chunk.ok && streamError === undefined) {
                   requestMeasurement(req)?.end('error');
                   streamError = chunk.error;
-                  const spent = largerSpend();
-                  if (spent && spent !== spentUsage) {
-                    spentUsage = spent;
-                    yield {
-                      ok: true as const,
-                      value: { content: '', usage: spent },
-                    };
-                  }
                 }
                 if (chunk.ok && !chunk.value.status && chunk.value.content)
                   accumulatedContent += chunk.value.content;
                 if (chunk.ok && chunk.value.usage)
-                  spentUsage = chunk.value.usage;
+                  spentUsage = mergeStreamUsage(spentUsage, chunk.value.usage);
                 if (measurement && chunk.ok) {
                   if (!deliveredContent && /\S/.test(chunk.value.content ?? ''))
                     deliveredContent = true;
@@ -937,9 +924,18 @@ async function serveMessages(
                   streamError === undefined && !agentOpts.signal?.aborted;
                 continue;
               }
-              out.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
+              const encoded =
+                event.event === 'message_start' ||
+                event.event === 'message_delta'
+                  ? anthropicEventWithUsage(
+                      event,
+                      spend.streamUsage(spentUsage, responseModel),
+                      responseModel,
+                    )
+                  : event;
+              out.write(`event: ${encoded.event}\ndata: ${encoded.data}\n\n`);
             }
-          }, recordSpend),
+          }),
         );
 
         if (streamError !== undefined) streamSucceeded = false;
@@ -976,10 +972,10 @@ async function serveMessages(
         }
       } catch (err) {
         streamSucceeded = false;
-        spentUsage = largerSpend();
-        if (spentUsage)
+        const usage = spend.usage(spentUsage, responseModel);
+        if (usage)
           out.write(
-            `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: {}, usage: { input_tokens: spentUsage.promptTokens, output_tokens: spentUsage.completionTokens } })}\n\n`,
+            `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: {}, usage: anthropicUsageToWire(usage, responseModel) })}\n\n`,
           );
         requestMeasurement(req)?.end('error');
         if (isOutageError(err))
@@ -1029,14 +1025,27 @@ async function serveMessages(
     }
 
     // --- Non-streaming ---
-    const result = await runAgent(() => chatAgent.process(messages, agentOpts));
-    if (useDialogue && s)
-      context.protocol.model = chatResponseModel(
-        resolvedModel.model,
-        responseModel,
-        { userId, key: s.key },
-      );
-
+    const spend = captureTokenUsage();
+    const result = await spend.run(() =>
+      runAgent(() => chatAgent.process(messages, agentOpts)),
+    );
+    const model =
+      useDialogue && s
+        ? chatResponseModel(resolvedModel.model, responseModel, {
+            userId,
+            key: s.key,
+          })
+        : responseModel;
+    context.protocol.model = model;
+    const resultUsage = result.ok
+      ? result.value.usage
+      : failedDialogueUsage(result.error);
+    const tokens = useDialogue ? resultUsage : spend.usage(resultUsage, model);
+    const wireUsage = tokens ? anthropicUsageToWire(tokens, model) : undefined;
+    const withUsage = <T>(payload: T) =>
+      wireUsage && typeof payload === 'object' && payload !== null
+        ? { ...payload, usage: wireUsage }
+        : payload;
     if (result.ok) {
       const lastUser = messages
         .filter((message) => message.role === 'user')
@@ -1059,23 +1068,7 @@ async function serveMessages(
         !out.detached
       )
         requestMeasurement(req)?.deliverOnResponseEnd();
-      const formatted = adapter.formatResult(result.value, context);
-      const wireUsage = useDialogue
-        ? responseUsageToWire(result.value.usage)
-        : undefined;
-      out.json(
-        200,
-        wireUsage && typeof formatted === 'object' && formatted !== null
-          ? {
-              ...formatted,
-              usage: {
-                input_tokens: wireUsage.prompt_tokens,
-                output_tokens: wireUsage.completion_tokens,
-                ...('x_hub' in wireUsage ? { x_hub: wireUsage.x_hub } : {}),
-              },
-            }
-          : formatted,
-      );
+      out.json(200, withUsage(adapter.formatResult(result.value, context)));
     } else {
       if (isOutageError(result.error)) {
         closeDestination(destination, describeCause(result.error));
@@ -1095,25 +1088,24 @@ async function serveMessages(
         if (retryAfter) out.setHeader('Retry-After', retryAfter);
         out.json(
           statusForError(result.error),
-          anthropicUnverifiedWrite(
-            `${unverified} ${throttleMessage(limit)}`,
-            'overloaded_error',
+          withUsage(
+            anthropicUnverifiedWrite(
+              `${unverified} ${throttleMessage(limit)}`,
+              'overloaded_error',
+            ),
           ),
         );
       } else if (unverified) {
-        out.json(500, anthropicUnverifiedWrite(unverified));
+        out.json(500, withUsage(anthropicUnverifiedWrite(unverified)));
       } else if (limit) {
         const retryAfter = retryAfterHeader(result.error);
         if (retryAfter) out.setHeader('Retry-After', retryAfter);
         out.json(
           statusForError(result.error),
-          anthropicErrorPayload(result.error),
+          withUsage(anthropicErrorPayload(result.error)),
         );
       } else {
-        out.json(
-          500,
-          adapter.formatError(result.error, context as ApiRequestContext),
-        );
+        out.json(500, withUsage(adapter.formatError(result.error, context)));
       }
     }
   } finally {

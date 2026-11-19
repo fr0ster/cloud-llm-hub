@@ -80,14 +80,14 @@ it('GET without x-clh-session is 400 naming x-clh-session', async () => {
 it('PUT stores and GET returns settings and effective models', async () => {
   const res = await call('PUT', {
     executor: { model: 'gpt-5' },
-    limits: { historyTokenBudget: 'off' },
+    limits: { toolResultMaxChars: 'off' },
   });
   expect(res.status).toBe(200);
   expect(await (await call()).json()).toMatchObject({
     settings: { executor: { model: 'gpt-5' } },
     effective: { executor: { model: 'gpt-5', source: 'user' } },
-    limits: { historyTokenBudget: 'off' },
-    effectiveLimits: { historyTokenBudget: { value: 'off', source: 'user' } },
+    limits: { toolResultMaxChars: 'off' },
+    effectiveLimits: { toolResultMaxChars: { value: 'off', source: 'user' } },
     canEdit: true,
     capabilities: { 'gpt-5': expect.any(Object) },
   });
@@ -100,7 +100,7 @@ it('PUT with params is 400 with the stage 2 reason and leaves settings unchanged
   setRoleModels('alice', 'one', { checker: { model: 'gpt-4.1' } });
   const res = await call('PUT', {
     executor: { model: 'gpt-5', params: { temperature: 1 } },
-    limits: { historyTokenBudget: 'off' },
+    limits: { toolResultMaxChars: 'off' },
   });
   expect(res.status).toBe(400);
   expect(await res.json()).toMatchObject({
@@ -157,7 +157,7 @@ it('GET exposes the parameters actually sent for every role with their sources',
     delete process.env.SAP_CORE_AI_MAX_TOKENS;
     const params = {
       temperature: { value: 'off', source: 'default' },
-      maxOutputTokens: { value: 2000, source: 'default' },
+      maxOutputTokens: { value: 'off', source: 'default' },
     };
     expect(await (await call()).json()).toMatchObject({
       effective: Object.fromEntries(
@@ -197,17 +197,17 @@ it('GET exposes the parameters actually sent for every role with their sources',
 });
 
 it('null clears individual limits to config/default and auto clears the role model', async () => {
-  const saved = process.env.LLM_AGENT_HISTORY_TOKEN_BUDGET;
-  process.env.LLM_AGENT_HISTORY_TOKEN_BUDGET = '4321';
+  const saved = process.env.LLM_AGENT_TOOL_RESULT_MAX_CHARS;
+  process.env.LLM_AGENT_TOOL_RESULT_MAX_CHARS = '4321';
   try {
     await call('PUT', {
       executor: { model: 'gpt-5' },
-      limits: { historyTokenBudget: 'off', executor: { maxIterations: 3 } },
+      limits: { toolResultMaxChars: 'off', executor: { maxIterations: 3 } },
     });
     const res = await call('PUT', {
       executor: 'auto',
       limits: {
-        historyTokenBudget: null,
+        toolResultMaxChars: null,
         executor: { maxIterations: null, maxToolCalls: 5 },
       },
     });
@@ -216,7 +216,7 @@ it('null clears individual limits to config/default and auto clears the role mod
       settings: {},
       limits: { executor: { maxToolCalls: 5 } },
       effectiveLimits: {
-        historyTokenBudget: { value: 4321, source: 'config' },
+        toolResultMaxChars: { value: 4321, source: 'config' },
       },
     });
     expect(getRoleModels('alice', 'one')).toEqual({});
@@ -224,7 +224,7 @@ it('null clears individual limits to config/default and auto clears the role mod
       executor: { maxToolCalls: 5 },
     });
   } finally {
-    if (saved === undefined) delete process.env.LLM_AGENT_HISTORY_TOKEN_BUDGET;
-    else process.env.LLM_AGENT_HISTORY_TOKEN_BUDGET = saved;
+    if (saved === undefined) delete process.env.LLM_AGENT_TOOL_RESULT_MAX_CHARS;
+    else process.env.LLM_AGENT_TOOL_RESULT_MAX_CHARS = saved;
   }
 });

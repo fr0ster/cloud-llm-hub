@@ -57,6 +57,7 @@ import {
 } from './agent-manager';
 import { createAgentMcpServerForRequest } from './agent-mcp';
 import { handleAnthropicMessages } from './anthropic-handler';
+import { createAgentProfileWaiter } from './lib/agent-profile-seeds';
 import { createBasicToBearerMiddleware } from './lib/basic-to-bearer';
 import { getAvailableDestinations } from './lib/btp-destinations';
 import { restoreHealth } from './lib/collection-persistence';
@@ -89,6 +90,7 @@ import {
   mcpDestinationRefusal,
 } from './lib/mcp-destination-guard';
 import { needsSapConnection } from './lib/mcp-request';
+import { PLANNER_MEMORY_STORE } from './lib/planner-context';
 import { type Providers, startProviders } from './lib/providers';
 import { requireMcpRole } from './lib/require-mcp-role';
 import { initializeRunRecordStore } from './lib/run-record-store';
@@ -110,6 +112,7 @@ import {
 } from './lib/session-middleware';
 import { createSessionRecordStore } from './lib/session-record-store';
 import { openAiSessionRefusal } from './lib/throttle-surfacing';
+import { toolStoreName } from './lib/tool-corpus';
 import {
   toolSearchReadinessGuard,
   withToolSearchHealth,
@@ -591,8 +594,16 @@ cds.on('bootstrap', (app: Application) => {
     lifecycleHooks(createSessionRecordStore(sessions, getAgentConfig().rag)),
   );
 
-  // First HTTP middleware: default deny also covers routes added during bootstrap.
-  app.use(ragReadinessGuard(isRagMigrationReady));
+  // The agent MCP route awaits migration, collection restore and profile sync.
+  const guardRagReadiness = ragReadinessGuard(isRagMigrationReady);
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (
+      req.method === 'POST' &&
+      /^\/mcp\/agent\/stream\/http\/?$/i.test(req.path)
+    )
+      return next();
+    return guardRagReadiness(req, res, next);
+  });
   app.use(toolSearchReadinessGuard);
 
   // Before CAP's own /health (mounted after `bootstrap`), so this one answers.
@@ -737,6 +748,9 @@ cds.on('bootstrap', (app: Application) => {
   // (the executor agent behind it). Same /mcp auth as above. See srv/agent-mcp.ts.
   app.post('/mcp/agent/stream/http', async (req: Request, res: Response) => {
     const alog = cds.log('mcp-proxy/agent-stream');
+    const disconnected = new AbortController();
+    const abort = () => disconnected.abort();
+    res.once('close', abort);
     let cleanup: (() => Promise<void>) | null = null;
     try {
       // Read the JSON-RPC body first (same as handleStreamHTTP).
@@ -764,15 +778,18 @@ cds.on('bootstrap', (app: Application) => {
         return;
       }
 
+      await waitForAgentProfiles(disconnected.signal);
       const result = await createAgentMcpServerForRequest(req);
       cleanup = result.cleanup;
+      if (disconnected.signal.aborted) return;
       res.on('close', () => {
         cleanup?.().catch((err) =>
           alog.warn('cleanup on close failed', { error: String(err) }),
         );
       });
       await result.transport.handleRequest(req, res, body);
-    } catch (err: unknown) {
+    } catch (err) {
+      if (disconnected.signal.aborted) return;
       const error = err instanceof Error ? err : new Error(String(err));
       alog.error('agent-stream handler error', { error: error.message });
       if (!res.headersSent) {
@@ -782,6 +799,7 @@ cds.on('bootstrap', (app: Application) => {
         });
       }
     } finally {
+      res.off('close', abort);
       if (cleanup) {
         try {
           await cleanup();
@@ -986,6 +1004,7 @@ cds.on('bootstrap', (app: Application) => {
 // IMPORTANT: Do NOT await — vectorization takes 60+ seconds and would block the
 // server from listening on port 8080, causing CF health check timeout (60s).
 // The 503 readiness guard in openai-handler.ts protects against requests before ready.
+let waitForAgentProfiles = createAgentProfileWaiter(Promise.resolve());
 cds.on('served', () => {
   void ensureModelCatalog();
   installThrottleObserver();
@@ -1011,9 +1030,6 @@ cds.on('served', () => {
     guardedTask('Empty session forget', log, () => forgetEmptySessions()),
     5 * 60 * 1000,
   ).unref();
-  // Every minute: long sessions idle past their TTL are closed, and records
-  // nobody came back for after a restart are deleted.
-  startSessionSweep();
   log.info(
     'Starting providers, then pre-initializing SmartAgent (MCP connect + tool vectorization) — non-blocking',
   );
@@ -1026,7 +1042,7 @@ cds.on('served', () => {
   // its settings), never an outage: the process exits non-zero so the platform
   // reports it instead of a healthy instance answering 503 forever. An agent
   // warm-up failure can be an outage (AI Core, a destination) and is retried.
-  Promise.resolve()
+  const agentProfilesReady = Promise.resolve()
     .then(
       (): Promise<UsageRuntime | undefined> =>
         initUsage(
@@ -1061,10 +1077,20 @@ cds.on('served', () => {
           provider: historyProvider(sessionKind),
           kind: sessionKind,
         });
-      const migration = await migrateHubRagProviders(migrations, (line) =>
-        log.info(line),
+      const qdrant = getAgentConfig().rag.qdrant;
+      const standaloneCollections = [
+        ...(p.stores.backendOf('tools') === 'qdrant'
+          ? [toolStoreName('reader'), toolStoreName('writer')]
+          : []),
+        ...(sessionKind === 'qdrant' ? [PLANNER_MEMORY_STORE] : []),
+      ].map((name) => p.stores.qdrantCollection(name));
+      const migration = await migrateHubRagProviders(
+        migrations,
+        (line) => log.info(line),
+        qdrant ? { config: qdrant, standaloneCollections } : undefined,
       );
       if (!migration.ok) throw migration.error;
+      startSessionSweep();
       registerRagRoutes(ragRouter, getCollectionRegistry());
       // Restore and validate configuration before initializing agents.
       await startCollectionRestore();
@@ -1075,31 +1101,32 @@ cds.on('served', () => {
           profiles.plannerRecord,
         );
       log.info('Providers ready');
-    })
-    .then(
-      () =>
-        initSmartAgents().then(
-          () => {
-            log.info('SmartAgents initialized and ready');
-          },
-          (err) => {
-            log.warn(
-              'SmartAgent initialization failed, will retry on first request',
-              { error: err instanceof Error ? err.message : String(err) },
-            );
-          },
-        ),
-      (err) => {
-        log.error('Provider startup failed, exiting', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-        // Not cds.shutdown(): it closes the server without an exit code (the
-        // force-exit that follows is process.exit() with 0), and before
-        // `cds serve` has listened it is still the library default, which
-        // exits 0 too. A failed start must end non-zero.
-        process.exit(1);
-      },
-    );
+    });
+  waitForAgentProfiles = createAgentProfileWaiter(agentProfilesReady);
+  void agentProfilesReady.then(
+    () =>
+      initSmartAgents().then(
+        () => {
+          log.info('SmartAgents initialized and ready');
+        },
+        (err) => {
+          log.warn(
+            'SmartAgent initialization failed, will retry on first request',
+            { error: err instanceof Error ? err.message : String(err) },
+          );
+        },
+      ),
+    (err) => {
+      log.error('Provider startup failed, exiting', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      // Not cds.shutdown(): it closes the server without an exit code (the
+      // force-exit that follows is process.exit() with 0), and before
+      // `cds serve` has listened it is still the library default, which
+      // exits 0 too. A failed start must end non-zero.
+      process.exit(1);
+    },
+  );
 });
 
 // Only shutdown ends an admitted session. Long sessions close first: their

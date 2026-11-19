@@ -173,6 +173,13 @@ curl -H "Authorization: Basic YWxpY2U6" \
 
 The response `model` field identifies the serving coordinator model, including session settings and accepted request overrides. This also applies to every OpenAI streaming chunk and Anthropic message responses.
 
+**Response token usage**
+
+- `usage.models` maps model names to `prompt_tokens`, `completion_tokens`, `total_tokens` and `requests`. When known, entries include `cached_input_tokens` and `cache_creation_input_tokens`, including reported zeroes. Embedding calls have their own model entry with zero completion tokens. Providers may omit token counts.
+- OpenAI's top-level `prompt_tokens`, `completion_tokens`, `total_tokens` and `prompt_tokens_details.cached_tokens` describe the serving model. The final streaming usage chunk has `choices: []` and precedes `[DONE]`.
+- For `POST /v1/messages`, top-level `usage.input_tokens` describes uncached input on the serving model. `cache_read_input_tokens` and `cache_creation_input_tokens` account for reads and writes separately when known. `output_tokens` describes output. Streams include counts known at `message_start` and cumulative counts at `message_delta`. The `models` breakdown uses the same fields as OpenAI.
+- Dialogue responses include `usage.x_hub` with durations in milliseconds and usage for the planner and each delivered subagent result. Each model's counts are independent.
+
 **Honesty guard note *(v6.28+)*:** the response (streaming or non-streaming, and the same on `/v1/messages` and `execute_step`) may carry a trailing `UNVERIFIED_WRITE:` line when the deterministic check finds a claimed write (create/update/activate/…) unsupported by the actual tool results. It's a soft warning — verify against the system before relying on the claim — never a block. Disable via `LLM_AGENT_STEP_REVIEW_ENABLED=false`.
 
 ---
@@ -639,11 +646,11 @@ per quota so concurrent callers do not each rediscover the same closed limit.
 
 The hub shares one SAP AI Core account, so the default strategy is
 `WaitAsNeeded` (`wait-as-needed`) both with and without the gatekeeper door.
-A positive server interval is waited exactly, without a total wait cap. SSE
-keep-alives protect streaming callers while queued. Without an interval, the
-strategy backs off from 2 seconds, doubling per unnamed wait, with 20% jitter
-in either direction and a hard 60-second cap per wait. After six unnamed waits
-per call it reports `no-interval`: a missing interval can mean a spend cap.
+The shared quota gate honors every `Retry-After` interval. SSE keep-alives
+protect streaming callers while queued. Without an interval, the strategy
+backs off from 2 seconds, doubling per unnamed wait with 20% jitter and a
+maximum delay of 60 seconds per wait. Retries continue without an attempt
+or total wait cap until caller cancellation or a different provider response.
 
 An explicitly set `LLM_AGENT_THROTTLE_MAX_WAIT_MS` selects `WaitIfShortEnough`
 only without a door. This opt-in ceiling bounds total throttle waiting; zero
@@ -786,8 +793,21 @@ The external agent uses the long session's existing dialogue plan and task board
 opened without a coordinator turn. It shares its `DialogueSession` with WebUI and
 OpenAI/Anthropic clients on the same key. Calls during an active dialogue turn return
 a tool error. Background work uses the same executor limits, shared pool and persisted
-store; running tasks restore as interrupted after restart. Tool and worker usage is
-recorded on channel `mcp-agent` with the request trace and session identity.
+store; running tasks restore as interrupted after restart. Agent MCP requests wait
+for built-in profiles to synchronize during startup. Disconnecting cancels that
+request's wait.
+
+`delegate_task` returns a task ID as soon as the task is scheduled. Use `get_task`
+with that ID, or `list_tasks`, for each task's recorded `usage` and `duration_ms`.
+The duration measures time from task start to finish. The text JSON and
+`structuredContent` both carry the usage. In `list_tasks` the structured rows
+are under `structuredContent.tasks`. `plan_create` and `plan_revise` return the
+usage of their own calls in both forms. `execute_step` returns a `[usage]` line
+with the same JSON as `structuredContent.usage`. All use the per-model fields
+described above. For a multi-model tool result, use the entries in `usage.models`.
+
+Tool and worker usage is recorded on channel `mcp-agent` with the request trace
+and session identity.
 
 All channels share the same thirteen RAG tools. The five content/collection writes below
 use strict objects and accept an optional nonempty `session` argument. A live,

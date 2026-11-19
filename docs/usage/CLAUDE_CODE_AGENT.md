@@ -172,7 +172,8 @@ The response is Server-Sent Events. Extract the assistant content from each chun
     print(''.join(out))
     if usage:
         print(f'---')
-        print(f'usage: prompt={usage[\"prompt_tokens\"]} completion={usage[\"completion_tokens\"]} total={usage[\"total_tokens\"]}')
+        for name, counts in (usage.get('models') or {'serving model': usage}).items():
+            print(f'usage {name}: {json.dumps(counts)}')
     "
 
 Keep `[SmartAgent: Executing X...]` markers in the output verbatim — they are
