@@ -25,6 +25,10 @@ import {
   assertToolSearchHealthy,
   toolSearchFailure,
 } from '../../srv/lib/tool-search-health';
+import {
+  qdrantMultivectorConfig,
+  qdrantQueryFetch,
+} from './helpers/qdrant-fetch';
 
 const docs: SharedCorpusDoc[] = [
   {
@@ -213,9 +217,14 @@ test('a Qdrant tool-search outage marks health DOWN and recovers only after a su
     },
     embedding,
   );
-  const fetchMock = jest
+  let offline = true;
+  const query = jest.fn(() => {
+    if (offline) throw new Error('Qdrant offline');
+    return Response.json({ result: { points: [] } });
+  });
+  jest
     .spyOn(global, 'fetch')
-    .mockRejectedValue(new Error('Qdrant offline'));
+    .mockImplementation(qdrantQueryFetch(qdrantMultivectorConfig(2), query));
   const rag = new ExpositionFilteringRag(
     stores.create('tools', 'tools-reader'),
     undefined,
@@ -227,14 +236,15 @@ test('a Qdrant tool-search outage marks health DOWN and recovers only after a su
   );
   try {
     expect((await rag.query(new TextOnlyEmbedding('read'), 5)).ok).toBe(false);
+    expect(query).toHaveBeenCalledTimes(1);
     expect(toolSearchFailure()).toBeDefined();
     await expect(assertToolSearchHealthy()).rejects.toMatchObject({
       statusCode: 503,
     });
-    fetchMock.mockImplementation(
-      async () => new Response(JSON.stringify({ result: [] })),
-    );
+    expect(query).toHaveBeenCalledTimes(2);
+    offline = false;
     await assertToolSearchHealthy();
+    expect(query).toHaveBeenCalledTimes(3);
     expect(toolSearchFailure()).toBeUndefined();
     expect(await rag.query(new TextOnlyEmbedding('read'), 5)).toEqual({
       ok: true,
@@ -247,9 +257,7 @@ test('a Qdrant tool-search outage marks health DOWN and recovers only after a su
         .query(new TextOnlyEmbedding('read'), 5),
     ).toEqual({ ok: true, value: [] });
   } finally {
-    fetchMock.mockImplementation(
-      async () => new Response(JSON.stringify({ result: [] })),
-    );
+    offline = false;
     await assertToolSearchHealthy();
   }
 });

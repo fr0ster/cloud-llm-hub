@@ -12,6 +12,10 @@ import { QdrantRag } from '@mcp-abap-adt/qdrant-rag';
 import type { RagConfig } from '../../srv/agent-config';
 import { buildEmbedding, prefetchEmbedder } from '../../srv/lib/providers';
 import { createRagStoreFactory } from '../../srv/lib/rag-store-factory';
+import {
+  qdrantMultivectorConfig,
+  qdrantQueryFetch,
+} from './helpers/qdrant-fetch';
 
 const inMem: RagConfig = {
   embedder: null,
@@ -260,10 +264,18 @@ describe('RagStoreFactory', () => {
   it.each(['vector', 'qdrant'] as const)(
     '%s non-tool stores retain the default query embedding fallback',
     async (backend) => {
-      jest
+      const multivector = qdrantQueryFetch(qdrantMultivectorConfig(2));
+      const legacy = qdrantQueryFetch({
+        dense: { size: 2, distance: 'Cosine' },
+      });
+      const fetchMock = jest
         .spyOn(global, 'fetch')
-        .mockImplementation(
-          async () => new Response(JSON.stringify({ result: [] })),
+        .mockImplementation((input, init) =>
+          new URL(String(input)).pathname.startsWith(
+            '/collections/hub-test-facts',
+          )
+            ? legacy(input, init)
+            : multivector(input, init),
         );
       const raw = jest.fn(async () => ({ vector: [1, 0] }));
       const breaker = new CircuitBreaker({ failureThreshold: 30 });
@@ -298,6 +310,22 @@ describe('RagStoreFactory', () => {
         ).toBe(true);
         expect(raw).toHaveBeenCalledTimes(2);
       }
+      const queries = fetchMock.mock.calls
+        .filter(
+          ([input, init]) =>
+            init?.method === 'POST' && String(input).endsWith('/points/query'),
+        )
+        .map(([, init]): { query: number[] | number[][]; using?: string } =>
+          JSON.parse(String(init?.body)),
+        );
+      expect(queries).toEqual(
+        backend === 'qdrant'
+          ? [
+              expect.objectContaining({ query: [[1, 0]] }),
+              expect.objectContaining({ query: [1, 0], using: 'dense' }),
+            ]
+          : [],
+      );
     },
   );
 });

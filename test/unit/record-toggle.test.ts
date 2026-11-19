@@ -31,6 +31,10 @@ import { CollectionRegistry } from '../../srv/rag-collections';
 import { registerRagRoutes } from '../../srv/rag-handler';
 import { runWithSessionId } from '../../srv/request-session';
 import { callRag, ragBody } from './helpers/canonical-rag';
+import {
+  qdrantCollectionInfo,
+  qdrantMultivectorConfig,
+} from './helpers/qdrant-fetch';
 import { makeMockRouter, makeReq, runIdRoute } from './helpers/rag-routes';
 
 const embedder = symmetricEmbedder({ embed: async () => ({ vector: [1, 0] }) });
@@ -70,29 +74,55 @@ test.each(['in-memory', 'vector', 'qdrant'])(
     // A Qdrant wire fake retains payloads verbatim, as the service does.
     interface Point {
       id: string;
-      vector: number[];
+      vector: number[][];
       payload: { text: string; enabled?: boolean; id: string };
     }
     const points = new Map<string, Point>();
+    const vectors = qdrantMultivectorConfig(2);
+    let created = false;
     if (backend === 'qdrant')
       jest
         .spyOn(globalThis, 'fetch')
         .mockImplementation(async (input, init) => {
-          const path = String(input);
+          const path = new URL(String(input)).pathname;
+          if (init?.method === 'GET' && /^\/collections\/[^/]+$/.test(path))
+            return created
+              ? qdrantCollectionInfo(vectors)
+              : Response.json(
+                  { status: { error: 'Collection not found' } },
+                  { status: 404 },
+                );
+          if (init?.method === 'PUT' && /^\/collections\/[^/]+$/.test(path)) {
+            const body: { vectors: typeof vectors } = JSON.parse(
+              String(init.body),
+            );
+            expect(body).toEqual({ vectors });
+            created = true;
+            return Response.json({ result: true });
+          }
+          if (init?.method === 'PUT' && path.endsWith('/index'))
+            return Response.json({ result: { status: 'completed' } });
+
           const body: { points?: Point[]; ids?: string[]; limit?: number } =
             typeof init?.body === 'string' ? JSON.parse(init.body) : {};
           if (init?.method === 'PUT' && path.endsWith('/points')) {
             for (const point of body.points ?? []) points.set(point.id, point);
+            return Response.json({ result: { status: 'completed' } });
           }
-          const result = path.endsWith('/search')
-            ? [...points.values()]
-                .slice(0, body.limit)
-                .map((point) => ({ ...point, score: 1 }))
-            : (body.ids ?? []).flatMap((key) => {
-                const point = points.get(key);
-                return point ? [point] : [];
-              });
-          return new Response(JSON.stringify({ result }), { status: 200 });
+          if (init?.method === 'POST' && path.endsWith('/points/query')) {
+            const hits = [...points.values()]
+              .slice(0, body.limit)
+              .map((point) => ({ ...point, score: 1 }));
+            return Response.json({ result: { points: hits } });
+          }
+          if (init?.method === 'POST' && path.endsWith('/points')) {
+            const result = (body.ids ?? []).flatMap((key) => {
+              const point = points.get(key);
+              return point ? [point] : [];
+            });
+            return Response.json({ result });
+          }
+          throw new Error(`Unexpected Qdrant request: ${init?.method} ${path}`);
         });
     const registry = await setup(backend);
     for (let i = 0; i < 48; i++)

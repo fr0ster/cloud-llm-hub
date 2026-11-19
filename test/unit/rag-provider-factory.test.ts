@@ -6,6 +6,11 @@ import {
   type RagCtors,
 } from '../../srv/lib/rag-provider-factory';
 import { createRagStoreFactory } from '../../srv/lib/rag-store-factory';
+import {
+  type QdrantVectorConfig,
+  qdrantCollectionInfo,
+  qdrantMultivectorConfig,
+} from './helpers/qdrant-fetch';
 
 const retrieval = { id: 'retrieval' };
 const embedding = { retrieval } as unknown as Embedding;
@@ -202,16 +207,16 @@ describe('Qdrant collection dimensions', () => {
   });
 
   it('uses each existing collection size after caching the configured size for new collections', async () => {
-    const sizes = new Map<string, number>([['restored-task-results', 1536]]);
+    const layouts = new Map<string, QdrantVectorConfig>([
+      ['restored-task-results', { size: 1536, distance: 'Cosine' }],
+    ]);
     const embedDocument = jest.fn();
     jest.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const name = String(input).split('/').pop()!;
-      const size = sizes.get(name);
-      return size === undefined
-        ? Response.json({}, { status: 404 })
-        : Response.json({
-            result: { config: { params: { vectors: { size } } } },
-          });
+      const layout = layouts.get(name);
+      return layout
+        ? qdrantCollectionInfo(layout)
+        : Response.json({}, { status: 404 });
     });
     const { ctors } = fakes();
     const provider = createCollectionProvider(
@@ -230,7 +235,7 @@ describe('Qdrant collection dimensions', () => {
         dimension('concurrent-new-task-results'),
       ]),
     ).toEqual([768, 768]);
-    sizes.set('new-task-results', 768);
+    layouts.set('new-task-results', qdrantMultivectorConfig(768));
     expect(await dimension('restored-task-results')).toBe(1536);
     expect(await dimension('new-task-results')).toBe(768);
     expect(await dimension('another-new-task-results')).toBe(768);
