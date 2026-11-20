@@ -778,15 +778,26 @@ async function serveMessages(
     ? undefined
     : collectionRetrieval(handle.agent);
   try {
-    await waitForSessionTurns(
-      sessionId,
-      pipeline.signal
-        ? AbortSignal.any([pipeline.signal, callerLeft.signal])
-        : callerLeft.signal,
-    );
-    const historyTurn = useDialogue
-      ? undefined
-      : await resolveClientHistoryTurn(boundCaller.value, messages, s);
+    const historySignal = pipeline.signal
+      ? AbortSignal.any([pipeline.signal, callerLeft.signal])
+      : callerLeft.signal;
+    let historyTurn:
+      | Awaited<ReturnType<typeof resolveClientHistoryTurn>>
+      | undefined;
+    try {
+      await waitForSessionTurns(sessionId, historySignal);
+      if (!useDialogue)
+        historyTurn = await resolveClientHistoryTurn(
+          boundCaller.value,
+          messages,
+          historySignal,
+          s,
+        );
+      historySignal.throwIfAborted();
+    } catch (error) {
+      if (callerLeft.signal.aborted) return;
+      throw error;
+    }
     if (collections) {
       const retrieval = await collections.retrieve(
         req,

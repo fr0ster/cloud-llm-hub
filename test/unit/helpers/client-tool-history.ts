@@ -2,20 +2,29 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { InMemoryRagProvider } from '@mcp-abap-adt/llm-agent';
+import {
+  InMemoryRagProvider,
+  isRagScanner,
+  symmetricEmbedder,
+} from '@mcp-abap-adt/llm-agent';
+import { QdrantRag } from '@mcp-abap-adt/qdrant-rag';
 import {
   initLongSessions,
   type LongSession,
+  LongSessionRegistry,
   setLongSessionsForTest,
 } from '../../../srv/lib/long-session';
-import { SessionHistoryRouter } from '../../../srv/lib/session-history-collection';
+import {
+  historyCollectionName,
+  SessionHistoryRouter,
+} from '../../../srv/lib/session-history-collection';
 import {
   lifecycleHooks,
   resolveSession,
 } from '../../../srv/lib/session-lifecycle';
 import { SqliteSessionRecordStore } from '../../../srv/lib/session-record-store';
 import { sweepSessionHistory } from '../../../srv/session-store';
-import { deferred, harness } from './channel-harness';
+import { deferred, type fakeRes, harness, tick } from './channel-harness';
 
 /** Exercise real request normalization and response handling across HTTP calls. */
 export function clientToolHistoryTests(
@@ -25,7 +34,7 @@ export function clientToolHistoryTests(
     body: object,
     sessionId: string,
     session?: LongSession,
-  ) => { done: Promise<void>; res: { body: string } },
+  ) => { done: Promise<void>; res: ReturnType<typeof fakeRes> },
 ) {
   const agentConfig = jest.requireMock<
     typeof import('../../../srv/agent-config')
@@ -34,6 +43,154 @@ export function clientToolHistoryTests(
   const manager = jest.requireMock<typeof import('../../../srv/agent-manager')>(
     '../../../srv/agent-manager',
   );
+  test.each(['record', 'scan'] as const)(
+    'disconnect during a throttled history %s lookup releases the long session',
+    async (lookup) => {
+      const sessionClosed = jest.fn(async () => {});
+      const registry = new LongSessionRegistry(
+        { ttlMs: 60_000, maxSessions: 10, maxPerUser: 5, queueLength: 2 },
+        { onClose: sessionClosed },
+      );
+      const session = registry.open('alice', {});
+      if ('refused' in session) throw new Error(session.refused);
+      const sessionId = session.key;
+      const caller = { userId: 'alice', sessionId, isAdmin: false };
+      const collectionName = historyCollectionName(sessionId);
+      const provider = new InMemoryRagProvider({ name: 'client-tool-history' });
+      const opened = await provider.createCollection(collectionName, {
+        scope: 'session',
+        sessionId,
+      });
+      if (!opened.ok) throw opened.error;
+      const { rag } = opened.value;
+      if (!isRagScanner(rag)) throw new Error('History cannot scan');
+      const qdrant = new QdrantRag({
+        url: 'https://qdrant.example',
+        collectionName,
+        embedder: symmetricEmbedder({ embed: async () => ({ vector: [1] }) }),
+      });
+      const read =
+        lookup === 'record'
+          ? jest
+              .spyOn(rag, 'getById')
+              .mockImplementation(qdrant.getById.bind(qdrant))
+          : jest
+              .spyOn(rag, 'scan')
+              .mockImplementation(qdrant.scan.bind(qdrant));
+      const router = new SessionHistoryRouter(provider);
+      const history = jest
+        .spyOn(manager, 'getSharedHistoryRag')
+        .mockReturnValue(router);
+      const retrying = deferred();
+      let attempts = 0;
+      let recovering = false;
+      let fetchSignal: AbortSignal | null | undefined;
+      const fetch = jest
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(async (input, init) => {
+          const path = new URL(String(input)).pathname;
+          if (lookup === 'scan' && !String(init?.body).includes('"offset"')) {
+            expect(path).toBe(`/collections/${collectionName}/points/scroll`);
+            return Response.json({
+              result: { points: [], next_page_offset: 1 },
+            });
+          }
+          if (recovering)
+            return Response.json({
+              result: lookup === 'scan' ? { points: [] } : [],
+            });
+          fetchSignal = init?.signal;
+          if (++attempts === 2) retrying.resolve();
+          return new Response(null, {
+            status: 429,
+            headers: { 'Retry-After': '0' },
+          });
+        });
+      const request = body(false);
+      const toolMessages =
+        protocol === 'openai'
+          ? [
+              {
+                role: 'assistant',
+                tool_calls: [
+                  {
+                    id: 'read-1',
+                    type: 'function',
+                    function: { name: 'Read', arguments: '{}' },
+                  },
+                ],
+              },
+              { role: 'tool', tool_call_id: 'read-1', content: 'FILE' },
+            ]
+          : [
+              {
+                role: 'assistant',
+                content: [
+                  { type: 'tool_use', id: 'read-1', name: 'Read', input: {} },
+                ],
+              },
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'tool_result',
+                    tool_use_id: 'read-1',
+                    content: 'FILE',
+                  },
+                ],
+              },
+            ];
+      setLongSessionsForTest(registry);
+      const first = call(
+        { ...request, messages: [...request.messages, ...toolMessages] },
+        sessionId,
+        session,
+      );
+      let next: ReturnType<typeof call> | undefined;
+      try {
+        await Promise.race([retrying.promise, first.done]);
+        expect(attempts).toBeGreaterThanOrEqual(2);
+        expect(fetchSignal?.aborted).toBe(false);
+        next = call(
+          {
+            ...request,
+            messages: [{ role: 'user', content: 'next question' }],
+          },
+          sessionId,
+          session,
+        );
+        await tick();
+        expect(harness.seenOptions).toHaveLength(0);
+        first.res.disconnect();
+        expect(fetchSignal?.aborted).toBe(true);
+        const attemptsAtDisconnect = attempts;
+        await first.done;
+        await next.done;
+        expect(next.res.body).toContain('done');
+        expect(harness.seenOptions).toHaveLength(1);
+        expect(attempts).toBe(attemptsAtDisconnect);
+        read.mockRestore();
+        await router.waitForTurns(sessionId);
+        expect(await router.listTurns(caller)).toEqual([
+          expect.objectContaining({
+            userText: 'next question',
+            assistantText: 'done',
+          }),
+        ]);
+        await registry.close('alice', sessionId, 'explicit');
+        expect(sessionClosed).toHaveBeenCalledWith(session, 'explicit');
+      } finally {
+        recovering = true;
+        await Promise.allSettled([first.done, next?.done]);
+        await router.drainWrites();
+        fetch.mockRestore();
+        read.mockRestore();
+        history.mockRestore();
+        setLongSessionsForTest(undefined);
+      }
+    },
+  );
+
   test.each(['off', 'on'] as const)(
     'records identical current-only requests as separate turns (clientHistory=%s)',
     async (clientHistory) => {

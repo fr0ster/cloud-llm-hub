@@ -293,7 +293,9 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
   private async open(
     sessionId: string,
     create: boolean,
+    signal?: AbortSignal,
   ): Promise<Result<Handles | undefined, RagError>> {
+    signal?.throwIfAborted();
     const now = this.options.clock?.() ?? Date.now();
     const failed = this.failedOpens.get(sessionId);
     if (failed && now - failed.at < HISTORY_OPEN_COOL_DOWN_MS)
@@ -304,6 +306,7 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
       create,
       this.options.storePrefix,
     );
+    signal?.throwIfAborted();
     if (!result.ok) {
       this.failedOpens.set(sessionId, { at: now, error: result.error });
       this.options.log?.warn('Session history open failed', {
@@ -853,15 +856,18 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
     return outcomes.every(Boolean);
   }
 
-  private async rows(sessionId: string, rag: IRag) {
+  private async rows(sessionId: string, rag: IRag, options?: CallOptions) {
     if (!isRagScanner(rag)) throw new RagError('History cannot scan');
     const rows: { id: string; text: string; metadata: RagMetadata }[] = [];
     let cursor: string | undefined;
     do {
-      const page = await rag.scan({
-        filter: { sessionId },
-        ...(cursor === undefined ? {} : { cursor }),
-      });
+      const page = await rag.scan(
+        {
+          filter: { sessionId },
+          ...(cursor === undefined ? {} : { cursor }),
+        },
+        options,
+      );
       if (!page.ok) throw page.error;
       rows.push(...page.value.records);
       if (page.value.cursor !== undefined && page.value.cursor === cursor)
@@ -924,24 +930,35 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
   async findClientToolTurn(
     caller: RagCaller,
     id: string,
+    signal: AbortSignal,
     callIds: readonly string[] = [],
   ): Promise<{ id: string; callIds: string[] } | undefined> {
-    if (!(await this.caller({ caller }))) return undefined;
-    const opened = await this.open(caller.sessionId, false);
+    signal.throwIfAborted();
+    const options: CallOptions = { signal };
+    // The binding store and provider catalog do not accept call options.
+    const opened = await withHistoryStoreTransport(
+      this.options.storeUrl,
+      signal,
+      async () => {
+        if (!(await this.caller({ caller }))) return undefined;
+        return this.open(caller.sessionId, false, signal);
+      },
+    );
+    if (!opened) return undefined;
     if (!opened.ok) throw opened.error;
     const rag = opened.value?.rag;
     if (!rag) return undefined;
-    const single = await rag.getById(id);
+    const single = await rag.getById(id, options);
     if (!single.ok) throw single.error;
     if (single.value?.metadata.turnId === id)
       return { id, callIds: storedClientToolCalls(single.value.metadata) };
-    const first = await rag.getById(turnChunkId(id, 0));
+    const first = await rag.getById(turnChunkId(id, 0), options);
     if (!first.ok) throw first.error;
     const count = first.value?.metadata.chunkCount;
     if (first.value && typeof count === 'number' && count > 1) {
       let index = 1;
       for (; index < count; index++) {
-        const part = await rag.getById(turnChunkId(id, index));
+        const part = await rag.getById(turnChunkId(id, index), options);
         if (!part.ok) throw part.error;
         if (part.value?.metadata.chunkCount !== count) break;
       }
@@ -950,7 +967,7 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
     }
     if (!callIds.length || !isRagScanner(rag)) return undefined;
 
-    const rows = await this.rows(caller.sessionId, rag);
+    const rows = await this.rows(caller.sessionId, rag, options);
     const requested = new Set(callIds);
     for (const { metadata } of rows) {
       const { turnId, chunkCount } = metadata;

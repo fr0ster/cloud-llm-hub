@@ -22,7 +22,7 @@ let installedFetch: typeof fetch | undefined;
  * Request bodies used by the provider are replayable JSON strings. */
 export function withHistoryStoreTransport<T>(
   url: string | undefined,
-  shutdown: AbortSignal,
+  signal: AbortSignal,
   run: () => T,
 ): T {
   if (!url) return run();
@@ -69,8 +69,5 @@ export function withHistoryStoreTransport<T>(
     };
     globalThis.fetch = installedFetch;
   }
-  return storeTransport.run(
-    { url: url.replace(/\/$/, ''), signal: shutdown },
-    run,
-  );
+  return storeTransport.run({ url: url.replace(/\/$/, ''), signal }, run);
 }

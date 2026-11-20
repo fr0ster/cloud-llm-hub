@@ -1018,19 +1018,26 @@ async function serveChatCompletions(
       })
       .with({ requestId: traceId, traceId });
     requestMeasurement(req)?.bind(usage);
-    await waitForSessionTurns(
-      sessionId,
-      pipeline.signal
-        ? AbortSignal.any([pipeline.signal, callerLeft.signal])
-        : callerLeft.signal,
-    );
-    const historyTurn = useDialogue
-      ? undefined
-      : await resolveClientHistoryTurn(
+    const historySignal = pipeline.signal
+      ? AbortSignal.any([pipeline.signal, callerLeft.signal])
+      : callerLeft.signal;
+    let historyTurn:
+      | Awaited<ReturnType<typeof resolveClientHistoryTurn>>
+      | undefined;
+    try {
+      await waitForSessionTurns(sessionId, historySignal);
+      if (!useDialogue)
+        historyTurn = await resolveClientHistoryTurn(
           boundCaller.value,
           normalizedMessages,
+          historySignal,
           s,
         );
+      historySignal.throwIfAborted();
+    } catch (error) {
+      if (callerLeft.signal.aborted) return;
+      throw error;
+    }
     // The parsed body: a raw request carries it only in `body`, not `req.body`.
     if (collections) {
       const retrieval = await collections.retrieve(

@@ -109,8 +109,10 @@ async function finishClientToolTurn(
 export async function resolveClientHistoryTurn(
   caller: RagCaller,
   messages: Message[],
+  signal: AbortSignal,
   session?: LongSession,
 ): Promise<{ id?: string; recorded: boolean }> {
+  signal.throwIfAborted();
   const bindings = session?.clientToolTurns;
   const id = clientHistoryTurnId(messages, bindings);
   const callIds = clientToolResultIds(messages);
@@ -118,8 +120,10 @@ export async function resolveClientHistoryTurn(
   const recorded = await getSharedHistoryRag()?.findClientToolTurn(
     caller,
     id,
+    signal,
     session && !callIds.some((callId) => bindings?.has(callId)) ? callIds : [],
   );
+  signal.throwIfAborted();
   if (!recorded) return { id, recorded: false };
   if (session)
     await finishClientToolTurn(session, recorded.id, recorded.callIds);
