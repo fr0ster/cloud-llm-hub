@@ -54,7 +54,10 @@ import {
   setLongSessionsForTest,
 } from '../../srv/lib/long-session';
 import { createHubRagAccess, initHubRagAccess } from '../../srv/lib/rag-access';
-import { historyCollectionName } from '../../srv/lib/session-history-collection';
+import {
+  historyCollectionName,
+  SESSION_HISTORY_RETRY_INTERVAL_MS,
+} from '../../srv/lib/session-history-collection';
 import {
   assertToolSearchHealthy,
   toolSearchFailure,
@@ -314,9 +317,6 @@ describe('the per-session history catalog record', () => {
     ).toBe(false);
     expect(warnings.length).toBeGreaterThan(0);
     expect(toolSearchFailure()).toContain('Session history unavailable');
-    await expect(assertToolSearchHealthy()).rejects.toMatchObject({
-      statusCode: 503,
-    });
     down = false;
     // Repair bypasses the read cooldown and persists the retained first turn.
     await assertToolSearchHealthy();
@@ -360,10 +360,16 @@ describe('failed history writes remain queued', () => {
     }
     expect(attempts).toBe(1);
     expect(warnings).toHaveLength(2);
-    await expect(
-      rag.query(new TextOnlyEmbedding('q'), 5),
-    ).rejects.toMatchObject({ statusCode: 503 });
+    let recalled = false;
+    const recall = rag.query(new TextOnlyEmbedding('q'), 5).then((result) => {
+      recalled = true;
+      return result;
+    });
+    await new Promise((resolve) =>
+      setTimeout(resolve, SESSION_HISTORY_RETRY_INTERVAL_MS),
+    );
     expect(attempts).toBe(2);
+    expect(recalled).toBe(false);
 
     // Still down after the window: one new attempt, one new warning.
     now += HISTORY_OPEN_COOL_DOWN_MS;
@@ -374,6 +380,7 @@ describe('failed history writes remain queued', () => {
     // Back up, after the next window: the store opens and the turn is kept.
     down = false;
     await assertToolSearchHealthy();
+    expect((await recall).ok).toBe(true);
     expect(
       await rag.recordTurn({
         owner: ALICE,

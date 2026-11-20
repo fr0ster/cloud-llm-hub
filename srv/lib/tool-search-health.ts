@@ -2,7 +2,10 @@ import { RagError, type RagResult, type Result } from '@mcp-abap-adt/llm-agent';
 import type { RequestHandler } from 'express';
 
 type SearchResult = Result<RagResult[], RagError>;
-type Failure = { message: string; probe: () => Promise<{ ok: boolean }> };
+type Failure = { message: string } & (
+  | { probe: () => Promise<{ ok: boolean }> }
+  | { repair: Promise<void> }
+);
 const failures = new Map<object, Failure>();
 let probing: Promise<void> | undefined;
 
@@ -26,13 +29,18 @@ export async function waitForBackendWork(
   });
 }
 
-/** History writes share the tool-search readiness state and request-driven repair. */
-export function markHubBackendFailure(
+/** Report retained writes as unhealthy while their own queue repairs them. */
+export function trackHubBackendRepair(
   backend: object,
   message: string,
-  probe: () => Promise<{ ok: boolean }>,
+  repair: Promise<void>,
 ): void {
-  failures.set(backend, { message, probe });
+  const failure = { message, repair };
+  failures.set(backend, failure);
+  const clear = () => {
+    if (failures.get(backend) === failure) failures.delete(backend);
+  };
+  void repair.then(clear, clear);
 }
 
 export class ToolSearchUnavailableError extends Error {
@@ -89,12 +97,11 @@ export async function queryToolCorpus(
     };
   }
   // Caller cancellation says nothing about backend availability.
-  if (!result.ok && !signal?.aborted)
-    markHubBackendFailure(store, message, probe);
+  if (!result.ok && !signal?.aborted) failures.set(store, { message, probe });
   return result;
 }
 
-/** One shared probe per arriving request batch; no timer, deadline or cached query vector. */
+/** Share request-driven tool probes and join background history repairs. */
 export async function assertToolSearchHealthy(
   signal?: AbortSignal,
 ): Promise<void> {
@@ -103,6 +110,7 @@ export async function assertToolSearchHealthy(
     probing = (async () => {
       await Promise.all(
         [...failures].map(async ([store, failure]) => {
+          if (!('probe' in failure)) return;
           try {
             const result = await failure.probe();
             // A concurrent search failure must not be cleared by an older probe.
@@ -118,6 +126,17 @@ export async function assertToolSearchHealthy(
     });
   }
   await waitForBackendWork(probing, signal);
+  // More sessions may retain writes while the current repairs are in progress.
+  while (true) {
+    const repairs = [...failures.values()].flatMap((failure) =>
+      'repair' in failure ? [failure.repair] : [],
+    );
+    if (!repairs.length) break;
+    await waitForBackendWork(
+      Promise.all(repairs).then(() => {}),
+      signal,
+    );
+  }
   const message = toolSearchFailure();
   if (message) throw new ToolSearchUnavailableError(message);
 }

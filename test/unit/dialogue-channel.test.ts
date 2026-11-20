@@ -1070,19 +1070,99 @@ it('follow is absent for a plain reply and for a non-streaming turn', async () =
   ).toBeUndefined();
 });
 
-function streamingRequest() {
+function streamingRequest(content = 'hi') {
   const req = fakeReq(
     {
       model: 'm',
       max_tokens: 100,
       stream: true,
-      messages: [{ role: 'user', content: 'hi' }],
+      messages: [{ role: 'user', content }],
     },
     session.key,
   ) as unknown as Request & { longSession: LongSession };
   req.longSession = session;
   return req;
 }
+
+it('characterizes OpenAI replay after a failed follow has already streamed replies', async () => {
+  jest.mocked(outbox.pending).mockRestore();
+  const handle = await dialogueFor('alice', session.key, 'DEST');
+  const acknowledgement = 'Acknowledged task A.';
+  const lateResult = 'Worker profile could not be loaded for task A.';
+  const answer = 'Answer to B.';
+  let failed = false;
+  handle.state = () => ({
+    settledSeq: failed ? 2 : 1,
+    lastFailedSeq: failed ? 2 : 0,
+    status: send.mock.calls.length === 2 ? 'done' : 'active',
+    turnActive: false,
+    queuedInputs: 0,
+    running: 0,
+    total: 1,
+    done: 1,
+    idle: false,
+  });
+  handle.subscribe = (fn) => {
+    if (send.mock.calls.length === 1 && !failed) {
+      void outbox
+        .add([
+          {
+            id: 'task-a-late',
+            text: lateResult,
+            trigger: 'event',
+            createdAt: 2,
+          },
+        ])
+        .then(() => {
+          failed = true;
+          fn({ kind: 'settled', outcome: 'failed', trigger: 'event' });
+        });
+    }
+    return () => {};
+  };
+  send.mockImplementation(
+    async (
+      content: string,
+      options: Parameters<DialogueHandle['session']['send']>[1],
+    ) => {
+      const text = content === 'Turn A' ? acknowledgement : answer;
+      options?.onPartial?.({ kind: 'content', delta: text });
+      return { text };
+    },
+  );
+
+  const first = fakeRes();
+  await handleChatCompletions(streamingRequest('Turn A'), typedResponse(first));
+  expect(first.body).toContain(acknowledgement);
+  expect(first.body).toContain(lateResult);
+  expect(first.body).toContain('Background planner turn failed');
+  expect(outbox.pending().map((message) => message.text)).toEqual([
+    acknowledgement,
+    lateResult,
+  ]);
+
+  const second = fakeRes();
+  await handleChatCompletions(
+    streamingRequest('Turn B'),
+    typedResponse(second),
+  );
+  expect(second.body).toContain(acknowledgement);
+  expect(second.body.indexOf(acknowledgement)).toBeLessThan(
+    second.body.indexOf(lateResult),
+  );
+  expect(second.body.indexOf(lateResult)).toBeLessThan(
+    second.body.indexOf(answer),
+  );
+  expect(getSessionHistory(session.key, 'alice')).toEqual([
+    { role: 'user', content: 'Turn A' },
+    { role: 'assistant', content: acknowledgement },
+    { role: 'user', content: 'Turn B' },
+    {
+      role: 'assistant',
+      content: `${acknowledgement}\n\n${lateResult}\n\n${answer}`,
+    },
+  ]);
+});
 
 for (const anthropic of [false, true]) {
   const handler = anthropic ? handleAnthropicMessages : handleChatCompletions;

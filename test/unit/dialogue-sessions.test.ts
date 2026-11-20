@@ -163,6 +163,7 @@ let mockGoal = 'read';
 let mockWorkerTrust: { target: number } | undefined;
 let mockPlannerHook: ((text: string) => Promise<void>) | undefined;
 let mockPlannerPreparationHook: (() => void) | undefined;
+let mockWorkerPreparationHook: (() => Promise<void>) | undefined;
 let mockCaptureLlm: (() => Promise<ILlm>) | undefined;
 let mockIsolationHistory: SessionHistoryRouter | undefined;
 let mockClientHistory: 'off' | 'on' = 'off';
@@ -356,6 +357,7 @@ jest.mock('../../srv/agent-manager', () => ({
         model?: string;
         profile: import('@mcp-abap-adt/llm-agent').WorkerProfile;
       }) => {
+        if (mockWorkerPreparationHook) await mockWorkerPreparationHook();
         try {
           model = currentRoleModel(roleOfProfile(profile)) ?? model;
         } catch (error) {
@@ -490,6 +492,7 @@ beforeEach(() => {
   mockGoal = 'read';
   mockPlannerHook = undefined;
   mockPlannerPreparationHook = undefined;
+  mockWorkerPreparationHook = undefined;
   mockCaptureLlm = undefined;
   mockIsolationHistory = undefined;
   mockClientHistory = 'off';
@@ -4400,9 +4403,13 @@ test.each(['direct', 'api', 'api-stream', 'api-disconnect'] as const)(
   },
 );
 
-test.each(['NO_MESSAGE', 'Initial reply; work is still running'])(
-  'records the late dialogue final once after send returned %s',
-  async (initialReply) => {
+test.each([
+  { initialReply: 'NO_MESSAGE', profileFails: false },
+  { initialReply: 'Initial reply; work is still running', profileFails: false },
+  { initialReply: 'Initial reply; work is still running', profileFails: true },
+])(
+  'records the late dialogue final once after $initialReply (profile fails: $profileFails)',
+  async ({ initialReply, profileFails }) => {
     const caller = ragCaller;
     const history = new SessionHistoryRouter(
       new InMemoryRagProvider({ name: 'late-dialogue-history' }),
@@ -4410,18 +4417,28 @@ test.each(['NO_MESSAGE', 'Initial reply; work is still running'])(
     mockIsolationHistory = history;
     const record = jest.spyOn(history, 'recordTurn');
     let finish!: () => void;
-    mockRun.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          finish = () => resolve({ output: 'Worker finished' });
-        }),
-    );
+    if (profileFails) {
+      mockWorkerPreparationHook = () =>
+        new Promise((_, reject) => {
+          finish = () =>
+            reject(new Error('Worker profile could not be loaded'));
+        });
+    } else {
+      mockRun.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finish = () => resolve({ output: 'Worker finished' });
+          }),
+      );
+    }
     let calls = 0;
-    const finalAnswer =
-      'FINAL_EVENT_ANSWER: all original constraints were preserved.';
+    const finalAnswer = profileFails
+      ? 'Task A failed because the worker profile could not be loaded.'
+      : 'FINAL_EVENT_ANSWER: all original constraints were preserved.';
+    const secondAnswer = 'Answer to the next user turn.';
     mockCaptureLlm = async () => {
       const llm: ILlm = {
-        chat: async () => {
+        chat: async (messages) => {
           calls++;
           if (calls === 1) {
             const delegated = await new PlannerToolsClient().callTool(
@@ -4434,10 +4451,19 @@ test.each(['NO_MESSAGE', 'Initial reply; work is still running'])(
             if (!delegated.ok || delegated.value.isError)
               throw new Error('delegation failed');
           }
+          const nextTurn = messages.some(
+            ({ content }) =>
+              typeof content === 'string' && content.includes('CLIENT_B'),
+          );
           return {
             ok: true,
             value: {
-              content: calls === 1 ? initialReply : finalAnswer,
+              content:
+                calls === 1
+                  ? initialReply
+                  : nextTurn
+                    ? secondAnswer
+                    : finalAnswer,
               finishReason: 'stop',
             },
           };
@@ -4461,6 +4487,13 @@ test.each(['NO_MESSAGE', 'Initial reply; work is still running'])(
       finish();
       await until(() => record.mock.calls.length === 1);
       await h.outbox.flushed();
+      if (profileFails) {
+        expect(h.session.snapshot().tasks[0]).toMatchObject({
+          state: 'failed',
+          error: expect.stringContaining('Worker profile could not be loaded'),
+        });
+        expect(mockRun).not.toHaveBeenCalled();
+      }
       const final = h.outbox
         .history()
         .find((message) => message.text === finalAnswer);
@@ -4478,19 +4511,32 @@ test.each(['NO_MESSAGE', 'Initial reply; work is still running'])(
         assistantText: finalAnswer,
         id: 'dialogue:stable-late-turn',
       });
+      if (profileFails) {
+        await clientTurnId.run('next-turn', () => h.session.send('CLIENT_B'));
+        expect(record).toHaveBeenCalledTimes(2);
+        expect(record).toHaveBeenLastCalledWith({
+          caller: expect.objectContaining(caller),
+          userText: 'CLIENT_B',
+          assistantText: secondAnswer,
+          id: 'dialogue:next-turn',
+        });
+      }
       await history.query(
         new TextOnlyEmbedding(text),
         5,
         callOptionsFor(caller),
       );
-      expect(await history.listTurns(caller)).toEqual([
+      const persisted = await history.listTurns(caller);
+      expect(persisted).toHaveLength(profileFails ? 2 : 1);
+      expect(persisted).toContainEqual(
         expect.objectContaining({
           id: 'dialogue:stable-late-turn',
           userText: text,
           assistantText: finalAnswer,
         }),
-      ]);
+      );
     } finally {
+      finish?.();
       opened.mockRestore();
       await closeDialogue(caller.userId, caller.sessionId, 'ttl');
     }

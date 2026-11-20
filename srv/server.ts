@@ -96,6 +96,7 @@ import { requireMcpRole } from './lib/require-mcp-role';
 import { initializeRunRecordStore } from './lib/run-record-store';
 import { sessionConfig } from './lib/session-config';
 import type { LongSessionRequest } from './lib/session-connection';
+import { stopSessionHistoryWrites } from './lib/session-history-collection';
 import {
   lifecycleHooks,
   openSession,
@@ -1133,6 +1134,7 @@ cds.on('served', () => {
 // ABAP sessions end, their state and records stay for revival. A close waits
 // for the session's running request, which the gatekeeper's abort ends.
 cds.on('shutdown', async () => {
+  stopSessionHistoryWrites();
   if (!usageRuntime()) {
     const closing = longSessionsIfReady()?.closeAll('shutdown');
     shutdownGatekeeper();

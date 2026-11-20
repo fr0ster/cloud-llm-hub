@@ -11,7 +11,10 @@ import {
 export const sessionHistoryWrite = new AsyncLocalStorage<true>();
 export const sessionHistoryRepair = new AsyncLocalStorage<true>();
 
-const storeTransport = new AsyncLocalStorage<string>();
+const storeTransport = new AsyncLocalStorage<{
+  url: string;
+  signal: AbortSignal;
+}>();
 let installedFetch: typeof fetch | undefined;
 
 /** Qdrant's Result conversion discards HTTP headers. Observe 429 before that boundary.
@@ -19,6 +22,7 @@ let installedFetch: typeof fetch | undefined;
  * Request bodies used by the provider are replayable JSON strings. */
 export function withHistoryStoreTransport<T>(
   url: string | undefined,
+  shutdown: AbortSignal,
   run: () => T,
 ): T {
   if (!url) return run();
@@ -32,11 +36,19 @@ export function withHistoryStoreTransport<T>(
           : input instanceof URL
             ? input.href
             : input.url;
-      if (!store || !(address === store || address.startsWith(`${store}/`)))
+      if (
+        !store ||
+        !(address === store.url || address.startsWith(`${store.url}/`))
+      )
         return transport(input, init);
+      const requestSignal =
+        init?.signal ?? (input instanceof Request ? input.signal : undefined);
+      const signal = requestSignal
+        ? AbortSignal.any([requestSignal, store.signal])
+        : store.signal;
       return runWithThrottleRetry(
         async () => {
-          const response = await transport(input, init);
+          const response = await transport(input, { ...init, signal });
           if (response.status !== 429) return response;
           await response.body?.cancel();
           throw Object.assign(new RagError('Session history store throttled'), {
@@ -45,17 +57,20 @@ export function withHistoryStoreTransport<T>(
           });
         },
         {
-          key: `session-history-http:${store}`,
+          key: `session-history-http:${store.url}`,
           strategy: new WaitAsTold({ fallbackBackoffMs: 2000 }),
           isThrottled: (error) =>
             error instanceof Error && httpStatusOf(error) === 429,
           retryAfterSeconds: (error) =>
             error instanceof Error ? retryAfterSecondsOf(error) : undefined,
-          signal: init?.signal ?? undefined,
+          signal,
         },
       );
     };
     globalThis.fetch = installedFetch;
   }
-  return storeTransport.run(url.replace(/\/$/, ''), run);
+  return storeTransport.run(
+    { url: url.replace(/\/$/, ''), signal: shutdown },
+    run,
+  );
 }
