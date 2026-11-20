@@ -1301,7 +1301,7 @@ async function runRagTool(
         args.enabled === true,
       );
       if (!doc) throw new Error('Document not found');
-      return respond({ id: doc.id, enabled: doc.enabled });
+      return respond({ collection: id, id: doc.id, enabled: doc.enabled });
     }
     const result = await registry.setSourceEnabled(
       id,
@@ -1310,7 +1310,7 @@ async function runRagTool(
       args.enabled === true,
     );
     if (!result.updated) throw new Error('Source file not found');
-    return respond(result);
+    return respond({ collection: id, enabled: args.enabled, ...result });
   }
   if (name === 'rag_read') {
     const doc = (await readRagDocuments(registry, id, { id: args.id ?? '' }))

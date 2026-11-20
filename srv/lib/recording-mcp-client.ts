@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
 import type {
   CallOptions,
   ILlm,
@@ -88,6 +89,7 @@ function isTransportFailure(error: unknown): boolean {
 export class RecordingMcpClient implements IMcpClient {
   private readonly knownNames: Set<string>;
   private readonly deltas: Map<string, ToolCallRecord[]>;
+  private readonly uncappedResults: WeakMap<ToolCallRecord, McpToolResult>;
   private readonly offeredWrites: Set<string>;
   private readonly sessionWrites: Map<
     string,
@@ -113,6 +115,7 @@ export class RecordingMcpClient implements IMcpClient {
     this.offeredWrites = shared?.offeredWrites ?? new Set<string>();
     this.knownNames = shared?.knownNames ?? new Set<string>();
     this.deltas = shared?.deltas ?? new Map<string, ToolCallRecord[]>();
+    this.uncappedResults = shared?.uncappedResults ?? new WeakMap();
     if (inner.healthCheck) {
       this.healthCheck = (options?: CallOptions) =>
         inner.healthCheck?.(options) as Promise<Result<boolean, McpError>>;
@@ -241,7 +244,7 @@ export class RecordingMcpClient implements IMcpClient {
     const record: RecordedToolCall & {
       answered?: boolean;
     } = {
-      call: { id: '', name, arguments: args },
+      call: { id: randomUUID(), name, arguments: args },
       result: { content: 'no answer yet', isError: true },
       answered: false,
     };
@@ -259,6 +262,8 @@ export class RecordingMcpClient implements IMcpClient {
         this.knownNames.has(name),
       );
       if (capped.rejection) {
+        if (traceId && this.retainRecords)
+          this.uncappedResults.set(record, res.value);
         record.rejection = capped.rejection;
         res = { ...res, value: capped.result };
       }
@@ -308,6 +313,14 @@ export class RecordingMcpClient implements IMcpClient {
    *  yields `[]` — there is no cumulative/session-wide fallback. */
   getToolRecords(requestId?: string): ToolCallRecord[] {
     return requestId ? [...(this.deltas.get(requestId) ?? [])] : [];
+  }
+
+  /** Review evidence includes the result before model-facing size rejection. */
+  getToolJournal(requestId?: string): ToolCallRecord[] {
+    return this.getToolRecords(requestId).map((record) => ({
+      call: record.call,
+      result: this.uncappedResults.get(record) ?? record.result,
+    }));
   }
 
   /** Capability is scoped to one turn and shared by all recorder views. */

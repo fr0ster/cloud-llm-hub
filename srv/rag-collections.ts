@@ -2292,7 +2292,7 @@ export class CollectionRegistry {
     source: string,
     uploadId: string,
     enabled: boolean,
-  ): Promise<{ updated: number }> {
+  ): Promise<{ updated: number; recordIds: string[] }> {
     await this.settled(collectionId, true);
     const stored = this.collections.get(collectionId);
     if (!stored) throw new Error('Collection not found');
@@ -2308,12 +2308,16 @@ export class CollectionRegistry {
         (doc.metadata.uploadId ?? '') === uploadId &&
         Number.isInteger(doc.metadata.chunkIndex),
     );
-    let updated = 0;
+    const recordIds: string[] = [];
     for (const doc of docs) {
-      await this.setDocumentEnabled(collectionId, doc.id, enabled);
-      updated++;
+      const record = await this.setDocumentEnabled(
+        collectionId,
+        doc.id,
+        enabled,
+      );
+      if (record) recordIds.push(record.id);
     }
-    return { updated };
+    return { updated: recordIds.length, recordIds };
   }
 
   deleteDocument(

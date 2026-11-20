@@ -14,6 +14,7 @@
 
 import type { ToolCallRecord } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
+import type { WriteClaim } from './checker-verdict-schema';
 import { isRagWriteTool } from './rag-tool-catalogue';
 import type { ToolResultRejection } from './tool-result-cap';
 import {
@@ -26,7 +27,11 @@ import {
 export type ReviewIssue =
   | {
       kind: 'unverified-write';
-      claimedOp: WriteOp;
+      claimedOp: WriteClaim['operation'];
+      reason: string;
+    }
+  | {
+      kind: 'write-review-unavailable';
       reason: string;
     }
   | {

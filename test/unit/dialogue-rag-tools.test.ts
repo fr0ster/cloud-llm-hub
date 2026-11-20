@@ -26,7 +26,7 @@ import {
   ragToolNames,
 } from '../../srv/lib/rag-tool-catalogue';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
-import { evaluateDeterministic } from '../../srv/lib/reviewer-core';
+import { evaluateWriteClaims } from '../../srv/lib/write-claim-review';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import {
   runWithProfileTools,
@@ -722,22 +722,45 @@ test('the real coordinator persistence result supplies evidence to the write rev
     expect(read).toMatchObject({
       value: { content: expect.stringContaining('Full requirements') },
     });
-    const evidence = coordinator.getToolRecords(options.trace.traceId);
+    const evidence = coordinator.getToolJournal(options.trace.traceId);
     expect(evidence.map((record) => record.call.name)).toEqual([
       'rag_persist',
       'rag_read',
     ]);
     expect(
       renderNotice(
-        evaluateDeterministic(
-          `I created the RAG record ${name}. No SAP changes were made.`,
+        evaluateWriteClaims(
+          [
+            {
+              system: 'rag',
+              operation: 'persisted',
+              target: {
+                scope: 'user',
+                collection: to.collection,
+                record: name,
+              },
+              callId: evidence[0].call.id,
+            },
+          ],
           evidence,
+          () => false,
         ),
       ),
     ).toBe('');
     expect(
       renderNotice(
-        evaluateDeterministic('I created SAP domain ZREQ.', evidence),
+        evaluateWriteClaims(
+          [
+            {
+              system: 'sap',
+              operation: 'created',
+              target: { type: 'domain', name: 'ZREQ' },
+              callId: evidence[0].call.id,
+            },
+          ],
+          evidence,
+          (name) => name === 'CreateDomain',
+        ),
       ),
     ).toContain('UNVERIFIED_WRITE:');
   });
