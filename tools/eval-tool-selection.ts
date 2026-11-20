@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { QueryEmbedding, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+import {
+  QueryEmbedding,
+  stampRagOwner,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import type { EmbedderConfig } from '../srv/agent-config';
 import {
@@ -96,11 +100,14 @@ async function main() {
     for (const doc of docs) {
       const writer = stores[collectionFor(doc.readOnlyHint)].writer?.();
       if (!writer) throw new Error('Store is not writable');
-      const metadata = {
-        exposition: doc.exposition,
-        readOnlyHint: doc.readOnlyHint,
-        name: doc.name,
-      };
+      const metadata = stampRagOwner(
+        {
+          exposition: doc.exposition,
+          readOnlyHint: doc.readOnlyHint,
+          name: doc.name,
+        },
+        { scope: 'global' },
+      );
       const bundled = vectors.get(doc.id);
       const writeVector =
         precomputed && bundled?.text === doc.text

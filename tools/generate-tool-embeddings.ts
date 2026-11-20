@@ -33,6 +33,7 @@ import * as path from 'node:path';
 import {
   DuplicateCollectionError,
   type IEmbedder,
+  stampRagOwner,
 } from '@mcp-abap-adt/llm-agent';
 import { config as loadDotenv } from 'dotenv';
 import { load as loadYaml } from 'js-yaml';
@@ -304,11 +305,18 @@ export async function buildQdrantStores(
     // QdrantRag creates the collection on the first write.
     for (const d of roles[role]) {
       const vector = await embedWithRetry(embedder, d.text);
-      const res = await write(d.id, d.text, vector, {
-        ownerScope: 'global',
-        ...(d.exposition ? { exposition: d.exposition } : {}),
-        readOnlyHint: d.readOnlyHint,
-      });
+      const res = await write(
+        d.id,
+        d.text,
+        vector,
+        stampRagOwner(
+          {
+            ...(d.exposition ? { exposition: d.exposition } : {}),
+            readOnlyHint: d.readOnlyHint,
+          },
+          { scope: 'global' },
+        ),
+      );
       if (!res.ok)
         throw new Error(
           `${role}: writing ${d.id} to ${collection} failed: ${res.error.message}`,
