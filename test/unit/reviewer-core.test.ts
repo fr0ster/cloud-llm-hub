@@ -1,4 +1,5 @@
 import type { ToolCallRecord } from '@mcp-abap-adt/llm-agent';
+import { renderNotice } from '../../srv/lib/notify-policy';
 import {
   evaluateDeterministic,
   parseToolOutcome,
@@ -270,6 +271,73 @@ describe('evaluateDeterministic (result-based)', () => {
       record('DeleteTable', '{"success":false,"error":"lock held"}', true),
     ]);
     expect(verdict).toEqual({ ok: true });
+  });
+});
+
+describe('RAG write evidence', () => {
+  it.each([
+    ['record_add', { record: 'requirements', created: true }, 'created'],
+    ['record_update', { record: 'requirements', updated: true }, 'updated'],
+    ['record_delete', { record: 'requirements', deleted: true }, 'deleted'],
+    ['record_set_enabled', { id: 'requirements', enabled: true }, 'activated'],
+  ])(
+    'uses a successful %s result for the corresponding record and operation',
+    (name, result, op) => {
+      const records = [record(name, { collection: 'project', ...result })];
+      expect(
+        renderNotice(
+          evaluateDeterministic(`The record requirements was ${op}.`, records),
+        ),
+      ).toBe('');
+      expect(
+        renderNotice(
+          evaluateDeterministic(
+            `The record old-requirements was ${op}.`,
+            records,
+          ),
+        ),
+      ).toContain('UNVERIFIED_WRITE:');
+    },
+  );
+
+  it('keeps an unverified RAG claim when readback finds a record after the write failed', () => {
+    const attempt: ToolCallRecord = {
+      ...record(
+        'record_add',
+        { error: { message: 'Record already exists' } },
+        true,
+      ),
+      call: {
+        id: 'add',
+        name: 'record_add',
+        arguments: { record: 'requirements' },
+      },
+    };
+    const records = [
+      attempt,
+      record('rag_read', { collection: 'session/project', id: 'requirements' }),
+      record('CreateDomain', 'SUCCESS'),
+    ];
+    const verdict = evaluateDeterministic(
+      'The record requirements was created.',
+      records,
+    );
+    expect(renderNotice(verdict)).toContain('UNVERIFIED_WRITE:');
+    expect(renderNotice(verdict)).toContain('record_add returned error');
+  });
+
+  it('requires the record to appear in the persist result', () => {
+    const records = [
+      record('rag_persist', {
+        collection: 'project',
+        records: ['another-record'],
+      }),
+    ];
+    expect(
+      renderNotice(
+        evaluateDeterministic('The record requirements was created.', records),
+      ),
+    ).toContain('UNVERIFIED_WRITE:');
   });
 });
 

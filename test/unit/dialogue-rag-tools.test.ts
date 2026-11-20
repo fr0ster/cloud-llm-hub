@@ -17,6 +17,7 @@ import {
   withDialogueRagTools,
 } from '../../srv/lib/dialogue-rag-tools';
 import { longSessions } from '../../srv/lib/long-session';
+import { renderNotice } from '../../srv/lib/notify-policy';
 import {
   buildRagToolSchemas,
   ragDescriptions,
@@ -25,6 +26,7 @@ import {
   ragToolNames,
 } from '../../srv/lib/rag-tool-catalogue';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
+import { evaluateDeterministic } from '../../srv/lib/reviewer-core';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import {
   runWithProfileTools,
@@ -685,6 +687,59 @@ test('explicit coordinator addresses do not shadow, persistence accepts equal na
       },
     });
     expect(listed.ok && listed.value.content).not.toContain('__');
+  });
+});
+
+test('the real coordinator persistence result supplies evidence to the write reviewer', async () => {
+  const { registry, client, inner } = setup();
+  const coordinator = new RecordingMcpClient(
+    new LocalRagMcpClient(inner, () => registry, true),
+  );
+  await inSession(async () => {
+    const name = 'business-requirements';
+    const from = { scope: 'session', collection: 'drafts' };
+    const to = { scope: 'user', collection: 'project' };
+    const options = { trace: { traceId: 'persist' } };
+    await client.callTool('collection_create', {
+      name: from.collection,
+      scope: from.scope,
+    });
+    await client.callTool('record_add', {
+      collection: from.collection,
+      record: name,
+      text: 'Full requirements',
+    });
+    await coordinator.callTool(
+      'rag_persist',
+      { from, to, records: [name] },
+      options,
+    );
+    const read = await coordinator.callTool(
+      'rag_read',
+      { collection: to, id: name },
+      options,
+    );
+    expect(read).toMatchObject({
+      value: { content: expect.stringContaining('Full requirements') },
+    });
+    const evidence = coordinator.getToolRecords(options.trace.traceId);
+    expect(evidence.map((record) => record.call.name)).toEqual([
+      'rag_persist',
+      'rag_read',
+    ]);
+    expect(
+      renderNotice(
+        evaluateDeterministic(
+          `I created the RAG record ${name}. No SAP changes were made.`,
+          evidence,
+        ),
+      ),
+    ).toBe('');
+    expect(
+      renderNotice(
+        evaluateDeterministic('I created SAP domain ZREQ.', evidence),
+      ),
+    ).toContain('UNVERIFIED_WRITE:');
   });
 });
 

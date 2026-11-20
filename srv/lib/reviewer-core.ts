@@ -13,12 +13,14 @@
  */
 
 import type { ToolCallRecord } from '@mcp-abap-adt/llm-agent';
+import { z } from 'zod';
+import { isRagWriteTool } from './rag-tool-catalogue';
 import type { ToolResultRejection } from './tool-result-cap';
 import {
-  claimedWriteOps,
   claimsCompletedRead,
   isWriteTool,
   type WriteOp,
+  writeClaimClauses,
 } from './write-guardrail';
 
 export type ReviewIssue =
@@ -157,7 +159,7 @@ function opSatisfied(op: WriteOp, outcomes: ToolOutcome[]): boolean {
       // still running, so neither the write nor lib can know it finished.
       return outcomes.some(
         (o) =>
-          (o.status === 'active' && isWriteTool(o.name)) ||
+          (o.ok && o.status === 'active' && isWriteTool(o.name)) ||
           (ACTIVATE_TOOL.test(o.name) && o.ok),
       );
     case 'created':
@@ -168,9 +170,89 @@ function opSatisfied(op: WriteOp, outcomes: ToolOutcome[]): boolean {
       return outcomes.some(
         (o) =>
           (UPDATE_TOOL.test(o.name) && o.ok) ||
-          (o.status === 'active' && isWriteTool(o.name)),
+          (o.ok && o.status === 'active' && isWriteTool(o.name)),
       );
   }
+}
+
+const ragWriteResult = z.object({
+  collection: z.string().optional(),
+  name: z.string().optional(),
+  record: z.string().optional(),
+  records: z.array(z.string()).optional(),
+  id: z.string().optional(),
+  created: z.boolean().optional(),
+  updated: z.union([z.literal(true), z.number().positive()]).optional(),
+  deleted: z.boolean().optional(),
+  enabled: z.boolean().optional(),
+});
+
+const ragWriteArguments = z.object({
+  collection: z.string().optional(),
+  name: z.string().optional(),
+  record: z.string().optional(),
+  records: z.array(z.string()).optional(),
+  id: z.string().optional(),
+  source: z.string().optional(),
+  title: z.string().optional(),
+  to: z.object({ scope: z.literal('user'), collection: z.string() }).optional(),
+});
+
+function ragWriteEvidence(record: ToolCallRecord, outcome: ToolOutcome) {
+  const envelope = parseEnvelope(record.result.content);
+  const result = ragWriteResult.safeParse(envelope).data;
+  const args = ragWriteArguments.safeParse(record.call.arguments).data;
+  const persisted = Boolean(result?.records?.length);
+  const enabled = result?.enabled;
+  const ops = new Set<WriteOp>();
+  if (outcome.ok && !envelope.error) {
+    if (result?.created || persisted) ops.add('created');
+    if (result?.updated || persisted || enabled !== undefined)
+      ops.add('updated');
+    if (result?.deleted) ops.add('deleted');
+    if (enabled === true) ops.add('activated');
+  }
+
+  const returnedTargets = [
+    ...(result?.records ?? []),
+    result?.record,
+    result?.id,
+    result?.name,
+    // A record mutation reports its parent collection as well as its target.
+    result?.record === undefined && result?.records === undefined
+      ? result?.collection
+      : undefined,
+    result?.record ? args?.title : undefined,
+    result?.updated ? (args?.record ?? args?.source) : undefined,
+  ].filter((target): target is string => Boolean(target));
+  const attemptedTargets = [
+    ...(args?.records ?? []),
+    args?.record,
+    args?.id,
+    args?.title,
+    args?.source,
+    args?.name,
+    args?.to && `${args.to.scope}/${args.to.collection}`,
+    args?.record || args?.id || args?.source ? undefined : args?.collection,
+  ].filter((target): target is string => Boolean(target));
+  return { outcome, ops, returnedTargets, attemptedTargets };
+}
+
+/** Match identifiers from the journal within the clause that asserts the write. */
+function mentionsTarget(clause: string, target: string): boolean {
+  const identifierChar = /[\p{L}\p{N}_-]/u;
+  for (
+    let start = clause.indexOf(target);
+    start !== -1;
+    start = clause.indexOf(target, start + target.length)
+  ) {
+    if (
+      !identifierChar.test(clause.charAt(start - 1)) &&
+      !identifierChar.test(clause.charAt(start + target.length))
+    )
+      return true;
+  }
+  return false;
 }
 
 const OP_LABEL: Record<WriteOp, string> = {
@@ -204,12 +286,9 @@ function reasonFor(op: WriteOp, outcomes: ToolOutcome[]): string {
 }
 
 /**
- * Result-based deterministic verdict: one `ReviewIssue` per claimed write op
- * unsatisfied by the ACTUAL tool-call results. A failed write tool relevant to
- * a claimed op is already surfaced by the per-op rule above (no successful
- * Create/Update/Delete family tool, or no status:active from a write tool),
- * so no separate catch-all is needed — it only added noise for UNRELATED
- * failed writes and mislabeled the op (attributing it to `claims[0]`).
+ * Compare claimed operations with the corresponding tool-call results. RAG
+ * results support claims that name their targets in the same clause. SAP
+ * operations keep the existing tool-family and status checks.
  */
 export function evaluateDeterministic(
   content: string,
@@ -217,6 +296,14 @@ export function evaluateDeterministic(
   writeToolOffered = false,
 ): ReviewVerdict {
   const outcomes = records.map(parseToolOutcome);
+  const sapOutcomes = outcomes.filter(
+    (outcome) => !isRagWriteTool(outcome.name),
+  );
+  const ragWrites = records.flatMap((record, index) =>
+    isRagWriteTool(record.call.name)
+      ? [ragWriteEvidence(record, outcomes[index])]
+      : [],
+  );
 
   // Zero calls and a claim to have read the system: the executor cannot have
   // read what it never asked for. Checked BEFORE the write claims, and
@@ -237,21 +324,47 @@ export function evaluateDeterministic(
 
   if (
     !writeToolOffered &&
-    !outcomes.some((outcome) => isWriteTool(outcome.name))
+    !sapOutcomes.some((outcome) => isWriteTool(outcome.name)) &&
+    ragWrites.length === 0
   )
     return { ok: true };
 
-  const claims = claimedWriteOps(content);
-  if (claims.length === 0) return { ok: true };
-
   const issues: ReviewIssue[] = [];
-  for (const op of claims) {
-    if (opSatisfied(op, outcomes)) continue;
-    issues.push({
-      kind: 'unverified-write',
-      claimedOp: op,
-      reason: reasonFor(op, outcomes),
-    });
+  for (const { clause, ops } of writeClaimClauses(content)) {
+    const matchingRagWrites = ragWrites.filter((write) =>
+      [...write.returnedTargets, ...write.attemptedTargets].some((target) =>
+        mentionsTarget(clause, target),
+      ),
+    );
+    for (const op of ops) {
+      if (matchingRagWrites.length === 0 && opSatisfied(op, sapOutcomes))
+        continue;
+      if (
+        matchingRagWrites.some(
+          (write) =>
+            write.ops.has(op) &&
+            write.returnedTargets.some((target) =>
+              mentionsTarget(clause, target),
+            ),
+        )
+      )
+        continue;
+      const failed = matchingRagWrites.find((write) => !write.outcome.ok);
+      const reason = failed
+        ? `write tool ${failed.outcome.name} returned error: ${failed.outcome.error}`
+        : matchingRagWrites.length
+          ? `claims ${OP_LABEL[op]} but no successful RAG write result supports the claim`
+          : reasonFor(op, sapOutcomes);
+      if (
+        !issues.some(
+          (issue) =>
+            issue.kind === 'unverified-write' &&
+            issue.claimedOp === op &&
+            issue.reason === reason,
+        )
+      )
+        issues.push({ kind: 'unverified-write', claimedOp: op, reason });
+    }
   }
 
   return issues.length === 0 ? { ok: true } : { ok: false, issues };
