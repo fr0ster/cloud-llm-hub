@@ -456,7 +456,9 @@ test.each(['success', 'error', 'exception', 'abort'] as const)(
         { session: opened(), task: 'read' },
         controller.signal,
       );
-      expect(recorded).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
+      expect(recorded).toHaveBeenCalledTimes(
+        outcome === 'success' || outcome === 'abort' ? 1 : 0,
+      );
     } finally {
       recorded.mockRestore();
     }

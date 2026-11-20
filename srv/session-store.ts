@@ -129,6 +129,16 @@ export function appendToSession(
   userId: string,
   ...msgs: Message[]
 ): void {
+  const entry = touchSession(sessionId, userId);
+  entry.messages.push(...msgs);
+
+  // Keep only last N messages
+  if (entry.messages.length > SESSION_MAX_MESSAGES) {
+    entry.messages = entry.messages.slice(-SESSION_MAX_MESSAGES);
+  }
+}
+
+function touchSession(sessionId: string, userId: string): SessionEntry {
   const key = sessionStoreKey(sessionId, userId);
   let entry = sessionStore.get(key);
   if (!entry) {
@@ -136,12 +146,7 @@ export function appendToSession(
     sessionStore.set(key, entry);
   }
   entry.lastAccess = Date.now();
-  entry.messages.push(...msgs);
-
-  // Keep only last N messages
-  if (entry.messages.length > SESSION_MAX_MESSAGES) {
-    entry.messages = entry.messages.slice(-SESSION_MAX_MESSAGES);
-  }
+  return entry;
 }
 
 /** Amend the original turn entry without recreating expired or cleared history. */
@@ -190,5 +195,6 @@ export function clearSession(sessionId: string, userId: string): void {
  * a session is idle must not make it look busy.
  */
 export function hasSessionHistory(sessionId: string, userId: string): boolean {
-  return sessionStore.has(sessionStoreKey(sessionId, userId));
+  return !!sessionStore.get(sessionStoreKey(sessionId, userId))?.messages
+    .length;
 }

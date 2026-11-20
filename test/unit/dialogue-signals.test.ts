@@ -13,6 +13,7 @@ import {
 } from '../../srv/lib/dialogue-signals';
 
 jest.mock('../../srv/agent-manager', () => ({
+  getSharedHistoryRag: () => undefined,
   getSystemToolTrust: () => () => undefined,
   isEmbeddedSystemTool: () => false,
   getTrustResolver: () =>

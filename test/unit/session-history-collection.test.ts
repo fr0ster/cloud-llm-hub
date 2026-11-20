@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   type ILlm,
+  InMemoryRag,
   InMemoryRagProvider,
   type RagCaller,
   RagError,
@@ -20,8 +21,14 @@ import {
   forgetSessionHistory,
   historyCollectionName,
   initSessionHistoryRouter,
+  SESSION_HISTORY_RETRY_INTERVAL_MS,
   SessionHistoryRouter,
 } from '../../srv/lib/session-history-collection';
+import {
+  assertToolSearchHealthy,
+  toolSearchFailure,
+} from '../../srv/lib/tool-search-health';
+import { historyTestProvider } from './helpers/session-history-fixture';
 
 const a: RagCaller = { userId: 'u1', sessionId: 's1', isAdmin: false };
 const b: RagCaller = { ...a, sessionId: 's2' };
@@ -39,6 +46,12 @@ beforeEach(async () => {
   provider = new InMemoryRagProvider({ name: 'session-history' });
   router = new SessionHistoryRouter(provider);
   initSessionHistoryRouter(router);
+});
+
+afterEach(async () => {
+  await router.stopWrites();
+  jest.useRealTimers();
+  jest.restoreAllMocks();
 });
 
 test('historyCollectionName is the specified sha256 name', () => {
@@ -388,7 +401,7 @@ test('k counts full turns instead of chunks', async () => {
 test('failed history writes warn with identifiers and error class only', async () => {
   const warn = jest.fn();
   router = new SessionHistoryRouter(provider, { log: { warn } });
-  jest.spyOn(provider, 'createCollection').mockResolvedValue({
+  const create = jest.spyOn(provider, 'createCollection').mockResolvedValue({
     ok: false,
     error: new RagError('private user and assistant text'),
   });
@@ -406,7 +419,86 @@ test('failed history writes warn with identifiers and error class only', async (
     error: 'RagError',
   });
   expect(JSON.stringify(warn.mock.calls)).not.toContain('private');
+  create.mockRestore();
+  await assertToolSearchHealthy();
+  expect(await router.listTurns(a)).toContainEqual(
+    expect.objectContaining({ id: 'failed-turn' }),
+  );
 });
+
+test.each([false, true])(
+  'shutdown drains the FIFO after Retry-After and a sibling failure is visible immediately (failure=%s)',
+  async (failChunk) => {
+    jest.useFakeTimers();
+    jest.spyOn(Math, 'random').mockReturnValue(0);
+    const backend = new InMemoryRag();
+    const writer = backend.writer();
+    const upsert = writer.upsertRaw.bind(writer);
+    const throttled = Object.assign(new RagError('throttled'), {
+      status: 429,
+      headers: new Headers({ 'retry-after': '120' }),
+    });
+    let rejected = false;
+    let throttledOnce = false;
+    jest.spyOn(writer, 'upsertRaw').mockImplementation(async (id, ...args) => {
+      if (failChunk && !rejected && id === 'first:chunk:00000000') {
+        rejected = true;
+        return { ok: false, error: new RagError('write failed') };
+      }
+      if (!throttledOnce && id === 'first:chunk:00000001') {
+        throttledOnce = true;
+        return { ok: false, error: throttled };
+      }
+      return upsert(id, ...args);
+    });
+    jest.spyOn(backend, 'writer').mockReturnValue(writer);
+    const storage = historyTestProvider(backend);
+    const created = await storage.createCollection(
+      historyCollectionName(a.sessionId),
+      {
+        scope: 'session',
+        sessionId: a.sessionId,
+      },
+    );
+    if (!created.ok) throw created.error;
+    router = new SessionHistoryRouter(storage, {
+      storageBackend: `history-drain-${failChunk}`,
+    });
+    const submit = (id: string, assistantText: string) =>
+      router.recordTurn({ caller: a, id, userText: 'q', assistantText });
+    const first = submit('first', 'a'.repeat(7000));
+    const second = submit('second', 'b');
+    let drained = false;
+    const draining = router.drainWrites().then(() => {
+      drained = true;
+    });
+    await expect(submit('late', 'c')).resolves.toBe(false);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(throttledOnce).toBe(true);
+    if (failChunk)
+      expect(toolSearchFailure()).toContain('Session history unavailable');
+    else expect(toolSearchFailure()).toBeUndefined();
+    await jest.advanceTimersByTimeAsync(119_999);
+    expect(drained).toBe(false);
+    expect(writer.upsertRaw).not.toHaveBeenCalledWith(
+      'second',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+    await jest.advanceTimersByTimeAsync(1 + SESSION_HISTORY_RETRY_INTERVAL_MS);
+    await draining;
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      !failChunk,
+      !failChunk,
+    ]);
+    expect(toolSearchFailure()).toBeUndefined();
+    expect((await router.listTurns(a)).map((turn) => turn.id)).toEqual([
+      'first',
+      'second',
+    ]);
+  },
+);
 
 test('turn ranking uses the best chunk score and warns for missing chunks', async () => {
   const warn = jest.fn();

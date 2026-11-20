@@ -9,7 +9,7 @@ import type {
   ToolTrace,
   ToolTraceEntry,
 } from '@mcp-abap-adt/llm-agent';
-import { isRagScanner } from '@mcp-abap-adt/llm-agent';
+import { isRagScanner, stampRagOwner } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { z } from 'zod';
 import type { RagConfig } from '../agent-config';
@@ -642,7 +642,10 @@ export class ProviderDialogueStore implements DialogueStoreBackend {
       dialogueId(userId, sessionId),
       text,
       this.zeroVector,
-      { authorUserId: userId, hubSessionId: sessionId, savedAt },
+      stampRagOwner(
+        { authorUserId: userId, hubSessionId: sessionId, savedAt },
+        { scope: 'global' },
+      ),
     );
     if (!r.ok) throw r.error;
     this.hasDialogueState(userId, sessionId);

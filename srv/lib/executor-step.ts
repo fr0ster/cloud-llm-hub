@@ -10,6 +10,7 @@ import { renderNotice } from './notify-policy';
 import { callOptionsFor } from './rag-caller';
 import { captureReviewProfile, recordReviewProfile } from './review-scope';
 import { currentRoleModel, roleOfProfile } from './role-models-scope';
+import { waitForSessionTurns } from './session-turns';
 import { evaluateGated } from './step-reviewer';
 import { assertToolSearchHealthy } from './tool-search-health';
 
@@ -50,6 +51,7 @@ export async function runExecutorStep(
   )
     throw new Error('A bound caller with a matching session is required');
   const caller = opts.caller;
+  await waitForSessionTurns(caller.sessionId, opts.signal);
   opts = { ...opts, ...callOptionsFor(caller) };
   const traceId = opts.trace?.traceId ?? '';
   const { result } = await captureReviewProfile(() =>

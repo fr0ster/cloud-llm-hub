@@ -3,6 +3,7 @@ import {
   type IRag,
   type IRagProvider,
   normalizeTrust,
+  stampRagOwner,
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import { ensureTrustStore } from './collection-persistence';
@@ -76,7 +77,7 @@ export class TrustStore {
             ? this.dimension()
             : this.dimension,
         ).fill(0),
-        {},
+        stampRagOwner({}, { scope: 'global' }),
       );
       if (!result.ok) throw result.error;
     });

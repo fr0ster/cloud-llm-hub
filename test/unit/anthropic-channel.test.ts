@@ -7,6 +7,7 @@ import {
 import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import { bindCaller } from '../../srv/lib/rag-caller';
 import { chatSessionBodyTests } from './helpers/chat-session-body';
+import { clientToolHistoryTests } from './helpers/client-tool-history';
 import { responseModelTests, typedResponse } from './helpers/response-model';
 
 // Bootstrap logging is tested with real CAP in logging-config.test.ts.
@@ -96,11 +97,16 @@ const body = (stream = false) => ({
   messages: [{ role: 'user', content: 'hi' }],
 });
 
-function call(b: unknown, res = fakeRes(), session?: LongSession) {
+function call(
+  b: object,
+  res = fakeRes(),
+  session?: LongSession,
+  sessionId = 's-1',
+) {
   const req = Object.assign(
     Object.defineProperties(
       express().request,
-      Object.getOwnPropertyDescriptors(fakeReq(b)),
+      Object.getOwnPropertyDescriptors(fakeReq(b, sessionId)),
     ),
     {
       longSession: session,
@@ -112,6 +118,10 @@ function call(b: unknown, res = fakeRes(), session?: LongSession) {
 
 beforeEach(() => harness.reset());
 afterEach(() => configure());
+
+clientToolHistoryTests('anthropic', body, (request, sessionId, session) =>
+  call(request, fakeRes(), session, sessionId),
+);
 
 it.each([false, true])(
   'reports uncached input and cache reads and writes (stream=%s)',
@@ -1275,7 +1285,9 @@ describe('history records only completed calls', () => {
     res.write = (chunk) => {
       if (
         chunk.includes('message_stop') &&
-        (outcome === 'success' || outcome === 'disconnect after terminal')
+        (outcome === 'success' ||
+          outcome === 'disconnect' ||
+          outcome === 'disconnect after terminal')
       )
         expect(recorded).toHaveBeenCalledTimes(1);
       const result = write(chunk);
@@ -1299,7 +1311,9 @@ describe('history records only completed calls', () => {
     try {
       await call(body(true), res).done;
       expect(recorded).toHaveBeenCalledTimes(
-        outcome === 'success' || outcome === 'disconnect after terminal'
+        outcome === 'success' ||
+          outcome === 'disconnect' ||
+          outcome === 'disconnect after terminal'
           ? 1
           : 0,
       );
@@ -1308,6 +1322,7 @@ describe('history records only completed calls', () => {
           expect.objectContaining({ userId: 'alice' }),
           expect.objectContaining({ role: 'user', content: 'hi' }),
           'partial answer',
+          expect.stringMatching(/^client:/),
         );
     } finally {
       recorded.mockRestore();
@@ -1333,7 +1348,9 @@ describe('history records only completed calls', () => {
         if (outcome === 'exception')
           await expect(done).rejects.toThrow('call failed');
         else await done;
-        expect(recorded).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
+        expect(recorded).toHaveBeenCalledTimes(
+          outcome === 'success' || outcome === 'disconnect' ? 1 : 0,
+        );
       } finally {
         recorded.mockRestore();
       }

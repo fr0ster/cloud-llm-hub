@@ -1,3 +1,7 @@
+import {
+  type ClientHistory,
+  configuredClientHistory,
+} from './lib/client-history';
 import { deployModel } from './lib/deploy-model';
 import {
   configuredExecutionLimits,
@@ -289,10 +293,12 @@ export interface AgentConfig {
     /** RAG backend type */
     ragType: RagType;
 
-    /** Max recent messages to include from client history (older excluded, available via RAG) */
+    /** Max recent consumer messages when client history is on; ignored when off. */
     historyRecencyWindow?: number;
+    /** Client dialogue policy; omission defaults to current turn only. */
+    clientHistory?: ClientHistory;
 
-    /** Legacy query budget for other RAG stores (default: 5). */
+    /** History turn retrieval count and legacy budget for other RAG stores (default: 5). */
     ragQueryK: number;
     /** Reader tool seeds per query (default: 2). */
     kReader?: number;
@@ -756,6 +762,7 @@ export function loadAgentConfig(): AgentConfig {
       maxToolCalls: parseMaxToolCalls(),
       ragType,
       historyRecencyWindow,
+      clientHistory: configuredClientHistory(),
       ragQueryK,
       toolSelection: parseToolSelection(process.env.LLM_AGENT_TOOLS_SELECTION),
       kReader: parseToolSearchK(process.env.LLM_AGENT_TOOLS_K_READER, 5),
@@ -789,6 +796,7 @@ export function loadAgentConfig(): AgentConfig {
     toolResultMaxChars: config.agent.toolResultMaxChars,
     maxToolCalls: config.agent.maxToolCalls,
     ragType: config.agent.ragType,
+    clientHistory: config.agent.clientHistory,
     historyRecencyWindow: config.agent.historyRecencyWindow ?? 'unlimited',
     gatekeeper: describeGatekeeperConfig(gatekeeper),
     ragBackends: config.rag.backends,

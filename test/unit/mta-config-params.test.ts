@@ -7,6 +7,7 @@ import { load } from 'js-yaml';
 // LLM_AGENT_PG_PASSWORD) go through
 // .env → cf set-env (tools/deploy.sh), never through mta.yaml.
 const CARRIED = [
+  'LLM_AGENT_CLIENT_HISTORY',
   'LLM_AGENT_PROMPT_CACHING',
   'LLM_AGENT_COORDINATOR_PROMPT_CACHING',
   'LLM_AGENT_PLANNER_PROMPT_CACHING',
@@ -75,6 +76,7 @@ it('every deployment template documents the new parameters', () => {
     const text = fs.readFileSync(path.join(dir, f), 'utf8');
     for (const name of [
       ...NEW,
+      'LLM_AGENT_CLIENT_HISTORY',
       'LLM_AGENT_LOG_LEVEL',
       'LLM_AGENT_LOG_LEVELS',
     ]) {
@@ -99,6 +101,7 @@ it('every new parameter has a default, so a deployment without it still resolves
     expect([name, mta.parameters[name]]).toEqual([name, '']);
   }
   expect(mta.parameters.LLM_AGENT_PROMPT_CACHING).toBe('on');
+  expect(mta.parameters.LLM_AGENT_CLIENT_HISTORY).toBe('off');
 });
 
 // Templates no longer set an iteration limit, so the base descriptor must

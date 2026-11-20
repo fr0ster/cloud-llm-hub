@@ -2,7 +2,7 @@
  * The persistent record of each open long session, so that a hub restarted
  * after a crash can give a client presenting its key the hub session back.
  *
- * The record holds no secrets: owner, key, timestamps, TTL and destination.
+ * The record holds session metadata and IDs for outstanding client tool calls.
  * Backends: SQLite (local runs, Docker with a volume) and the HANA / PG
  * provider the RAG backends use (CF, whose file system does not survive a
  * restart). `none` keeps no record.
@@ -18,6 +18,7 @@ import {
   type IRetrievalEmbedder,
   isRagScanner,
   type RagScanRecord,
+  stampRagOwner,
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { z } from 'zod';
@@ -45,12 +46,13 @@ export interface SessionRecord {
   destination?: string;
   agentsCollectionId?: string;
   collectionOverrides?: Record<string, boolean>;
+  clientToolTurns?: [string, string][];
   closedAt?: number;
 }
 
 export interface SessionRecordStore {
   put(r: SessionRecord): Promise<void>;
-  /** Writes only if lastActivity moved ≥ 60000 ms since the last write of that key. */
+  /** Writes when session metadata changes or lastActivity moves by 60 seconds. */
   touch(r: SessionRecord): Promise<void>;
   get(userId: string, key: string): Promise<SessionRecord | undefined>;
   delete(userId: string, key: string): Promise<void>;
@@ -75,6 +77,7 @@ function stored(r: SessionRecord): SessionRecord {
     ...(r.collectionOverrides
       ? { collectionOverrides: { ...r.collectionOverrides } }
       : {}),
+    ...(r.clientToolTurns ? { clientToolTurns: r.clientToolTurns } : {}),
     ...(r.closedAt !== undefined ? { closedAt: r.closedAt } : {}),
   };
 }
@@ -90,6 +93,7 @@ const sessionRecordSchema = z.object({
   agentsCollectionId: z.string().optional(),
   closedAt: z.number().optional(),
   collectionOverrides: z.record(z.string(), z.boolean()).optional(),
+  clientToolTurns: z.array(z.tuple([z.string(), z.string()])).optional(),
 });
 function decode(text: string): SessionRecord | undefined {
   try {
@@ -115,7 +119,7 @@ export class SessionRecordOwnerError extends Error {
  * key never written by this process is written.
  */
 abstract class SerialSessionRecordStore implements SessionRecordStore {
-  private readonly collectionFlags = new Map<string, string>();
+  private readonly sessionMetadata = new Map<string, string>();
   private readonly destinations = new Map<string, string | undefined>();
   private readonly written = new Map<string, number>();
   private readonly queues = new Map<string, Promise<unknown>>();
@@ -138,7 +142,7 @@ abstract class SerialSessionRecordStore implements SessionRecordStore {
   /**
    * The threshold is checked inside the key's chain, so overlapping touches
    * see each other's writes: timestamp-only updates write once per minute;
-   * a destination change always writes.
+   * metadata changes always write.
    */
   touch(r: SessionRecord): Promise<void> {
     return this.serial(r.key, async () => {
@@ -146,8 +150,7 @@ abstract class SerialSessionRecordStore implements SessionRecordStore {
       if (
         last !== undefined &&
         this.destinations.get(r.key) === r.destination &&
-        this.collectionFlags.get(r.key) ===
-          JSON.stringify([r.collectionOverrides, r.agentsCollectionId]) &&
+        this.sessionMetadata.get(r.key) === this.metadataOf(r) &&
         r.lastActivity - last < TOUCH_INTERVAL_MS
       )
         return;
@@ -160,7 +163,7 @@ abstract class SerialSessionRecordStore implements SessionRecordStore {
       if (await this.deleteRecord(userId, key)) {
         this.written.delete(key);
         this.destinations.delete(key);
-        this.collectionFlags.delete(key);
+        this.sessionMetadata.delete(key);
       }
     });
   }
@@ -172,10 +175,15 @@ abstract class SerialSessionRecordStore implements SessionRecordStore {
     await this.writeRecord(r);
     this.written.set(r.key, r.lastActivity);
     this.destinations.set(r.key, r.destination);
-    this.collectionFlags.set(
-      r.key,
-      JSON.stringify([r.collectionOverrides, r.agentsCollectionId]),
-    );
+    this.sessionMetadata.set(r.key, this.metadataOf(r));
+  }
+
+  private metadataOf(r: SessionRecord): string {
+    return JSON.stringify([
+      r.collectionOverrides,
+      r.agentsCollectionId,
+      r.clientToolTurns,
+    ]);
   }
 
   private serial<T>(key: string, run: () => Promise<T>): Promise<T> {
@@ -398,7 +406,10 @@ export class ProviderSessionRecordStore extends SerialSessionRecordStore {
       recordId(r.key),
       JSON.stringify(stored(r)),
       this.zeroVector,
-      { authorUserId: r.userId, hubSessionId: r.key },
+      stampRagOwner(
+        { authorUserId: r.userId, hubSessionId: r.key },
+        { scope: 'global' },
+      ),
     );
     if (!w.ok) throw w.error;
   }

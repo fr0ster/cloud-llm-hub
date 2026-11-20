@@ -37,8 +37,8 @@ export function deleteSessionState(userId: string, sessionId: string): void {
 }
 
 /**
- * Whether this session still holds memory worth bounding: turns, unexpired run and dialogue records, or session
- * collections. The destination name is deliberately not counted — a few bytes
+ * Whether this session still holds turns, unexpired run and
+ * dialogue records, or session collections. The destination name is not counted — a few bytes
  * that would keep a session retained after everything else had gone.
  */
 export function hasSessionState(userId: string, sessionId: string): boolean {

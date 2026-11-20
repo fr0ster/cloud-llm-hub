@@ -38,6 +38,10 @@ import {
   type RagStoreFactory,
 } from './rag-store-factory';
 import { SapAiCoreEmbedder } from './sap-ai-core-embedder';
+import {
+  sessionHistoryRepair,
+  sessionHistoryWrite,
+} from './session-history-write-scope';
 import { usageRuntime } from './usage/runtime';
 
 export interface EmbedderFingerprint {
@@ -181,28 +185,62 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
     },
   });
   const toolSearchEmbedder = new CircuitBreakerEmbedder(toolSearch, breaker);
-  const retrieval = symmetricEmbedder(embedder);
+  // Both readiness probes must reach the provider through an open shared breaker.
+  async function probeEmbedding<T>(
+    run: () => Promise<T>,
+    options?: CallOptions,
+  ) {
+    try {
+      const result = await run();
+      if (!options?.signal?.aborted) breaker.recordSuccess();
+      return result;
+    } catch (error) {
+      if (!options?.signal?.aborted) breaker.recordFailure();
+      throw error;
+    }
+  }
+  const documentEmbedder = {
+    embed: (text: string, options?: CallOptions) =>
+      sessionHistoryRepair.getStore()
+        ? probeEmbedding(() => toolSearch.embed(text, options), options)
+        : (sessionHistoryWrite.getStore()
+            ? toolSearchEmbedder
+            : embedder
+          ).embed(text, options),
+    getMaxInputChars: embedder.getMaxInputChars,
+    maxBatchSize: embedder.maxBatchSize,
+    ...(isBatchEmbedder(toolSearch)
+      ? {
+          embedBatch: (texts: string[], options?: CallOptions) =>
+            sessionHistoryRepair.getStore()
+              ? probeEmbedding(
+                  () => toolSearch.embedBatch(texts, options),
+                  options,
+                )
+              : (sessionHistoryWrite.getStore()
+                  ? toolSearchEmbedder
+                  : embedder
+                ).embedBatch(texts, options),
+        }
+      : {}),
+  };
+  const retrieval = asymmetricEmbedder({
+    document: documentEmbedder,
+    query: embedder,
+  });
   return {
     embedder,
     retrieval,
     toolSearchEmbedder,
     toolSearchRetrieval: asymmetricEmbedder({
-      document: embedder,
+      document: documentEmbedder,
       query: toolSearchEmbedder,
     }),
     breaker,
     fingerprint: embedderFingerprint(cfg),
     probeQueryEmbedder: {
-      async embedQuery(text, options) {
-        try {
-          const result = await toolSearch.embed(text, options);
-          if (!options?.signal?.aborted) breaker.recordSuccess();
-          return result;
-        } catch (error) {
-          if (!options?.signal?.aborted) breaker.recordFailure();
-          throw error;
-        }
-      },
+      embedQuery: (text, options) =>
+        probeEmbedding(() => toolSearch.embed(text, options), options),
     },
   };
 }

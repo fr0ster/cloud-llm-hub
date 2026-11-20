@@ -171,6 +171,7 @@ import type { AgentConfig } from '../../srv/agent-config';
 // this wiring contract can be driven directly, without going through the
 // full destination-initialization path.
 import * as agentManager from '../../srv/agent-manager';
+import { consumerHistoryRag } from '../../srv/lib/client-history';
 import { FixedExecutorPlanner } from '../../srv/lib/fixed-executor-planner';
 import { turnOwner } from '../../srv/lib/history-turn';
 import { outageClassifier } from '../../srv/lib/mcp-outage';
@@ -446,31 +447,47 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     }
   });
 
-  it('keeps tool retrieval and skills on the worker alone', async () => {
-    const toolsRag = {} as never;
-    await agentManager.buildAgentForDestination({} as never, toolsRag, config);
-    expect(setToolsRag).toHaveBeenCalledTimes(1);
-    expect(setToolsRag).toHaveBeenCalledWith(toolsRag);
-    expect(withSkillManager).toHaveBeenCalledTimes(1);
-    const instances = (SmartAgentBuilder as jest.Mock).mock.results.map(
-      (r) => r.value,
-    );
-    expect(instances[0].setToolsRag).toHaveBeenCalledWith(toolsRag);
-    expect(instances[0].addRagCollection).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: 'skills',
-        meta: expect.objectContaining({ scope: 'global' }),
-      }),
-    );
-    expect(instances[0].withSkillManager).toHaveBeenCalledTimes(1);
-    expect(instances[1].setToolsRag).not.toHaveBeenCalled();
-    expect(instances[1].addRagCollection).not.toHaveBeenCalled();
-    expect(instances[1].setHistoryRag).toHaveBeenCalledTimes(1);
-    expect(instances[1].withEmbedder).toHaveBeenCalledTimes(
-      instances[0].withEmbedder.mock.calls.length,
-    );
-    expect(instances[1].withSkillManager).not.toHaveBeenCalled();
-  });
+  it.each([undefined, 'off', 'on'] as const)(
+    'keeps tool retrieval and skills on the worker alone (clientHistory=%s)',
+    async (clientHistory) => {
+      const mcpAdapter = new McpClientAdapter(
+        new MCPClientWrapper({ url: 'http://localhost' }),
+      );
+      const toolsRag = new agentManager.ExpositionFilteringRag(
+        new InMemoryRag(),
+      );
+      await agentManager.buildAgentForDestination(mcpAdapter, toolsRag, {
+        ...config,
+        agent: { ...config.agent, clientHistory },
+      });
+      expect(setToolsRag).toHaveBeenCalledTimes(1);
+      expect(setToolsRag).toHaveBeenCalledWith(toolsRag);
+      expect(withSkillManager).toHaveBeenCalledTimes(1);
+      const instances = (SmartAgentBuilder as jest.Mock).mock.results.map(
+        (r) => r.value,
+      );
+      expect(instances[0].setToolsRag).toHaveBeenCalledWith(toolsRag);
+      expect(instances[0].addRagCollection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'skills',
+          meta: expect.objectContaining({ scope: 'global' }),
+        }),
+      );
+      expect(instances[0].withSkillManager).toHaveBeenCalledTimes(1);
+      expect(instances[1].setToolsRag).not.toHaveBeenCalled();
+      expect(instances[1].addRagCollection).not.toHaveBeenCalled();
+      expect(instances[1].setHistoryRag).toHaveBeenCalledTimes(1);
+      expect(instances[1].withEmbedder).toHaveBeenCalledTimes(
+        instances[0].withEmbedder.mock.calls.length,
+      );
+      expect(instances[1].withSkillManager).not.toHaveBeenCalled();
+      const historyRag =
+        clientHistory === 'on'
+          ? consumerHistoryRag
+          : agentManager.getSharedHistoryRag();
+      expect(setHistoryRag.mock.calls).toEqual([[historyRag], [historyRag]]);
+    },
+  );
 
   it('runs the real controller with zero retrieval, translation, embedding or LLM calls before planning', async () => {
     const actual = jest.requireActual('@mcp-abap-adt/llm-agent-libs');

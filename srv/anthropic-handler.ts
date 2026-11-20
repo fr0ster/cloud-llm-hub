@@ -7,6 +7,10 @@ import {
 } from './lib/anthropic-usage';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import {
+  clientHistoryMessages,
+  hasPendingClientTools,
+} from './lib/client-history';
+import {
   registerClientTools,
   runWithClientTools,
 } from './lib/client-tool-trust';
@@ -95,7 +99,12 @@ import {
   type LongSessionRequest,
   releaseRequestConnection,
 } from './lib/session-connection';
-import { recordTurn } from './lib/session-turns';
+import {
+  recordTurn,
+  rememberClientToolTurn,
+  resolveClientHistoryTurn,
+  waitForSessionTurns,
+} from './lib/session-turns';
 import {
   anthropicDoorRefusal,
   anthropicErrorPayload,
@@ -446,7 +455,10 @@ async function serveMessages(
       : undefined,
     cds.context?.user?.is('MCP_Admin') === true,
   );
-  let { messages } = normalized;
+  let messages = clientHistoryMessages(
+    normalized.messages,
+    getAgentConfig().agent.clientHistory,
+  );
 
   log.info('Messages request', {
     stream,
@@ -616,6 +628,7 @@ async function serveMessages(
   let responseModel: string;
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
+    await waitForSessionTurns(sessionId, callerLeft.signal);
     responseModel = chatResponseModel(resolvedModel.model, getCurrentModel());
     handle = await getSmartAgent(
       currentRoleModel('coordinator') ?? resolvedModel.model,
@@ -765,6 +778,26 @@ async function serveMessages(
     ? undefined
     : collectionRetrieval(handle.agent);
   try {
+    const historySignal = pipeline.signal
+      ? AbortSignal.any([pipeline.signal, callerLeft.signal])
+      : callerLeft.signal;
+    let historyTurn:
+      | Awaited<ReturnType<typeof resolveClientHistoryTurn>>
+      | undefined;
+    try {
+      await waitForSessionTurns(sessionId, historySignal);
+      if (!useDialogue)
+        historyTurn = await resolveClientHistoryTurn(
+          boundCaller.value,
+          messages,
+          historySignal,
+          s,
+        );
+      historySignal.throwIfAborted();
+    } catch (error) {
+      if (callerLeft.signal.aborted) return;
+      throw error;
+    }
     if (collections) {
       const retrieval = await collections.retrieve(
         req,
@@ -795,15 +828,9 @@ async function serveMessages(
       messages = retrieval.messages;
     }
     if (stream && useDialogue && early) {
-      const lastUser = messages
-        .filter((message) => message.role === 'user')
-        .at(-1);
       return await streamDialogue({
         stream: early,
         protocol: 'anthropic',
-        onEnd: (text) => {
-          if (lastUser) recordTurn(boundCaller.value, lastUser, text);
-        },
         model: () =>
           chatResponseModel(
             resolvedModel.model,
@@ -855,6 +882,7 @@ async function serveMessages(
       const measurement = requestMeasurement(req);
       let accumulatedContent = '';
       let streamSucceeded = false;
+      let pendingClientTools = false;
       let deliveredContent = false;
       let explicitMessages = false;
       let heldStop = undefined as { event?: string; data: string } | undefined;
@@ -869,6 +897,10 @@ async function serveMessages(
             const source = chatAgent.streamProcess(messages, agentOpts);
             const observed = (async function* () {
               for await (const chunk of source) {
+                if (chunk.ok) {
+                  if (chunk.value.reset) pendingClientTools = false;
+                  pendingClientTools ||= hasPendingClientTools(chunk.value);
+                }
                 if (!chunk.ok && streamError === undefined) {
                   requestMeasurement(req)?.end('error');
                   streamError = chunk.error;
@@ -899,6 +931,24 @@ async function serveMessages(
                     'clhTurnEnd' in chunk.value)
                 )
                   continue;
+                if (
+                  chunk.ok &&
+                  historyTurn &&
+                  s &&
+                  chunk.value.toolCalls?.length
+                ) {
+                  const toolCalls = chunk.value.toolCalls.map((call) => ({
+                    ...call,
+                    id: call.id ?? `toolu_${randomUUID()}`,
+                  }));
+                  await rememberClientToolTurn(
+                    s,
+                    historyTurn.id,
+                    toolCalls.map((call) => call.id),
+                  );
+                  yield { ...chunk, value: { ...chunk.value, toolCalls } };
+                  continue;
+                }
                 yield chunk;
               }
             })();
@@ -908,10 +958,7 @@ async function serveMessages(
               if (event.event === 'message_stop') {
                 heldStop = event;
                 streamSucceeded =
-                  streamError === undefined &&
-                  !callerLeft.signal.aborted &&
-                  !agentOpts.signal?.aborted &&
-                  !out.detached;
+                  streamError === undefined && !agentOpts.signal?.aborted;
                 continue;
               }
               const encoded =
@@ -990,8 +1037,21 @@ async function serveMessages(
       const lastUser = messages
         .filter((message) => message.role === 'user')
         .at(-1);
-      if (streamSucceeded && lastUser && accumulatedContent)
-        recordTurn(boundCaller.value, lastUser, accumulatedContent);
+      if (
+        historyTurn &&
+        !historyTurn.recorded &&
+        streamSucceeded &&
+        !pendingClientTools &&
+        lastUser &&
+        accumulatedContent
+      )
+        recordTurn(
+          boundCaller.value,
+          lastUser,
+          accumulatedContent,
+          historyTurn.id,
+          ...(s ? [s] : []),
+        );
       // The held `message_stop` closes the message after any notice above.
       if (measurement && !explicitMessages && deliveredContent && !out.detached)
         requestMeasurement(req)?.messageDelivered();
@@ -1026,11 +1086,29 @@ async function serveMessages(
         ? { ...payload, usage: wireUsage }
         : payload;
     if (result.ok) {
+      if (result.value.toolCalls?.length)
+        await rememberClientToolTurn(
+          s,
+          historyTurn?.id,
+          result.value.toolCalls.map((call) => call.id),
+        );
       const lastUser = messages
         .filter((message) => message.role === 'user')
         .at(-1);
-      if (lastUser && !callerLeft.signal.aborted && !agentOpts.signal?.aborted)
-        recordTurn(boundCaller.value, lastUser, result.value.content);
+      if (
+        historyTurn &&
+        !historyTurn.recorded &&
+        lastUser &&
+        !agentOpts.signal?.aborted &&
+        !hasPendingClientTools(result.value)
+      )
+        recordTurn(
+          boundCaller.value,
+          lastUser,
+          result.value.content,
+          historyTurn.id,
+          ...(s ? [s] : []),
+        );
       if (
         requestMeasurement(req) &&
         /\S/.test(result.value.content) &&

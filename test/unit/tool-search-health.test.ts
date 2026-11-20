@@ -306,7 +306,7 @@ test('the HTTP health endpoint stays DOWN until an agent request probes successf
   }
 });
 
-test('vector tools fail with an open embedder breaker while non-tool stores retain keyword fallback', async () => {
+test('vector tools and history fail with an open embedder breaker; user stores retain keyword fallback', async () => {
   const breaker = new CircuitBreaker({ failureThreshold: 1 });
   const embedder = new CircuitBreakerEmbedder(
     { embed: async () => ({ vector: [1, 0] }) },
@@ -331,8 +331,15 @@ test('vector tools fail with an open embedder breaker while non-tool stores reta
   expect((await tools.query(new TextOnlyEmbedding('read'), 5)).ok).toBe(false);
   expect(toolSearchFailure()).toBeDefined();
   expect(
+    (
+      await stores
+        .create('session', 'empty')
+        .query(new TextOnlyEmbedding('read'), 5)
+    ).ok,
+  ).toBe(false);
+  expect(
     await stores
-      .create('session', 'empty')
+      .create('persistent', 'empty')
       .query(new TextOnlyEmbedding('read'), 5),
   ).toEqual({ ok: true, value: [] });
   breaker.recordSuccess();

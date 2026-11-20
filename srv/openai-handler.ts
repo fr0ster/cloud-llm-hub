@@ -2,6 +2,10 @@ import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import {
+  clientHistoryMessages,
+  hasPendingClientTools,
+} from './lib/client-history';
+import {
   registerClientTools,
   runWithClientTools,
 } from './lib/client-tool-trust';
@@ -97,7 +101,13 @@ import {
   type LongSessionRequest,
   releaseRequestConnection,
 } from './lib/session-connection';
-import { extractText, recordTurn } from './lib/session-turns';
+import {
+  extractText,
+  recordTurn,
+  rememberClientToolTurn,
+  resolveClientHistoryTurn,
+  waitForSessionTurns,
+} from './lib/session-turns';
 import {
   destinationClosedText,
   openAiDoorRefusal,
@@ -130,6 +140,7 @@ function getUserId(): string {
 // ---------------------------------------------------------------------------
 
 function mapStopReason(r: string): string {
+  if (r === 'tool_calls' || r === 'tool_use') return 'tool_calls';
   return r === 'stop' ? 'stop' : 'length';
 }
 
@@ -161,72 +172,6 @@ function withRequestConnection<T>(
 
 // Re-exported: tests and other modules imported these from the handler.
 export { appendToSession, clearSession, getSessionHistory };
-
-/**
- * Trim messages for SmartAgent context to prevent context window overflow.
- *
- * Strategy:
- * - ALL assistant messages are truncated (MCP tool outputs can be enormous)
- * - Older assistant messages: aggressive limit (200 chars)
- * - Recent assistant messages (last pair): moderate limit (500 chars)
- * - User messages: kept intact (they're short prompts)
- * - Total history budget: 6000 chars max — if exceeded, drop oldest pairs
- * - Remove [SmartAgent: Executing ...] progress markers from all messages
- */
-function trimHistoryForContext(messages: Message[]): Message[] {
-  const TOTAL_BUDGET = 6000;
-  const OLDER_ASSISTANT_LIMIT = 200;
-  const RECENT_ASSISTANT_LIMIT = 500;
-
-  if (messages.length <= 2) return messages;
-
-  // Separate system messages (must be preserved for client adapter detection)
-  const systemMessages = messages.filter((m) => m.role === 'system');
-  const nonSystem = messages.filter((m) => m.role !== 'system');
-
-  // Clean all assistant messages: remove progress markers + truncate
-  const cleaned = nonSystem.map((m, i) => {
-    if (m.role !== 'assistant' || typeof m.content !== 'string') return m;
-
-    let content = m.content.replace(
-      /\n\n\[SmartAgent: Executing [^\]]+\.\.\.\]\n/g,
-      '',
-    );
-
-    // Last assistant message gets moderate limit, older ones get aggressive limit
-    const isLastAssistant =
-      i ===
-      nonSystem.length -
-        1 -
-        [...nonSystem].reverse().findIndex((msg) => msg.role === 'assistant');
-    const limit = isLastAssistant
-      ? RECENT_ASSISTANT_LIMIT
-      : OLDER_ASSISTANT_LIMIT;
-
-    if (content.length > limit) {
-      content = `${content.slice(0, limit)}... [truncated]`;
-    }
-    return { ...m, content };
-  });
-
-  // Check total size (excluding system) — drop oldest if over budget
-  let totalChars = cleaned.reduce(
-    (sum, m) => sum + (typeof m.content === 'string' ? m.content.length : 0),
-    0,
-  );
-
-  let result = cleaned;
-  while (totalChars > TOTAL_BUDGET && result.length > 2) {
-    const dropped = result[0];
-    const droppedLen =
-      typeof dropped.content === 'string' ? dropped.content.length : 0;
-    result = result.slice(1);
-    totalChars -= droppedLen;
-  }
-
-  // Re-attach system messages at the front
-  return [...systemMessages, ...result];
-}
 
 // ---------------------------------------------------------------------------
 // OpenAI request types
@@ -544,22 +489,13 @@ async function handleChatCompletionsScoped(
       ? await longSessions().run(
           s,
           () =>
-            serveChatCompletions(
-              req,
-              res,
-              body,
-              userMessages,
-              authenticatedCaller,
-              s,
-              early,
-            ),
+            serveChatCompletions(req, res, body, authenticatedCaller, s, early),
           () => early?.ensureStream(),
         )
       : await serveChatCompletions(
           req,
           res,
           body,
-          userMessages,
           authenticatedCaller,
           undefined,
           early,
@@ -590,7 +526,6 @@ async function serveChatCompletions(
   req: Request,
   res: Response,
   body: OpenAIChatRequest,
-  userMessages: OpenAIChatRequest['messages'],
   authenticatedCaller: {
     userId: string;
     admin: boolean;
@@ -628,13 +563,7 @@ async function serveChatCompletions(
   }
   const t0 = requestStart(req);
 
-  // Two modes of history management:
-  // 1. Server-managed session (our browser UI): an explicit session (header/cookie) is present,
-  //    so the client sends only the new message and the server prepends its stored history.
-  // 2. Client-managed history (OpenAI/API clients like Cline): no explicit session, client sends
-  //    full history. A freshly-MINTED cookie id (first browser request, no cookie yet) is NOT
-  //    explicit → client-history mode, so stateless API clients sending full `messages` are
-  //    never silently truncated to just the last message.
+  // Explicit sessions and client-managed requests share the same history policy.
   const serverManaged = !!explicitSessionId;
 
   // Resolve user identity early — needed for user-keyed session store lookups below.
@@ -666,66 +595,51 @@ async function serveChatCompletions(
 
   let normalizedMessages: Message[];
 
-  if (serverManaged) {
-    // Server session mode: prior turns enter only through semantic history retrieval.
-    const lastUserContent = extractText(
-      userMessages[userMessages.length - 1].content,
-    );
-    const newUserMessage: Message = { role: 'user', content: lastUserContent };
-    normalizedMessages = [newUserMessage];
-  } else {
-    // Client history mode: normalize all client messages
-    normalizedMessages = body.messages
-      .map((m) => {
-        const role = m.role as Message['role'];
-        const msg: Message = { role, content: extractText(m.content) };
-        if (role === 'tool') {
-          if (typeof m.tool_call_id === 'string' && m.tool_call_id.trim()) {
-            msg.tool_call_id = m.tool_call_id;
-          } else {
-            return null;
-          }
+  // Client history mode: normalize all client messages
+  normalizedMessages = body.messages
+    .map((m) => {
+      const role = m.role as Message['role'];
+      const msg: Message = { role, content: extractText(m.content) };
+      if (role === 'tool') {
+        if (typeof m.tool_call_id === 'string' && m.tool_call_id.trim()) {
+          msg.tool_call_id = m.tool_call_id;
+        } else {
+          return null;
         }
-        if (role === 'assistant' && Array.isArray(m.tool_calls)) {
-          const toolCalls = m.tool_calls
-            .filter(
-              (tc) =>
-                typeof tc === 'object' &&
-                tc !== null &&
-                typeof tc.id === 'string' &&
-                tc.type === 'function' &&
-                typeof tc.function?.name === 'string' &&
-                typeof tc.function?.arguments === 'string',
-            )
-            .map((tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.function.name,
-                arguments: tc.function.arguments,
-              },
-            }));
-          if (toolCalls.length > 0) {
-            msg.tool_calls = toolCalls;
-            if (!msg.content) msg.content = null;
-          }
+      }
+      if (role === 'assistant' && Array.isArray(m.tool_calls)) {
+        const toolCalls = m.tool_calls
+          .filter(
+            (tc) =>
+              typeof tc === 'object' &&
+              tc !== null &&
+              typeof tc.id === 'string' &&
+              tc.type === 'function' &&
+              typeof tc.function?.name === 'string' &&
+              typeof tc.function?.arguments === 'string',
+          )
+          .map((tc) => ({
+            id: tc.id,
+            type: 'function' as const,
+            function: {
+              name: tc.function.name,
+              arguments: tc.function.arguments,
+            },
+          }));
+        if (toolCalls.length > 0) {
+          msg.tool_calls = toolCalls;
+          if (!msg.content) msg.content = null;
         }
-        return msg;
-      })
-      .filter((m): m is Message => m !== null);
+      }
+      return msg;
+    })
+    .filter((m): m is Message => m !== null);
 
-    // NOTE: We deliberately do NOT mirror `normalizedMessages` into `sessionStore` here.
-    // The response path below calls `appendToSession(sessionId, newUser, assistant)`, which
-    // already persists the turn. Mirroring would store `newUser` twice (mirror + append),
-    // so the next request (e.g. browser carrying the just-minted cookie) would prepend a
-    // polluted history with a duplicated first user message. For explicit-session API
-    // clients this branch never runs (serverManaged uses semantic history retrieval).
-  }
-
-  // Trim history to prevent context overflow
   const rawHistorySize = normalizedMessages.length;
-  if (!serverManaged)
-    normalizedMessages = trimHistoryForContext(normalizedMessages);
+  normalizedMessages = clientHistoryMessages(
+    normalizedMessages,
+    getAgentConfig().agent.clientHistory,
+  );
 
   log.info('Chat completions request', {
     stream: body.stream ?? false,
@@ -918,6 +832,7 @@ async function serveChatCompletions(
   let responseModel: string;
   let handle: Awaited<ReturnType<typeof getSmartAgent>>;
   try {
+    await waitForSessionTurns(sessionId, callerLeft.signal);
     responseModel = chatResponseModel(requestedModel, getCurrentModel());
     // Use destAfter (header OR session/default) — the same destination the
     // connection was established for. requestedDestination alone is undefined
@@ -1103,6 +1018,26 @@ async function serveChatCompletions(
       })
       .with({ requestId: traceId, traceId });
     requestMeasurement(req)?.bind(usage);
+    const historySignal = pipeline.signal
+      ? AbortSignal.any([pipeline.signal, callerLeft.signal])
+      : callerLeft.signal;
+    let historyTurn:
+      | Awaited<ReturnType<typeof resolveClientHistoryTurn>>
+      | undefined;
+    try {
+      await waitForSessionTurns(sessionId, historySignal);
+      if (!useDialogue)
+        historyTurn = await resolveClientHistoryTurn(
+          boundCaller.value,
+          normalizedMessages,
+          historySignal,
+          s,
+        );
+      historySignal.throwIfAborted();
+    } catch (error) {
+      if (callerLeft.signal.aborted) return;
+      throw error;
+    }
     // The parsed body: a raw request carries it only in `body`, not `req.body`.
     if (collections) {
       const retrieval = await collections.retrieve(
@@ -1233,7 +1168,6 @@ async function serveChatCompletions(
             assistant = { role: 'assistant', content: text };
             appendToSession(sessionId, userId, assistant);
           }
-          if (lastUser) recordTurn(boundCaller.value, lastUser, text);
         },
       });
     }
@@ -1271,6 +1205,7 @@ async function serveChatCompletions(
       let finishReasonSent = false;
       let accumulatedContent = ''; // Accumulate full response for session history
       let streamSucceeded = false;
+      let pendingClientTools = false;
       let lastUsage: TokenUsage | undefined;
       const spend = captureTokenUsage();
 
@@ -1362,6 +1297,8 @@ async function serveChatCompletions(
                         }
 
                         const v = chunk.value;
+                        if (v.reset) pendingClientTools = false;
+                        pendingClientTools ||= hasPendingClientTools(v);
                         if (
                           'clhMessageId' in v ||
                           'clhMessageEnd' in v ||
@@ -1400,6 +1337,7 @@ async function serveChatCompletions(
                         };
 
                         // First chunk: role + initial content (matches SmartServer)
+                        const initialChunk = firstChunk;
                         if (firstChunk) {
                           const initialContent = v.content || '';
                           if (initialContent)
@@ -1424,13 +1362,20 @@ async function serveChatCompletions(
                         }
 
                         // Content and/or tool_calls delta (matches SmartServer)
-                        if (v.content || v.toolCalls) {
+                        if ((!initialChunk && v.content) || v.toolCalls) {
                           const delta: Record<string, unknown> = {};
-                          if (v.content) {
+                          if (!initialChunk && v.content) {
                             accumulatedContent += v.content;
                             delta.content = v.content;
                           }
                           if (v.toolCalls) {
+                            await rememberClientToolTurn(
+                              s,
+                              historyTurn?.id,
+                              v.toolCalls.flatMap((call) =>
+                                call.id ? [call.id] : [],
+                              ),
+                            );
                             delta.tool_calls = v.toolCalls.map(
                               (call, index) => {
                                 const tc = toToolCallDelta(call, index);
@@ -1554,11 +1499,7 @@ async function serveChatCompletions(
         responseLength: accumulatedContent.length,
       });
 
-      const terminalSucceeded =
-        streamSucceeded &&
-        !callerLeft.signal.aborted &&
-        !opts.signal?.aborted &&
-        !out.detached;
+      const terminalSucceeded = streamSucceeded && !opts.signal?.aborted;
       // Save conversation turn to server session
       if (terminalSucceeded && accumulatedContent) {
         const lastUser = normalizedMessages
@@ -1569,7 +1510,14 @@ async function serveChatCompletions(
             role: 'assistant',
             content: accumulatedContent,
           } as Message);
-          recordTurn(boundCaller.value, lastUser, accumulatedContent);
+          if (historyTurn && !historyTurn.recorded && !pendingClientTools)
+            recordTurn(
+              boundCaller.value,
+              lastUser,
+              accumulatedContent,
+              historyTurn.id,
+              ...(s ? [s] : []),
+            );
           const updatedHistory = getSessionHistory(sessionId, userId);
           log.debug('Session updated', {
             sessionId,
@@ -1577,9 +1525,6 @@ async function serveChatCompletions(
             responseChars: accumulatedContent.length,
           });
         }
-
-        // NOTE: state store upsert removed — llm-agent 6.0 has no default state store.
-        // Session history managed by SessionManager + history RAG (session-scoped).
       }
       out.write('data: [DONE]\n\n');
 
@@ -1672,10 +1617,17 @@ async function serveChatCompletions(
       model,
     );
 
+    const responseToolCalls = result.ok ? result.value.toolCalls : undefined;
+    if (responseToolCalls?.length)
+      await rememberClientToolTurn(
+        s,
+        historyTurn?.id,
+        responseToolCalls.map((call) => call.id),
+      );
+
     // Save conversation turn to server session
     if (
       result.ok &&
-      !callerLeft.signal.aborted &&
       !opts.signal?.aborted &&
       finalContent !== '(no response)'
     ) {
@@ -1687,7 +1639,18 @@ async function serveChatCompletions(
           role: 'assistant',
           content: finalContent,
         } as Message);
-        recordTurn(boundCaller.value, lastUser, finalContent);
+        if (
+          historyTurn &&
+          !historyTurn.recorded &&
+          !hasPendingClientTools(result.value)
+        )
+          recordTurn(
+            boundCaller.value,
+            lastUser,
+            finalContent,
+            historyTurn.id,
+            ...(s ? [s] : []),
+          );
       }
 
       // NOTE: state store upsert removed (non-streaming path) — same as streaming.
@@ -1714,8 +1677,19 @@ async function serveChatCompletions(
         choices: [
           {
             index: 0,
-            message: { role: 'assistant', content: finalContent },
-            finish_reason: finalFinishReason,
+            message: {
+              role: 'assistant',
+              content:
+                responseToolCalls?.length && result.ok
+                  ? result.value.content || null
+                  : finalContent,
+              ...(responseToolCalls?.length
+                ? { tool_calls: responseToolCalls }
+                : {}),
+            },
+            finish_reason: responseToolCalls?.length
+              ? 'tool_calls'
+              : finalFinishReason,
           },
         ],
         usage: finalUsage ?? emptyOpenAiUsage,

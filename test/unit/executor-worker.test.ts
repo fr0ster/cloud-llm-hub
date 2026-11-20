@@ -191,9 +191,13 @@ describe('buildExecutorWorker', () => {
     expect(withToolCache).not.toHaveBeenCalled();
   });
 
-  it.each([true, false])(
-    'injectHistory=%s preserves the proxied handle and selects worker history',
-    async (injectHistory) => {
+  it.each(
+    ([undefined, 'off', 'on'] as const).flatMap((clientHistory) =>
+      [true, false].map((injectHistory) => ({ clientHistory, injectHistory })),
+    ),
+  )(
+    'clientHistory=$clientHistory, injectHistory=$injectHistory preserves hub-owned worker history through the real wrappers',
+    async ({ clientHistory, injectHistory }) => {
       const expose = jest.fn();
       fakeAgent.process.mockResolvedValue({
         ok: true,
@@ -202,11 +206,35 @@ describe('buildExecutorWorker', () => {
       const worker = await buildExecutorWorker(
         {} as never,
         {} as never,
-        config,
+        {
+          ...config,
+          agent: {
+            ...config.agent,
+            clientHistory,
+          },
+        },
         expose,
         { injectHistory },
       );
-      const history = [{ role: 'user' as const, content: 'previous' }];
+      const history = [
+        { role: 'user' as const, content: 'CURRENT_REQUEST' },
+        {
+          role: 'assistant' as const,
+          content: null,
+          tool_calls: [
+            {
+              id: 'current-call',
+              type: 'function' as const,
+              function: { name: 'read', arguments: '{}' },
+            },
+          ],
+        },
+        {
+          role: 'tool' as const,
+          content: 'CURRENT_TOOL_RESULT',
+          tool_call_id: 'current-call',
+        },
+      ];
       const [executor, raw] = expose.mock.calls[0];
       expect(raw).toBe(fakeAgent);
       expect(executor).not.toBe(fakeAgent);
@@ -220,6 +248,15 @@ describe('buildExecutorWorker', () => {
           ? [...history, { role: 'user', content: 'task' }]
           : 'task',
       );
+      await worker.run({
+        caller: taskCaller,
+        task: 'delegated check',
+        history,
+      });
+      expect(fakeAgent.process.mock.calls.at(-1)?.[0]).toEqual([
+        ...history,
+        { role: 'user', content: 'delegated check' },
+      ]);
       await runWithSessionId(
         'worker',
         () => executor.process('direct'),
@@ -228,6 +265,16 @@ describe('buildExecutorWorker', () => {
       expect(fakeAgent.process.mock.calls.at(-1)?.[0]).toEqual([
         ...history,
         { role: 'user', content: 'direct' },
+      ]);
+      fakeAgent.streamProcess.mockImplementation(async function* () {
+        yield { ok: true, value: { content: 'done' } };
+      });
+      const current = { role: 'user' as const, content: 'direct-stream' };
+      for await (const chunk of executor.streamProcess([...history, current]))
+        expect(chunk).toEqual({ ok: true, value: { content: 'done' } });
+      expect(fakeAgent.streamProcess.mock.calls.at(-1)?.[0]).toEqual([
+        ...history,
+        current,
       ]);
     },
   );

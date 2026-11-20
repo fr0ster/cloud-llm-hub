@@ -54,12 +54,19 @@ import {
   setLongSessionsForTest,
 } from '../../srv/lib/long-session';
 import { createHubRagAccess, initHubRagAccess } from '../../srv/lib/rag-access';
-import { historyCollectionName } from '../../srv/lib/session-history-collection';
+import {
+  historyCollectionName,
+  type SessionHistoryRouter,
+} from '../../srv/lib/session-history-collection';
+import {
+  assertToolSearchHealthy,
+  toolSearchFailure,
+} from '../../srv/lib/tool-search-health';
 import { collectionAggregateQuery } from '../../srv/lib/usage/storage-aggregates';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { appendToSession, sweepSessionHistory } from '../../srv/session-store';
 import { type PgliteHandle, startPglite } from './helpers/pglite';
-import { SessionHistoryFixture as SessionHistoryRag } from './helpers/session-history-fixture';
+import { SessionHistoryFixture } from './helpers/session-history-fixture';
 
 jest.setTimeout(120_000);
 
@@ -181,6 +188,14 @@ async function historyRows(): Promise<
 const ALICE = turnOwner('alice@example.com', 's-1');
 const BOB = turnOwner('bob@example.com', 's-2');
 
+const routers = new Set<SessionHistoryRouter>();
+class SessionHistoryRag extends SessionHistoryFixture {
+  constructor(...args: ConstructorParameters<typeof SessionHistoryFixture>) {
+    super(...args);
+    routers.add(this.router);
+  }
+}
+
 /** A clock that advances one second per call, so createdAt orders turns. */
 function steppingClock(start = Date.parse('2026-10-20T10:00:00.000Z')) {
   let t = start;
@@ -300,17 +315,19 @@ describe('the per-session history catalog record', () => {
     ).toHaveLength(1);
   });
 
-  it('a backend that is down: the turn fails quietly; after the cool-down the next use opens the store', async () => {
+  it('a backend outage marks readiness unhealthy and repair replays the original turn', async () => {
     const warnings: unknown[] = [];
-    let now = 1_000_000;
+    const now = 1_000_000;
     const rag = history(() => ALICE, { warnings, clock: () => now });
     down = true;
     expect(
       await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' }),
     ).toBe(false);
     expect(warnings.length).toBeGreaterThan(0);
+    expect(toolSearchFailure()).toContain('Session history unavailable');
     down = false;
-    now += HISTORY_OPEN_COOL_DOWN_MS;
+    // Repair bypasses the read cooldown and persists the retained first turn.
+    await assertToolSearchHealthy();
     expect(
       await rag.recordTurn({
         owner: ALICE,
@@ -318,20 +335,26 @@ describe('the per-session history catalog record', () => {
         assistantText: 'a ZDEMO_LATER',
       }),
     ).toBe(true);
-    expect(await recall(rag, 'ZDEMO_LATER')).toHaveLength(1);
+    expect(await recall(rag, 'ZDEMO_LATER')).toHaveLength(2);
   });
 });
 
-describe('a failed open is kept for a cool-down', () => {
-  it('N calls in the window: one open warning plus a warning per failed turn', async () => {
+describe('failed history writes remain queued', () => {
+  it('subsequent turns do not write around an outage; repair drains all retained turns', async () => {
     const warnings: unknown[] = [];
     let now = 5_000_000;
     const provider = newProvider();
     let attempts = 0;
+    let attempted = () => {};
+    const secondAttempt = new Promise<void>((resolve) => {
+      attempted = resolve;
+    });
     const describe = provider.describeCollections.bind(provider);
     provider.describeCollections = async () => {
       attempts++;
-      return describe();
+      const result = await describe();
+      if (attempts === 2) attempted();
+      return result;
     };
     const rag = history(() => ALICE, {
       warnings,
@@ -347,22 +370,29 @@ describe('a failed open is kept for a cool-down', () => {
           assistantText: 'a',
         }),
       ).toBe(false);
-      expect((await rag.query(new TextOnlyEmbedding('q'), 5)).ok).toBe(false);
       now += 1000;
     }
     expect(attempts).toBe(1);
-    expect(warnings).toHaveLength(6);
+    expect(warnings).toHaveLength(2);
+    let recalled = false;
+    const recall = rag.query(new TextOnlyEmbedding('q'), 5).then((result) => {
+      recalled = true;
+      return result;
+    });
+    await secondAttempt;
+    expect(attempts).toBe(2);
+    expect(recalled).toBe(false);
 
     // Still down after the window: one new attempt, one new warning.
     now += HISTORY_OPEN_COOL_DOWN_MS;
     await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' });
     await rag.recordTurn({ owner: ALICE, userText: 'q', assistantText: 'a' });
     expect(attempts).toBe(2);
-    expect(warnings).toHaveLength(9);
 
     // Back up, after the next window: the store opens and the turn is kept.
     down = false;
-    now += HISTORY_OPEN_COOL_DOWN_MS;
+    await assertToolSearchHealthy();
+    expect((await recall).ok).toBe(true);
     expect(
       await rag.recordTurn({
         owner: ALICE,
@@ -370,8 +400,8 @@ describe('a failed open is kept for a cool-down', () => {
         assistantText: 'a ZDEMO_BACK',
       }),
     ).toBe(true);
-    expect(attempts).toBe(3);
-    expect(await recall(rag, 'ZDEMO_BACK')).toHaveLength(1);
+    expect(toolSearchFailure()).toBeUndefined();
+    expect(await rag.listTurns(ALICE)).toHaveLength(8);
   });
 });
 
@@ -949,4 +979,10 @@ test('persisted history bytes survive window expiry and revival, and shrink with
   expect(await measure(BOB, 'bob@example.com', 's-2')).toBe(bytes * 16);
 });
 
-afterEach(() => setLongSessionsForTest(undefined));
+afterEach(async () => {
+  // Repairs still own their writes after a failed request. Join teardown before
+  // the next test resets the bindings and truncates the shared database.
+  await Promise.all([...routers].map((router) => router.stopWrites()));
+  routers.clear();
+  setLongSessionsForTest(undefined);
+});

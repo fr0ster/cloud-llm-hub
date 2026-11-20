@@ -62,9 +62,10 @@ describe('RagStoreFactory', () => {
     expect(f.create('persistent', 'x')).toBeInstanceOf(InMemoryRag);
   });
 
-  it('vector builds FallbackRag, qdrant builds a bare QdrantRag (no keyword fallback)', () => {
+  it('session vector writes use a primary VectorRag; qdrant uses a bare QdrantRag', () => {
     const f = createRagStoreFactory(q, buildEmbedding(emb));
-    expect(f.create('session', 'history')).toBeInstanceOf(FallbackRag);
+    expect(f.create('session', 'history')).toBeInstanceOf(VectorRag);
+    expect(f.create('session', 'history')).not.toBeInstanceOf(FallbackRag);
     const t = f.create('tools', 'tools-reader-a-b');
     expect(t).toBeInstanceOf(QdrantRag);
     expect(t).not.toBeInstanceOf(FallbackRag);

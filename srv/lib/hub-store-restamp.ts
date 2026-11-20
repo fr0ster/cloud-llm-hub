@@ -3,6 +3,7 @@ import {
   isRagScanner,
   RagError,
   type Result,
+  stampRagOwner,
 } from '@mcp-abap-adt/llm-agent';
 import { PROVIDER_DEFAULT_DIMENSION } from './rag-provider-factory';
 
@@ -48,7 +49,12 @@ export async function restampHubStores(
         });
         if (!page.ok) return page;
         for (const row of page.value.records) {
-          const { sessionId, userId, ...metadata } = row.metadata;
+          const {
+            sessionId,
+            userId,
+            ownerScope: _legacyScope,
+            ...metadata
+          } = row.metadata;
           const planner = record.name === 'h_planner_memory';
           const keys = new Set<string>();
           const check = (source: string, target: string) => {
@@ -103,12 +109,16 @@ export async function restampHubStores(
             };
           const result =
             record.name === 'h_planner_memory'
-              ? await writer.upsertRaw(row.id, row.text, metadata)
+              ? await writer.upsertRaw(
+                  row.id,
+                  row.text,
+                  stampRagOwner(metadata, record),
+                )
               : await writer.upsertPrecomputedRaw?.(
                   row.id,
                   row.text,
                   zeroVector,
-                  metadata,
+                  stampRagOwner(metadata, record),
                 );
           if (!result)
             return { ok: false, error: new RagError('Missing restamp writer') };

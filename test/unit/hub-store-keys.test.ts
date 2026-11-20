@@ -1,6 +1,7 @@
 import {
   type IRagProvider,
   isRagScanner,
+  type RagMetadata,
   symmetricEmbedder,
   VectorRag,
   validateRagMetadata,
@@ -15,13 +16,15 @@ import {
   runRecordId,
 } from '../../srv/lib/run-record-store';
 import { ProviderSessionRecordStore } from '../../srv/lib/session-record-store';
+import { TrustStore } from '../../srv/lib/trust-store';
 import { runWithSessionId } from '../../srv/request-session';
 
 const embedder = symmetricEmbedder({ embed: async () => ({ vector: [1, 0] }) });
 
-it('hub stores write no library identity keys', async () => {
+it('hub stores stamp global ownership before precomputed writes', async () => {
   const stores = new Map<string, VectorRag>();
   const scans = new Map<string, jest.SpyInstance>();
+  const precomputed = new Map<string, RagMetadata>();
   const provider: IRagProvider = {
     name: 'test',
     kind: 'vector',
@@ -31,6 +34,14 @@ it('hub stores write no library identity keys', async () => {
       const rag = stores.get(name) ?? new VectorRag(embedder);
       stores.set(name, rag);
       scans.set(name, jest.spyOn(rag, 'scan'));
+      const writer = rag.writer();
+      const write = writer.upsertPrecomputedRaw?.bind(writer);
+      if (!write) throw new Error('Missing precomputed writer');
+      writer.upsertPrecomputedRaw = (id, text, vector, metadata, options) => {
+        precomputed.set(name, metadata);
+        return write(id, text, vector, metadata, options);
+      };
+      jest.spyOn(rag, 'writer').mockReturnValue(writer);
       return {
         ok: true,
         value: {
@@ -93,6 +104,18 @@ it('hub stores write no library identity keys', async () => {
   expect(await sessions.get('bob', 's1')).toBeUndefined();
   expect(await sessions.get('alice', 's2')).toBeUndefined();
 
+  const trust = await TrustStore.open(provider, 2);
+  await trust.setSource('skills', 3, 'alice');
+  expect(await trust.getSource('skills')).toBe(3);
+  expect([...precomputed.keys()].sort()).toEqual([
+    'h_dialogue',
+    'h_runs',
+    'h_sessions',
+    'h_trust',
+  ]);
+  for (const metadata of precomputed.values())
+    expect(metadata.ownerScope).toBe('global');
+
   const planner = new VectorRag(embedder);
   stores.set('h_planner_memory', planner);
   await scopedPlannerMemory(planner, '["alice","s1"]', 's1')
@@ -114,6 +137,7 @@ it('hub stores write no library identity keys', async () => {
     expect(row.metadata).not.toHaveProperty('sessionId');
     expect(row.metadata).not.toHaveProperty('roleId');
     expect(() => validateRagMetadata(row.metadata)).not.toThrow();
+    if (name === 'h_trust') continue;
     expect(
       name === 'h_planner_memory'
         ? row.metadata.namespace

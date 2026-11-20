@@ -1,14 +1,12 @@
 // Serves PGlite (Postgres in WASM) with pgvector over TCP, so the ordinary `pg`
-// driver can connect. Usage: node serve-pglite.mjs <port> <dataDir>
-// Prints `PGLITE_READY` once listening; a line `stop` on stdin shuts it down
-// cleanly (the data directory survives, so a restart finds the same data).
-// A child process, because the PGlite packages are ESM-only and jest is not.
+// driver can connect. A worker thread runs the ESM packages outside Jest's
+// module runtime and keeps the data directory for restart tests.
+import { parentPort, workerData } from 'node:worker_threads';
 import { PGlite } from '@electric-sql/pglite';
 import { vector } from '@electric-sql/pglite-pgvector';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 
-const port = Number(process.argv[2]);
-const dataDir = process.argv[3];
+const { port, dataDir } = workerData;
 const db = await PGlite.create({ dataDir, extensions: { vector } });
 const server = new PGLiteSocketServer({
   db,
@@ -17,20 +15,9 @@ const server = new PGLiteSocketServer({
   maxConnections: 20,
 });
 await server.start();
-console.log('PGLITE_READY');
-
-let stopping = false;
-const stop = async () => {
-  if (stopping) return;
-  stopping = true;
+parentPort.postMessage('ready');
+parentPort.once('message', async () => {
   await server.stop();
   await db.close();
-  process.exit(0);
-};
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', (d) => {
-  if (String(d).includes('stop')) void stop();
+  parentPort.close();
 });
-process.stdin.on('end', () => void stop());
-process.on('SIGINT', stop);
-process.on('SIGTERM', stop);

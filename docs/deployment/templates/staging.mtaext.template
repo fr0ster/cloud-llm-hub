@@ -21,6 +21,9 @@ extends: cloud-llm-hub-staging                       # the generated staging MTA
 version: 1.0.0
 
 parameters:
+  # Client history: off (default) keeps only the current turn, including tool messages.
+  # Only off retrieves history RAG (base mta.yaml: 15; code: 5); on uses consumer history only.
+  # LLM_AGENT_CLIENT_HISTORY: "off"
   # Prompt caching: on/off (true/false also accepted). Empty roles inherit global.
   # LLM_AGENT_PROMPT_CACHING: "on"
   # LLM_AGENT_COORDINATOR_PROMPT_CACHING: ""

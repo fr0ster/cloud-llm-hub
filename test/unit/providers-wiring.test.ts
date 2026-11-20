@@ -31,7 +31,7 @@ describe('default configuration builds today objects', () => {
     expect(p.stores.create('session', 'history')).toBeInstanceOf(InMemoryRag);
   });
 
-  it('vector tools have no fallback while history and user RAG retain fallback with a breaker-wrapped AI Core embedder', async () => {
+  it('vector tools and history have no write fallback; user RAG retains fallback', async () => {
     process.env.LLM_AGENT_RAG_TYPE = 'vector';
     delete process.env.LLM_AGENT_PROVIDER;
     const p = await startProviders(loadAgentConfig());
@@ -39,7 +39,10 @@ describe('default configuration builds today objects', () => {
     const tools = p.stores.create('tools', 'reader');
     expect(tools).toBeInstanceOf(VectorRag);
     expect(tools).not.toBeInstanceOf(FallbackRag);
-    expect(p.stores.create('session', 'history')).toBeInstanceOf(FallbackRag);
+    expect(p.stores.create('session', 'history')).toBeInstanceOf(VectorRag);
+    expect(p.stores.create('session', 'history')).not.toBeInstanceOf(
+      FallbackRag,
+    );
     expect(p.stores.create('persistent', 'user-rag')).toBeInstanceOf(
       FallbackRag,
     );

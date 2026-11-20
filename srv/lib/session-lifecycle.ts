@@ -79,6 +79,7 @@ let records: SessionRecordStore | undefined;
  * refused on its own.
  */
 const closed = new Map<string, number>();
+const permanentlyClosed = new WeakSet<LongSession>();
 
 /** Revivals in flight: two requests presenting one key read the store once. */
 const reviving = new Map<string, Promise<LongSession | undefined>>();
@@ -99,6 +100,9 @@ function recordOf(s: LongSession): SessionRecord {
     ttlMs: longSessions().ttlMs,
     collectionOverrides: sessionCollectionOverrides(s.userId, s.key),
     agentsCollectionId: s.agentsCollectionId,
+    ...(s.clientToolTurns?.size
+      ? { clientToolTurns: [...s.clientToolTurns] }
+      : {}),
     ...(s.destination !== undefined
       ? { destination: s.destination }
       : undefined),
@@ -142,6 +146,9 @@ export function lifecycleHooks(store?: SessionRecordStore): LongSessionHooks {
   closed.clear();
   reviving.clear();
   return {
+    async onPersist(s) {
+      if (!permanentlyClosed.has(s)) await store?.put(recordOf(s));
+    },
     onOpen(s: LongSession): void {
       if (
         !usageRuntime()?.enabled('session') &&
@@ -158,6 +165,7 @@ export function lifecycleHooks(store?: SessionRecordStore): LongSessionHooks {
       s: LongSession,
       reason: import('./long-session').CloseReason,
     ) {
+      if (reason !== 'shutdown') permanentlyClosed.add(s);
       let handle: Awaited<ReturnType<typeof lookupDialogue>>;
       if (usageRuntime()?.enabled('session')) {
         try {
@@ -401,6 +409,9 @@ async function revive(
       getAgentConfig().profiles?.collectionId ??
       'agents',
     revived: true,
+    ...(rec.clientToolTurns
+      ? { clientToolTurns: new Map(rec.clientToolTurns) }
+      : {}),
   });
   if ('refused' in opened) {
     // Opened meanwhile by another path: that session is the one.

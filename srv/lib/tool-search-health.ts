@@ -2,9 +2,46 @@ import { RagError, type RagResult, type Result } from '@mcp-abap-adt/llm-agent';
 import type { RequestHandler } from 'express';
 
 type SearchResult = Result<RagResult[], RagError>;
-type Failure = { message: string; probe: () => Promise<SearchResult> };
+type Failure = { message: string } & (
+  | { probe: () => Promise<{ ok: boolean }> }
+  | { repair: Promise<void> }
+);
 const failures = new Map<object, Failure>();
 let probing: Promise<void> | undefined;
+
+/** Cancel one caller's wait without cancelling shared backend work. */
+export async function waitForBackendWork(
+  work: Promise<void>,
+  signal?: AbortSignal,
+): Promise<void> {
+  signal?.throwIfAborted();
+  if (!signal) return work;
+  await new Promise<void>((resolve, reject) => {
+    const aborted = () => {
+      signal.removeEventListener('abort', aborted);
+      reject(new DOMException('Backend wait aborted', 'AbortError'));
+    };
+    signal.addEventListener('abort', aborted, { once: true });
+    work
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener('abort', aborted));
+    if (signal.aborted) aborted();
+  });
+}
+
+/** Report retained writes as unhealthy while their own queue repairs them. */
+export function trackHubBackendRepair(
+  backend: object,
+  message: string,
+  repair: Promise<void>,
+): void {
+  const failure = { message, repair };
+  failures.set(backend, failure);
+  const clear = () => {
+    if (failures.get(backend) === failure) failures.delete(backend);
+  };
+  void repair.then(clear, clear);
+}
 
 export class ToolSearchUnavailableError extends Error {
   readonly statusCode = 503;
@@ -64,13 +101,16 @@ export async function queryToolCorpus(
   return result;
 }
 
-/** One shared probe per arriving request batch; no timer, deadline or cached query vector. */
-export async function assertToolSearchHealthy(): Promise<void> {
+/** Share request-driven tool probes and join background history repairs. */
+export async function assertToolSearchHealthy(
+  signal?: AbortSignal,
+): Promise<void> {
   if (!failures.size) return;
   if (!probing) {
     probing = (async () => {
       await Promise.all(
         [...failures].map(async ([store, failure]) => {
+          if (!('probe' in failure)) return;
           try {
             const result = await failure.probe();
             // A concurrent search failure must not be cleared by an older probe.
@@ -85,7 +125,18 @@ export async function assertToolSearchHealthy(): Promise<void> {
       probing = undefined;
     });
   }
-  await probing;
+  await waitForBackendWork(probing, signal);
+  // More sessions may retain writes while the current repairs are in progress.
+  while (true) {
+    const repairs = [...failures.values()].flatMap((failure) =>
+      'repair' in failure ? [failure.repair] : [],
+    );
+    if (!repairs.length) break;
+    await waitForBackendWork(
+      Promise.all(repairs).then(() => {}),
+      signal,
+    );
+  }
   const message = toolSearchFailure();
   if (message) throw new ToolSearchUnavailableError(message);
 }
@@ -104,8 +155,14 @@ export const toolSearchReadinessGuard: RequestHandler = async (
     next();
     return;
   }
+  const disconnected = new AbortController();
+  const cancel = () => {
+    if (!res.writableFinished) disconnected.abort();
+  };
+  req.once('aborted', cancel);
+  res.once('close', cancel);
   try {
-    await assertToolSearchHealthy();
+    await assertToolSearchHealthy(disconnected.signal);
     next();
   } catch (error) {
     res.status(503).json({
@@ -117,5 +174,8 @@ export const toolSearchReadinessGuard: RequestHandler = async (
             : 'Tool search unavailable',
       },
     });
+  } finally {
+    req.removeListener('aborted', cancel);
+    res.removeListener('close', cancel);
   }
 };
