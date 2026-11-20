@@ -6,6 +6,7 @@ import {
   isRagScanner,
   type RagMetadata,
   type RagResult,
+  stampRagOwner,
 } from '@mcp-abap-adt/llm-agent';
 
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -32,12 +33,15 @@ export function scopedPlannerMemory(
       namespace,
       ...rest
     } = meta;
-    return {
-      ...rest,
-      id: storageId(id),
-      namespace: owner,
-      [originalId]: id,
-    };
+    return stampRagOwner(
+      {
+        ...rest,
+        id: storageId(id),
+        namespace: owner,
+        [originalId]: id,
+      },
+      { scope: 'global' },
+    );
   };
   const restore = (row: RagResult): RagResult => {
     const { [originalId]: id, namespace, ownerScope, ...meta } = row.metadata;

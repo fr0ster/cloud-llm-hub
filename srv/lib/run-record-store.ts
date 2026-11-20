@@ -7,7 +7,7 @@ import type {
   IRunRecordStore,
   RunRecord,
 } from '@mcp-abap-adt/llm-agent';
-import { isRagScanner } from '@mcp-abap-adt/llm-agent';
+import { isRagScanner, stampRagOwner } from '@mcp-abap-adt/llm-agent';
 import { callerIdentityKey } from '@mcp-abap-adt/llm-agent-libs';
 import cds from '@sap/cds';
 import { z } from 'zod';
@@ -287,7 +287,10 @@ export class ProviderRunRecordStore implements DeletableRunRecordStore {
       runRecordId(userId, sessionId),
       text,
       this.zeroVector,
-      { authorUserId: userId, hubSessionId: sessionId, savedAt },
+      stampRagOwner(
+        { authorUserId: userId, hubSessionId: sessionId, savedAt },
+        { scope: 'global' },
+      ),
     );
     if (!r.ok) throw r.error;
     this.hasRunRecord(userId, sessionId);

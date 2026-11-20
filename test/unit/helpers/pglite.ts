@@ -1,6 +1,6 @@
 /**
  * A real Postgres with pgvector for unit tests: PGlite (Postgres in WASM)
- * served over TCP by @electric-sql/pglite-socket in a child process, with the
+ * served over TCP by @electric-sql/pglite-socket in a worker thread, with the
  * pg-vector-rag shared layout (`sharedLayoutSql`) deployed in a fresh schema.
  *
  * The data directory lives until `stop()`, so `restart()` brings the same
@@ -8,11 +8,11 @@
  * End every `pg` pool on it before `restart()`: pg-vector-rag's pool has no
  * 'error' listener, so a dropped idle connection would be an uncaught error.
  */
-import { type ChildProcess, spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { staticLogin } from '@mcp-abap-adt/llm-agent';
 import { createPgClient, sharedLayoutSql } from '@mcp-abap-adt/pg-vector-rag';
 
@@ -60,44 +60,40 @@ async function portFree(port: number): Promise<void> {
   }
 }
 
-function launch(port: number, dataDir: string): Promise<ChildProcess> {
-  const child = spawn(process.execPath, [SCRIPT, String(port), dataDir], {
-    stdio: ['pipe', 'pipe', 'inherit'],
-  });
+function launch(port: number, dataDir: string): Promise<Worker> {
+  const worker = new Worker(SCRIPT, { workerData: { port, dataDir } });
   return new Promise((resolve, reject) => {
-    let buf = '';
     const timer = setTimeout(() => {
-      child.kill();
+      void worker.terminate();
       reject(new Error('PGlite did not start within 60 s'));
     }, 60_000);
-    const early = (code: number | null) => {
+    const fail = (error: Error) => {
       clearTimeout(timer);
-      reject(new Error(`PGlite exited early (code ${code})`));
+      reject(error);
     };
-    child.on('exit', early);
-    child.stdout?.on('data', (d) => {
-      buf += String(d);
-      if (buf.includes('PGLITE_READY')) {
-        clearTimeout(timer);
-        child.off('exit', early);
-        resolve(child);
-      }
+    const early = (code: number) =>
+      fail(new Error(`PGlite exited early (code ${code})`));
+    worker.once('error', fail);
+    worker.once('exit', early);
+    worker.once('message', () => {
+      clearTimeout(timer);
+      worker.off('exit', early);
+      resolve(worker);
     });
   });
 }
 
-function stopChild(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null) return Promise.resolve();
+function stopWorker(worker: Worker): Promise<void> {
+  if (worker.threadId === -1) return Promise.resolve();
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
-      child.kill();
-      resolve();
+      void worker.terminate();
     }, 15_000);
-    child.once('exit', () => {
+    worker.once('exit', () => {
       clearTimeout(timer);
       resolve();
     });
-    child.stdin?.end('stop\n');
+    worker.postMessage('stop');
   });
 }
 
@@ -110,9 +106,9 @@ export async function startPglite(opts: {
   const credential = staticLogin('postgres', 'postgres');
   const schema = `t_${process.pid}_${Date.now()}`;
 
-  let child: ChildProcess | undefined;
+  let worker: Worker | undefined;
   try {
-    child = await launch(port, dataDir);
+    worker = await launch(port, dataDir);
     const client = await createPgClient({
       connectionString: url,
       credential,
@@ -136,27 +132,27 @@ export async function startPglite(opts: {
       await client.end();
     }
   } catch (err) {
-    if (child) await stopChild(child);
+    if (worker) await stopWorker(worker);
     rmSync(dataDir, { recursive: true, force: true });
     throw err;
   }
 
-  let running: ChildProcess = child;
+  let running = worker;
   return {
     url,
     schema,
     credential,
     async stop() {
-      await stopChild(running);
+      await stopWorker(running);
       rmSync(dataDir, { recursive: true, force: true });
     },
     async restart() {
-      await stopChild(running);
+      await stopWorker(running);
       await portFree(port);
       running = await launch(port, dataDir);
     },
     async suspend() {
-      await stopChild(running);
+      await stopWorker(running);
       await portFree(port);
     },
     async resume() {

@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import {
   clientHistoryMessages,
-  clientHistoryTurnId,
   hasPendingClientTools,
 } from './lib/client-history';
 import {
@@ -125,6 +124,8 @@ import {
   appendToSession,
   clearSession,
   getSessionHistory,
+  rememberClientToolTurn,
+  sessionClientTurnId,
 } from './session-store';
 
 /** Get authenticated user ID from CAP context (XSUAA JWT or mocked auth) */
@@ -634,7 +635,11 @@ async function serveChatCompletions(
     .filter((m): m is Message => m !== null);
 
   const rawHistorySize = normalizedMessages.length;
-  const historyTurnId = clientHistoryTurnId(normalizedMessages);
+  const historyTurnId = sessionClientTurnId(
+    sessionId,
+    userId,
+    normalizedMessages,
+  );
   normalizedMessages = clientHistoryMessages(
     normalizedMessages,
     getAgentConfig().agent.clientHistory,
@@ -1191,6 +1196,7 @@ async function serveChatCompletions(
       let accumulatedContent = ''; // Accumulate full response for session history
       let streamSucceeded = false;
       let pendingClientTools = false;
+      const clientToolIds = new Set<string>();
       let lastUsage: TokenUsage | undefined;
       const spend = captureTokenUsage();
 
@@ -1282,7 +1288,13 @@ async function serveChatCompletions(
                         }
 
                         const v = chunk.value;
+                        if (v.reset) {
+                          pendingClientTools = false;
+                          clientToolIds.clear();
+                        }
                         pendingClientTools ||= hasPendingClientTools(v);
+                        for (const call of v.toolCalls ?? [])
+                          if (call.id) clientToolIds.add(call.id);
                         if (
                           'clhMessageId' in v ||
                           'clhMessageEnd' in v ||
@@ -1477,6 +1489,8 @@ async function serveChatCompletions(
       });
 
       const terminalSucceeded = streamSucceeded && !opts.signal?.aborted;
+      if (terminalSucceeded && !useDialogue && pendingClientTools)
+        rememberClientToolTurn(sessionId, userId, historyTurnId, clientToolIds);
       // Save conversation turn to server session
       if (terminalSucceeded && accumulatedContent) {
         const lastUser = normalizedMessages
@@ -1592,6 +1606,14 @@ async function serveChatCompletions(
       useDialogue ? resultUsage : spend.usage(resultUsage, model),
       model,
     );
+
+    if (result.ok && !useDialogue && !opts.signal?.aborted)
+      rememberClientToolTurn(
+        sessionId,
+        userId,
+        historyTurnId,
+        result.value.toolCalls?.map((call) => call.id) ?? [],
+      );
 
     // Save conversation turn to server session
     if (

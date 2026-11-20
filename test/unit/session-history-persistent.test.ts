@@ -56,7 +56,7 @@ import {
 import { createHubRagAccess, initHubRagAccess } from '../../srv/lib/rag-access';
 import {
   historyCollectionName,
-  SESSION_HISTORY_RETRY_INTERVAL_MS,
+  type SessionHistoryRouter,
 } from '../../srv/lib/session-history-collection';
 import {
   assertToolSearchHealthy,
@@ -66,7 +66,7 @@ import { collectionAggregateQuery } from '../../srv/lib/usage/storage-aggregates
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { appendToSession, sweepSessionHistory } from '../../srv/session-store';
 import { type PgliteHandle, startPglite } from './helpers/pglite';
-import { SessionHistoryFixture as SessionHistoryRag } from './helpers/session-history-fixture';
+import { SessionHistoryFixture } from './helpers/session-history-fixture';
 
 jest.setTimeout(120_000);
 
@@ -187,6 +187,14 @@ async function historyRows(): Promise<
 
 const ALICE = turnOwner('alice@example.com', 's-1');
 const BOB = turnOwner('bob@example.com', 's-2');
+
+const routers = new Set<SessionHistoryRouter>();
+class SessionHistoryRag extends SessionHistoryFixture {
+  constructor(...args: ConstructorParameters<typeof SessionHistoryFixture>) {
+    super(...args);
+    routers.add(this.router);
+  }
+}
 
 /** A clock that advances one second per call, so createdAt orders turns. */
 function steppingClock(start = Date.parse('2026-10-20T10:00:00.000Z')) {
@@ -337,10 +345,16 @@ describe('failed history writes remain queued', () => {
     let now = 5_000_000;
     const provider = newProvider();
     let attempts = 0;
+    let attempted = () => {};
+    const secondAttempt = new Promise<void>((resolve) => {
+      attempted = resolve;
+    });
     const describe = provider.describeCollections.bind(provider);
     provider.describeCollections = async () => {
       attempts++;
-      return describe();
+      const result = await describe();
+      if (attempts === 2) attempted();
+      return result;
     };
     const rag = history(() => ALICE, {
       warnings,
@@ -365,9 +379,7 @@ describe('failed history writes remain queued', () => {
       recalled = true;
       return result;
     });
-    await new Promise((resolve) =>
-      setTimeout(resolve, SESSION_HISTORY_RETRY_INTERVAL_MS),
-    );
+    await secondAttempt;
     expect(attempts).toBe(2);
     expect(recalled).toBe(false);
 
@@ -967,4 +979,10 @@ test('persisted history bytes survive window expiry and revival, and shrink with
   expect(await measure(BOB, 'bob@example.com', 's-2')).toBe(bytes * 16);
 });
 
-afterEach(() => setLongSessionsForTest(undefined));
+afterEach(async () => {
+  // Repairs still own their writes after a failed request. Join teardown before
+  // the next test resets the bindings and truncates the shared database.
+  await Promise.all([...routers].map((router) => router.stopWrites()));
+  routers.clear();
+  setLongSessionsForTest(undefined);
+});

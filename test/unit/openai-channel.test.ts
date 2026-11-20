@@ -139,7 +139,9 @@ function call(
 beforeEach(() => harness.reset());
 afterEach(() => configure());
 
-clientToolHistoryTests('openai', body, call);
+clientToolHistoryTests('openai', body, (request, sessionId) =>
+  call(request, fakeRes(), sessionId),
+);
 
 it.each([false, true])(
   'reports serving model cache and separate embedding usage (stream=%s)',

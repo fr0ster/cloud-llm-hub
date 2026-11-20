@@ -4308,6 +4308,99 @@ test.each(
   },
 );
 
+test.each(['off', 'on'] as const)(
+  'dialogue %s distinguishes fresh requests from tool-result replays',
+  async (policy) => {
+    mockClientHistory = policy;
+    const caller = isolationCallers[0];
+    const history = new SessionHistoryRouter(
+      new InMemoryRagProvider({ name: 'dialogue-turn-identity' }),
+    );
+    mockIsolationHistory = history;
+    const prompts: string[] = [];
+    let answer = '';
+    mockCaptureLlm = async () => {
+      const llm: ILlm = {
+        chat: async (messages) => {
+          prompts.push(JSON.stringify(messages));
+          return { ok: true, value: { content: answer, finishReason: 'stop' } };
+        },
+        async *streamChat(messages, tools, options) {
+          yield await llm.chat(messages, tools, options);
+        },
+      };
+      return llm;
+    };
+    const send = async (
+      messages: import('@mcp-abap-adt/llm-agent').Message[],
+      reply: string,
+    ) => {
+      answer = reply;
+      const channel = dialogueChat(
+        typedRequest(fakeReq({})),
+        caller.userId,
+        {
+          userId: caller.userId,
+          key: caller.sessionId,
+          createdAt: 0,
+          lastActivity: 0,
+          revived: false,
+        },
+        'TEST',
+        typedResponse(fakeRes()),
+      );
+      const result = await channel.process(messages, callOptionsFor(caller));
+      if (!result.ok) throw result.error;
+    };
+    const user = { role: 'user' as const, content: 'status?' };
+    const loop: import('@mcp-abap-adt/llm-agent').Message[] = [
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: 'status-read',
+            type: 'function',
+            function: { name: 'read', arguments: '{}' },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'status-read',
+        content: 'CURRENT_TOOL_RESULT',
+      },
+    ];
+    try {
+      await send([user], 'First status');
+      await send([user], 'Second status');
+      await send([user, ...loop], 'Status after read');
+      const freshPrefix = {
+        role: 'assistant' as const,
+        content: 'FRESH_CLIENT_PREFIX',
+      };
+      await send(
+        policy === 'on' ? [freshPrefix, user, ...loop] : [user, ...loop],
+        'Replay status',
+      );
+      await history.waitForTurns(caller.sessionId);
+      const turns = await history.listTurns(caller);
+      expect(turns.map((turn) => turn.assistantText).sort()).toEqual([
+        'First status',
+        'Second status',
+        'Status after read',
+      ]);
+      expect(prompts.at(-1)).toContain('CURRENT_TOOL_RESULT');
+      expect(prompts.at(-1)?.includes('FRESH_CLIENT_PREFIX')).toBe(
+        policy === 'on',
+      );
+    } finally {
+      await closeDialogue(caller.userId, caller.sessionId, 'ttl');
+      await history.stopWrites();
+    }
+  },
+);
+
 test.each(['direct', 'api', 'api-stream', 'api-disconnect'] as const)(
   '%s dialogue sends store full turns once, independently of delivery history',
   async (mode) => {

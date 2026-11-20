@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { createHash } from 'node:crypto';
-import type { IRag, Message } from '@mcp-abap-adt/llm-agent';
+import { createHash, randomUUID } from 'node:crypto';
+import type { IRag, LlmStreamChunk, Message } from '@mcp-abap-adt/llm-agent';
 import type { IStageHandler } from '@mcp-abap-adt/llm-agent-libs';
 import { BuildValidationError } from './build-validation-error';
 
@@ -14,20 +14,34 @@ export function clientHistoryWindow(
   return policy === 'on' && window ? window : undefined;
 }
 
-/** Tool-result continuations retain the same user boundary. Include the prefix
- * so a later user message with identical text is still a different turn.
- * Compute before applying the client history policy. */
-export function clientHistoryTurnId(messages: Message[]): string | undefined {
+/** A fresh request gets its own ID. A continuation names calls from the same
+ * turn, even if the client dropped earlier messages or prior tool rounds. */
+export function clientHistoryTurnId(
+  messages: Message[],
+  issuedCalls?: ReadonlyMap<string, string>,
+): string | undefined {
   let lastUser = messages.length - 1;
   while (lastUser >= 0 && messages[lastUser].role !== 'user') lastUser--;
   if (lastUser < 0) return undefined;
-  return `client:${createHash('sha256')
-    .update(JSON.stringify(messages.slice(0, lastUser + 1)))
-    .digest('hex')}`;
+  const calls = new Set<string>();
+  let firstResult: string | undefined;
+  for (const message of messages.slice(lastUser + 1)) {
+    for (const call of message.tool_calls ?? []) calls.add(call.id);
+    if (message.role !== 'tool' || !message.tool_call_id) continue;
+    const callId = message.tool_call_id;
+    const turnId = issuedCalls?.get(callId);
+    if (turnId) return turnId;
+    if (calls.has(callId)) firstResult ??= callId;
+  }
+  // An echoed call can still identify a continuation after an in-process
+  // session window expires or when the tool loop began outside this process.
+  return `client:${firstResult === undefined ? randomUUID() : createHash('sha256').update(firstResult).digest('hex')}`;
 }
 
 export function hasPendingClientTools(response: {
-  toolCalls?: readonly unknown[];
+  toolCalls?:
+    | Readonly<NonNullable<LlmStreamChunk['toolCalls']>>
+    | Message['tool_calls'];
   finishReason?: string;
   stopReason?: string;
 }): boolean {

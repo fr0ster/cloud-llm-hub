@@ -3,6 +3,8 @@ import {
   type IRagEditor,
   type IRagProvider,
   RagError,
+  type RagMetadata,
+  stampRagOwner,
 } from '@mcp-abap-adt/llm-agent';
 import { userCollectionId } from '../../srv/collection-ids';
 import { createCollectionPersistence } from '../../srv/lib/collection-persistence';
@@ -66,16 +68,29 @@ async function fixture() {
     text: 'untouched',
     metadata: {},
   });
-  return { registry, backend, writer, id };
+  const externalUpsert = async (
+    docId: string,
+    text: string,
+    metadata: RagMetadata,
+  ) => {
+    const result = await writer.upsertRaw(
+      `doc:${id}:${docId}`,
+      text,
+      stampRagOwner(
+        { ...metadata, docId, collectionId: id },
+        { scope: 'user', userId: 'alice' },
+      ),
+    );
+    if (!result.ok) throw result.error;
+  };
+  return { registry, backend, writer, id, externalUpsert };
 }
 
 afterEach(() => jest.restoreAllMocks());
 
 test('persistent update reads current backend metadata and createdAt, preserving unrelated snapshot entries', async () => {
-  const { registry, backend, writer, id } = await fixture();
-  await writer.upsertRaw(`doc:${id}:one`, 'external text', {
-    docId: 'one',
-    collectionId: id,
+  const { registry, backend, externalUpsert, id } = await fixture();
+  await externalUpsert('one', 'external text', {
     createdAt: '2020-01-01T00:00:00.000Z',
     title: 'external title',
     enabled: false,
@@ -177,10 +192,8 @@ test('a backend rejection before submission leaves the snapshot unchanged', asyn
 
 test('persistent update counts the snapshot replacement bytes after an external text edit', async () => {
   jest.spyOn(storageValues, 'storageEnabled').mockReturnValue(true);
-  const { registry, writer, id } = await fixture();
-  await writer.upsertRaw(`doc:${id}:one`, 'much longer external text', {
-    docId: 'one',
-    collectionId: id,
+  const { registry, externalUpsert, id } = await fixture();
+  await externalUpsert('one', 'much longer external text', {
     createdAt: '2020-01-01T00:00:00.000Z',
   });
   await updateRagRecord(registry, id, 'one', { text: 'new text' });
@@ -193,19 +206,15 @@ test('persistent update counts the snapshot replacement bytes after an external 
 test.each([2, null])(
   'replacement preserves backend trust %s after an external edit',
   async (trust) => {
-    const { registry, backend, writer, id } = await fixture();
-    await writer.upsertRaw(`doc:${id}:one`, 'old', {
-      docId: 'one',
-      collectionId: id,
+    const { registry, backend, writer, externalUpsert, id } = await fixture();
+    await externalUpsert('one', 'old', {
       _trust: 5,
       _trustHistory: [{ from: null, to: 5, actor: 'first', at: 'before' }],
     });
     await registry.updateDocument(id, 'one', { text: 'cached' });
     const history = [{ from: 5, to: trust, actor: 'other', at: 'now' }];
     await writer.deleteByIdRaw(`doc:${id}:one`);
-    await writer.upsertRaw(`doc:${id}:one`, 'external', {
-      docId: 'one',
-      collectionId: id,
+    await externalUpsert('one', 'external', {
       ...(trust === null ? {} : { _trust: trust }),
       _trustHistory: history,
     });
@@ -234,11 +243,9 @@ test('adding a new record checks the backend once', async () => {
 });
 
 test('replacement preserves trust on a record another writer created after restore', async () => {
-  const { registry, backend, writer, id } = await fixture();
+  const { registry, backend, externalUpsert, id } = await fixture();
   const history = [{ from: null, to: 4, actor: 'other', at: 'now' }];
-  await writer.upsertRaw(`doc:${id}:external`, 'external', {
-    docId: 'external',
-    collectionId: id,
+  await externalUpsert('external', 'external', {
     _trust: 4,
     _trustHistory: history,
   });

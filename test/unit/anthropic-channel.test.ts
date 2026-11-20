@@ -97,11 +97,16 @@ const body = (stream = false) => ({
   messages: [{ role: 'user', content: 'hi' }],
 });
 
-function call(b: unknown, res = fakeRes(), session?: LongSession) {
+function call(
+  b: object,
+  res = fakeRes(),
+  session?: LongSession,
+  sessionId = 's-1',
+) {
   const req = Object.assign(
     Object.defineProperties(
       express().request,
-      Object.getOwnPropertyDescriptors(fakeReq(b)),
+      Object.getOwnPropertyDescriptors(fakeReq(b, sessionId)),
     ),
     {
       longSession: session,
@@ -114,7 +119,9 @@ function call(b: unknown, res = fakeRes(), session?: LongSession) {
 beforeEach(() => harness.reset());
 afterEach(() => configure());
 
-clientToolHistoryTests('anthropic', body, call);
+clientToolHistoryTests('anthropic', body, (request, sessionId) =>
+  call(request, fakeRes(), undefined, sessionId),
+);
 
 it.each([false, true])(
   'reports uncached input and cache reads and writes (stream=%s)',

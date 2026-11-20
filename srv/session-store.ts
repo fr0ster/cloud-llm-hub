@@ -13,6 +13,7 @@ import { forgetPlannerMemory } from './lib/planner-memory';
 import type { Message } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { getSharedHistoryRag, isProvidersReady } from './agent-manager';
+import { clientHistoryTurnId } from './lib/client-history';
 import { guardedTask } from './lib/guarded-task';
 import { turnOwner } from './lib/history-turn';
 import { longSessionsIfReady } from './lib/long-session';
@@ -34,6 +35,7 @@ const SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 interface SessionEntry {
   messages: Message[];
   lastAccess: number;
+  clientToolTurns?: Map<string, string>;
 }
 
 /**
@@ -51,6 +53,37 @@ function sessionStoreKey(sessionId: string, userId: string): string {
   // A tuple, not a join: no separator keeps two pairs apart whatever a
   // caller puts in a cookie, and the NUL this used before was no exception.
   return JSON.stringify([userId, sessionId]);
+}
+
+export function sessionClientTurnId(
+  sessionId: string,
+  userId: string,
+  messages: Message[],
+): string | undefined {
+  const entry = sessionStore.get(sessionStoreKey(sessionId, userId));
+  return clientHistoryTurnId(messages, entry?.clientToolTurns);
+}
+
+export function rememberClientToolTurn(
+  sessionId: string,
+  userId: string,
+  turnId: string | undefined,
+  toolCallIds: Iterable<string>,
+): void {
+  if (!turnId) return;
+  let toolTurns: Map<string, string> | undefined;
+  for (const id of toolCallIds) {
+    if (!toolTurns) {
+      const entry = touchSession(sessionId, userId);
+      toolTurns = entry.clientToolTurns ??= new Map();
+    }
+    toolTurns.set(id, turnId);
+  }
+}
+
+export function hasClientToolTurns(sessionId: string, userId: string): boolean {
+  return !!sessionStore.get(sessionStoreKey(sessionId, userId))?.clientToolTurns
+    ?.size;
 }
 
 /** Periodic cleanup of expired sessions. `.unref()` so the timer doesn't keep the
@@ -129,6 +162,16 @@ export function appendToSession(
   userId: string,
   ...msgs: Message[]
 ): void {
+  const entry = touchSession(sessionId, userId);
+  entry.messages.push(...msgs);
+
+  // Keep only last N messages
+  if (entry.messages.length > SESSION_MAX_MESSAGES) {
+    entry.messages = entry.messages.slice(-SESSION_MAX_MESSAGES);
+  }
+}
+
+function touchSession(sessionId: string, userId: string): SessionEntry {
   const key = sessionStoreKey(sessionId, userId);
   let entry = sessionStore.get(key);
   if (!entry) {
@@ -136,12 +179,7 @@ export function appendToSession(
     sessionStore.set(key, entry);
   }
   entry.lastAccess = Date.now();
-  entry.messages.push(...msgs);
-
-  // Keep only last N messages
-  if (entry.messages.length > SESSION_MAX_MESSAGES) {
-    entry.messages = entry.messages.slice(-SESSION_MAX_MESSAGES);
-  }
+  return entry;
 }
 
 /** Amend the original turn entry without recreating expired or cleared history. */
@@ -190,5 +228,6 @@ export function clearSession(sessionId: string, userId: string): void {
  * a session is idle must not make it look busy.
  */
 export function hasSessionHistory(sessionId: string, userId: string): boolean {
-  return sessionStore.has(sessionStoreKey(sessionId, userId));
+  return !!sessionStore.get(sessionStoreKey(sessionId, userId))?.messages
+    .length;
 }

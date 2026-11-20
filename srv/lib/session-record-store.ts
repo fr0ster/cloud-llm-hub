@@ -18,6 +18,7 @@ import {
   type IRetrievalEmbedder,
   isRagScanner,
   type RagScanRecord,
+  stampRagOwner,
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { z } from 'zod';
@@ -398,7 +399,10 @@ export class ProviderSessionRecordStore extends SerialSessionRecordStore {
       recordId(r.key),
       JSON.stringify(stored(r)),
       this.zeroVector,
-      { authorUserId: r.userId, hubSessionId: r.key },
+      stampRagOwner(
+        { authorUserId: r.userId, hubSessionId: r.key },
+        { scope: 'global' },
+      ),
     );
     if (!w.ok) throw w.error;
   }

@@ -1,4 +1,3 @@
-import { clientHistoryTurnId } from '../../../srv/lib/client-history';
 import * as sessionTurns from '../../../srv/lib/session-turns';
 import { harness } from './channel-harness';
 
@@ -6,21 +5,74 @@ import { harness } from './channel-harness';
 export function clientToolHistoryTests(
   protocol: 'openai' | 'anthropic',
   body: (stream: boolean) => { messages: object[] },
-  call: (body: object) => { done: Promise<unknown> },
+  call: (body: object, sessionId: string) => { done: Promise<void> },
 ) {
-  test.each([
-    { stream: false, combined: false },
-    { stream: true, combined: false },
-    { stream: true, combined: true },
-  ])(
-    'client tool continuations record one complete user turn (stream=$stream, combined=$combined)',
-    async ({ stream, combined }) => {
+  const agentConfig = jest.requireMock<
+    typeof import('../../../srv/agent-config')
+  >('../../../srv/agent-config');
+  const config = agentConfig.getAgentConfig();
+  test.each(['off', 'on'] as const)(
+    'records identical current-only requests as separate turns (clientHistory=%s)',
+    async (clientHistory) => {
+      const configured = jest
+        .spyOn(agentConfig, 'getAgentConfig')
+        .mockReturnValue({
+          ...config,
+          agent: { ...config.agent, clientHistory },
+        });
+      const sessionId = randomUUID();
+      const recorded = jest
+        .spyOn(sessionTurns, 'recordTurn')
+        .mockImplementation(() => {});
+      try {
+        for (const content of ['First status', 'Second status']) {
+          harness.process = async () => ({
+            ok: true,
+            value: { content, stopReason: 'stop' },
+          });
+          await call(
+            {
+              ...body(false),
+              messages: [{ role: 'user', content: 'status?' }],
+            },
+            sessionId,
+          ).done;
+        }
+        expect(
+          recorded.mock.calls.map(([, user, answer]) => [user.content, answer]),
+        ).toEqual([
+          ['status?', 'First status'],
+          ['status?', 'Second status'],
+        ]);
+        expect(recorded.mock.calls[0][3]).not.toBe(recorded.mock.calls[1][3]);
+      } finally {
+        configured.mockRestore();
+        recorded.mockRestore();
+      }
+    },
+  );
+
+  test.each(
+    (['off', 'on'] as const).flatMap((clientHistory) => [
+      { clientHistory, stream: false, combined: false },
+      { clientHistory, stream: true, combined: false },
+      { clientHistory, stream: true, combined: true },
+    ]),
+  )(
+    'client tool continuations record one complete user turn (clientHistory=$clientHistory, stream=$stream, combined=$combined)',
+    async ({ clientHistory, stream, combined }) => {
+      const configured = jest
+        .spyOn(agentConfig, 'getAgentConfig')
+        .mockReturnValue({
+          ...config,
+          agent: { ...config.agent, clientHistory },
+        });
+      const sessionId = randomUUID();
       const recorded = jest
         .spyOn(sessionTurns, 'recordTurn')
         .mockImplementation(() => {});
       const finalAnswer = `Final answer ${'complete result '.repeat(1000)}`;
       const messages = [...body(stream).messages];
-      const id = clientHistoryTurnId([{ role: 'user', content: 'hi' }]);
       const tools = [
         {
           type: 'function',
@@ -78,7 +130,7 @@ export function clientToolHistoryTests(
             yield { ok: true, value: { toolCalls } };
             yield { ok: true, value: { finishReason: 'tool_calls' } };
           };
-          await call(request()).done;
+          await call(request(), sessionId).done;
           expect(recorded).not.toHaveBeenCalled();
           if (protocol === 'openai')
             messages.push(
@@ -143,17 +195,32 @@ export function clientToolHistoryTests(
             value: { content: finalAnswer.slice(100), finishReason: 'stop' },
           };
         };
-        await call(request()).done;
+        await call(request(), sessionId).done;
         expect(recorded).toHaveBeenCalledTimes(1);
+        const id = recorded.mock.calls[0][3];
+        expect(id).toEqual(expect.stringMatching(/^client:/));
         expect(recorded).toHaveBeenCalledWith(
           expect.objectContaining({ userId: 'alice' }),
           { role: 'user', content: 'hi' },
           finalAnswer,
           id,
         );
+        // A replay that keeps only the latest tool round still identifies the same turn.
+        await call(
+          {
+            ...request(),
+            messages: [messages[0], ...messages.slice(-2)],
+          },
+          sessionId,
+        ).done;
+        expect(recorded).toHaveBeenCalledTimes(2);
+        expect(recorded.mock.calls[1][3]).toBe(id);
       } finally {
+        configured.mockRestore();
         recorded.mockRestore();
       }
     },
   );
 }
+
+import { randomUUID } from 'node:crypto';

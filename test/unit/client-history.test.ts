@@ -31,15 +31,19 @@ test('client turn identity survives tool results and distinguishes repeated user
     },
     { role: 'tool', tool_call_id: 'read', content: 'result' },
   ];
-  expect(clientHistoryTurnId(continued)).toBe(clientHistoryTurnId(start));
-  expect(clientHistoryTurnId([...continued, user])).not.toBe(
-    clientHistoryTurnId(start),
-  );
+  const id = clientHistoryTurnId(start);
+  if (!id) throw new Error('Missing history turn');
+  const issued = new Map([['read', id]]);
+  expect(clientHistoryTurnId(continued, issued)).toBe(id);
+  expect(clientHistoryTurnId([user, continued[2]], issued)).toBe(id);
+  expect(clientHistoryTurnId(continued)).toBe(clientHistoryTurnId(continued));
+  expect(clientHistoryTurnId([...continued, user], issued)).not.toBe(id);
+  expect(clientHistoryTurnId(start, issued)).not.toBe(id);
   expect(clientHistoryTurnId([])).toBeUndefined();
 });
 
 test.each([
-  [{ toolCalls: [{}] }, true],
+  [{ toolCalls: [{ index: 0 }] }, true],
   [{ finishReason: 'tool_calls' }, true],
   [{ stopReason: 'tool_use' }, true],
   [{ toolCalls: [], stopReason: 'stop' }, false],

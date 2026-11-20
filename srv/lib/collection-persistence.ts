@@ -1514,7 +1514,13 @@ export class PersistentHistoryStore
         const w = await this.innerWriter();
         if (!w.ok) return w;
         return w.value.upsertPrecomputedRaw
-          ? w.value.upsertPrecomputedRaw(id, text, vector, metadata, options)
+          ? w.value.upsertPrecomputedRaw(
+              id,
+              text,
+              vector,
+              stampRagOwner(metadata, { scope: 'global' }),
+              options,
+            )
           : w.value.upsertRaw(id, text, metadata, options);
       },
       upsertRaw: async (

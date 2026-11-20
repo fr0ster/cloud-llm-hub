@@ -96,7 +96,10 @@ import { requireMcpRole } from './lib/require-mcp-role';
 import { initializeRunRecordStore } from './lib/run-record-store';
 import { sessionConfig } from './lib/session-config';
 import type { LongSessionRequest } from './lib/session-connection';
-import { stopSessionHistoryWrites } from './lib/session-history-collection';
+import {
+  drainSessionHistoryWrites,
+  stopSessionHistoryWrites,
+} from './lib/session-history-collection';
 import {
   lifecycleHooks,
   openSession,
@@ -1133,21 +1136,24 @@ cds.on('served', () => {
 // Only shutdown ends an admitted session. Long sessions close first: their
 // ABAP sessions end, their state and records stay for revival. A close waits
 // for the session's running request, which the gatekeeper's abort ends.
-cds.on('shutdown', async () => {
-  stopSessionHistoryWrites();
-  if (!usageRuntime()) {
-    const closing = longSessionsIfReady()?.closeAll('shutdown');
-    shutdownGatekeeper();
-    await closing;
-    return;
-  }
+cds.on('shutdown', async (error?: Error) => {
+  if (error) void stopSessionHistoryWrites();
+  const runtime = usageRuntime();
   const usageDeadline = Date.now() + USAGE_SHUTDOWN_TIMEOUT_MS;
-  beginUsageShutdown();
+  if (runtime) beginUsageShutdown();
   const closing = longSessionsIfReady()?.closeAll('shutdown');
-  const pipelines = shutdownGatekeeper();
+  const pipelines = error
+    ? shutdownGatekeeper()
+    : shutdownGatekeeper({ drain: true });
+  const draining = Promise.all([closing, pipelines]).then((): void => {});
+  if (!error) {
+    await draining;
+    await drainSessionHistoryWrites();
+  }
+  if (!runtime) return;
   await completeUsageShutdown(
     usageDeadline,
-    Promise.all([closing, pipelines]).then((): void => {}),
+    draining,
     closeUsageSessions,
     async (remainingMs: number): Promise<void> => {
       const runtime = usageRuntime();

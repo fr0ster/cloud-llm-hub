@@ -63,6 +63,7 @@ import {
   unusableCheckerPlanSteps,
 } from './checker-verdict';
 import { submitVerdictTool } from './checker-verdict-tool';
+import { clientHistoryTurnId } from './client-history';
 import { runWithContextCapture } from './context-capture';
 import { withCoordinatorModel } from './coordinator-model';
 import {
@@ -163,7 +164,6 @@ interface HistoryTurn {
   answer: string;
   tasks: Set<string>;
   taskAnswers: Map<string, string>;
-  recorded: boolean;
   consumerMessages: Message[];
   clientLoop: Message[];
   transcript: NonNullable<PlannerRequestRecord['transcript']>;
@@ -867,7 +867,11 @@ async function open(
   // Task ownership, rather than message roles or the latest send(), ties late
   // replies back to their original request, including when sends are queued.
   const historyTurns = new Map<string, HistoryTurn>();
-  const queuedHistoryTurns: HistoryTurn[] = [];
+  const recordedHistoryTurns = new Set<string>();
+  const queuedHistoryTurns: Pick<
+    HistoryTurn,
+    'id' | 'caller' | 'text' | 'consumerMessages' | 'clientLoop'
+  >[] = [];
   const taskHistoryTurns = new Map<string, HistoryTurn[]>();
   const completedHistoryTasks = new Set<string>();
   let activeHistoryTurns: HistoryTurn[] = [];
@@ -884,16 +888,29 @@ async function open(
   const historyAnswer = (text: string) => {
     for (const turn of activeHistoryTurns) turn.answer = stripNoMessage(text);
   };
-  const finishHistory = (turns: Iterable<HistoryTurn> = activeHistoryTurns) => {
+  const finishHistory = (turns: Iterable<HistoryTurn>, succeeded: boolean) => {
     for (const turn of turns) {
-      if (turn.recorded || turn.tasks.size || !turn.answer.trim()) continue;
-      turn.recorded = true;
-      recordTurn(
-        turn.caller,
-        { role: 'user', content: turn.text },
-        turn.answer,
-        turn.id,
-      );
+      if (turn.tasks.size) continue;
+      if (historyTurns.get(turn.id) === turn) historyTurns.delete(turn.id);
+      if (
+        succeeded &&
+        turn.answer.trim() &&
+        !recordedHistoryTurns.has(turn.id)
+      ) {
+        recordedHistoryTurns.add(turn.id);
+        recordTurn(
+          turn.caller,
+          { role: 'user', content: turn.text },
+          turn.answer,
+          turn.id,
+        );
+      }
+      turn.text = '';
+      turn.answer = '';
+      turn.consumerMessages = [];
+      turn.clientLoop = [];
+      turn.transcript = [];
+      turn.taskAnswers.clear();
     }
   };
   const pendingEventTasks: string[] = [];
@@ -1006,9 +1023,22 @@ async function open(
         offset: request?.transcript?.length ?? 0,
       };
       if (trigger !== 'event') {
-        const turn = queuedHistoryTurns.shift();
-        if (turn) turn.transcript = [];
-        activeHistoryTurns = turn ? [turn] : [];
+        const queued = queuedHistoryTurns.shift();
+        activeHistoryTurns = [];
+        if (queued) {
+          const turn: HistoryTurn = historyTurns.get(queued.id) ?? {
+            ...queued,
+            answer: '',
+            tasks: new Set(),
+            taskAnswers: new Map(),
+            transcript: [],
+          };
+          turn.transcript = [];
+          turn.consumerMessages = queued.consumerMessages;
+          turn.clientLoop = queued.clientLoop;
+          historyTurns.set(turn.id, turn);
+          activeHistoryTurns = [turn];
+        }
         return;
       }
       activeHistoryTurns = [];
@@ -1190,8 +1220,9 @@ async function open(
           earlierHistoryTurns.push(turn);
         }
       // Their results are final even if the later correction itself failed.
-      finishHistory(earlierHistoryTurns);
-      if (outcome === 'ok') finishHistory();
+      finishHistory(earlierHistoryTurns, true);
+      finishHistory(activeHistoryTurns, outcome === 'ok');
+      activeHistoryTurns = [];
       settledSeq++;
       if (outcome === 'failed') {
         lastFailedSeq = settledSeq;
@@ -1911,36 +1942,30 @@ async function open(
     options = sessionOptions(options);
     // send accepts only the new client text. All later planner/delegation
     // histories are hub-owned and must pass through without role-based cuts.
-    const historyId = `dialogue:${clientTurnId.getStore() ?? randomUUID()}`;
-    let historyTurn = historyTurns.get(historyId);
-    if (!historyTurn) {
-      const clientMessages = clientTurnMessages.getStore() ?? [];
-      let clientUserIndex = clientMessages.length - 1;
-      while (
-        clientUserIndex >= 0 &&
-        clientMessages[clientUserIndex].role !== 'user'
-      )
-        clientUserIndex--;
-      historyTurn = {
-        id: historyId,
-        caller: options.caller ?? boundCaller.value,
-        text,
-        answer: '',
-        tasks: new Set(),
-        taskAnswers: new Map(),
-        recorded: false,
-        transcript: [],
-        consumerMessages: clientMessages.slice(0, Math.max(0, clientUserIndex)),
-        clientLoop:
-          clientUserIndex < 0
-            ? []
-            : clientMessages
-                .slice(clientUserIndex + 1)
-                .filter((message) => message.role !== 'system'),
-      };
-      historyTurns.set(historyId, historyTurn);
-    }
-    queuedHistoryTurns.push(historyTurn);
+    const clientMessages = clientTurnMessages.getStore() ?? [];
+    const historyId = `dialogue:${clientTurnId.getStore() ?? clientHistoryTurnId(clientMessages) ?? randomUUID()}`;
+    let clientUserIndex = clientMessages.length - 1;
+    while (
+      clientUserIndex >= 0 &&
+      clientMessages[clientUserIndex].role !== 'user'
+    )
+      clientUserIndex--;
+    const queued = {
+      id: historyId,
+      caller: options.caller ?? boundCaller.value,
+      text,
+      consumerMessages:
+        config.agent.clientHistory === 'on' && clientUserIndex > 0
+          ? clientMessages.slice(0, clientUserIndex)
+          : [],
+      clientLoop:
+        clientUserIndex < 0
+          ? []
+          : clientMessages
+              .slice(clientUserIndex + 1)
+              .filter((message) => message.role !== 'system'),
+    };
+    queuedHistoryTurns.push(queued);
     emit({
       kind: 'turn',
       source: turnSource.getStore() ?? 'mcp',
@@ -1971,7 +1996,11 @@ async function open(
           const usage = withRecordedTaskUsage(message.usage);
           return usage === message.usage ? message : { ...message, usage };
         })
-        .finally(drainPending),
+        .finally(() => {
+          const index = queuedHistoryTurns.indexOf(queued);
+          if (index !== -1) queuedHistoryTurns.splice(index, 1);
+          return drainPending();
+        }),
     );
   };
   return {

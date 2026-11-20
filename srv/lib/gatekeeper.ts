@@ -160,9 +160,6 @@ export interface PipelineSession {
 
 let activePipelines: Set<Promise<void>> | undefined;
 function trackPipeline(pipeline: PipelineSession): PipelineSession {
-  const runtime = usageRuntime();
-  if (!runtime || (!runtime.enabled('session') && !runtime.enabled('storage')))
-    return pipeline;
   let settle: () => void = (): void => {};
   const done = new Promise<void>(
     (resolve: (value: void | PromiseLike<void>) => void): void => {
@@ -205,13 +202,16 @@ export async function admitPipeline(
   signal?: AbortSignal,
   opts: { presented?: boolean } = {},
 ): Promise<PipelineAdmission> {
-  if (usageRuntime() && backgroundShutdown.signal.aborted)
-    return { closed: true };
+  if (backgroundShutdown.signal.aborted) return { closed: true };
   const d = theDoor();
   if (d) {
     const r = await d.admit(userId, sessionId, signal, opts);
     if ('refused' in r || 'closed' in r) return r;
     const a = r.admitted;
+    if (backgroundShutdown.signal.aborted) {
+      a.release();
+      return { closed: true };
+    }
     return {
       admitted: trackPipeline({
         signal: a.signal,
@@ -348,14 +348,20 @@ export function forgetEmptySessions(): number {
 /**
  * End every admitted session and every waiter. The only thing that does.
  *
- * Abort first; recording alone needs a bounded wait for full pipeline teardown.
+ * Abort the pipelines and join teardown before closing their write queues.
  */
-export function shutdownGatekeeper(): Promise<void> | void {
+export function shutdownGatekeeper(options: { drain: true }): Promise<void>;
+export function shutdownGatekeeper(): Promise<void> | void;
+export function shutdownGatekeeper(options?: {
+  drain: true;
+}): Promise<void> | void {
   backgroundShutdown.abort(new Error('shutdown'));
   theDoor()?.abortAll(new Error('shutdown'));
+  if (options?.drain)
+    return Promise.all(activePipelines ?? []).then((): void => {});
   if (usageRuntime())
     return withinUsageShutdownBudget(
-      Promise.all([...(activePipelines ?? [])]).then((): void => {}),
+      Promise.all(activePipelines ?? []).then((): void => {}),
     ).then((): void => {});
 }
 

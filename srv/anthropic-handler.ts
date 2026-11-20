@@ -8,7 +8,6 @@ import {
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import {
   clientHistoryMessages,
-  clientHistoryTurnId,
   hasPendingClientTools,
 } from './lib/client-history';
 import {
@@ -117,6 +116,7 @@ import {
 } from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
 import { sessionIdOf, type WithSession } from './session-id';
+import { rememberClientToolTurn, sessionClientTurnId } from './session-store';
 
 /** Singleton adapter instance (stateless — safe to share) */
 const adapter = new AnthropicApiAdapter();
@@ -451,7 +451,6 @@ async function serveMessages(
       : undefined,
     cds.context?.user?.is('MCP_Admin') === true,
   );
-  const historyTurnId = clientHistoryTurnId(normalized.messages);
   let messages = clientHistoryMessages(
     normalized.messages,
     getAgentConfig().agent.clientHistory,
@@ -482,6 +481,11 @@ async function serveMessages(
     return;
   }
   const userId = authenticatedCaller.userId;
+  const historyTurnId = sessionClientTurnId(
+    sessionId,
+    userId,
+    normalized.messages,
+  );
   const boundCaller = await bindCaller(
     sessionId,
     userId,
@@ -866,6 +870,7 @@ async function serveMessages(
       let accumulatedContent = '';
       let streamSucceeded = false;
       let pendingClientTools = false;
+      const clientToolIds = new Set<string>();
       let deliveredContent = false;
       let explicitMessages = false;
       let heldStop = undefined as { event?: string; data: string } | undefined;
@@ -880,8 +885,15 @@ async function serveMessages(
             const source = chatAgent.streamProcess(messages, agentOpts);
             const observed = (async function* () {
               for await (const chunk of source) {
-                if (chunk.ok)
+                if (chunk.ok) {
+                  if (chunk.value.reset) {
+                    pendingClientTools = false;
+                    clientToolIds.clear();
+                  }
                   pendingClientTools ||= hasPendingClientTools(chunk.value);
+                  for (const call of chunk.value.toolCalls ?? [])
+                    if (call.id) clientToolIds.add(call.id);
+                }
                 if (!chunk.ok && streamError === undefined) {
                   requestMeasurement(req)?.end('error');
                   streamError = chunk.error;
@@ -1000,6 +1012,8 @@ async function serveMessages(
       const lastUser = messages
         .filter((message) => message.role === 'user')
         .at(-1);
+      if (!useDialogue && streamSucceeded && pendingClientTools)
+        rememberClientToolTurn(sessionId, userId, historyTurnId, clientToolIds);
       if (
         !useDialogue &&
         streamSucceeded &&
@@ -1047,6 +1061,13 @@ async function serveMessages(
         ? { ...payload, usage: wireUsage }
         : payload;
     if (result.ok) {
+      if (!useDialogue && !agentOpts.signal?.aborted)
+        rememberClientToolTurn(
+          sessionId,
+          userId,
+          historyTurnId,
+          result.value.toolCalls?.map((call) => call.id) ?? [],
+        );
       const lastUser = messages
         .filter((message) => message.role === 'user')
         .at(-1);

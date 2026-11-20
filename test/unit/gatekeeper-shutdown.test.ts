@@ -45,6 +45,21 @@ describe('shutdown', () => {
     expect(() => gatekeeper.shutdownGatekeeper()).not.toThrow();
   });
 
+  it('joins pipeline teardown without a door or usage recorder', async () => {
+    const first = await gatekeeper.admitPipeline('u', 'A');
+    if (!('admitted' in first)) throw new Error('refused');
+    let stopped = false;
+    const stopping = gatekeeper.shutdownGatekeeper({ drain: true }).then(() => {
+      stopped = true;
+    });
+    expect(first.admitted.signal).toBeUndefined();
+    expect(await gatekeeper.admitPipeline('u', 'B')).toEqual({ closed: true });
+    expect(stopped).toBe(false);
+    first.admitted.release();
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
   it('is hooked to CAP shutdown', () => {
     const src = readFileSync(join(__dirname, '../../srv/server.ts'), 'utf8');
     expect(src).toMatch(/cds\.on\(\s*'shutdown'[\s\S]*?shutdownGatekeeper\(\)/);
