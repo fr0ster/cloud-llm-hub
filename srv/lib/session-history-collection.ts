@@ -65,12 +65,25 @@ interface QueuedTurn {
   assistantText: string;
   id: string;
   createdAt: string;
+  clientToolCallIds?: string[];
+  onStored?: () => Promise<void>;
 }
 
 interface TurnQueue {
   turns: QueuedTurn[];
   running?: Promise<boolean>;
   repair?: Promise<void>;
+}
+
+function turnChunkId(turnId: string, index: number): string {
+  return `${turnId}:chunk:${index.toString().padStart(8, '0')}`;
+}
+
+function storedClientToolCalls(metadata: RagMetadata): string[] {
+  const ids = metadata.clientToolCallIds;
+  return Array.isArray(ids)
+    ? ids.filter((id): id is string => typeof id === 'string')
+    : [];
 }
 
 /** Probe cadence after non-429 failures. Retained writes have no retry deadline. */
@@ -213,6 +226,7 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
         )
           return false;
         queue.turns.shift();
+        await turn.onStored?.();
       }
       this.turnQueues.delete(sessionId);
       return true;
@@ -757,6 +771,8 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
     userText: string;
     assistantText: string;
     id?: string;
+    clientToolCallIds?: string[];
+    onStored?: () => Promise<void>;
   }): Promise<boolean> {
     if (!input.caller.sessionId.trim() || !this.acceptingWrites) return false;
     const sessionId = input.caller.sessionId;
@@ -788,9 +804,7 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
               // Retry the catalog too: it may throttle before an upsert is reached.
               this.failedOpens.delete(input.caller.sessionId);
               const result = await this.write(
-                chunks.length === 1
-                  ? turnId
-                  : `${turnId}:chunk:${chunkIndex.toString().padStart(8, '0')}`,
+                chunks.length === 1 ? turnId : turnChunkId(turnId, chunkIndex),
                 renderTurn(chunk.userText, chunk.assistantText),
                 {
                   turnId,
@@ -799,6 +813,9 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
                   userContinuation: chunk.userContinuation,
                   createdAt: input.createdAt,
                   userTextLength: chunk.userText.length,
+                  ...(chunkIndex === 0 && input.clientToolCallIds?.length
+                    ? { clientToolCallIds: input.clientToolCallIds }
+                    : {}),
                 },
                 {
                   caller: input.caller,
@@ -901,6 +918,52 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
       : [];
     this.measure(caller, rows);
     return assembleTurns(rows);
+  }
+
+  /** Find a completed turn by ID or by one of the calls it issued. */
+  async findClientToolTurn(
+    caller: RagCaller,
+    id: string,
+    callIds: readonly string[] = [],
+  ): Promise<{ id: string; callIds: string[] } | undefined> {
+    if (!(await this.caller({ caller }))) return undefined;
+    const opened = await this.open(caller.sessionId, false);
+    if (!opened.ok) throw opened.error;
+    const rag = opened.value?.rag;
+    if (!rag) return undefined;
+    const single = await rag.getById(id);
+    if (!single.ok) throw single.error;
+    if (single.value?.metadata.turnId === id)
+      return { id, callIds: storedClientToolCalls(single.value.metadata) };
+    const first = await rag.getById(turnChunkId(id, 0));
+    if (!first.ok) throw first.error;
+    const count = first.value?.metadata.chunkCount;
+    if (first.value && typeof count === 'number' && count > 1) {
+      let index = 1;
+      for (; index < count; index++) {
+        const part = await rag.getById(turnChunkId(id, index));
+        if (!part.ok) throw part.error;
+        if (part.value?.metadata.chunkCount !== count) break;
+      }
+      if (index === count)
+        return { id, callIds: storedClientToolCalls(first.value.metadata) };
+    }
+    if (!callIds.length || !isRagScanner(rag)) return undefined;
+
+    const rows = await this.rows(caller.sessionId, rag);
+    const requested = new Set(callIds);
+    for (const { metadata } of rows) {
+      const { turnId, chunkCount } = metadata;
+      const storedIds = storedClientToolCalls(metadata);
+      if (
+        typeof turnId === 'string' &&
+        storedIds.some((callId) => requested.has(callId)) &&
+        rows.filter((row) => row.metadata.turnId === turnId).length ===
+          chunkCount
+      )
+        return { id: turnId, callIds: storedIds };
+    }
+    return undefined;
   }
 
   async forgetSessionHistory(sessionId: string): Promise<void> {

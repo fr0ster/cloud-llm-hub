@@ -104,6 +104,8 @@ import {
 import {
   extractText,
   recordTurn,
+  rememberClientToolTurn,
+  resolveClientHistoryTurn,
   waitForSessionTurns,
 } from './lib/session-turns';
 import {
@@ -124,8 +126,6 @@ import {
   appendToSession,
   clearSession,
   getSessionHistory,
-  rememberClientToolTurn,
-  sessionClientTurnId,
 } from './session-store';
 
 /** Get authenticated user ID from CAP context (XSUAA JWT or mocked auth) */
@@ -140,6 +140,7 @@ function getUserId(): string {
 // ---------------------------------------------------------------------------
 
 function mapStopReason(r: string): string {
+  if (r === 'tool_calls' || r === 'tool_use') return 'tool_calls';
   return r === 'stop' ? 'stop' : 'length';
 }
 
@@ -635,11 +636,6 @@ async function serveChatCompletions(
     .filter((m): m is Message => m !== null);
 
   const rawHistorySize = normalizedMessages.length;
-  const historyTurnId = sessionClientTurnId(
-    sessionId,
-    userId,
-    normalizedMessages,
-  );
   normalizedMessages = clientHistoryMessages(
     normalizedMessages,
     getAgentConfig().agent.clientHistory,
@@ -1028,6 +1024,13 @@ async function serveChatCompletions(
         ? AbortSignal.any([pipeline.signal, callerLeft.signal])
         : callerLeft.signal,
     );
+    const historyTurn = useDialogue
+      ? undefined
+      : await resolveClientHistoryTurn(
+          boundCaller.value,
+          normalizedMessages,
+          s,
+        );
     // The parsed body: a raw request carries it only in `body`, not `req.body`.
     if (collections) {
       const retrieval = await collections.retrieve(
@@ -1196,7 +1199,6 @@ async function serveChatCompletions(
       let accumulatedContent = ''; // Accumulate full response for session history
       let streamSucceeded = false;
       let pendingClientTools = false;
-      const clientToolIds = new Set<string>();
       let lastUsage: TokenUsage | undefined;
       const spend = captureTokenUsage();
 
@@ -1288,13 +1290,8 @@ async function serveChatCompletions(
                         }
 
                         const v = chunk.value;
-                        if (v.reset) {
-                          pendingClientTools = false;
-                          clientToolIds.clear();
-                        }
+                        if (v.reset) pendingClientTools = false;
                         pendingClientTools ||= hasPendingClientTools(v);
-                        for (const call of v.toolCalls ?? [])
-                          if (call.id) clientToolIds.add(call.id);
                         if (
                           'clhMessageId' in v ||
                           'clhMessageEnd' in v ||
@@ -1365,6 +1362,13 @@ async function serveChatCompletions(
                             delta.content = v.content;
                           }
                           if (v.toolCalls) {
+                            await rememberClientToolTurn(
+                              s,
+                              historyTurn?.id,
+                              v.toolCalls.flatMap((call) =>
+                                call.id ? [call.id] : [],
+                              ),
+                            );
                             delta.tool_calls = v.toolCalls.map(
                               (call, index) => {
                                 const tc = toToolCallDelta(call, index);
@@ -1489,8 +1493,6 @@ async function serveChatCompletions(
       });
 
       const terminalSucceeded = streamSucceeded && !opts.signal?.aborted;
-      if (terminalSucceeded && !useDialogue && pendingClientTools)
-        rememberClientToolTurn(sessionId, userId, historyTurnId, clientToolIds);
       // Save conversation turn to server session
       if (terminalSucceeded && accumulatedContent) {
         const lastUser = normalizedMessages
@@ -1501,12 +1503,13 @@ async function serveChatCompletions(
             role: 'assistant',
             content: accumulatedContent,
           } as Message);
-          if (!useDialogue && !pendingClientTools)
+          if (historyTurn && !historyTurn.recorded && !pendingClientTools)
             recordTurn(
               boundCaller.value,
               lastUser,
               accumulatedContent,
-              historyTurnId,
+              historyTurn.id,
+              ...(s ? [s] : []),
             );
           const updatedHistory = getSessionHistory(sessionId, userId);
           log.debug('Session updated', {
@@ -1607,12 +1610,12 @@ async function serveChatCompletions(
       model,
     );
 
-    if (result.ok && !useDialogue && !opts.signal?.aborted)
-      rememberClientToolTurn(
-        sessionId,
-        userId,
-        historyTurnId,
-        result.value.toolCalls?.map((call) => call.id) ?? [],
+    const responseToolCalls = result.ok ? result.value.toolCalls : undefined;
+    if (responseToolCalls?.length)
+      await rememberClientToolTurn(
+        s,
+        historyTurn?.id,
+        responseToolCalls.map((call) => call.id),
       );
 
     // Save conversation turn to server session
@@ -1629,8 +1632,18 @@ async function serveChatCompletions(
           role: 'assistant',
           content: finalContent,
         } as Message);
-        if (!useDialogue && !hasPendingClientTools(result.value))
-          recordTurn(boundCaller.value, lastUser, finalContent, historyTurnId);
+        if (
+          historyTurn &&
+          !historyTurn.recorded &&
+          !hasPendingClientTools(result.value)
+        )
+          recordTurn(
+            boundCaller.value,
+            lastUser,
+            finalContent,
+            historyTurn.id,
+            ...(s ? [s] : []),
+          );
       }
 
       // NOTE: state store upsert removed (non-streaming path) — same as streaming.
@@ -1657,8 +1670,19 @@ async function serveChatCompletions(
         choices: [
           {
             index: 0,
-            message: { role: 'assistant', content: finalContent },
-            finish_reason: finalFinishReason,
+            message: {
+              role: 'assistant',
+              content:
+                responseToolCalls?.length && result.ok
+                  ? result.value.content || null
+                  : finalContent,
+              ...(responseToolCalls?.length
+                ? { tool_calls: responseToolCalls }
+                : {}),
+            },
+            finish_reason: responseToolCalls?.length
+              ? 'tool_calls'
+              : finalFinishReason,
           },
         ],
         usage: finalUsage ?? emptyOpenAiUsage,

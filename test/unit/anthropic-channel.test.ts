@@ -119,8 +119,8 @@ function call(
 beforeEach(() => harness.reset());
 afterEach(() => configure());
 
-clientToolHistoryTests('anthropic', body, (request, sessionId) =>
-  call(request, fakeRes(), undefined, sessionId),
+clientToolHistoryTests('anthropic', body, (request, sessionId, session) =>
+  call(request, fakeRes(), session, sessionId),
 );
 
 it.each([false, true])(

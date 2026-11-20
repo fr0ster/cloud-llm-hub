@@ -1,16 +1,39 @@
-import * as sessionTurns from '../../../srv/lib/session-turns';
-import { harness } from './channel-harness';
+import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { InMemoryRagProvider } from '@mcp-abap-adt/llm-agent';
+import {
+  initLongSessions,
+  type LongSession,
+  setLongSessionsForTest,
+} from '../../../srv/lib/long-session';
+import { SessionHistoryRouter } from '../../../srv/lib/session-history-collection';
+import {
+  lifecycleHooks,
+  resolveSession,
+} from '../../../srv/lib/session-lifecycle';
+import { SqliteSessionRecordStore } from '../../../srv/lib/session-record-store';
+import { sweepSessionHistory } from '../../../srv/session-store';
+import { deferred, harness } from './channel-harness';
 
 /** Exercise real request normalization and response handling across HTTP calls. */
 export function clientToolHistoryTests(
   protocol: 'openai' | 'anthropic',
   body: (stream: boolean) => { messages: object[] },
-  call: (body: object, sessionId: string) => { done: Promise<void> },
+  call: (
+    body: object,
+    sessionId: string,
+    session?: LongSession,
+  ) => { done: Promise<void>; res: { body: string } },
 ) {
   const agentConfig = jest.requireMock<
     typeof import('../../../srv/agent-config')
   >('../../../srv/agent-config');
   const config = agentConfig.getAgentConfig();
+  const manager = jest.requireMock<typeof import('../../../srv/agent-manager')>(
+    '../../../srv/agent-manager',
+  );
   test.each(['off', 'on'] as const)(
     'records identical current-only requests as separate turns (clientHistory=%s)',
     async (clientHistory) => {
@@ -21,9 +44,12 @@ export function clientToolHistoryTests(
           agent: { ...config.agent, clientHistory },
         });
       const sessionId = randomUUID();
-      const recorded = jest
-        .spyOn(sessionTurns, 'recordTurn')
-        .mockImplementation(() => {});
+      const router = new SessionHistoryRouter(
+        new InMemoryRagProvider({ name: 'standalone-history' }),
+      );
+      const history = jest
+        .spyOn(manager, 'getSharedHistoryRag')
+        .mockReturnValue(router);
       try {
         for (const content of ['First status', 'Second status']) {
           harness.process = async () => ({
@@ -38,39 +64,87 @@ export function clientToolHistoryTests(
             sessionId,
           ).done;
         }
+        await router.waitForTurns(sessionId);
+        const turns = await router.listTurns({
+          userId: 'alice',
+          sessionId,
+          isAdmin: false,
+        });
         expect(
-          recorded.mock.calls.map(([, user, answer]) => [user.content, answer]),
+          turns
+            .map(({ userText, assistantText }) => [userText, assistantText])
+            .sort(),
         ).toEqual([
           ['status?', 'First status'],
           ['status?', 'Second status'],
         ]);
-        expect(recorded.mock.calls[0][3]).not.toBe(recorded.mock.calls[1][3]);
+        expect(turns[0].id).not.toBe(turns[1].id);
       } finally {
+        await router.drainWrites();
         configured.mockRestore();
-        recorded.mockRestore();
+        history.mockRestore();
       }
     },
   );
 
   test.each(
-    (['off', 'on'] as const).flatMap((clientHistory) => [
-      { clientHistory, stream: false, combined: false },
-      { clientHistory, stream: true, combined: false },
-      { clientHistory, stream: true, combined: true },
-    ]),
+    (['off', 'on'] as const).flatMap((clientHistory) =>
+      [false, true].flatMap((longSession) => [
+        { clientHistory, longSession, stream: false, combined: false },
+        { clientHistory, longSession, stream: true, combined: false },
+        { clientHistory, longSession, stream: true, combined: true },
+      ]),
+    ),
   )(
-    'client tool continuations record one complete user turn (clientHistory=$clientHistory, stream=$stream, combined=$combined)',
-    async ({ clientHistory, stream, combined }) => {
+    'client tool continuations record one complete user turn (clientHistory=$clientHistory, longSession=$longSession, stream=$stream, combined=$combined)',
+    async ({ clientHistory, longSession, stream, combined }) => {
       const configured = jest
         .spyOn(agentConfig, 'getAgentConfig')
         .mockReturnValue({
           ...config,
           agent: { ...config.agent, clientHistory },
+          rag: {
+            ...config.rag,
+            backends: {
+              tools: 'in-memory',
+              session: 'in-memory',
+              persistent: 'in-memory',
+            },
+          },
         });
-      const sessionId = randomUUID();
-      const recorded = jest
-        .spyOn(sessionTurns, 'recordTurn')
-        .mockImplementation(() => {});
+      const provider = new InMemoryRagProvider({ name: 'client-tool-history' });
+      let router = new SessionHistoryRouter(provider);
+      const history = jest
+        .spyOn(manager, 'getSharedHistoryRag')
+        .mockReturnValue(router);
+      const dir = longSession
+        ? mkdtempSync(path.join(tmpdir(), 'clh-tool-turn-'))
+        : undefined;
+      const store = dir
+        ? new SqliteSessionRecordStore(path.join(dir, 'sessions.db'))
+        : undefined;
+      let session: LongSession | undefined;
+      if (store) {
+        const opened = initLongSessions(lifecycleHooks(store)).open(
+          'alice',
+          {},
+        );
+        if ('refused' in opened) throw new Error(opened.refused);
+        session = opened;
+      }
+      const sessionId = session?.key ?? randomUUID();
+      const caller = { userId: 'alice', sessionId, isAdmin: false };
+      const restart = async () => {
+        if (!store) return;
+        await router.drainWrites();
+        sweepSessionHistory(Infinity);
+        await store.close();
+        initLongSessions(lifecycleHooks(store));
+        router = new SessionHistoryRouter(provider);
+        history.mockReturnValue(router);
+        session = await resolveSession('alice', sessionId);
+        expect(session?.revived).toBe(true);
+      };
       const finalAnswer = `Final answer ${'complete result '.repeat(1000)}`;
       const messages = [...body(stream).messages];
       const tools = [
@@ -97,6 +171,7 @@ export function clientToolHistoryTests(
               ],
         messages: [...messages],
       });
+      let pendingId: string | undefined;
       try {
         for (const round of [1, 2]) {
           const toolCalls = [
@@ -130,8 +205,50 @@ export function clientToolHistoryTests(
             yield { ok: true, value: { toolCalls } };
             yield { ok: true, value: { finishReason: 'tool_calls' } };
           };
-          await call(request(), sessionId).done;
-          expect(recorded).not.toHaveBeenCalled();
+          if (store && round === 1) {
+            const saving = deferred();
+            const saved = deferred();
+            const put = store.put.bind(store);
+            const write = jest
+              .spyOn(store, 'put')
+              .mockImplementationOnce(async (record) => {
+                saving.resolve();
+                await saved.promise;
+                await put(record);
+              });
+            const response = call(request(), sessionId, session);
+            try {
+              await Promise.race([saving.promise, response.done]);
+              expect(write).toHaveBeenCalledTimes(1);
+              expect(response.res.body).not.toContain('read-1');
+            } finally {
+              saved.resolve();
+              await response.done;
+              write.mockRestore();
+            }
+            expect(response.res.body).toContain('read-1');
+          } else {
+            const response = call(
+              request(),
+              session ? sessionId : randomUUID(),
+              session,
+            );
+            await response.done;
+            expect(response.res.body).toContain(`read-${round}`);
+          }
+          if (store) {
+            const pending = (await store.get('alice', sessionId))
+              ?.clientToolTurns;
+            pendingId ??= pending?.[0]?.[1];
+            expect(pendingId).toEqual(expect.stringMatching(/^client:/));
+            expect(pending).toEqual(
+              Array.from({ length: round }, (_, i) => [
+                `read-${i + 1}`,
+                pendingId,
+              ]),
+            );
+          }
+          expect(await router.listTurns(caller)).toEqual([]);
           if (protocol === 'openai')
             messages.push(
               {
@@ -195,32 +312,60 @@ export function clientToolHistoryTests(
             value: { content: finalAnswer.slice(100), finishReason: 'stop' },
           };
         };
-        await call(request(), sessionId).done;
-        expect(recorded).toHaveBeenCalledTimes(1);
-        const id = recorded.mock.calls[0][3];
-        expect(id).toEqual(expect.stringMatching(/^client:/));
-        expect(recorded).toHaveBeenCalledWith(
-          expect.objectContaining({ userId: 'alice' }),
-          { role: 'user', content: 'hi' },
-          finalAnswer,
-          id,
-        );
-        // A replay that keeps only the latest tool round still identifies the same turn.
+        const lastRound = {
+          ...request(),
+          messages: [messages[0], ...messages.slice(-2)],
+        };
+        await restart();
         await call(
-          {
-            ...request(),
-            messages: [messages[0], ...messages.slice(-2)],
-          },
+          store && combined ? lastRound : request(),
           sessionId,
+          session,
         ).done;
-        expect(recorded).toHaveBeenCalledTimes(2);
-        expect(recorded.mock.calls[1][3]).toBe(id);
+        await router.waitForTurns(sessionId);
+        const complete = await router.listTurns(caller);
+        expect(complete).toEqual([
+          expect.objectContaining({
+            id: pendingId ?? expect.stringMatching(/^client:/),
+            userText: 'hi',
+            assistantText: finalAnswer,
+          }),
+        ]);
+        expect(
+          (await store?.get('alice', sessionId))?.clientToolTurns,
+        ).toBeUndefined();
+        harness.process = async () => ({
+          ok: true,
+          value: { content: 'Replay answer', stopReason: 'stop' },
+        });
+        harness.stream = async function* () {
+          yield {
+            ok: true,
+            value: { content: 'Replay answer', finishReason: 'stop' },
+          };
+        };
+        for (const replay of store ? [request(), lastRound] : [request()]) {
+          await restart();
+          await call(replay, sessionId, session).done;
+          await router.waitForTurns(sessionId);
+          expect(
+            (await router.listTurns(caller)).map(({ id, assistantText }) => ({
+              id,
+              assistantText,
+            })),
+          ).toEqual([{ id: complete[0].id, assistantText: finalAnswer }]);
+        }
       } finally {
+        await router.drainWrites();
+        if (store) {
+          setLongSessionsForTest(undefined);
+          lifecycleHooks();
+          await store.close();
+        }
+        if (dir) rmSync(dir, { recursive: true, force: true });
+        history.mockRestore();
         configured.mockRestore();
-        recorded.mockRestore();
       }
     },
   );
 }
-
-import { randomUUID } from 'node:crypto';

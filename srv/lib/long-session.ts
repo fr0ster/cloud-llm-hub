@@ -37,6 +37,8 @@ export interface LongSession {
   lastActivity: number;
   destination?: string;
   agentsCollectionId?: string;
+  /** Calls issued to the client whose user turn is still open. */
+  clientToolTurns?: Map<string, string>;
   /** True when rebuilt from the store after a restart. */
   revived: boolean;
   connection?: IAbapConnection;
@@ -53,6 +55,8 @@ export interface LongSessionHooks {
   onClose(s: LongSession, reason: CloseReason): Promise<void>;
   /** Record write (throttled by the store). */
   onTouch?(s: LongSession): void;
+  /** Write state that must survive a restart before the caller can proceed. */
+  onPersist?(s: LongSession): Promise<void>;
 }
 
 type RegistryConfig = Pick<
@@ -93,6 +97,7 @@ export class LongSessionRegistry {
     init: {
       destination?: string;
       agentsCollectionId?: string;
+      clientToolTurns?: Map<string, string>;
       key?: string;
       createdAt?: number;
       revived?: boolean;
@@ -116,6 +121,9 @@ export class LongSessionRegistry {
       lastActivity: now,
       destination: init.destination,
       agentsCollectionId: init.agentsCollectionId,
+      ...(init.clientToolTurns
+        ? { clientToolTurns: init.clientToolTurns }
+        : {}),
       revived: init.revived ?? false,
     };
     this.entries.set(slot(userId, session.key), {
@@ -271,6 +279,10 @@ export class LongSessionRegistry {
     if (!s) return;
     s.lastActivity = this.now();
     this.hooks.onTouch?.(s);
+  }
+
+  async persist(s: LongSession): Promise<void> {
+    await this.hooks.onPersist?.(s);
   }
 
   private async finish(

@@ -14,28 +14,49 @@ export function clientHistoryWindow(
   return policy === 'on' && window ? window : undefined;
 }
 
-/** A fresh request gets its own ID. A continuation names calls from the same
- * turn, even if the client dropped earlier messages or prior tool rounds. */
+function lastUserIndex(messages: Message[]): number {
+  let index = messages.length - 1;
+  while (index >= 0 && messages[index].role !== 'user') index--;
+  return index;
+}
+
+export function clientToolResultIds(messages: Message[]): string[] {
+  const lastUser = lastUserIndex(messages);
+  if (lastUser < 0) return [];
+  return messages
+    .slice(lastUser + 1)
+    .flatMap((message) =>
+      message.role === 'tool' && message.tool_call_id
+        ? [message.tool_call_id]
+        : [],
+    );
+}
+
+/** Standalone requests get distinct IDs. Without a binding, the first echoed
+ * round anchors the ID for the rest of a client-managed tool loop. */
 export function clientHistoryTurnId(
   messages: Message[],
   issuedCalls?: ReadonlyMap<string, string>,
 ): string | undefined {
-  let lastUser = messages.length - 1;
-  while (lastUser >= 0 && messages[lastUser].role !== 'user') lastUser--;
+  const lastUser = lastUserIndex(messages);
   if (lastUser < 0) return undefined;
-  const calls = new Set<string>();
-  let firstResult: string | undefined;
-  for (const message of messages.slice(lastUser + 1)) {
-    for (const call of message.tool_calls ?? []) calls.add(call.id);
-    if (message.role !== 'tool' || !message.tool_call_id) continue;
-    const callId = message.tool_call_id;
+  const results = clientToolResultIds(messages);
+  for (const callId of results) {
     const turnId = issuedCalls?.get(callId);
     if (turnId) return turnId;
-    if (calls.has(callId)) firstResult ??= callId;
   }
-  // An echoed call can still identify a continuation after an in-process
-  // session window expires or when the tool loop began outside this process.
-  return `client:${firstResult === undefined ? randomUUID() : createHash('sha256').update(firstResult).digest('hex')}`;
+  if (!results.length) return `client:${randomUUID()}`;
+  const resultIds = new Set(results);
+  for (const message of messages.slice(lastUser + 1)) {
+    const calls = message.role === 'assistant' ? message.tool_calls : undefined;
+    if (calls?.some((call) => resultIds.has(call.id)))
+      return clientIdFromCall(calls[0].id);
+  }
+  return clientIdFromCall(results[0]);
+}
+
+function clientIdFromCall(callId: string): string {
+  return `client:${createHash('sha256').update(callId).digest('hex')}`;
 }
 
 export function hasPendingClientTools(response: {

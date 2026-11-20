@@ -99,7 +99,12 @@ import {
   type LongSessionRequest,
   releaseRequestConnection,
 } from './lib/session-connection';
-import { recordTurn, waitForSessionTurns } from './lib/session-turns';
+import {
+  recordTurn,
+  rememberClientToolTurn,
+  resolveClientHistoryTurn,
+  waitForSessionTurns,
+} from './lib/session-turns';
 import {
   anthropicDoorRefusal,
   anthropicErrorPayload,
@@ -116,7 +121,6 @@ import {
 } from './lib/throttle-surfacing';
 import { runWithSessionId } from './request-session';
 import { sessionIdOf, type WithSession } from './session-id';
-import { rememberClientToolTurn, sessionClientTurnId } from './session-store';
 
 /** Singleton adapter instance (stateless — safe to share) */
 const adapter = new AnthropicApiAdapter();
@@ -481,11 +485,6 @@ async function serveMessages(
     return;
   }
   const userId = authenticatedCaller.userId;
-  const historyTurnId = sessionClientTurnId(
-    sessionId,
-    userId,
-    normalized.messages,
-  );
   const boundCaller = await bindCaller(
     sessionId,
     userId,
@@ -785,6 +784,9 @@ async function serveMessages(
         ? AbortSignal.any([pipeline.signal, callerLeft.signal])
         : callerLeft.signal,
     );
+    const historyTurn = useDialogue
+      ? undefined
+      : await resolveClientHistoryTurn(boundCaller.value, messages, s);
     if (collections) {
       const retrieval = await collections.retrieve(
         req,
@@ -870,7 +872,6 @@ async function serveMessages(
       let accumulatedContent = '';
       let streamSucceeded = false;
       let pendingClientTools = false;
-      const clientToolIds = new Set<string>();
       let deliveredContent = false;
       let explicitMessages = false;
       let heldStop = undefined as { event?: string; data: string } | undefined;
@@ -886,13 +887,8 @@ async function serveMessages(
             const observed = (async function* () {
               for await (const chunk of source) {
                 if (chunk.ok) {
-                  if (chunk.value.reset) {
-                    pendingClientTools = false;
-                    clientToolIds.clear();
-                  }
+                  if (chunk.value.reset) pendingClientTools = false;
                   pendingClientTools ||= hasPendingClientTools(chunk.value);
-                  for (const call of chunk.value.toolCalls ?? [])
-                    if (call.id) clientToolIds.add(call.id);
                 }
                 if (!chunk.ok && streamError === undefined) {
                   requestMeasurement(req)?.end('error');
@@ -924,6 +920,24 @@ async function serveMessages(
                     'clhTurnEnd' in chunk.value)
                 )
                   continue;
+                if (
+                  chunk.ok &&
+                  historyTurn &&
+                  s &&
+                  chunk.value.toolCalls?.length
+                ) {
+                  const toolCalls = chunk.value.toolCalls.map((call) => ({
+                    ...call,
+                    id: call.id ?? `toolu_${randomUUID()}`,
+                  }));
+                  await rememberClientToolTurn(
+                    s,
+                    historyTurn.id,
+                    toolCalls.map((call) => call.id),
+                  );
+                  yield { ...chunk, value: { ...chunk.value, toolCalls } };
+                  continue;
+                }
                 yield chunk;
               }
             })();
@@ -1012,10 +1026,9 @@ async function serveMessages(
       const lastUser = messages
         .filter((message) => message.role === 'user')
         .at(-1);
-      if (!useDialogue && streamSucceeded && pendingClientTools)
-        rememberClientToolTurn(sessionId, userId, historyTurnId, clientToolIds);
       if (
-        !useDialogue &&
+        historyTurn &&
+        !historyTurn.recorded &&
         streamSucceeded &&
         !pendingClientTools &&
         lastUser &&
@@ -1025,7 +1038,8 @@ async function serveMessages(
           boundCaller.value,
           lastUser,
           accumulatedContent,
-          historyTurnId,
+          historyTurn.id,
+          ...(s ? [s] : []),
         );
       // The held `message_stop` closes the message after any notice above.
       if (measurement && !explicitMessages && deliveredContent && !out.detached)
@@ -1061,18 +1075,18 @@ async function serveMessages(
         ? { ...payload, usage: wireUsage }
         : payload;
     if (result.ok) {
-      if (!useDialogue && !agentOpts.signal?.aborted)
-        rememberClientToolTurn(
-          sessionId,
-          userId,
-          historyTurnId,
-          result.value.toolCalls?.map((call) => call.id) ?? [],
+      if (result.value.toolCalls?.length)
+        await rememberClientToolTurn(
+          s,
+          historyTurn?.id,
+          result.value.toolCalls.map((call) => call.id),
         );
       const lastUser = messages
         .filter((message) => message.role === 'user')
         .at(-1);
       if (
-        !useDialogue &&
+        historyTurn &&
+        !historyTurn.recorded &&
         lastUser &&
         !agentOpts.signal?.aborted &&
         !hasPendingClientTools(result.value)
@@ -1081,7 +1095,8 @@ async function serveMessages(
           boundCaller.value,
           lastUser,
           result.value.content,
-          historyTurnId,
+          historyTurn.id,
+          ...(s ? [s] : []),
         );
       if (
         requestMeasurement(req) &&

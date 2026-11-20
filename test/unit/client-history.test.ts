@@ -37,6 +37,9 @@ test('client turn identity survives tool results and distinguishes repeated user
   expect(clientHistoryTurnId(continued, issued)).toBe(id);
   expect(clientHistoryTurnId([user, continued[2]], issued)).toBe(id);
   expect(clientHistoryTurnId(continued)).toBe(clientHistoryTurnId(continued));
+  expect(clientHistoryTurnId([user, continued[2]])).toBe(
+    clientHistoryTurnId(continued),
+  );
   expect(clientHistoryTurnId([...continued, user], issued)).not.toBe(id);
   expect(clientHistoryTurnId(start, issued)).not.toBe(id);
   expect(clientHistoryTurnId([])).toBeUndefined();

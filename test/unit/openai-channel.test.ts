@@ -139,8 +139,8 @@ function call(
 beforeEach(() => harness.reset());
 afterEach(() => configure());
 
-clientToolHistoryTests('openai', body, (request, sessionId) =>
-  call(request, fakeRes(), sessionId),
+clientToolHistoryTests('openai', body, (request, sessionId, session) =>
+  call(request, fakeRes(), sessionId, undefined, session),
 );
 
 it.each([false, true])(

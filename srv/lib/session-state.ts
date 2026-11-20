@@ -3,11 +3,7 @@ import {
   getCollectionRegistry,
   isProvidersReady,
 } from '../agent-manager';
-import {
-  clearSession,
-  hasClientToolTurns,
-  hasSessionHistory,
-} from '../session-store';
+import { clearSession, hasSessionHistory } from '../session-store';
 import {
   deleteCollectionOverrides,
   hasCollectionOverrides,
@@ -41,7 +37,7 @@ export function deleteSessionState(userId: string, sessionId: string): void {
 }
 
 /**
- * Whether this session still holds turns, client tool calls, unexpired run and
+ * Whether this session still holds turns, unexpired run and
  * dialogue records, or session collections. The destination name is not counted — a few bytes
  * that would keep a session retained after everything else had gone.
  */
@@ -49,7 +45,6 @@ export function hasSessionState(userId: string, sessionId: string): boolean {
   return (
     hasCollectionOverrides(userId, sessionId) ||
     hasSessionHistory(sessionId, userId) ||
-    hasClientToolTurns(sessionId, userId) ||
     hasRunRecord(userId, sessionId) ||
     hasDialogueState(userId, sessionId) ||
     (isProvidersReady() &&
