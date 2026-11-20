@@ -129,19 +129,18 @@ const OP_WORDS: Record<WriteOp, RegExp> = {
   ),
 };
 
-/** Group completed write claims by clause, including chained operations. */
-export function* writeClaimClauses(content: string) {
-  for (const clause of content.split(/(?<=[.!?\n])/)) {
-    if (!claimsCompletedWrite(clause)) continue;
-    yield { clause, ops: WRITE_OPS.filter((op) => OP_WORDS[op].test(clause)) };
-  }
-}
-
-/** Distinct write operations the content claims as completed. */
+/**
+ * Which write operations the content CLAIMS as completed (EN + RU/UK), at
+ * most one entry per op. Splits into clauses so a chained claim like "was
+ * created and activated" attributes BOTH ops to the same completion cue.
+ */
 export function claimedWriteOps(content: string): WriteOp[] {
   const ops = new Set<WriteOp>();
-  for (const claim of writeClaimClauses(content)) {
-    for (const op of claim.ops) ops.add(op);
+  for (const clause of content.split(/(?<=[.!?\n])/)) {
+    if (!claimsCompletedWrite(clause)) continue;
+    for (const op of WRITE_OPS) {
+      if (OP_WORDS[op].test(clause)) ops.add(op);
+    }
   }
   return Array.from(ops);
 }

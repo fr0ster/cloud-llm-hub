@@ -928,83 +928,52 @@ test.each([
   },
 );
 
-test.each([
-  {
-    answer:
-      'I created the RAG record `business-requirements`. No SAP changes were made.',
-    failed: false,
-    notice: false,
-  },
-  {
-    answer:
-      'I created the RAG record `business-requirements`. I created SAP domain ZREQ.',
-    failed: false,
-    notice: true,
-  },
-  {
-    answer: 'I created the RAG record `business-requirements`.',
-    failed: true,
-    notice: true,
-  },
-])(
-  'coordinator reviews RAG persistence evidence ($answer, failed: $failed)',
-  async ({ answer, failed, notice }) => {
-    const { h } = await ready();
-    const traceId = 'rag-final';
-    mockFinalAnswer = answer;
-    mockToolRecords.set(traceId, [
-      {
-        call: {
-          id: 'persist',
-          name: 'rag_persist',
-          arguments: {
-            from: { scope: 'session', collection: 'drafts' },
-            to: { scope: 'user', collection: 'projects' },
-            records: ['business-requirements'],
-          },
-        },
-        result: failed
-          ? { isError: true, content: 'Persistence failed' }
-          : {
-              content: JSON.stringify({
-                scope: 'user',
-                collection: 'projects',
-                records: ['business-requirements'],
-              }),
-            },
+test('dialogue warns about a failed SAP domain create alongside a same-named RAG record', async () => {
+  const { h } = await ready();
+  const traceId = 'rag-final';
+  const answer = 'I created SAP domain ZREQ.';
+  mockFinalAnswer = answer;
+  mockToolRecords.set(traceId, [
+    {
+      call: {
+        id: 'rag',
+        name: 'record_add',
+        arguments: { collection: 'drafts', record: 'ZREQ' },
       },
-    ]);
-    jest
-      .mocked(evaluateGated)
-      .mockImplementation(
-        jest.requireActual<typeof import('../../srv/lib/step-reviewer')>(
-          '../../srv/lib/step-reviewer',
-        ).evaluateGated,
-      );
-    await h.session.send('persist the record', { trace: { traceId } });
-    const content = h.session
-      .snapshot()
-      .conversation.find(
-        (message) =>
-          message.role === 'assistant' &&
-          typeof message.content === 'string' &&
-          message.content.includes(answer),
-      )?.content;
-    expect(evaluateGated).toHaveBeenCalledWith(
-      expect.objectContaining({
-        content: answer,
-        records: expect.arrayContaining([
-          expect.objectContaining({
-            call: expect.objectContaining({ name: 'rag_persist' }),
-          }),
-        ]),
-      }),
+      result: {
+        content: { collection: 'drafts', record: 'ZREQ', created: true },
+      },
+    },
+    {
+      call: {
+        id: 'sap',
+        name: 'CreateDomain',
+        arguments: { domain_name: 'ZREQ' },
+      },
+      result: { content: { success: false, error: 'Domain already exists' } },
+    },
+  ]);
+  jest
+    .mocked(evaluateGated)
+    .mockImplementation(
+      jest.requireActual<typeof import('../../srv/lib/step-reviewer')>(
+        '../../srv/lib/step-reviewer',
+      ).evaluateGated,
     );
-    expect(content).toContain(answer);
-    if (notice) expect(content).toContain('UNVERIFIED_WRITE:');
-    else expect(content).not.toContain('UNVERIFIED_WRITE:');
-  },
-);
+  await h.session.send('create the domain', { trace: { traceId } });
+  const content = h.session
+    .snapshot()
+    .conversation.find(
+      (message) =>
+        message.role === 'assistant' &&
+        typeof message.content === 'string' &&
+        message.content.includes(answer),
+    )?.content;
+  expect(content).toContain('UNVERIFIED_WRITE:');
+  expect(content).toContain(
+    'CreateDomain returned error: Domain already exists',
+  );
+});
 
 test.each([true, false, 'close'] as const)(
   'late worker evidence reaches the next coordinator review (write: %s)',

@@ -1,3 +1,4 @@
+import type { ToolCallRecord } from '@mcp-abap-adt/llm-agent';
 import { unwrapBuilderResult } from '@mcp-abap-adt/llm-agent-libs';
 import { bindCaller } from '../../srv/lib/rag-caller';
 import * as sessionTurns from '../../srv/lib/session-turns';
@@ -306,16 +307,17 @@ it('R19 first execute_step adopts destination', async () => {
   expect(harness.establishCalls).toEqual(['DEST']);
 });
 
-async function directHandle() {
-  const { getSmartAgent } = await import('../../srv/agent-manager');
-  const handle = await getSmartAgent(undefined, 'DEST');
-  const executor = { process: jest.fn(handle.agent.process) };
-  const records = [
+async function directHandle(
+  records: ToolCallRecord[] = [
     {
       call: { id: '', name: 'CreateDomain', arguments: {} },
       result: { content: '{"success":true,"status":"inactive"}' },
     },
-  ];
+  ],
+) {
+  const { getSmartAgent } = await import('../../srv/agent-manager');
+  const handle = await getSmartAgent(undefined, 'DEST');
+  const executor = { process: jest.fn(handle.agent.process) };
   const extras = {
     executor,
     criticLlm: { chat: jest.fn(), streamChat: async function* () {} },
@@ -349,20 +351,37 @@ it('runs only the executor and passes its output through verbatim', async () => 
   }
 });
 
-it('appends the canonical notice for a deterministic contradiction', async () => {
-  const { handle, recMcp, criticLlm } = await directHandle();
-  const content = 'The domain was created and activated successfully.';
+it('execute_step warns about a failed SAP domain create alongside a same-named RAG record', async () => {
+  const { handle, recMcp, criticLlm } = await directHandle([
+    {
+      call: {
+        id: 'rag',
+        name: 'record_add',
+        arguments: { collection: 'drafts', record: 'ZREQ' },
+      },
+      result: {
+        content: { collection: 'drafts', record: 'ZREQ', created: true },
+      },
+    },
+    {
+      call: {
+        id: 'sap',
+        name: 'CreateDomain',
+        arguments: { domain_name: 'ZREQ' },
+      },
+      result: { content: { success: false, error: 'Domain already exists' } },
+    },
+  ]);
+  const content = 'I created SAP domain ZREQ.';
   harness.process = async () => ({ ok: true, value: { content } });
-  const { evaluateDeterministic } = await import('../../srv/lib/reviewer-core');
-  const { renderNotice } = await import('../../srv/lib/notify-policy');
   try {
     const result = await executeStep(req, caller, {
       session: await opened(),
       task: 'create the domain',
     });
-    expect(result.content[0].text).toBe(
-      content +
-        renderNotice(evaluateDeterministic(content, recMcp.getToolRecords())),
+    expect(result.content[0].text).toContain(`${content}UNVERIFIED_WRITE:`);
+    expect(result.content[0].text).toContain(
+      'CreateDomain returned error: Domain already exists',
     );
     expect(recMcp.getToolRecords).toHaveBeenCalledWith(
       expect.stringMatching(/^agent-step-/),

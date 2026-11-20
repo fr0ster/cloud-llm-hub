@@ -274,71 +274,49 @@ describe('evaluateDeterministic (result-based)', () => {
   });
 });
 
-describe('RAG write evidence', () => {
-  it.each([
-    ['record_add', { record: 'requirements', created: true }, 'created'],
-    ['record_update', { record: 'requirements', updated: true }, 'updated'],
-    ['record_delete', { record: 'requirements', deleted: true }, 'deleted'],
-    ['record_set_enabled', { id: 'requirements', enabled: true }, 'activated'],
-  ])(
-    'uses a successful %s result for the corresponding record and operation',
-    (name, result, op) => {
-      const records = [record(name, { collection: 'project', ...result })];
-      expect(
-        renderNotice(
-          evaluateDeterministic(`The record requirements was ${op}.`, records),
-        ),
-      ).toBe('');
-      expect(
-        renderNotice(
-          evaluateDeterministic(
-            `The record old-requirements was ${op}.`,
-            records,
-          ),
-        ),
-      ).toContain('UNVERIFIED_WRITE:');
-    },
-  );
-
-  it('keeps an unverified RAG claim when readback finds a record after the write failed', () => {
-    const attempt: ToolCallRecord = {
-      ...record(
-        'record_add',
-        { error: { message: 'Record already exists' } },
-        true,
-      ),
-      call: {
-        id: 'add',
-        name: 'record_add',
-        arguments: { record: 'requirements' },
-      },
-    };
+describe('RAG results in prose review', () => {
+  it('keeps the notice when a successful record write belongs to a different collection', () => {
     const records = [
-      attempt,
-      record('rag_read', { collection: 'session/project', id: 'requirements' }),
-      record('CreateDomain', 'SUCCESS'),
-    ];
-    const verdict = evaluateDeterministic(
-      'The record requirements was created.',
-      records,
-    );
-    expect(renderNotice(verdict)).toContain('UNVERIFIED_WRITE:');
-    expect(renderNotice(verdict)).toContain('record_add returned error');
-  });
-
-  it('requires the record to appear in the persist result', () => {
-    const records = [
-      record('rag_persist', {
-        collection: 'project',
-        records: ['another-record'],
+      record('record_add', {
+        collection: 'user/a',
+        record: 'requirements',
+        created: true,
+      }),
+      record('record_add', {
+        collection: 'user/b',
+        record: 'requirements',
+        created: false,
       }),
     ];
-    expect(
-      renderNotice(
-        evaluateDeterministic('The record requirements was created.', records),
-      ),
-    ).toContain('UNVERIFIED_WRITE:');
+    const verdict = evaluateDeterministic(
+      'I created the record requirements in user/b.',
+      records,
+      true,
+    );
+    expect(renderNotice(verdict)).toContain('no successful Create* tool ran');
   });
+
+  it.each([false, true])(
+    'keeps the SAP write-capability gate for a RAG collection deletion (offered: %s)',
+    (writeToolOffered) => {
+      const deletion = {
+        call: {
+          id: 'delete',
+          name: 'collection_delete',
+          arguments: { collection: 'drafts' },
+        },
+        result: {
+          content: { collection: 'drafts__u_1234567890abcdef', deleted: true },
+        },
+      } satisfies ToolCallRecord;
+      const verdict = evaluateDeterministic(
+        'The RAG collection drafts was deleted.',
+        [deletion],
+        writeToolOffered,
+      );
+      expect(verdict.ok).toBe(!writeToolOffered);
+    },
+  );
 });
 
 // lib 13 answers a successful write with the terse text `SUCCESS` and no

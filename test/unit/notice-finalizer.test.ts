@@ -96,6 +96,40 @@ describe('NoticeFinalizer', () => {
     });
   });
 
+  it('warns about a failed SAP domain create even when a same-named RAG record was added', async () => {
+    const recorder = new RecordingMcpClient(fakeInner());
+    jest.spyOn(recorder, 'getToolRecords').mockReturnValue([
+      {
+        call: {
+          id: 'rag',
+          name: 'record_add',
+          arguments: { collection: 'drafts', record: 'ZREQ' },
+        },
+        result: {
+          content: { collection: 'drafts', record: 'ZREQ', created: true },
+        },
+      },
+      {
+        call: {
+          id: 'sap',
+          name: 'CreateDomain',
+          arguments: { domain_name: 'ZREQ' },
+        },
+        result: { content: { success: false, error: 'Domain already exists' } },
+      },
+    ]);
+    const onPartial = jest.fn();
+    await new NoticeFinalizer(recorder).finalize(
+      baseInput({ interpreterOutput: 'I created SAP domain ZREQ.', onPartial }),
+    );
+    expect(onPartial).toHaveBeenLastCalledWith({
+      kind: 'content',
+      delta: expect.stringMatching(
+        /^UNVERIFIED_WRITE:.*CreateDomain returned error: Domain already exists/,
+      ),
+    });
+  });
+
   it('(a) emits the answer content FIRST, then a single trailing UNVERIFIED_WRITE notice when the claim outruns the tool RESULT', async () => {
     const recMcp = new RecordingMcpClient(fakeInner());
     jest.spyOn(recMcp, 'getToolRecords').mockReturnValue([
@@ -324,7 +358,10 @@ describe('adaptive write review', () => {
         llm: { chat, streamChat: async function* () {} },
         systemPrompt: 'Checker profile',
       }),
-      isSapWriteTool: (name) => name === 'CreateDomain',
+      isSapWriteTool: (name) =>
+        ['CreateDomain', 'CreateTransport', 'CreateTransportTask'].includes(
+          name,
+        ),
     });
     const onPartial = jest.fn();
     const result = await finalizer.finalize(
@@ -499,6 +536,89 @@ describe('adaptive write review', () => {
     expect(output).toContain('SAP activated domain ZREQ');
     expect(output).toContain('SAP created domain OTHER');
     expect(output).toContain('SAP created class ZREQ');
+  });
+
+  it.each([
+    {
+      tool: 'CreateTransportTask',
+      args: { transport_number: 'DEVK900001', target_user: 'DEVELOPER' },
+      content: {
+        success: true,
+        request: 'DEVK900001',
+        task_number: 'DEVK900002',
+      },
+      created: 'DEVK900002',
+      other: 'DEVK900001',
+    },
+    {
+      tool: 'CreateTransport',
+      args: { description: 'New transport' },
+      content: {
+        success: true,
+        transport_number: 'DEVK900001',
+        task_number: 'DEVK900002',
+      },
+      created: 'DEVK900001',
+      other: 'DEVK900002',
+    },
+  ])(
+    'verifies the result target of $tool',
+    async ({ tool, args, content, created, other }) => {
+      const recorder = new RecordingMcpClient(fakeInner());
+      jest.spyOn(recorder, 'getToolJournal').mockReturnValue([
+        {
+          call: { id: 'transport-call', name: tool, arguments: args },
+          result: { content },
+        },
+      ]);
+      const claim = {
+        system: 'sap',
+        operation: 'created',
+        target: { type: 'transport', name: created },
+        callId: 'transport-call',
+      } satisfies WriteClaim;
+      expect((await review(recorder, [claim])).output).not.toContain(
+        'UNVERIFIED_WRITE:',
+      );
+      const { output } = await review(recorder, [
+        { ...claim, target: { ...claim.target, name: other } },
+      ]);
+      expect(output).toContain(`SAP created transport ${other}`);
+      expect(output).toContain(
+        `${tool} does not prove the operation and target`,
+      );
+    },
+  );
+
+  it('requires a returned task number to verify a transport task creation', async () => {
+    const recorder = new RecordingMcpClient(fakeInner());
+    jest.spyOn(recorder, 'getToolJournal').mockReturnValue([
+      {
+        call: {
+          id: 'task',
+          name: 'CreateTransportTask',
+          arguments: {
+            transport_number: 'DEVK900001',
+            target_user: 'DEVELOPER',
+          },
+        },
+        result: {
+          content: { success: true, request: 'DEVK900001', task_number: null },
+        },
+      },
+    ]);
+    const { output } = await review(recorder, [
+      {
+        system: 'sap',
+        operation: 'created',
+        target: { type: 'transport', name: 'DEVK900001' },
+        callId: 'task',
+      },
+    ]);
+    expect(output).toContain('UNVERIFIED_WRITE:');
+    expect(output).toContain(
+      'CreateTransportTask does not prove the operation and target',
+    );
   });
 
   it('uses recorder call IDs and keeps pre-cap results in the journal sent to the checker', async () => {

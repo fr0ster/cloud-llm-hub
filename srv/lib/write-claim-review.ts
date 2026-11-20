@@ -60,7 +60,8 @@ const sapOperations = {
   activated: 'Activate',
 } satisfies Record<SapClaim['operation'], string>;
 
-// SAP handler input keys, indexed by the object types in tool-objects.json.
+// For handlers that act on a named object and can return a terse SUCCESS,
+// these input keys identify the object addressed by the write.
 const sapTargetFields: Record<string, readonly string[]> = {
   behaviorDefinition: ['name'],
   behaviorImplementation: ['class_name'],
@@ -82,7 +83,6 @@ const sapTargetFields: Record<string, readonly string[]> = {
   structure: ['structure_name'],
   table: ['table_name'],
   tableType: ['table_type_name'],
-  transport: ['transport_number'],
   unitTest: [
     'class_name',
     'cds_view_name',
@@ -98,7 +98,12 @@ const sapActivation = z.object({
 const batchActivation = z.object({
   objects: z.array(z.object({ type: z.string(), name: z.string() })),
 });
-const sapResultTarget = z.object({ name: z.string(), type: z.string() });
+const createTransportResult = z.object({
+  transport_number: z.string().min(1),
+});
+const createTransportTaskResult = z.object({
+  task_number: z.string().min(1).nullable(),
+});
 
 function verifiesSap(
   claim: SapClaim,
@@ -134,15 +139,20 @@ function verifiesSap(
   const type = toolObjects[tool];
   if (!type || type !== target.type) return false;
 
+  if (tool === 'CreateTransport') {
+    const created = createTransportResult.safeParse(result).data;
+    return created !== undefined && sameName(created.transport_number);
+  }
+  if (tool === 'CreateTransportTask') {
+    const created = createTransportTaskResult.safeParse(result).data;
+    return created?.task_number != null && sameName(created.task_number);
+  }
+
   for (const field of sapTargetFields[type] ?? []) {
     const name = z.string().safeParse(call.arguments[field]).data;
     if (name !== undefined) return sameName(name);
   }
-  const returned = sapResultTarget.safeParse(result).data;
-  return (
-    returned?.type.toLowerCase() === type.toLowerCase() &&
-    sameName(returned.name)
-  );
+  return false;
 }
 
 const ragResult = z.object({
