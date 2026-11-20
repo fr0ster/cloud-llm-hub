@@ -32,6 +32,7 @@ import {
   type RagScanPage,
   type RagScanRecord,
   type Result,
+  stampRagOwner,
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import type { CollectionMeta, RagDocument } from '../rag-collections';
@@ -498,11 +499,8 @@ export function refuseWhileDeleting(
  * The backend payload of a persistent document. The point id stays
  * `doc:<collectionId>:<docId>`.
  *
- * Reserved keys (PAYLOAD_BOOKKEEPING: id, namespace, collectionId, docId,
- * createdAt, _createdAtMs) are the hub's: they are written after the
- * document's own metadata, so they always win, and a document's own value
- * under one of them is dropped (see ownMetadata). Every other metadata key is
- * kept as given.
+ * The registry writes through raw backend writers, so stamp the catalog
+ * owner here after stripping reserved fields from the document's metadata.
  */
 function payload(
   entry: PersistentEntry,
@@ -510,14 +508,17 @@ function payload(
   metadata: Record<string, unknown>,
   createdAt: string,
   namespace?: string,
-): Record<string, unknown> {
+): RagMetadata {
   const collectionId = entry.meta.id;
-  return {
-    ...ownMetadata(metadata),
-    id: `doc:${collectionId}:${docId}`,
-    namespace: namespace ?? entry.meta.owner,
-    ...documentPayload(collectionId, docId, createdAt),
-  };
+  return stampRagOwner(
+    {
+      ...ownMetadata(metadata),
+      id: `doc:${collectionId}:${docId}`,
+      namespace: namespace ?? entry.meta.owner,
+      ...documentPayload(collectionId, docId, createdAt),
+    },
+    catalogOwner(entry.meta),
+  );
 }
 
 /**

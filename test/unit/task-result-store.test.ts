@@ -18,9 +18,12 @@ import {
   symmetricEmbedder,
   type TaskResultEntry,
 } from '@mcp-abap-adt/llm-agent';
+import { QdrantRagProvider } from '@mcp-abap-adt/qdrant-rag';
 import { z } from 'zod';
 import { executeRagTool } from '../../srv/agent-mcp-rag';
 import { resolveRouteId, sessionCollectionId } from '../../srv/collection-ids';
+import { createCollectionPersistence } from '../../srv/lib/collection-persistence';
+import { migrateHubRagProviders } from '../../srv/lib/rag-migration';
 import { loopReads, ReadDedup } from '../../srv/lib/read-dedup';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { createTaskResultStore } from '../../srv/lib/task-result-store';
@@ -123,6 +126,142 @@ test('put creates the session collection lazily and the record is readable infor
       outcome: 'done',
     },
   });
+});
+
+test('a dialogue task result passes Qdrant access migration on the next startup', async () => {
+  const config = { url: 'https://qdrant.example', prefix: 'test' };
+  const embed = jest.fn(async () => {
+    throw new Error('Embedding must not be called');
+  });
+  const provider = () =>
+    new QdrantRagProvider({
+      name: 'test',
+      url: config.url,
+      embedder: symmetricEmbedder({ embed }),
+      catalogCollection: `${config.prefix}-collections-catalog`,
+    });
+  const persistence = createCollectionPersistence(provider(), 'fp', {
+    storePrefix: config.prefix,
+    vectorDimension: async () => 2,
+  });
+  const storeName = persistence.storeName(physical);
+  const payload = z.record(z.string(), z.json());
+  const point = z.object({ id: z.string(), payload });
+  const writeBody = z.object({ points: z.array(point) });
+  const readBody = z.object({ ids: z.array(z.string()) });
+  const patchBody = z.object({ points: z.array(z.string()), payload });
+  const createBody = z.object({
+    vectors: z.object({
+      size: z.number(),
+      distance: z.enum(['Cosine', 'Dot']),
+      multivector_config: z
+        .object({ comparator: z.literal('max_sim') })
+        .optional(),
+    }),
+  });
+  const collections = new Map<
+    string,
+    { vectors: QdrantVectorConfig; points: Map<string, z.infer<typeof point>> }
+  >();
+  const fetchMock = jest
+    .spyOn(globalThis, 'fetch')
+    .mockImplementation(async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      const method = init?.method ?? 'GET';
+      const [, , name, resource, action] = path.split('/');
+      if (path === '/') return Response.json({ version: '1.17.0' });
+      if (path === '/collections')
+        return Response.json({
+          result: {
+            collections: [...collections.keys()].map((name) => ({ name })),
+          },
+        });
+      const collection = collections.get(name);
+      if (!resource && method === 'PUT') {
+        const { vectors } = createBody.parse(JSON.parse(String(init?.body)));
+        collections.set(name, { vectors, points: new Map() });
+        return Response.json({ result: true });
+      }
+      if (!collection) return Response.json({}, { status: 404 });
+      if (!resource && method === 'GET')
+        return Response.json({
+          result: {
+            config: {
+              params: {
+                vectors: collection.vectors,
+                replication_factor: 1,
+                write_consistency_factor: 1,
+              },
+            },
+          },
+        });
+      if (resource === 'aliases' && method === 'GET')
+        return Response.json({ result: { aliases: [] } });
+      if (resource === 'index' && method === 'PUT')
+        return Response.json({ result: { status: 'completed' } });
+      if (resource === 'points' && method === 'PUT') {
+        const { points } = writeBody.parse(JSON.parse(String(init?.body)));
+        for (const point of points) collection.points.set(point.id, point);
+        return Response.json({ result: { status: 'completed' } });
+      }
+      if (resource === 'points' && method === 'POST') {
+        if (action === 'scroll')
+          return Response.json({
+            result: {
+              points: [...collection.points.values()],
+              next_page_offset: null,
+            },
+          });
+        if (action === 'payload') {
+          const patch = patchBody.parse(JSON.parse(String(init?.body)));
+          for (const id of patch.points) {
+            const point = collection.points.get(id);
+            if (!point) throw new Error(`Missing point ${id}`);
+            point.payload = { ...point.payload, ...patch.payload };
+          }
+          return Response.json({ result: { status: 'completed' } });
+        }
+        const { ids } = readBody.parse(JSON.parse(String(init?.body)));
+        return Response.json({
+          result: ids.flatMap((id) => collection.points.get(id) ?? []),
+        });
+      }
+      throw new Error(`Unexpected Qdrant request: ${method} ${path}`);
+    });
+  try {
+    const registry = new CollectionRegistry({
+      defaultBackend: 'qdrant',
+      persistence,
+    });
+    const written = await createTaskResultStore(registry, scope).put(entry);
+    if (!written.ok) throw new Error(written.error.message);
+    const originalPayloads = [
+      ...(collections.get(storeName)?.points.values() ?? []),
+    ].map(({ payload }) => payload);
+
+    const log = jest.fn<void, [string]>();
+    const migration = await migrateHubRagProviders(
+      [{ provider: provider(), kind: 'qdrant' }],
+      log,
+      { config, standaloneCollections: [] },
+    );
+    expect(log.mock.calls.flat()).not.toContainEqual(
+      expect.stringContaining('Conflicting owner keys'),
+    );
+    expect(migration).toEqual({ ok: true, value: undefined });
+    expect(originalPayloads).toEqual([
+      expect.objectContaining({
+        kind: 'task-result',
+        ownerScope: 'session',
+        sessionId: scope.sessionKey,
+        text: entry.output,
+      }),
+    ]);
+    expect(originalPayloads[0]).not.toHaveProperty('userId');
+    expect(embed).not.toHaveBeenCalled();
+  } finally {
+    fetchMock.mockRestore();
+  }
 });
 
 test('identical concurrent puts across store instances return the same ref; different text returns exists', async () => {
