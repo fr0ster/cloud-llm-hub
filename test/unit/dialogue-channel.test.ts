@@ -1065,9 +1065,7 @@ it('follow is absent for a plain reply and for a non-streaming turn', async () =
     caller: taskCaller,
     sessionId: taskCaller.sessionId,
   });
-  expect(
-    nonStreaming.follow(new AbortController().signal),
-  ).toBeUndefined();
+  expect(nonStreaming.follow(new AbortController().signal)).toBeUndefined();
 });
 
 function streamingRequest(content = 'hi') {
