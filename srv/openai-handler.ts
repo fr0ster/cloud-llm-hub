@@ -119,6 +119,7 @@ import {
   unverifiedWriteFor,
 } from './lib/throttle-surfacing';
 import { usageRuntime } from './lib/usage/runtime';
+import { isUserMcpName } from './lib/user-mcp-names';
 import { runWithSessionId } from './request-session';
 import { honouredSessionId, sessionIdOf, type WithSession } from './session-id';
 import {
@@ -539,11 +540,17 @@ async function serveChatCompletions(
 
   // Validate and normalize external tools (passed to SmartAgent for client adapter detection)
   const externalToolsValidation = normalizeAndValidateExternalTools(body.tools);
-  const externalTools = externalToolsValidation.tools;
+  const externalTools = externalToolsValidation.tools.filter(
+    (tool) => !isUserMcpName(tool.name),
+  );
+  const externalToolErrors =
+    externalToolsValidation.errors.length +
+    externalToolsValidation.tools.length -
+    externalTools.length;
   registerClientTools(externalTools);
-  if (externalToolsValidation.errors.length > 0) {
+  if (externalToolErrors > 0) {
     log.debug('Invalid external tools detected', {
-      count: externalToolsValidation.errors.length,
+      count: externalToolErrors,
     });
   }
 
@@ -676,6 +683,7 @@ async function serveChatCompletions(
   const ragIdentity = {
     admin: authenticatedCaller.admin,
     channel: 'openai' as const,
+    userMcpSession: s,
     onToolResult: useDialogue
       ? undefined
       : (record: import('@mcp-abap-adt/llm-agent').ToolCallRecord): void => {
@@ -790,11 +798,9 @@ async function serveChatCompletions(
 
   early?.ensureStream({
     'X-SAP-Active-Destination': destAfter,
-    ...(externalToolsValidation.errors.length
+    ...(externalToolErrors
       ? {
-          'x-smartagent-invalid-tools': String(
-            externalToolsValidation.errors.length,
-          ),
+          'x-smartagent-invalid-tools': String(externalToolErrors),
         }
       : {}),
   });
@@ -1106,11 +1112,9 @@ async function serveChatCompletions(
     };
 
     const invalidToolsHeader: Record<string, string> =
-      externalToolsValidation.errors.length > 0
+      externalToolErrors > 0
         ? {
-            'x-smartagent-invalid-tools': String(
-              externalToolsValidation.errors.length,
-            ),
+            'x-smartagent-invalid-tools': String(externalToolErrors),
           }
         : {};
 

@@ -79,13 +79,18 @@ jest.mock('../../srv/lib/long-session', () => ({
   longSessionsIfReady: () => ({ touch }),
 }));
 
+const app = express();
 function request(fields: {
   longSession?: { userId: string; key: string; destination?: string };
   headers?: Record<string, string>;
   body?: object;
 }): Request {
-  const base: Request = Object.create(express.request);
-  return Object.assign(base, { headers: {} }, fields);
+  const base: Request = Object.create(app.request);
+  return Object.assign(
+    base,
+    { headers: {}, url: '/v1/session/events' },
+    fields,
+  );
 }
 type SessionMocks = {
   lookupDialogue: jest.Mock<Promise<DialogueHandle | undefined>, []>;

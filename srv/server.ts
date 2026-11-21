@@ -15,6 +15,12 @@ import {
   USAGE_SHUTDOWN_TIMEOUT_MS,
 } from './lib/usage/shutdown';
 import {
+  handleDeleteUserMcp,
+  handlePutUserMcp,
+  handleUserMcpResult,
+  invalidUserMcpRequest,
+} from './lib/user-mcp-handler';
+import {
   handleGetSessionModels,
   handlePutSessionModels,
 } from './session-models-handler';
@@ -887,11 +893,26 @@ cds.on('bootstrap', (app: Application) => {
       'Access-Control-Allow-Headers',
       // No X-Session-Id: no route reads it. x-clh-session carries the key of
       // a long session this service issued.
-      'Content-Type, Authorization, X-Rag-Collections, x-clh-session, x-clh-turn-id, x-clh-model-coordinator, x-clh-model-planner, x-clh-model-executor, x-clh-model-checker, x-clh-params-coordinator, x-clh-params-planner, x-clh-params-executor, x-clh-params-checker, x-clh-limits',
+      'Content-Type, Authorization, Last-Event-ID, X-Rag-Collections, x-clh-session, x-clh-turn-id, x-clh-model-coordinator, x-clh-model-planner, x-clh-model-executor, x-clh-model-checker, x-clh-params-coordinator, x-clh-params-planner, x-clh-params-executor, x-clh-params-checker, x-clh-limits',
     );
     res.writeHead(204);
     res.end();
   });
+
+  const parseUserMcpJson = express.json({ limit: Number.POSITIVE_INFINITY });
+  const userMcpJson = (req: Request, res: Response, next: NextFunction) => {
+    parseUserMcpJson(req, res, (error) => {
+      if (error) invalidUserMcpRequest(res);
+      else next();
+    });
+  };
+  app.put('/v1/session/user-mcp', userMcpJson, handlePutUserMcp);
+  app.delete('/v1/session/user-mcp', handleDeleteUserMcp);
+  app.post(
+    '/v1/session/user-mcp/results/:callId',
+    userMcpJson,
+    handleUserMcpResult,
+  );
 
   // Parse JSON body for /v1/* routes
   app.use('/v1', express.json({ limit: RAG_WRITE_MAX_BYTES }));

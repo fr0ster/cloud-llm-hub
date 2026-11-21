@@ -13,6 +13,7 @@ describe('trust defaults', () => {
     correction: 4.9,
     target: 4.3,
     docs: 4.2,
+    'user-mcp': 4.1,
     client: 4.4,
     user: 3.5,
     session: 4,

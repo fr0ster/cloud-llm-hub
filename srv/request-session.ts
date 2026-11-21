@@ -8,6 +8,7 @@ import {
   currentVerdictTools,
   runWithVerdictTools,
 } from './lib/checker-verdict-tool';
+import type { LongSession } from './lib/long-session';
 import { runWithReviewSignals } from './lib/review-scope';
 
 const als = new AsyncLocalStorage<{
@@ -28,6 +29,8 @@ const als = new AsyncLocalStorage<{
 }>();
 
 export interface RagCallerIdentity {
+  /** Set by authenticated HTTP chat and carried to its deferred workers. */
+  readonly userMcpSession?: LongSession;
   readonly onToolResult?: (
     record: import('@mcp-abap-adt/llm-agent').ToolCallRecord,
   ) => void;

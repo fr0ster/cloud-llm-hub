@@ -830,7 +830,7 @@ A worker-local async scope observes RecordingMcpClient, embedded agent-manager M
 
 Session observers receive activity and source-labelled turn events. Chat streams forward these as comments during planner execution and background follow. The WebUI renders foreign requests as user bubbles and shows each active task's current action and idle minutes, refreshed every 15 seconds. A five-minute authenticated ping keeps the approuter session alive while work is visible or a chat stream is open.
 
-`GET /v1/session/events` is a read-only view for the authenticated long session (404 without an owned session, 409 outside dialogue mode). It sends the current `tasks` snapshot and plan, then retained complete messages, including confirmed messages. Messages carry `id: <messageId>` and `event: message`; live plans/tasks use `plan`/`task` events. `Last-Event-ID` replays retained messages after that ID; an absent or unknown cursor replays all retained messages. Internal settled events are not sent. Multiple tabs can observe the same messages without affecting chat delivery. The deprecated `POST /v1/session/events/ack` route retains ownership/mode checks and returns 204 without changing state, for compatibility with old tabs.
+`GET /v1/session/events` opens an event stream for the authenticated long session. Dialogue observers receive the current `tasks` snapshot and plan, then retained complete messages, including confirmed messages. Messages carry `id: <messageId>` and `event: message`. Live plans and tasks use `plan` and `task` events. `Last-Event-ID` replays retained messages after that ID, or all retained messages if the cursor is absent or unrecognized. Multiple tabs can observe messages without affecting chat delivery. An opted-in user MCP executor can subscribe in any coordinator mode. Outside dialogue mode, an observer without executor parameters receives 409. The deprecated `POST /v1/session/events/ack` retains ownership and mode checks and returns 204 without changing state.
 
 Every 15 seconds the events channel writes `: heartbeat` and touches the long session. Lifecycle touches refresh the dialogue row's savedAt at most once per 60 seconds. Running dialogue work also holds the session against inactivity expiry; releasing the hold touches the session so its TTL starts from that activity. Closing a browser tab disconnects its subscription; explicit session close or expiry ends work.
 
@@ -1544,12 +1544,12 @@ Trust is ordered by LEVEL first (system > MCP > informational), then GROUP withi
 | Level / Group | session | user | global |
 | --- | --- | --- | --- |
 | system (prompt, base skills, corrections) | 5.0 (reserved) | 4.9 (`correction`) | 4.8 (`system`) |
-| MCP (tool results) | 4.5 (reserved) | 4.4 (`client`) | 4.3 (`target`, built-in ABAP/SAP MCP); 4.2 (`docs`, docs MCP) |
+| MCP (tool results) | 4.1 (`user-mcp`), 4.5 (reserved) | 4.4 (`client`) | 4.3 (`target`, built-in ABAP/SAP MCP), 4.2 (`docs`, docs MCP) |
 | informational (collection records) | 4.0 (`session`) | 3.5 (`user`) | 3.0 (`global`) |
 
 Session system (5.0) and session MCP (4.5) have no producers yet. Deploy-configured ABAP and docs MCP belong to the global group. `client` describes results of tools supplied by the client in its own request, in the user group. It is accepted in deployment defaults and profile maps for completeness. The OpenAI and Anthropic request paths register validated client tool definitions in request scope. Replayed results receive `[source: client:<tool-name>; trust 4.4]` wherever the existing model-facing tool-message formatter applies trust tags; profile and deployment overrides apply. Unknown tools and hub orchestration results remain untagged. Registered ABAP and docs MCP ownership takes precedence over client names.
 
-An **assistant** is the future memory-and-learning entity. An **agent** performs a role described by a **profile** within a **pipeline**. Each role has its own profile trust map; informational trust resolves record override, collection/source override, profile class map, deployment defaults, then built-in defaults (`correction=4.9,system=4.8,client=4.4,target=4.3,docs=4.2,session=4,user=3.5,global=3`). Informational presets use class `user`; session recall and planner memory use `session`. Embedded SAP/ABAP tool results use `target`; external docs MCP results use `docs`. Global preset prompts and base skills use `system`. User profile copies and corrective skills (`kind: correction`) use `correction`. Corrections outrank their base; instruction classes outrank informational records; MCP results outrank session information. Explicit admin, user and profile overrides retain precedence.
+An **assistant** is the future memory-and-learning entity. An **agent** performs a role described by a **profile** within a **pipeline**. Each role has its own profile trust map; informational trust resolves record override, collection/source override, profile class map, deployment defaults, then built-in defaults (`correction=4.9,system=4.8,client=4.4,target=4.3,docs=4.2,user-mcp=4.1,session=4,user=3.5,global=3`). Informational presets use class `user`; session recall and planner memory use `session`. Embedded SAP/ABAP tool results use `target`; external docs MCP results use `docs`. Global preset prompts and base skills use `system`. User profile copies and corrective skills (`kind: correction`) use `correction`. Corrections outrank their base; instruction classes outrank informational records; MCP results outrank session information. Explicit admin, user and profile overrides retain precedence.
 
 `TrustResolver` resolves current metadata on each read, including already-built agents. Collection and record overrides persist with bounded audit history (last 20 changes); the internal `h_trust` store holds informational skill source/record overrides. Writes invalidate only the affected provider cache entry. Defaults are not persisted on reads. Caller metadata cannot set informational trust or impersonate provenance.
 
@@ -1578,6 +1578,62 @@ trust overrides preceding the active profile's docs map and deployment defaults.
 Raw MCP results stay raw; the tool loop adds source/trust envelopes for the model.
 
 Dialogue check steps are decisions. The plan author includes explicit check steps where verification is needed. Each turn the coordinator weighs the plan and new user input: run a planned check, skip it with a reason, or add an unplanned check. Changed user input or new evidence can require `plan_revise`. Checker failures require JSON `claims: [{quote, evidence, reason}]`: exact checked-result quotes and evidence excerpts (or `none provided`). Whitespace-normalized quotes must occur in checked results; excerpts must occur in evidence received by the checker. Invalid failures become `unusable verdict: <reason>`, stay undecided, and are logged with reason codes and counts only. PASS and JSON pass/count/note compatibility remains. No tools executed alone is never grounds for fail.
+
+### Session tool bridge for user MCP
+
+The hybrid design approved on 2026-11-20 lets an authenticated user add their
+own system tools to a long session. The browser executes remote HTTPS MCP when
+the server permits the browser origin and can authenticate there. The local
+companion covers local and stdio MCP and can also handle remote servers whose
+browser access is blocked. Both use the same outbound SSE and HTTP bridge to
+the hub and keep MCP credentials on the executor. The approved companion is an
+`npx` package in the `llm-agent` monorepo, reusing `llm-agent-mcp` and released
+with `llm-agent`. Browser settings, the browser MCP client, and the companion
+are later delivery steps. Their configuration can follow `.mcp.json`.
+
+The hub holds each catalogue, executor stream, and pending call in the owning
+long session's memory. Only the analyst, executor, and checker can receive user
+MCP tools. A registration may select any subset of those roles and defaults to
+all three. The coordinator and plan author retain their configured docs MCP
+access. A server exposes reads by default and must opt into writes explicitly.
+The bridge treats a tool as read-only only when it declares `readOnlyHint: true`
+and lacks a positive `destructiveHint`. Host profile ceilings, including checker
+read-only scope, still apply. Dispatch checks the live catalogue and role again.
+The public namespace is `user__<server>__<tool>`, and retrieval records use the typed
+`tool:` key. Per-server direct, RAG and automatic selection follow the external
+MCP count policy. Tool vectors are held in the session. Failed ranked searches
+in user MCP or docs MCP use the shared tool-search health guard. A missing
+embedder, failed embedding, or unavailable tool index returns an explicit
+search error. The hub rejects API traffic until the readiness probes succeed.
+Model-facing results carry the `user-mcp` trust class, below target and docs by
+default. Their content is external data and gives no instructions to the agent.
+
+A request or deferred worker uses the registration belonging to its originating
+authenticated HTTP chat session. A call waits for its reply, session closure or
+request/task cancellation. A server without a connected executor returns
+`USER_MCP_UNAVAILABLE` immediately. The hub sends each call to an opted-in stream
+for that server and transport. Reconnects replay outstanding calls with the same
+call IDs and `replay: true`. Executors can re-execute reads. For writes, they
+record the call ID before execution and use it to return the stored result or
+report an unknown outcome on replay. The bridge settles an unknown outcome as
+`USER_MCP_OUTCOME_UNKNOWN` without an automatic retry. The executor can
+unregister during a graceful disconnect. Closing the session discards all
+registrations and settles pending calls before draining active work. Restarted
+sessions begin with an empty catalogue. Call logs contain the tool name, byte
+counts and duration.
+
+Agent MCP is an exception to tool parity across connections. It has no user MCP
+executor for its requests or dialogue tasks, so the channel omits registered
+session tools. Workers continue to reject ad-hoc client tool definitions and
+result replay. See [the session user MCP API](API_REFERENCE.md#session-user-mcp)
+for the executor protocol.
+
+The analyst reads the user's request and answers the questions in its brief.
+It gathers evidence through SAP read tools, docs MCP, and user MCP, and stores
+the evidence in session RAG. Its report quotes and answers each question with
+record IDs, describes the source and contents of each gathered record, and
+reports unsuccessful searches. A brief with no questions receives the same
+report for its stated goal.
 
 ### Deploy defaults for session roles and limits
 

@@ -1104,8 +1104,8 @@ credentials retains the binding but leaves background work without credentials
 until that principal supplies them again.
 
 Each events subscriber has its own last emitted message cursor. Pending messages
-are emitted in outbox order even when persistence fails; persistence retries on
-the serialized save path. Acknowledgements remove the prefix through a known ID.
+are emitted in outbox order even when persistence fails. Persistence retries on
+the serialized save path. Chat requests confirm delivery.
 Reconnects can pass `Last-Event-ID` to skip the rendered prefix.
 
 ### Dialogue activity, turns and keep-alive
@@ -1117,6 +1117,107 @@ Live `turn` events carry `{ kind: "turn", source, text }`. Sources are `webui`, 
 Both streaming chat endpoints (`/v1/chat/completions`, `/v1/messages`) forward these events as SSE comments: `: activity <json>` and `: turn <json>`. They are never assistant content, including during background follow.
 
 `GET /v1/ping` returns 204 through the same authentication and role middleware as `/v1`. The WebUI requests it through the approuter every five minutes while a chat stream or active tasks exist, and stops when idle.
+
+### Session user MCP
+
+All user MCP endpoints require the regular `/v1` authentication and `x-clh-session`
+with a long-session key owned by the caller. Out-of-band registration and result
+requests can run while chat or worker execution is active.
+
+| Method and path | Request | Success |
+|---|---|---|
+| `PUT /v1/session/user-mcp` | `{ "servers": [...] }` with one or more server registrations | `204` |
+| `DELETE /v1/session/user-mcp?server=<name>` | Delete the named registration. Omit `server` to delete all registrations in the session. | `204` |
+| `POST /v1/session/user-mcp/results/{callId}` | Exactly one of `result`, `error`, or `outcome: "unknown"` | `204` |
+| `GET /v1/session/events?userMcp=<transport>&server=<name>` | Open an executor SSE stream. Repeat `server` for each server the executor serves. | `200` with `text/event-stream` |
+
+An example registration follows.
+
+```json
+{
+  "servers": [
+    {
+      "name": "work",
+      "transport": "browser",
+      "roles": ["analyst", "executor", "checker"],
+      "writes": false,
+      "tools": [
+        {
+          "name": "lookup",
+          "description": "Look up a record by its ID",
+          "inputSchema": { "type": "object", "properties": { "id": { "type": "string" } } },
+          "annotations": { "readOnlyHint": true }
+        }
+      ]
+    }
+  ]
+}
+```
+
+`transport` is `browser` or `companion`. `roles` accepts `analyst`, `executor`, and
+`checker` and defaults to all three. A registration containing `planner` returns
+400 `INVALID_USER_MCP_REQUEST`. The bridge is available only to the listed
+worker roles. The default `writes` is `false`. Any tool lacking
+`readOnlyHint: true` or declaring `destructiveHint: true` requires `writes: true`.
+The complete payload is validated before replacing any named catalogue. Other
+server registrations in the session retain their catalogues. Names are composed
+of ASCII letters, digits, underscores and hyphens. A server name starts and ends
+with a letter or digit and contains no `__`. The reserved server names are
+`user`, `user-mcp`, `hub`, `sap`, `docs`, `rag`, `system`, `client` and `target`,
+case-insensitively. The `user__` prefix is reserved for public names produced by
+the hub. The example tool is exposed to models as `user__work__lookup`.
+
+Automatic exposure uses the same `LLM_AGENT_MCP_DIRECT_MAX` threshold as
+deployment MCP, based on the number of tools in the server catalogue. Deployers
+can select `direct`, `rag`, or `auto` with a `user__<server>` entry in
+`LLM_AGENT_MCP_SELECTION`. Registration roles and profile permissions filter
+both selection and execution. Ranked searches require a working embedder and
+tool index. A search failure puts the hub in tool-search `DOWN` state. All API
+requests receive 503 until the existing readiness probes succeed. Health
+endpoints report the state without starting a probe.
+
+An executor stream can open before registration and can run in any coordinator
+mode. The latest connection for a given server and transport receives the calls.
+Regular dialogue observers receive dialogue events. Opted-in streams in dialogue
+mode receive those events as well as their server calls. The event carries the
+executor's original tool name.
+
+```text
+event: user_mcp_call
+data: {"callId":"c1143887-95b4-4086-9325-2a7587935412","server":"work","tool":"lookup","arguments":{"id":"123"}}
+
+```
+
+On reconnect, send the usual `Last-Event-ID` for dialogue messages. The bridge
+also replays outstanding calls for the selected servers with the original
+`callId` and `"replay": true`. These events leave the dialogue cursor intact.
+Executors may re-execute reads on replay. For writes, the executor must record
+the `callId` before executing and retain it and its result across reconnections.
+On replay of a write:
+
+- If a result is stored for the `callId`, return that result.
+- If the `callId` is recorded and no result is stored, skip execution and return
+  `{ "outcome": "unknown" }`.
+- If the `callId` has never been seen, record it and execute the call.
+
+Only calls with a connected executor at dispatch enter the pending queue. A
+worker gets `USER_MCP_UNAVAILABLE` immediately when it cannot dispatch. Once
+dispatched, the worker waits for a reply, session closure, or cancellation.
+
+An executor can answer with `{ "result": { "content": [{ "type": "text",
+"text": "found" }] } }`. The hub also accepts string or object `content`,
+`structuredContent`, and optional MCP `isError`. When a result includes both
+content fields, the worker receives both in an object. For an executor error the
+hub accepts
+`{ "error": "message" }` or `{ "error": { "message": "message", "code": -32603 } }`.
+An error is returned to the worker as a tool error. `{ "outcome": "unknown" }`
+settles the call with the typed failure `USER_MCP_OUTCOME_UNKNOWN`, meaning the
+write may or may not have been applied. The hub never automatically retries
+this write. A valid call ID that is finished, cancelled, or owned by another
+session returns 404
+`USER_MCP_CALL_NOT_FOUND`. Missing session headers on bridge requests return 400
+`SESSION_REQUIRED`, and keys without an owned session return 404
+`SESSION_NOT_FOUND`. Invalid bodies, names, or executor parameters return 400.
 
 ### Session collection search toggle
 

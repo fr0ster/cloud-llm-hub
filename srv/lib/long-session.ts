@@ -17,6 +17,7 @@ import {
   longSessionLlms,
   runWithRequestLlms,
 } from './session-llms';
+import type { UserMcpBridge } from './user-mcp-bridge';
 
 export type CloseReason = 'explicit' | 'ttl' | 'shutdown';
 
@@ -39,6 +40,8 @@ export interface LongSession {
   agentsCollectionId?: string;
   /** Calls issued to the client whose user turn is still open. */
   clientToolTurns?: Map<string, string>;
+  /** Live user MCP registrations and pending calls for this session instance. */
+  userMcp?: UserMcpBridge;
   /** True when rebuilt from the store after a restart. */
   revived: boolean;
   connection?: IAbapConnection;
@@ -291,6 +294,7 @@ export class LongSessionRegistry {
     reason: CloseReason,
   ): Promise<void> {
     try {
+      entry.session.userMcp?.close();
       await entry.tail;
       await this.hooks.onClose(entry.session, reason);
     } finally {

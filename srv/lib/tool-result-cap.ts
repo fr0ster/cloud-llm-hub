@@ -6,6 +6,7 @@ import {
   currentSessionLimit,
   sessionToolResultMaxChars,
 } from './execution-limits';
+import { isUserMcpName } from './user-mcp-names';
 
 export const toolResultBudget = new AsyncLocalStorage<number>();
 
@@ -35,6 +36,7 @@ export function capToolResult(
   toolName?: string,
   logToolName = true,
 ): { result: McpToolResult; rejection?: ToolResultRejection } {
+  if (toolName && isUserMcpName(toolName)) return { result };
   maxChars = sessionToolResultMaxChars(maxChars);
   if (maxChars === 0) return { result };
   const content = result.content;
@@ -75,7 +77,9 @@ export function withToolResultCap(
       : {}),
     async listTools(options) {
       const result = await inner.listTools(options);
-      if (result.ok) for (const tool of result.value) knownNames.add(tool.name);
+      if (result.ok)
+        for (const tool of result.value)
+          if (!isUserMcpName(tool.name)) knownNames.add(tool.name);
       return result;
     },
     async callTool(name, args, options) {

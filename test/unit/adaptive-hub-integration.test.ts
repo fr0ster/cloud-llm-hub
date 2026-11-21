@@ -20,14 +20,21 @@ import {
 } from '../../srv/agent-manager';
 import { clientHistoryMessages } from '../../srv/lib/client-history';
 import { makeHubLlm } from '../../srv/lib/llm-factory';
+import { LongSessionRegistry } from '../../srv/lib/long-session';
 import { startProviders } from '../../srv/lib/providers';
 import { callOptionsFor } from '../../srv/lib/rag-caller';
 import { getRunRecordStore } from '../../srv/lib/run-record-store';
 import { recordTurn } from '../../srv/lib/session-turns';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
+import {
+  UserMcpBridge,
+  type UserMcpCall,
+  userMcpRegistration,
+} from '../../srv/lib/user-mcp-bridge';
 import { isWriteTool } from '../../srv/lib/write-guardrail';
 import {
   profileToolAllowed,
+  type RagCallerIdentity,
   runWithSessionId,
 } from '../../srv/request-session';
 
@@ -45,6 +52,7 @@ const config: AgentConfig = {
       correction: 4.9,
       target: 4.3,
       docs: 4.2,
+      'user-mcp': 4.1,
       client: 4.4,
       user: 3.5,
       session: 4,
@@ -89,7 +97,15 @@ const config: AgentConfig = {
 };
 
 describe('adaptive chat through the real hub build and library pipeline', () => {
-  let scenario: 'hello' | 'throw' | 'invalid' | 'check-write' | 'revise';
+  let scenario:
+    | 'hello'
+    | 'throw'
+    | 'invalid'
+    | 'check-write'
+    | 'revise'
+    | 'user-mcp';
+  const bridgedName = 'user__documents__lookup';
+  const bridgedValue = 'Returned by the session executor';
   const revisionCount = 21;
   const checkerScopes: boolean[] = [];
   const calls: string[] = [];
@@ -105,6 +121,18 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       controllerPrompts.push(messages.map((m) => m.content).join('\n'));
       if (scenario === 'throw') throw new Error('planning unavailable');
       if (scenario === 'invalid') return 'not JSON';
+      if (scenario === 'user-mcp')
+        return JSON.stringify({
+          steps: [
+            {
+              id: 'lookup',
+              kind: 'work',
+              worker: 'executor',
+              goal: 'Look in the documents',
+            },
+            { id: 'answer', kind: 'answer', from: 'lookup' },
+          ],
+        });
       if (scenario === 'revise') {
         const call = controllerPrompts.length;
         const step =
@@ -175,7 +203,44 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
         value: { content: respond(messages), finishReason: 'stop' as const },
       };
     }),
-    streamChat: jest.fn(async function* (messages) {
+    streamChat: jest.fn(async function* (messages, tools) {
+      if (scenario === 'user-mcp') {
+        expect(tools?.some((tool) => tool.name === 'unregistered')).not.toBe(
+          true,
+        );
+        const result = messages.find((message) => message.role === 'tool');
+        if (!result && tools?.some((tool) => tool.name === bridgedName)) {
+          yield {
+            ok: true as const,
+            value: {
+              content: '',
+              finishReason: 'tool_calls' as const,
+              toolCalls: [
+                {
+                  id: 'lookup',
+                  name: bridgedName,
+                  arguments: { id: 'record-1' },
+                },
+              ],
+            },
+          };
+        } else {
+          if (result)
+            expect(result.content).toContain(
+              `[source: user-mcp:${bridgedName}; trust 4.1]`,
+            );
+          yield {
+            ok: true as const,
+            value: {
+              content: result?.content?.includes(bridgedValue)
+                ? bridgedValue
+                : 'No session tool',
+              finishReason: 'stop' as const,
+            },
+          };
+        }
+        return;
+      }
       if (
         scenario === 'check-write' &&
         !messages.some((m) => m.role === 'tool')
@@ -228,6 +293,7 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     userId = 'alice',
     remembered?: string,
     runConfig: AgentConfig = config,
+    identity?: RagCallerIdentity,
   ) {
     // Model the client ingress once; internal coordinator/worker calls are unfiltered.
     if (typeof prompt !== 'string')
@@ -286,10 +352,12 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       },
       [],
       userId,
+      identity,
     );
     lease.release();
     expect(retention.isKnown(userId, sessionId)).toBe(true);
     return {
+      executor: handle.executor,
       text: chunks.join(''),
       callTool,
       record: await runWithSessionId(
@@ -300,6 +368,104 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       ),
     };
   }
+
+  it('executes registered MCP through the adaptive worker and the direct proxy, with no agent MCP access', async () => {
+    scenario = 'user-mcp';
+    const registry = new LongSessionRegistry(
+      { ttlMs: 100, maxSessions: 1, maxPerUser: 1, queueLength: 0 },
+      { onClose: async () => {} },
+    );
+    const session = registry.open('alice', {
+      key: 'adaptive-user-mcp',
+    });
+    if ('refused' in session) throw new Error(session.refused);
+    const bridge = new UserMcpBridge();
+    session.userMcp = bridge;
+    bridge.register(
+      userMcpRegistration.parse({
+        servers: [
+          {
+            name: 'documents',
+            transport: 'browser',
+            tools: [
+              {
+                name: 'lookup',
+                description: 'Look up a document',
+                inputSchema: { type: 'object' },
+                annotations: { readOnlyHint: true },
+              },
+            ],
+          },
+        ],
+      }).servers,
+    );
+    const send = jest.fn((call: UserMcpCall) =>
+      bridge.answer(call.callId, { result: { content: bridgedValue } }),
+    );
+    bridge.subscribe('browser', ['documents'], { send, close: () => {} });
+    const bridgeConfig = {
+      ...config,
+      agent: { ...config.agent, toolResultMaxChars: 1 },
+    };
+    try {
+      const result = await run(
+        session.key,
+        'Look up a document',
+        session.userId,
+        undefined,
+        bridgeConfig,
+        { channel: 'openai', admin: false, userMcpSession: session },
+      );
+      expect(result.text).toBe(bridgedValue);
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          server: 'documents',
+          tool: 'lookup',
+          arguments: { id: 'record-1' },
+        }),
+      );
+      expect(result.callTool).not.toHaveBeenCalled();
+      const direct = await runWithSessionId(
+        session.key,
+        () =>
+          result.executor.process('Look up a document', {
+            ...callOptionsFor({
+              userId: session.userId,
+              sessionId: session.key,
+              isAdmin: false,
+            }),
+            externalTools: [
+              {
+                name: 'unregistered',
+                description: 'An ad-hoc tool',
+                inputSchema: { type: 'object' },
+              },
+            ],
+          }),
+        [],
+        session.userId,
+        { channel: 'openai', admin: false, userMcpSession: session },
+      );
+      expect(direct).toMatchObject({
+        ok: true,
+        value: { content: bridgedValue },
+      });
+      expect(send).toHaveBeenCalledTimes(2);
+      send.mockClear();
+      const mcp = await run(
+        session.key,
+        'Look up a document',
+        session.userId,
+        undefined,
+        bridgeConfig,
+        { channel: 'mcp-agent', admin: false, userMcpSession: session },
+      );
+      expect(mcp.text).toBe('No session tool');
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      await registry.close(session.userId, session.key, 'explicit');
+    }
+  });
 
   it('reviews a direct adaptive answer without an executor tool-loop or SAP calls', async () => {
     scenario = 'hello';

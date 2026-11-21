@@ -124,6 +124,28 @@ test('shipped seeds validate and executor alone owns storage/retry rules', async
     );
   }
 });
+test('the analyst seed answers the brief and cites session evidence in its report', async () => {
+  const analyst = (await loadAgentProfileSeeds()).find(
+    ({ id }) => id === 'analyst',
+  );
+  expect(analyst?.metadata).toMatchObject({
+    kind: 'profile',
+    tools: 'read-only',
+    result: 'report',
+  });
+  for (const instruction of [
+    'Answer the questions you are given',
+    "Read the user's request and the questions in the brief",
+    'SAP read tools, docs MCP, and user MCP',
+    'store what you gathered in session RAG',
+    '**Answers**. Give one entry per asked question. Quote the question and cite the supporting RAG record IDs',
+    "If the brief contains no questions, quote and answer the brief's goal",
+    '**Gathered data**. For each RAG record ID, name the source and describe what the record contains',
+    '**Not found**. Report what you searched for and where you searched',
+  ])
+    expect(analyst?.text).toContain(instruction);
+});
+
 test.each([
   ['name: analyst\nname: analyst', 'duplicate YAML key'],
   ['name: analyst\nceiling: all', 'unsupported key'],
