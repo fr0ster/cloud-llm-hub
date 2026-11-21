@@ -1,4 +1,5 @@
-import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
+import { type IMcpClient, McpError } from '@mcp-abap-adt/llm-agent';
+import { isUserMcpName } from './user-mcp-names';
 
 /**
  * First listed owner wins name collisions; one non-cacheable part disables
@@ -6,10 +7,18 @@ import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
  * Keep this as one builder slot: llm-agent 33 requires labeled servers for
  * multiple slots. ExternalMcp already assigns stable aliases to docs tools.
  */
-export function compositeMcpClient(parts: IMcpClient[]): IMcpClient {
+export function compositeMcpClient(
+  parts: IMcpClient[],
+  userMcp?: IMcpClient,
+): IMcpClient {
   let owners = new Map<string, IMcpClient>();
   const client: IMcpClient = {
-    cacheable: parts.every((part) => part.cacheable !== false),
+    get cacheable() {
+      return (
+        userMcp?.cacheable !== false &&
+        parts.every((part) => part.cacheable !== false)
+      );
+    },
     async listTools(options) {
       const tools: Awaited<ReturnType<IMcpClient['listTools']>> = {
         ok: true,
@@ -20,15 +29,30 @@ export function compositeMcpClient(parts: IMcpClient[]): IMcpClient {
         const result = await part.listTools(options);
         if (!result.ok) return result;
         for (const tool of result.value) {
-          if (local.has(tool.name)) continue;
+          if (local.has(tool.name) || isUserMcpName(tool.name)) continue;
           local.set(tool.name, part);
           tools.value.push(tool);
         }
       }
       owners = local;
+      if (userMcp) {
+        const listed = await userMcp.listTools(options);
+        if (!listed.ok) return listed;
+        tools.value.push(...listed.value);
+      }
       return tools;
     },
     async callTool(name, args, options) {
+      if (isUserMcpName(name))
+        return userMcp
+          ? userMcp.callTool(name, args, options)
+          : {
+              ok: false,
+              error: new McpError(
+                'TOOL_FORBIDDEN: User MCP tool is not permitted',
+                'TOOL_FORBIDDEN',
+              ),
+            };
       if (!owners.has(name)) {
         const result = await client.listTools(options);
         if (!result.ok) return result;

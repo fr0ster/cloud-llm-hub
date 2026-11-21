@@ -185,6 +185,10 @@ test('the safety net aborts hung indexing and preserves the MCP connection', asy
         }),
     );
     const embedQuery = jest.fn(embedder.embedQuery);
+    let repaired = false;
+    repairSearch = () => {
+      repaired = true;
+    };
     const docs = new ExternalMcp(
       parseExternalMcp({
         LLM_AGENT_EXECUTOR_MCP: 'DOCS',
@@ -198,7 +202,10 @@ test('the safety net aborts hung indexing and preserves the MCP connection', asy
       }),
       warn,
       Date.now,
-      () => ({ embedDocument, embedQuery }),
+      () => ({
+        embedDocument: repaired ? embedder.embedDocument : embedDocument,
+        embedQuery,
+      }),
     );
     let resolved = false;
     const ready = docs.clients('executor').then((clients) => {
@@ -216,31 +223,37 @@ test('the safety net aborts hung indexing and preserves the MCP connection', asy
     expect(clients).toHaveLength(1);
     expect(signal?.aborted).toBe(true);
     expect(warn).toHaveBeenCalledWith(
-      'External docs MCP indexing unavailable; no docs hits',
+      'External docs MCP indexing unavailable',
       { destination: 'DOCS' },
     );
     expect(disconnect).not.toHaveBeenCalled();
     expect(await clients[0].callTool('search_cds', {})).toMatchObject({
       ok: true,
     });
-    expect(await names(docs.withToolsRag(corpus, 'executor'))).toEqual([
-      'tool:corpus',
-    ]);
+    const rag = docs.withToolsRag(corpus, 'executor');
+    await expect(names(rag)).rejects.toMatchObject({
+      code: 'TOOL_SEARCH_UNAVAILABLE',
+    });
     expect(embedQuery).not.toHaveBeenCalled();
     // An embedder ignoring cancellation must not publish late vectors.
     finish({ vector: [1, 0] });
     await jest.advanceTimersByTimeAsync(0);
-    expect(await names(docs.withToolsRag(corpus, 'executor'))).toEqual([
-      'tool:corpus',
-    ]);
+    await expect(names(rag)).rejects.toMatchObject({
+      code: 'TOOL_SEARCH_UNAVAILABLE',
+    });
   } finally {
     jest.useRealTimers();
   }
 });
 
-test.each(['direct', 'rag'])(
-  'indexing failure keeps a %s connection usable',
-  async (mode) => {
+test.each(['direct', 'missing', 'rejected', 'empty'])(
+  'docs MCP handles %s indexing and repairs failed ranked searches before admitting traffic',
+  async (failure) => {
+    const mode = failure === 'direct' ? 'direct' : 'rag';
+    let broken = true;
+    repairSearch = () => {
+      broken = false;
+    };
     const warn = jest.fn();
     const disconnect = jest.fn(async () => {});
     const docs = new ExternalMcp(
@@ -256,12 +269,17 @@ test.each(['direct', 'rag'])(
       }),
       warn,
       Date.now,
-      () => ({
-        ...embedder,
-        embedDocument: async () => {
-          throw new Error('offline');
-        },
-      }),
+      () =>
+        broken && failure === 'missing'
+          ? undefined
+          : {
+              ...embedder,
+              embedDocument: async () => {
+                if (broken && failure === 'rejected')
+                  throw new Error('offline');
+                return { vector: broken && failure === 'empty' ? [] : [1, 0] };
+              },
+            },
     );
     const clients = await docs.clients('executor');
     expect(clients).toHaveLength(1);
@@ -270,11 +288,27 @@ test.each(['direct', 'rag'])(
     });
     expect(disconnect).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledTimes(mode === 'rag' ? 1 : 0);
-    expect(await names(docs.withToolsRag(corpus, 'executor'))).toEqual(
-      mode === 'rag'
-        ? ['tool:corpus']
-        : ['tool:corpus', 'tool:search_cds', 'tool:search_ui'],
-    );
+    const rag = docs.withToolsRag(corpus, 'executor');
+    if (mode === 'direct') {
+      expect(await names(rag)).toEqual([
+        'tool:corpus',
+        'tool:search_cds',
+        'tool:search_ui',
+      ]);
+      expect(toolSearchFailure()).toBeUndefined();
+      return;
+    }
+    await expect(names(rag)).rejects.toMatchObject({
+      code: 'TOOL_SEARCH_UNAVAILABLE',
+    });
+    expect(toolSearchFailure()).toContain('external docs MCP (executor)');
+    await expect(assertToolSearchHealthy()).rejects.toMatchObject({
+      statusCode: 503,
+    });
+    repairSearch();
+    await assertToolSearchHealthy();
+    expect(toolSearchFailure()).toBeUndefined();
+    expect(await names(rag)).toEqual(['tool:corpus', 'tool:search_cds']);
   },
 );
 

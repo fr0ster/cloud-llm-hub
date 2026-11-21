@@ -19,17 +19,41 @@ import { buildHeadersForDestination } from '@sap-cloud-sdk/connectivity';
 import { resolveHttpDestination } from '../connections/destinationResolver';
 import { profileToolAllowed } from '../request-session';
 import { BuildValidationError } from './build-validation-error';
-import { queryToolCorpus } from './tool-search-health';
+import { queryToolCorpus, waitForBackendWork } from './tool-search-health';
 import { resolverFor, type TrustResolver } from './trust-resolver';
+import { isUserMcpName } from './user-mcp-names';
 
-const roles = ['planner', 'executor', 'checker', 'analyst'] as const;
-export type ExternalMcpRole = (typeof roles)[number];
+export const externalMcpRoles = [
+  'planner',
+  'executor',
+  'checker',
+  'analyst',
+] as const;
+export type ExternalMcpRole = (typeof externalMcpRoles)[number];
 export type McpSelection = 'direct' | 'rag' | 'auto';
 export interface ExternalMcpConfig {
   selection?: Record<string, McpSelection>;
   directMax?: number;
   roles: Record<ExternalMcpRole, string[]>;
   trust: Record<string, number>;
+}
+export function selectMcpMode(
+  config: Pick<ExternalMcpConfig, 'selection' | 'directMax'>,
+  server: string,
+  count: number,
+): 'direct' | 'rag' {
+  const mode = config.selection?.[server] ?? 'auto';
+  return mode === 'auto'
+    ? count <= (config.directMax ?? 12)
+      ? 'direct'
+      : 'rag'
+    : mode;
+}
+
+export function mcpToolSimilarity(left: number[], right: number[]): number {
+  const dot = left.reduce((sum, value, i) => sum + value * (right[i] ?? 0), 0);
+  const norm = Math.hypot(...left) * Math.hypot(...right);
+  return norm ? dot / norm : 0;
 }
 export function parseExternalMcp(env: NodeJS.ProcessEnv): ExternalMcpConfig {
   const list = (value: string | undefined): string[] => [
@@ -288,7 +312,7 @@ export class ExternalMcp {
           for (const [name, entry] of this.vectors) {
             if (entry.destination === destination) this.vectors.delete(name);
           }
-          this.warn('External docs MCP indexing unavailable; no docs hits', {
+          this.warn('External docs MCP indexing unavailable', {
             destination,
           });
           this.retryAt.set(destination, this.now() + 30000);
@@ -310,7 +334,7 @@ export class ExternalMcp {
   }
   private destinations(): string[] {
     return [
-      ...new Set(roles.flatMap((role) => this.config.roles[role])),
+      ...new Set(externalMcpRoles.flatMap((role) => this.config.roles[role])),
     ].sort();
   }
   private rebuildOwners(): void {
@@ -323,7 +347,9 @@ export class ExternalMcp {
         // Namespace all tools in multi-destination configurations before discovery
         // can reveal collisions. Reachability never participates in naming.
         const name =
-          reserved.has(tool.name) || this.destinations().length > 1
+          reserved.has(tool.name) ||
+          isUserMcpName(tool.name) ||
+          this.destinations().length > 1
             ? `${destination}__${tool.name}`
             : tool.name;
         // Skip duplicate tool names returned by a destination.
@@ -335,19 +361,18 @@ export class ExternalMcp {
         )
           continue;
         // Reject ambiguous generated aliases as well as duplicate raw names.
-        if (reserved.has(name) || this.owners.has(name)) continue;
+        if (reserved.has(name) || isUserMcpName(name) || this.owners.has(name))
+          continue;
         this.owners.set(name, { destination, tool: tool.name });
       }
     }
   }
   mode(destination: string): 'direct' | 'rag' {
-    const mode = this.config.selection?.[destination] ?? 'auto';
-    return mode === 'auto'
-      ? (this.cached.get(destination)?.tools.length ?? 0) <=
-        (this.config.directMax ?? 12)
-        ? 'direct'
-        : 'rag'
-      : mode;
+    return selectMcpMode(
+      this.config,
+      destination,
+      this.cached.get(destination)?.tools.length ?? 0,
+    );
   }
   private available(role?: string) {
     return [...this.owners].filter(([, owner]) => {
@@ -356,7 +381,7 @@ export class ExternalMcp {
         connection &&
         !connection.retired &&
         (!role ||
-          roles.some(
+          externalMcpRoles.some(
             (r) =>
               r === role && this.config.roles[r].includes(owner.destination),
           ))
@@ -365,15 +390,14 @@ export class ExternalMcp {
   }
   private async indexDestination(
     destination: string,
-    signal: AbortSignal,
+    signal?: AbortSignal,
   ): Promise<void> {
+    const tools = this.cached.get(destination)?.tools;
     const entries = this.available().filter(
       ([, owner]) => owner.destination === destination,
     );
     const texts = entries.map(([name, owner]) => {
-      const tool = this.cached
-        .get(destination)
-        ?.tools.find((tool) => tool.name === owner.tool);
+      const tool = tools?.find((tool) => tool.name === owner.tool);
       return { name, text: `Tool: ${name} \u2014 ${tool?.description ?? ''}` };
     });
     if (this.mode(destination) !== 'rag') {
@@ -393,14 +417,15 @@ export class ExternalMcp {
     const embedder = this.embedder?.();
     if (!embedder) throw new Error('Docs MCP RAG requires an embedder');
     const indexed = await Promise.all(
-      texts.map(async ({ name, text }) => ({
-        name,
-        destination,
-        text,
-        vector: (await embedder.embedDocument(text, { signal })).vector,
-      })),
+      texts.map(async ({ name, text }) => {
+        const { vector } = await embedder.embedDocument(text, { signal });
+        if (!vector.length) throw new Error('Missing docs tool vector');
+        return { name, destination, text, vector };
+      }),
     );
-    signal.throwIfAborted();
+    signal?.throwIfAborted();
+    if (tools !== this.cached.get(destination)?.tools)
+      throw new Error('Docs MCP catalogue changed during indexing');
     // Publish one destination atomically; other destinations retain their vectors.
     for (const [name, entry] of this.vectors) {
       if (entry.destination === destination) this.vectors.delete(name);
@@ -469,13 +494,33 @@ export class ExternalMcp {
     const direct: RagResult[] = [];
     const ranked: RagResult[] = [];
     let vector: number[] | undefined;
-    if (
-      probe ||
-      this.available(role).some(
-        ([name, owner]) =>
-          this.mode(owner.destination) === 'rag' && this.vectors.has(name),
-      )
-    ) {
+    const rankedEntries = () =>
+      this.available(role).filter(
+        ([, owner]) => this.mode(owner.destination) === 'rag',
+      );
+    const unindexed = () =>
+      new Set(
+        rankedEntries()
+          .filter(([name]) => !this.vectors.has(name))
+          .map(([, owner]) => owner.destination),
+      );
+    const pending = [...unindexed()].flatMap((destination) => {
+      const connection = this.connections.get(destination);
+      return connection ? [connection] : [];
+    });
+    if (pending.length)
+      await waitForBackendWork(
+        Promise.all(pending).then(() => {}),
+        options?.signal,
+      );
+    const missing = unindexed();
+    if (missing.size) {
+      if (!probe) throw new Error('Missing docs tool index');
+      await Promise.all(
+        [...missing].map((destination) => this.indexDestination(destination)),
+      );
+    }
+    if (probe || rankedEntries().length) {
       // No artificial deadline: work stops only via the caller's abort.
       const embedder = probe
         ? (this.probeQueryEmbedder?.() ?? this.embedder?.())
@@ -493,16 +538,11 @@ export class ExternalMcp {
       if (this.mode(owner.destination) === 'direct') direct.push(record);
       else {
         const entry = this.vectors.get(name);
-        if (!entry || !vector) continue;
-        const dot = entry.vector.reduce(
-          (sum, value, i) => sum + value * (vector[i] ?? 0),
-          0,
-        );
-        const norm = Math.hypot(...entry.vector) * Math.hypot(...vector);
+        if (!entry || !vector) throw new Error('Missing docs tool index');
         ranked.push({
           ...record,
           text: entry.text,
-          score: norm ? dot / norm : 0,
+          score: mcpToolSimilarity(entry.vector, vector),
         });
       }
     }
@@ -526,7 +566,7 @@ export class ExternalMcp {
     options?: { signal?: AbortSignal },
     resolver?: TrustResolver,
   ): Promise<IMcpClient[]> {
-    const selected = roles.find((value) => value === role);
+    const selected = externalMcpRoles.find((value) => value === role);
     if (!selected) return [];
     options?.signal?.throwIfAborted();
     this.refresh();

@@ -91,9 +91,14 @@ jest.mock('../../srv/anthropic-handler', () => ({
   ) => res.json({ reached: 'messages', session: req.longSession?.key ?? null }),
 }));
 
-import { RagError } from '@mcp-abap-adt/llm-agent';
+import {
+  type IRag,
+  RagError,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import express from 'express';
 import { z } from 'zod';
+import { parseExternalMcp } from '../../srv/lib/external-mcp';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { longSessions } from '../../srv/lib/long-session';
 import { clearSessionConfig } from '../../srv/lib/session-config';
@@ -102,7 +107,13 @@ import {
   queryToolCorpus,
   toolSearchFailure,
 } from '../../srv/lib/tool-search-health';
+import type { UserMcpCall } from '../../srv/lib/user-mcp-bridge';
+import {
+  userMcpClient,
+  withUserMcpToolsRag,
+} from '../../srv/lib/user-mcp-tools';
 import type { CollectionMeta } from '../../srv/rag-collections';
+import { runWithSessionId } from '../../srv/request-session';
 import { SESSION_COOKIE, SESSION_HEADER } from '../../srv/session-id';
 
 require('../../srv/server');
@@ -143,6 +154,619 @@ async function openOne(body: unknown = {}) {
   return { res, body: await res.json() };
 }
 
+async function openMcpSession() {
+  const { body } = await openOne();
+  const key = z.object({ session: z.string() }).parse(body).session;
+  const session = longSessions().get(user.id, key);
+  if (!session) throw new Error('Session missing');
+  return session;
+}
+
+const bridgeRegistration = {
+  name: 'work',
+  transport: 'browser',
+  tools: [
+    {
+      name: 'read',
+      description: 'Read',
+      inputSchema: { type: 'object' },
+      annotations: { readOnlyHint: true },
+    },
+  ],
+};
+const writeRegistration = {
+  ...bridgeRegistration,
+  writes: true,
+  tools: [
+    {
+      name: 'write',
+      description: 'Write',
+      inputSchema: { type: 'object' },
+    },
+  ],
+};
+
+function bridgeRequest(
+  key: string | undefined,
+  method: 'PUT' | 'POST' | 'DELETE',
+  path = '',
+  payload?: object,
+) {
+  return fetch(`${base}/v1/session/user-mcp${path}`, {
+    method,
+    headers: {
+      'content-type': 'application/json',
+      ...(key ? { [SESSION_HEADER]: key } : {}),
+    },
+    body: payload && JSON.stringify(payload),
+  });
+}
+
+test('user MCP registration validates the whole catalogue, replaces a server and deletes one or all', async () => {
+  const session = await openMcpSession();
+  const payload = { servers: [bridgeRegistration] };
+  expect((await bridgeRequest(undefined, 'PUT', '', payload)).status).toBe(400);
+  expect((await bridgeRequest(session.key, 'PUT', '', payload)).status).toBe(
+    204,
+  );
+  const planner = await bridgeRequest(session.key, 'PUT', '', {
+    servers: [{ ...bridgeRegistration, roles: ['planner'] }],
+  });
+  expect(planner.status).toBe(400);
+  expect(await planner.json()).toEqual({
+    error: {
+      code: 'INVALID_USER_MCP_REQUEST',
+      message: 'User MCP roles must be analyst, executor, or checker',
+    },
+  });
+  for (const server of [
+    { ...bridgeRegistration, name: 'DOCS' },
+    { ...bridgeRegistration, name: 'broken__alias' },
+    { ...bridgeRegistration, transport: 'stdio' },
+    { ...bridgeRegistration, roles: ['admin'] },
+    { ...bridgeRegistration, writes: 'true' },
+    {
+      ...bridgeRegistration,
+      tools: [...bridgeRegistration.tools, ...bridgeRegistration.tools],
+    },
+    {
+      ...bridgeRegistration,
+      tools: [{ ...bridgeRegistration.tools[0], name: 'user__collision' }],
+    },
+    {
+      ...bridgeRegistration,
+      tools: [
+        { ...bridgeRegistration.tools[0], inputSchema: { type: 'array' } },
+      ],
+    },
+  ]) {
+    expect(
+      (await bridgeRequest(session.key, 'PUT', '', { servers: [server] }))
+        .status,
+    ).toBe(400);
+  }
+  expect(session.userMcp?.catalogue().map((tool) => tool.name)).toEqual([
+    'user__work__read',
+  ]);
+  expect(
+    (
+      await bridgeRequest(session.key, 'PUT', '', {
+        servers: [
+          {
+            ...bridgeRegistration,
+            tools: [{ ...bridgeRegistration.tools[0], name: 'list' }],
+          },
+          { ...bridgeRegistration, name: 'second', transport: 'companion' },
+        ],
+      })
+    ).status,
+  ).toBe(204);
+  expect(session.userMcp?.catalogue().map((tool) => tool.name)).toEqual([
+    'user__work__list',
+    'user__second__read',
+  ]);
+  expect(
+    (await bridgeRequest(session.key, 'DELETE', '?server=work')).status,
+  ).toBe(204);
+  expect(session.userMcp?.catalogue().map((tool) => tool.name)).toEqual([
+    'user__second__read',
+  ]);
+  expect((await bridgeRequest(session.key, 'DELETE')).status).toBe(204);
+  expect(session.userMcp?.catalogue()).toEqual([]);
+});
+
+test('user MCP rejects missing or invalid executor IDs on subscriptions and invalid IDs on registration', async () => {
+  const session = await openMcpSession();
+  for (const query of [
+    '',
+    '&executorId=',
+    '&executorId=a%20b',
+    '&executorId=a%0A',
+    '&executorId=a&executorId=b',
+  ]) {
+    const response = await fetch(
+      `${base}/v1/session/events?userMcp=browser&server=work${query}`,
+      { headers: { [SESSION_HEADER]: session.key } },
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: { code: 'INVALID_USER_MCP_REQUEST' },
+    });
+  }
+  for (const executorId of [123, '', 'a b', ['a']]) {
+    const response = await bridgeRequest(session.key, 'PUT', '', {
+      executorId,
+      servers: [bridgeRegistration],
+    });
+    expect(response.status).toBe(400);
+  }
+  expect(session.userMcp).toBeUndefined();
+});
+
+test('deleting an invalid ranked user MCP catalogue restores search in its session', async () => {
+  const session = await openMcpSession();
+  const payload = { servers: [bridgeRegistration] };
+  expect((await bridgeRequest(session.key, 'PUT', '', payload)).status).toBe(
+    204,
+  );
+  const tools: IRag = {
+    query: async () => ({ ok: true, value: [] }),
+    getById: async () => ({ ok: true, value: null }),
+    healthCheck: async () => ({ ok: true, value: undefined }),
+  };
+  const rag = withUserMcpToolsRag(
+    tools,
+    'executor',
+    parseExternalMcp({ LLM_AGENT_MCP_SELECTION: 'user__work=rag' }),
+    () => ({
+      embedQuery: async () => ({ vector: [1, 0] }),
+      embedDocument: async () => ({ vector: [] }),
+    }),
+  );
+  const search = () =>
+    runWithSessionId(
+      session.key,
+      () => rag.query(new TextOnlyEmbedding('read'), 1),
+      [],
+      session.userId,
+      { admin: false, channel: 'openai', userMcpSession: session },
+    );
+  await expect(search()).resolves.toMatchObject({
+    ok: false,
+    error: { code: 'USER_MCP_CATALOGUE_INVALID' },
+  });
+  expect((await fetch(`${base}/health`)).status).toBe(200);
+  expect(
+    (await bridgeRequest(session.key, 'DELETE', '?server=work')).status,
+  ).toBe(204);
+  await expect(search()).resolves.toEqual({ ok: true, value: [] });
+});
+
+const callEvent = z.object({
+  callId: z.uuid(),
+  server: z.string(),
+  tool: z.string(),
+  arguments: z.record(z.string(), z.json()),
+  replay: z.literal(true).optional(),
+});
+
+async function connectExecutor(
+  key: string,
+  executorId = 'browser-a',
+  cursor?: string,
+) {
+  const query = new URLSearchParams({
+    userMcp: 'browser',
+    server: 'work',
+    executorId,
+  });
+  const response = await fetch(`${base}/v1/session/events?${query}`, {
+    headers: {
+      [SESSION_HEADER]: key,
+      ...(cursor ? { 'Last-Event-ID': cursor } : {}),
+    },
+  });
+  expect(response.status).toBe(200);
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('Missing SSE body');
+  const decoder = new TextDecoder();
+  let pending = '';
+  return {
+    async nextCall() {
+      for (;;) {
+        const end = pending.indexOf('\n\n');
+        if (end !== -1) {
+          const event = pending.slice(0, end);
+          pending = pending.slice(end + 2);
+          const data = event
+            .split('\n')
+            .find((line) => line.startsWith('data: '));
+          if (event.startsWith('event: user_mcp_call\n') && data)
+            return callEvent.parse(JSON.parse(data.slice(6)));
+          continue;
+        }
+        const chunk = await reader.read();
+        if (chunk.done) throw new Error('SSE closed before the call arrived');
+        pending += decoder.decode(chunk.value, { stream: true });
+      }
+    },
+    cancel: () => reader.cancel(),
+  };
+}
+
+test('user MCP delivers and resumes calls over SSE, isolates results and releases an active turn on close', async () => {
+  const session = await openMcpSession();
+  const other = await openMcpSession();
+  expect(
+    (
+      await bridgeRequest(session.key, 'PUT', '', {
+        servers: [bridgeRegistration],
+      })
+    ).status,
+  ).toBe(204);
+  const client = userMcpClient('executor');
+  const call = (signal?: AbortSignal) =>
+    runWithSessionId(
+      session.key,
+      () =>
+        client.callTool('user__work__read', { lookup: 'sample' }, { signal }),
+      [],
+      session.userId,
+      { admin: false, channel: 'openai', userMcpSession: session },
+    );
+  await expect(call()).resolves.toMatchObject({
+    ok: false,
+    error: { code: 'USER_MCP_UNAVAILABLE' },
+  });
+  const first = await connectExecutor(session.key);
+  try {
+    const result = call();
+    const event = await first.nextCall();
+    expect(event).toEqual({
+      callId: event.callId,
+      server: 'work',
+      tool: 'read',
+      arguments: { lookup: 'sample' },
+    });
+    await first.cancel();
+    const again = await connectExecutor(
+      session.key,
+      'browser-b',
+      'last-dialogue-message',
+    );
+    try {
+      expect(await again.nextCall()).toEqual({ ...event, replay: true });
+      const path = `/results/${event.callId}`;
+      const reply = {
+        result: { content: [{ type: 'text', text: 'sample result' }] },
+      };
+      expect((await bridgeRequest(other.key, 'POST', path, reply)).status).toBe(
+        404,
+      );
+      user.id = 'bob';
+      expect(
+        (await bridgeRequest(session.key, 'POST', path, reply)).status,
+      ).toBe(404);
+      user.id = 'alice';
+      expect(
+        (
+          await bridgeRequest(session.key, 'POST', path, {
+            ...reply,
+            error: 'both fields',
+          })
+        ).status,
+      ).toBe(400);
+      expect(
+        (await bridgeRequest(session.key, 'POST', path, reply)).status,
+      ).toBe(204);
+      await expect(result).resolves.toMatchObject({
+        ok: true,
+        value: reply.result,
+      });
+      expect(
+        (await bridgeRequest(session.key, 'POST', path, reply)).status,
+      ).toBe(404);
+
+      const failed = call();
+      const failure = await again.nextCall();
+      const error = { message: 'Executor reported a tool error', code: -32603 };
+      expect(
+        (
+          await bridgeRequest(
+            session.key,
+            'POST',
+            `/results/${failure.callId}`,
+            { error },
+          )
+        ).status,
+      ).toBe(204);
+      await expect(failed).resolves.toMatchObject({
+        ok: true,
+        value: { isError: true, content: error },
+      });
+
+      const stop = new AbortController();
+      const aborted = call(stop.signal);
+      const cancelled = await again.nextCall();
+      stop.abort();
+      await expect(aborted).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'USER_MCP_ABORTED' },
+      });
+      expect(
+        (
+          await bridgeRequest(
+            session.key,
+            'POST',
+            `/results/${cancelled.callId}`,
+            reply,
+          )
+        ).status,
+      ).toBe(404);
+
+      const closing = longSessions().run(session, () => call());
+      await again.nextCall();
+      const closed = await fetch(`${base}/v1/session`, {
+        method: 'DELETE',
+        headers: { [SESSION_HEADER]: session.key },
+      });
+      expect(closed.status).toBe(204);
+      await expect(closing).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'SESSION_CLOSED' },
+      });
+      expect(session.userMcp?.catalogue()).toEqual([]);
+    } finally {
+      await again.cancel();
+    }
+  } finally {
+    await first.cancel();
+  }
+});
+
+test('a replayed user MCP write can settle as outcome unknown and is not replayed again', async () => {
+  const session = await openMcpSession();
+  expect(
+    (
+      await bridgeRequest(session.key, 'PUT', '', {
+        servers: [writeRegistration],
+      })
+    ).status,
+  ).toBe(204);
+  const call = (id: string) =>
+    runWithSessionId(
+      session.key,
+      () => userMcpClient('executor').callTool('user__work__write', { id }),
+      [],
+      session.userId,
+      { admin: false, channel: 'openai', userMcpSession: session },
+    );
+  const first = await connectExecutor(session.key);
+  try {
+    const original = call('first');
+    const event = await first.nextCall();
+    expect(event.replay).toBeUndefined();
+    await first.cancel();
+    const second = await connectExecutor(session.key);
+    try {
+      expect(await second.nextCall()).toEqual({ ...event, replay: true });
+      const path = `/results/${event.callId}`;
+      expect(
+        (
+          await bridgeRequest(session.key, 'POST', path, {
+            outcome: 'unknown',
+            error: 'extra field',
+          })
+        ).status,
+      ).toBe(400);
+      expect(
+        (await bridgeRequest(session.key, 'POST', path, { outcome: 'unknown' }))
+          .status,
+      ).toBe(204);
+      await expect(original).resolves.toMatchObject({
+        ok: false,
+        error: {
+          code: 'USER_MCP_OUTCOME_UNKNOWN',
+          message:
+            'USER_MCP_OUTCOME_UNKNOWN: The write may or may not have been applied',
+        },
+      });
+      expect(
+        (await bridgeRequest(session.key, 'POST', path, { outcome: 'unknown' }))
+          .status,
+      ).toBe(404);
+    } finally {
+      await second.cancel();
+    }
+    const third = await connectExecutor(session.key);
+    try {
+      const next = call('second');
+      const sent = await third.nextCall();
+      expect(sent).toEqual({
+        callId: sent.callId,
+        server: 'work',
+        tool: 'write',
+        arguments: { id: 'second' },
+      });
+      const result = { content: 'stored' };
+      expect(
+        (
+          await bridgeRequest(session.key, 'POST', `/results/${sent.callId}`, {
+            result,
+          })
+        ).status,
+      ).toBe(204);
+      await expect(next).resolves.toMatchObject({ ok: true, value: result });
+    } finally {
+      await third.cancel();
+    }
+  } finally {
+    await first.cancel();
+  }
+});
+
+test.each(['subscription', 'registration'])(
+  'a different executor taking over via %s never receives a delivered write',
+  async (takeover) => {
+    const session = await openMcpSession();
+    const register = (executorId: string) =>
+      bridgeRequest(session.key, 'PUT', '', {
+        executorId,
+        servers: [writeRegistration],
+      });
+    expect((await register('browser-a')).status).toBe(204);
+    const bridge = session.userMcp;
+    const [tool] = bridge?.catalogue() ?? [];
+    if (!bridge || !tool) throw new Error('Write registration missing');
+
+    const first = await connectExecutor(session.key, 'browser-a');
+    try {
+      const pending = bridge.call(tool, { id: 'original' });
+      const sent = await first.nextCall();
+      const reply = { result: { content: 'applied' } };
+      const rejectLateResult = async () => {
+        const late = await bridgeRequest(
+          session.key,
+          'POST',
+          `/results/${sent.callId}`,
+          reply,
+        );
+        expect(late.status).toBe(404);
+        expect(await late.json()).toMatchObject({
+          error: { code: 'USER_MCP_CALL_NOT_FOUND' },
+        });
+        await expect(pending).resolves.toMatchObject({
+          ok: false,
+          error: { code: 'USER_MCP_OUTCOME_UNKNOWN' },
+        });
+      };
+      if (takeover === 'registration') {
+        expect((await register('browser-b')).status).toBe(204);
+        await rejectLateResult();
+      }
+      const second = await connectExecutor(session.key, 'browser-b');
+      try {
+        await rejectLateResult();
+        const [currentTool] = bridge.catalogue();
+        const next = bridge.call(currentTool, { id: 'next' });
+        const received = await second.nextCall();
+        expect(received.callId).not.toBe(sent.callId);
+        expect(received.arguments).toEqual({ id: 'next' });
+        expect(received.replay).toBeUndefined();
+        expect(
+          (
+            await bridgeRequest(
+              session.key,
+              'POST',
+              `/results/${received.callId}`,
+              reply,
+            )
+          ).status,
+        ).toBe(204);
+        await expect(next).resolves.toMatchObject({
+          ok: true,
+          value: reply.result,
+        });
+      } finally {
+        await second.cancel();
+      }
+    } finally {
+      await first.cancel();
+    }
+  },
+);
+
+test.each(['unregister', 'remove tool', 'revoke writes'] as const)(
+  'a pending write settles and rejects late results after %s',
+  async (change) => {
+    const session = await openMcpSession();
+    const registration = {
+      ...bridgeRegistration,
+      writes: true,
+      tools: [
+        ...bridgeRegistration.tools,
+        {
+          name: 'write',
+          description: 'Write',
+          inputSchema: { type: 'object' },
+        },
+      ],
+    };
+    const register = (server = registration) =>
+      bridgeRequest(session.key, 'PUT', '', { servers: [server] });
+    expect((await register()).status).toBe(204);
+    const bridge = session.userMcp;
+    if (!bridge) throw new Error('Bridge missing');
+    const events: UserMcpCall[] = [];
+    const detach = bridge.subscribe('browser', ['work'], {
+      executorId: 'browser-a',
+      send: (event) => {
+        events.push(event);
+        return true;
+      },
+      close: () => {},
+    });
+    const pending = runWithSessionId(
+      session.key,
+      () =>
+        userMcpClient('executor').callTool('user__work__write', { id: '1' }),
+      [],
+      session.userId,
+      { admin: false, channel: 'openai', userMcpSession: session },
+    );
+    expect(events).toHaveLength(1);
+    detach();
+    const response =
+      change === 'unregister'
+        ? await bridgeRequest(session.key, 'DELETE', '?server=work')
+        : await register({
+            ...registration,
+            writes: change !== 'revoke writes',
+            tools:
+              change === 'remove tool'
+                ? bridgeRegistration.tools
+                : registration.tools,
+          });
+    expect(response.status).toBe(204);
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: 'USER_MCP_OUTCOME_UNKNOWN',
+        message: expect.stringContaining(
+          'The write may or may not have been applied',
+        ),
+      },
+    });
+    const send = jest.fn(() => true);
+    const reconnected = bridge.subscribe('browser', ['work'], {
+      executorId: 'browser-a',
+      send,
+      close: () => {},
+    });
+    expect(send).not.toHaveBeenCalled();
+    reconnected();
+    expect((await register()).status).toBe(204);
+    bridge.subscribe('browser', ['work'], {
+      executorId: 'browser-a',
+      send,
+      close: () => {},
+    });
+    expect(send).not.toHaveBeenCalled();
+    const late = await bridgeRequest(
+      session.key,
+      'POST',
+      `/results/${events[0].callId}`,
+      {
+        result: { content: 'stored' },
+      },
+    );
+    expect(late.status).toBe(404);
+    expect(await late.json()).toMatchObject({
+      error: { code: 'USER_MCP_CALL_NOT_FOUND' },
+    });
+  },
+);
+
 function chat(headers: Record<string, string> = {}, path = 'chat/completions') {
   return fetch(`${base}/v1/${path}`, {
     method: 'POST',
@@ -151,9 +775,10 @@ function chat(headers: Record<string, string> = {}, path = 'chat/completions') {
   });
 }
 
-test('bootstrap rejects every route while tool search is unhealthy and admits traffic only after a successful probe', async () => {
+test('bootstrap allows catalogue recovery while other routes wait for tool search readiness', async () => {
   process.env.LLM_AGENT_PLAIN_API = 'true';
   process.env.LLM_AGENT_PLAIN_MCP = 'true';
+  const session = await openMcpSession();
   let failed = true;
   const failure = {
     ok: false as const,
@@ -183,6 +808,25 @@ test('bootstrap rejects every route while tool search is unhealthy and admits tr
       }
     }
     expect(probe).not.toHaveBeenCalled();
+    const payload = { servers: [bridgeRegistration] };
+    expect((await bridgeRequest(session.key, 'PUT', '', payload)).status).toBe(
+      204,
+    );
+    expect(session.userMcp?.catalogue()).toHaveLength(1);
+    expect(
+      (
+        await fetch(`${base}/V1/SESSION/USER-MCP/?server=work`, {
+          method: 'DELETE',
+          headers: { [SESSION_HEADER]: session.key },
+        })
+      ).status,
+    ).toBe(204);
+    expect(session.userMcp?.catalogue()).toEqual([]);
+    expect((await bridgeRequest(session.key, 'PUT', '', payload)).status).toBe(
+      204,
+    );
+    expect((await bridgeRequest(undefined, 'DELETE')).status).toBe(400);
+    expect(probe).not.toHaveBeenCalled();
     const routes = [
       '/v1/chat/completions',
       '/v1/messages',
@@ -190,6 +834,8 @@ test('bootstrap rejects every route while tool search is unhealthy and admits tr
       '/v1/session',
       '/v1/session/models',
       '/v1/session/events',
+      '/v1/session/user-mcp',
+      '/v1/session/user-mcp/results/c1143887-95b4-4086-9325-2a7587935412',
       '/v1/models',
       '/v1/usage',
       '/v1/token',
@@ -215,6 +861,11 @@ test('bootstrap rejects every route while tool search is unhealthy and admits tr
         'DELETE',
         'OPTIONS',
       ]) {
+        if (
+          route === '/v1/session/user-mcp' &&
+          (method === 'PUT' || method === 'DELETE')
+        )
+          continue;
         const response = await fetch(base + route, { method });
         expect(response.status).toBe(503);
         if (method !== 'HEAD')
@@ -230,7 +881,7 @@ test('bootstrap rejects every route while tool search is unhealthy and admits tr
       body: '{',
     });
     expect(malformed.status).toBe(503);
-    expect(longSessions().size()).toBe(0);
+    expect(longSessions().size()).toBe(1);
     failed = false;
     probe.mockClear();
     expect((await fetch(`${base}/health`)).status).toBe(503);

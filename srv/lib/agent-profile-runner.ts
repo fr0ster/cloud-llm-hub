@@ -34,8 +34,8 @@ export interface AgentProfileRunnerHost {
   prepareTools?(role: string, options?: CallOptions): Promise<void>;
   plannerKnowledgeTools?(): string[];
   acceptsPolicyName?: (name: string) => boolean;
-  catalogue(): readonly RegisteredProfileTool[];
-  grants(): ReadonlySet<string>;
+  catalogue(role?: string): readonly RegisteredProfileTool[];
+  grants(role?: string): ReadonlySet<string>;
   buildWorker(
     profile: WorkerProfile,
     preamble: string,
@@ -66,8 +66,8 @@ export class AgentProfileRunner implements IAgentProfileRunner {
   ): <T>(run: () => T) => T {
     const permissions = effectiveProfileTools({
       acceptsPolicyName: this.host.acceptsPolicyName,
-      catalogue: this.host.catalogue(),
-      grants: this.host.grants(),
+      catalogue: this.host.catalogue(profile.name),
+      grants: this.host.grants(profile.name),
       result: profile.result,
       policy: profile.tools,
       parent,
@@ -131,7 +131,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
     const parent = currentProfileTools();
     try {
       await this.host.prepareTools?.(profile.name, options);
-      const catalogue = this.host.catalogue();
+      const catalogue = this.host.catalogue(profile.name);
       effectiveProfileTools({
         acceptsPolicyName: this.host.acceptsPolicyName,
         catalogue,

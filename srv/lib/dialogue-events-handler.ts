@@ -11,8 +11,14 @@ import { longSessionsIfReady } from './long-session';
 import type { LongSessionRequest } from './session-connection';
 import { taskView } from './task-view';
 import { dialogueUsageToWire, sumPlannerUsage } from './usage-wire';
+import { UserMcpBridge } from './user-mcp-bridge';
+import {
+  invalidUserMcpRequest,
+  userMcpExecutorQuery,
+  userMcpSessionOf,
+} from './user-mcp-handler';
 
-/** Read-only view of complete session messages, plans and tasks for all tabs.
+/** Session events for dialogue observers and opted-in user MCP executors.
  * The open channel is the WebUI's live connection, so it counts as session
  * activity: each heartbeat touches the session, and the TTL starts once the
  * channel drops (spec: TTL counts from the last activity).
@@ -21,7 +27,11 @@ export async function handleDialogueEvents(
   req: Request,
   res: Response,
 ): Promise<void> {
-  const session = (req as LongSessionRequest).longSession;
+  const executor = req.query?.userMcp !== undefined;
+  const session = executor
+    ? userMcpSessionOf(req, res)
+    : (req as LongSessionRequest).longSession;
+  if (executor && !session) return;
   const userId = cds.context?.user?.id ?? 'anonymous';
   if (!session || session.userId !== userId) {
     res.status(404).json({
@@ -30,20 +40,30 @@ export async function handleDialogueEvents(
     return;
   }
   const config = getAgentConfig();
-  if (config.agent.chatCoordinator !== 'dialogue') {
+  const dialogue = config.agent.chatCoordinator === 'dialogue';
+  if (!dialogue && !executor) {
     res
       .status(409)
       .json({ error: { message: 'Dialogue coordinator required' } });
     return;
   }
+  const subscription = executor
+    ? userMcpExecutorQuery.safeParse(req.query)
+    : undefined;
+  if (subscription && !subscription.success) {
+    invalidUserMcpRequest(res);
+    return;
+  }
   let closed = false;
   let unsubscribe = () => {};
   let unlisten = () => {};
+  let detachExecutor = () => {};
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   const cleanup = () => {
     closed = true;
     unsubscribe();
     unlisten();
+    detachExecutor();
     clearInterval(heartbeat);
   };
   res.once('close', cleanup);
@@ -52,16 +72,31 @@ export async function handleDialogueEvents(
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
-  const send = (event: string, data: object, id?: string) => {
-    if (closed) return;
+  const send = (event: string, data: object, id?: string): boolean => {
+    if (closed || res.destroyed || res.writableEnded) return false;
     try {
       res.write(
         `${id ? `id: ${id}\n` : ''}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
       );
+      return true;
     } catch {
       cleanup();
+      return false;
     }
   };
+  if (subscription?.success) {
+    const { userMcp, executorId, server } = subscription.data;
+    session.userMcp ??= new UserMcpBridge();
+    detachExecutor = session.userMcp.subscribe(userMcp, server, {
+      executorId,
+      send: (call) => send('user_mcp_call', call),
+      close: () => {
+        cleanup();
+        res.end();
+      },
+    });
+    if (closed) detachExecutor();
+  }
   let attached = false;
   const attach = (handle: DialogueHandle) => {
     if (closed || attached) return;
@@ -105,10 +140,12 @@ export async function handleDialogueEvents(
     unsubscribe = detach;
     if (closed) detach();
   };
-  unlisten = onDialogueCreated(userId, session.key, attach);
-  const handle = await lookupDialogue(userId, session.key);
-  if (handle) attach(handle);
-  else if (!attached) send('tasks', []);
+  if (dialogue && !closed) {
+    unlisten = onDialogueCreated(userId, session.key, attach);
+    const handle = await lookupDialogue(userId, session.key);
+    if (handle) attach(handle);
+    else if (!attached) send('tasks', []);
+  }
   if (closed) return;
   heartbeat = setInterval(() => {
     if (closed) return;
