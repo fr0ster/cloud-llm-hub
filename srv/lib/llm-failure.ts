@@ -9,8 +9,7 @@ import {
 import { throttleCallScope, withThrottleCall } from './throttle-strategy';
 import { reportWorkerActivity } from './worker-activity';
 
-// A failed planner result has no usage field. Observe completed model calls
-// here so already-spent tokens survive the library's failed-result envelope.
+// Observe provider calls independently of the pipeline's usage and result.
 const spendObserver = new AsyncLocalStorage<{
   record: (usage: TokenUsage) => void;
   preview?: (call: symbol, usage?: TokenUsage) => void;
@@ -51,34 +50,6 @@ export function attributeTokenUsage(
   };
 }
 
-/** Reconcile two views of the same calls, retaining provider-only model entries. */
-export function reconcileTokenUsage(
-  fallback: TokenUsage | undefined,
-  observed: TokenUsage | undefined,
-  model?: string,
-): TokenUsage | undefined {
-  if (!observed) return fallback;
-  if (!fallback) return observed;
-  const reported =
-    fallback.models ??
-    (model ? attributeTokenUsage(fallback, model).models : undefined);
-  if (!reported)
-    return observed.totalTokens >= fallback.totalTokens ? observed : fallback;
-  const models = new Map(Object.entries(reported));
-  for (const [name, entry] of Object.entries(observed.models ?? {})) {
-    const previous = models.get(name);
-    models.set(name, {
-      ...mergeStreamUsage(previous, entry),
-      requests: Math.max(previous?.requests ?? 0, entry.requests),
-    });
-  }
-  let usage: TokenUsage | undefined;
-  for (const [name, entry] of models) {
-    usage = addTokenUsage(usage, { ...entry, models: { [name]: entry } });
-  }
-  return usage;
-}
-
 export function captureTokenUsage() {
   let observed: TokenUsage | undefined;
   const active = new Map<symbol, TokenUsage>();
@@ -95,14 +66,14 @@ export function captureTokenUsage() {
         },
       );
     },
-    usage(fallback?: TokenUsage, model?: string) {
-      return reconcileTokenUsage(fallback, observed, model);
+    usage(fallback?: TokenUsage) {
+      return observed ?? fallback;
     },
-    streamUsage(fallback: TokenUsage | undefined, model: string) {
+    streamUsage(fallback?: TokenUsage) {
       let usage = observed;
       for (const preview of active.values())
         usage = addTokenUsage(usage, preview);
-      return reconcileTokenUsage(fallback, usage, model);
+      return usage ?? fallback;
     },
   };
 }

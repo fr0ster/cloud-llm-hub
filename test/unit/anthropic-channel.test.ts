@@ -4,7 +4,7 @@ import {
   staticApiKey,
   type TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
-import { reportLlmSpend } from '../../srv/lib/llm-failure';
+import { reliableLlm, reportLlmSpend } from '../../srv/lib/llm-failure';
 import { bindCaller } from '../../srv/lib/rag-caller';
 import { chatSessionBodyTests } from './helpers/chat-session-body';
 import { clientToolHistoryTests } from './helpers/client-tool-history';
@@ -139,14 +139,24 @@ it.each([false, true])(
       completionTokens: 177,
       totalTokens: 1708,
     };
+    const pipelineUsage: TokenUsage = {
+      ...usage,
+      models: { unknown: { ...usage, requests: 1 } },
+    };
     harness.process = async () => {
       reportLlmSpend(usage, 'm');
-      return { ok: true, value: { content: 'answer', usage } };
+      return { ok: true, value: { content: 'answer', usage: pipelineUsage } };
     };
     harness.stream = async function* () {
-      yield { ok: true, value: { content: 'answer', usage: input } };
-      reportLlmSpend(usage, 'm');
-      yield { ok: true, value: { content: '', usage, finishReason: 'stop' } };
+      try {
+        yield { ok: true, value: { content: 'answer', usage: input } };
+        yield {
+          ok: true,
+          value: { content: '', usage: pipelineUsage, finishReason: 'stop' },
+        };
+      } finally {
+        reportLlmSpend(usage, 'm');
+      }
     };
     const { res, done } = call(body(stream));
     await done;
@@ -159,6 +169,8 @@ it.each([false, true])(
         m: {
           prompt_tokens: 1531,
           completion_tokens: 177,
+          total_tokens: 1708,
+          requests: 1,
           cached_input_tokens: 1527,
           cache_creation_input_tokens: 2,
         },
@@ -180,10 +192,8 @@ it.each([false, true])(
           },
         },
       });
-      expect(JSON.parse(event('message_delta') ?? '')).toMatchObject({
-        usage: expected,
-      });
-    } else expect(JSON.parse(res.body)).toMatchObject({ usage: expected });
+      expect(JSON.parse(event('message_delta') ?? '').usage).toEqual(expected);
+    } else expect(JSON.parse(res.body).usage).toEqual(expected);
   },
 );
 
@@ -219,14 +229,31 @@ it.each([false, true])(
       if (!input || !output) throw new Error('Missing provider usage');
       expect(input.promptTokens).toBe(1533);
       expect(output.promptTokens).toBe(0);
+      const llm = reliableLlm({
+        model: 'm',
+        chat: async () => ({
+          ok: true,
+          value: { content: 'answer', finishReason: 'stop' },
+        }),
+        async *streamChat() {
+          yield { ok: true, value: { content: 'answer', usage: input } };
+          yield {
+            ok: true,
+            value: { content: '', usage: output, finishReason: 'stop' },
+          };
+        },
+      });
       harness.process = async () => {
-        reportLlmSpend(input, 'm');
+        for await (const chunk of llm.streamChat([])) {
+          if (!chunk.ok) throw chunk.error;
+        }
         return { ok: true, value: { content: 'answer', usage: output } };
       };
       harness.stream = async function* () {
-        reportLlmSpend(input, 'm');
-        yield { ok: true, value: { content: 'answer', usage: output } };
-        yield { ok: true, value: { content: '', finishReason: 'stop' } };
+        for await (const chunk of llm.streamChat([])) {
+          if (!chunk.ok) throw chunk.error;
+          yield { ok: true, value: { ...chunk.value } };
+        }
       };
       const { res, done } = call(body(stream));
       await done;

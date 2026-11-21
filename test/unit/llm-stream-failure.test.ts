@@ -49,21 +49,27 @@ test('provider stream start exposes cache counts and finalizes a single request'
   };
   const llm = reliableLlm(provider);
   const spend = captureTokenUsage();
+  const pipelineUsage: TokenUsage = {
+    ...initial,
+    models: { unknown: { ...initial, requests: 1 } },
+  };
+  expect(spend.usage(pipelineUsage)).toBe(pipelineUsage);
   await spend.run(async () => {
     for await (const chunk of llm.streamChat([])) {
       if (!chunk.ok) throw chunk.error;
       if (chunk.value.content)
-        expect(spend.streamUsage(undefined, 'claude')?.models?.claude).toEqual({
-          ...initial,
-          requests: 1,
+        expect(spend.streamUsage(pipelineUsage)?.models).toEqual({
+          claude: { ...initial, requests: 1 },
         });
     }
   });
-  expect(spend.usage()?.models?.claude).toEqual({
-    ...initial,
-    completionTokens: 177,
-    totalTokens: 1708,
-    requests: 1,
+  expect(spend.usage(pipelineUsage)?.models).toEqual({
+    claude: {
+      ...initial,
+      completionTokens: 177,
+      totalTokens: 1708,
+      requests: 1,
+    },
   });
 });
 

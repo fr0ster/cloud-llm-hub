@@ -3,7 +3,7 @@ import {
   type PlannerMessageUsage,
   type TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
-import { reconcileTokenUsage } from './llm-failure';
+import { mergeStreamUsage } from './llm-failure';
 
 interface WireModelTokens {
   prompt_tokens: number;
@@ -101,6 +101,30 @@ export function tokenUsageToWire(
       : {}),
   };
 }
+/** A task can appear in multiple dialogue messages with updated counters. */
+function mergeTaskUsage(
+  previous: TokenUsage | undefined,
+  next: TokenUsage | undefined,
+): TokenUsage | undefined {
+  if (!next) return previous;
+  if (!previous) return next;
+  if (!previous.models)
+    return next.totalTokens >= previous.totalTokens ? next : previous;
+  const models = new Map(Object.entries(previous.models));
+  for (const [name, entry] of Object.entries(next.models ?? {})) {
+    const earlier = models.get(name);
+    models.set(name, {
+      ...mergeStreamUsage(earlier, entry),
+      requests: Math.max(earlier?.requests ?? 0, entry.requests),
+    });
+  }
+  let usage: TokenUsage | undefined;
+  for (const [name, entry] of models) {
+    usage = addTokenUsage(usage, { ...entry, models: { [name]: entry } });
+  }
+  return usage;
+}
+
 export function sumPlannerUsage(
   messages: Iterable<PlannerMessageUsage | undefined>,
   opts?: { durationMs?: number },
@@ -117,7 +141,7 @@ export function sumPlannerUsage(
     planner = addTokenUsage(planner, usage?.planner);
     for (const task of usage?.tasks ?? []) {
       const previous = tasks.get(task.id);
-      const combined = reconcileTokenUsage(previous?.usage, task.usage);
+      const combined = mergeTaskUsage(previous?.usage, task.usage);
       const previousMs = previous?.durationMs;
       const durationMs =
         task.durationMs === undefined

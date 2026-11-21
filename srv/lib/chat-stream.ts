@@ -7,6 +7,7 @@ import {
   type OrchestratorError,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
+import cds from '@sap/cds';
 import type { Response } from 'express';
 import {
   anthropicEventWithUsage,
@@ -168,6 +169,17 @@ export async function streamDialogue(opts: {
       `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: finish_reason ? {} : { role: 'assistant', content }, finish_reason }] })}\n\n`,
     );
   let usage: LlmStreamChunk['usage'];
+  const terminalUsage = () => {
+    const tokens =
+      sumPlannerUsage(deliveredUsage, {
+        durationMs: Date.now() - stream.createdAt,
+      }) ?? usage;
+    if (tokens?.models)
+      cds
+        .log(`${protocol}-handler`)
+        .info('Token usage by model', tokens.models);
+    return tokens;
+  };
   const consuming = (async () => {
     try {
       await firstChunk;
@@ -179,11 +191,13 @@ export async function streamDialogue(opts: {
           opts.context,
         )) {
           const total =
-            event.event === 'message_delta' || event.event === 'message_start'
-              ? sumPlannerUsage(deliveredUsage, {
-                  durationMs: Date.now() - stream.createdAt,
-                })
-              : undefined;
+            event.event === 'message_delta'
+              ? terminalUsage()
+              : event.event === 'message_start'
+                ? sumPlannerUsage(deliveredUsage, {
+                    durationMs: Date.now() - stream.createdAt,
+                  })
+                : undefined;
           if (event.event === 'message_stop') {
             terminalSucceeded =
               !failure && !stream.signal.aborted && !stream.out.detached;
@@ -205,12 +219,7 @@ export async function streamDialogue(opts: {
           if (chunk.value.usage) usage = chunk.value.usage;
         }
         delta('', 'stop');
-        const wireUsage = openAiUsageToWire(
-          sumPlannerUsage(deliveredUsage, {
-            durationMs: Date.now() - stream.createdAt,
-          }) ?? usage,
-          responseModel(),
-        );
+        const wireUsage = openAiUsageToWire(terminalUsage(), responseModel());
         if (wireUsage)
           stream.out.write(
             `data: ${JSON.stringify({ ...base, choices: [], usage: wireUsage })}\n\n`,
@@ -223,10 +232,7 @@ export async function streamDialogue(opts: {
     } catch (error) {
       terminalSucceeded = false;
       // Spend survives a failed turn. Emit it before the error closes the socket.
-      const total = sumPlannerUsage(deliveredUsage, {
-        durationMs: Date.now() - stream.createdAt,
-      });
-      const spent = total ?? usage;
+      const spent = terminalUsage();
       if (spent) {
         if (protocol === 'anthropic')
           stream.out.write(

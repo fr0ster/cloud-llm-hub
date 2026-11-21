@@ -8,12 +8,13 @@ import { responseModelTests } from './helpers/response-model';
 
 const mockCatalog = jest.fn<Promise<IModelInfo[]>, []>();
 const mockCatalogError = jest.fn();
+const mockInfo = jest.fn();
 jest.mock('../../srv/lib/llm-factory', () => ({
   makeHubCatalogProvider: () => ({ getModelCatalog: mockCatalog }),
 }));
 
 import { LlmError } from '@mcp-abap-adt/llm-agent';
-import { reportLlmSpend } from '../../srv/lib/llm-failure';
+import { reliableLlm, reportLlmSpend } from '../../srv/lib/llm-failure';
 import { chatSessionBodyTests } from './helpers/chat-session-body';
 import { clientToolHistoryTests } from './helpers/client-tool-history';
 
@@ -28,7 +29,7 @@ jest.mock(
     __esModule: true,
     default: {
       log: () => ({
-        info() {},
+        info: mockInfo,
         warn() {},
         error: mockCatalogError,
         debug() {},
@@ -202,6 +203,93 @@ it.each([false, true])(
         },
       },
     });
+  },
+);
+
+it.each([false, true])(
+  'reports exactly the observed planner, worker iterations and checker (stream=%s)',
+  async (stream) => {
+    mockInfo.mockClear();
+    const usage = (promptTokens: number, completionTokens: number) => ({
+      promptTokens,
+      completionTokens,
+      totalTokens: promptTokens + completionTokens,
+    });
+    const provider = (
+      model: string,
+      tokens: TokenUsage,
+      streamTokens = tokens,
+    ) =>
+      reliableLlm({
+        model,
+        chat: async () => ({
+          ok: true,
+          value: { content: '', usage: tokens, finishReason: 'stop' },
+        }),
+        async *streamChat() {
+          yield { ok: true, value: { content: '', usage: streamTokens } };
+        },
+      });
+    const planner = provider('m', usage(11, 2));
+    const worker = provider('executor-model', usage(13, 3), usage(19, 5));
+    const checker = provider('checker-model', usage(17, 2));
+    const reply = async () => {
+      await planner.chat([]);
+      for await (const chunk of worker.streamChat([])) {
+        if (!chunk.ok) throw chunk.error;
+      }
+      await worker.chat([]);
+      await checker.chat([]);
+      return {
+        content: 'answer',
+        usage: {
+          ...usage(28, 4),
+          models: {
+            m: { ...usage(11, 2), requests: 1 },
+            unknown: { ...usage(17, 2), requests: 1 },
+          },
+        },
+      };
+    };
+    harness.process = async () => ({ ok: true, value: await reply() });
+    harness.stream = async function* () {
+      yield { ok: true, value: { ...(await reply()), finishReason: 'stop' } };
+    };
+    const { res, done } = call(body(stream));
+    await done;
+    const payload = stream
+      ? res.body
+          .split('\n')
+          .find((line) => line.includes('"choices":[],"usage":'))
+          ?.slice(6)
+      : res.body;
+    const models = {
+      m: { ...usage(11, 2), requests: 1 },
+      'executor-model': { ...usage(32, 8), requests: 2 },
+      'checker-model': { ...usage(17, 2), requests: 1 },
+    };
+    const wireModels = Object.fromEntries(
+      Object.entries(models).map(([model, tokens]) => [
+        model,
+        {
+          prompt_tokens: tokens.promptTokens,
+          completion_tokens: tokens.completionTokens,
+          total_tokens: tokens.totalTokens,
+          requests: tokens.requests,
+        },
+      ]),
+    );
+    const response = JSON.parse(payload ?? '');
+    if (stream)
+      expect(mockInfo).toHaveBeenCalledWith('Token usage by model', models);
+    expect(response.usage).toEqual({
+      prompt_tokens: 11,
+      completion_tokens: 2,
+      total_tokens: 13,
+      models: wireModels,
+    });
+    if (!stream)
+      expect(mockInfo).toHaveBeenCalledWith('Token usage by model', models);
   },
 );
 

@@ -1039,16 +1039,19 @@ async function serveChatCompletions(
       if (callerLeft.signal.aborted) return;
       throw error;
     }
+    const spend = captureTokenUsage();
     // The parsed body: a raw request carries it only in `body`, not `req.body`.
     if (collections) {
-      const retrieval = await collections.retrieve(
-        { headers: req.headers, body },
-        normalizedMessages,
-        userId,
-        sessionId,
-        log,
-        res.headersSent,
-        usage,
+      const retrieval = await spend.run(() =>
+        collections.retrieve(
+          { headers: req.headers, body },
+          normalizedMessages,
+          userId,
+          sessionId,
+          log,
+          res.headersSent,
+          usage,
+        ),
       );
       if (retrieval.refusal) {
         if (early?.opened) {
@@ -1205,20 +1208,7 @@ async function serveChatCompletions(
       let streamSucceeded = false;
       let pendingClientTools = false;
       let lastUsage: TokenUsage | undefined;
-      const spend = captureTokenUsage();
-
-      let usageSent = false;
-      const writeUsage = () => {
-        const usage = openAiUsageToWire(
-          spend.usage(lastUsage, responseModel),
-          responseModel,
-        );
-        if (!usage || usageSent) return;
-        usageSent = true;
-        out.write(
-          `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: responseModel, choices: [], usage })}\n\n`,
-        );
-      };
+      let streamErrorMessage: string | undefined;
 
       log.info('Starting streamProcess', { sessionId });
 
@@ -1280,21 +1270,18 @@ async function serveChatCompletions(
                             traceId,
                             err,
                           );
-                          const userMessage = unverified
+                          streamErrorMessage = unverified
                             ? limit
                               ? `${unverified} ${throttleMessage(limit)}`
                               : unverified
                             : limit
                               ? `${failureMessage(err)}. ${throttleMessage(limit)}`
                               : failureMessage(err);
-                          writeUsage();
-                          out.write(
-                            `data: ${jsonError(userMessage, 'server_error')}\n\n`,
-                          );
                           break;
                         }
 
                         const v = chunk.value;
+                        if (v.usage) lastUsage = v.usage;
                         if (v.reset) pendingClientTools = false;
                         pendingClientTools ||= hasPendingClientTools(v);
                         if (
@@ -1318,7 +1305,6 @@ async function serveChatCompletions(
                           out.write(`: status ${JSON.stringify(v.status)}\n\n`);
                           continue;
                         }
-                        if (v.usage) lastUsage = v.usage;
                         if (v.timing) {
                           log.info('Pipeline stage timing', {
                             timing: v.timing,
@@ -1437,23 +1423,13 @@ async function serveChatCompletions(
                         traceId,
                         err,
                       );
-                      const userMessage = streamUnverified
+                      streamErrorMessage = streamUnverified
                         ? streamLimit
                           ? `${streamUnverified} ${throttleMessage(streamLimit)}`
                           : streamUnverified
                         : streamLimit
                           ? `${failureMessage(err)}. ${throttleMessage(streamLimit)}`
                           : failureMessage(err);
-                      writeUsage();
-                      out.write(
-                        `data: ${jsonError(userMessage, 'server_error')}\n\n`,
-                      );
-                    }
-
-                    // Log per-model token breakdown if available (inside runWithSessionId so TS
-                    // can track lastUsage mutations; this is pure logging with no ordering concern).
-                    if (lastUsage?.models) {
-                      log.info('Token usage by model', lastUsage.models);
                     }
                   }),
                 ),
@@ -1464,6 +1440,20 @@ async function serveChatCompletions(
         ),
       );
       // end runWithSessionId / runWithRequestConnection / pipeline.run
+
+      const tokens = spend.usage(lastUsage);
+      if (tokens?.models) log.info('Token usage by model', tokens.models);
+      const usage = openAiUsageToWire(tokens, responseModel);
+      const writeUsage = () => {
+        if (usage)
+          out.write(
+            `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: responseModel, choices: [], usage })}\n\n`,
+          );
+      };
+      if (streamErrorMessage !== undefined) {
+        writeUsage();
+        out.write(`data: ${jsonError(streamErrorMessage, 'server_error')}\n\n`);
+      }
 
       // Ensure finish_reason is always sent — clients require it to detect stream end
       if (!finishReasonSent) {
@@ -1488,11 +1478,11 @@ async function serveChatCompletions(
       // OpenAI spec gates this behind stream_options.include_usage, but in practice
       // most clients (Goose, Cline) expect it. Sending unconditionally is safe —
       // clients that don't need it simply ignore the extra chunk.
-      writeUsage();
+      if (streamErrorMessage === undefined) writeUsage();
 
       log.info('Stream completed', {
         chunkCount,
-        hasUsage: !!lastUsage,
+        hasUsage: !!tokens,
         durationMs: Date.now() - t0,
         responseLength: accumulatedContent.length,
       });
@@ -1550,7 +1540,6 @@ async function serveChatCompletions(
     // --- Non-streaming (with rate-limit retry) ---
     // Bind the caller and session for canonical host RAG execution.
     // The wrapper encloses the whole retry block so the context stays alive across retries.
-    const spend = captureTokenUsage();
     const result = await spend.run(() =>
       pipeline.run(() =>
         runWithSessionId(
@@ -1610,10 +1599,9 @@ async function serveChatCompletions(
     const resultUsage = result.ok
       ? result.value.usage
       : failedDialogueUsage(result.error);
-    const finalUsage = openAiUsageToWire(
-      useDialogue ? resultUsage : spend.usage(resultUsage, model),
-      model,
-    );
+    const tokens = useDialogue ? resultUsage : spend.usage(resultUsage);
+    if (tokens?.models) log.info('Token usage by model', tokens.models);
+    const finalUsage = openAiUsageToWire(tokens, model);
 
     const responseToolCalls = result.ok ? result.value.toolCalls : undefined;
     if (responseToolCalls?.length)

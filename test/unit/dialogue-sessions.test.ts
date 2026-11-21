@@ -3043,21 +3043,19 @@ test.each([true, false])(
     expect(h.failedUsage?.().tasks).toEqual([
       expect.objectContaining({
         worker: 'executor',
-        usage: fails
-          ? {
+        usage: {
+          promptTokens: 7,
+          completionTokens: 3,
+          totalTokens: 10,
+          models: {
+            'worker-model': {
               promptTokens: 7,
               completionTokens: 3,
               totalTokens: 10,
-              models: {
-                'worker-model': {
-                  promptTokens: 7,
-                  completionTokens: 3,
-                  totalTokens: 10,
-                  requests: 1,
-                },
-              },
-            }
-          : { promptTokens: 8, completionTokens: 4, totalTokens: 12 },
+              requests: 1,
+            },
+          },
+        },
       }),
     ]);
   },
