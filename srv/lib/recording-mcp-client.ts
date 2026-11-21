@@ -29,6 +29,7 @@ import {
   type ToolEffectAnnotations,
 } from './tool-authorization';
 import { capToolResult, withinToolResultBudget } from './tool-result-cap';
+import { isUserMcpName } from './user-mcp-names';
 import { reportWorkerActivity } from './worker-activity';
 import { isWriteTool } from './write-guardrail';
 
@@ -131,10 +132,13 @@ export class RecordingMcpClient implements IMcpClient {
    * mutates this instance: the recorder is shared by every build for a
    * destination, so extending it in place would nest clients per request.
    */
-  includeClients(clients: IMcpClient[]): RecordingMcpClient {
-    if (!clients.length) return this;
+  includeClients(
+    clients: IMcpClient[],
+    userMcp?: IMcpClient,
+  ): RecordingMcpClient {
+    if (!clients.length && !userMcp) return this;
     return new RecordingMcpClient(
-      compositeMcpClient([...clients, this.inner]),
+      compositeMcpClient([...clients, this.inner], userMcp),
       undefined,
       this.maxChars,
       this.retainRecords,
@@ -144,7 +148,8 @@ export class RecordingMcpClient implements IMcpClient {
   async listTools(options?: CallOptions): Promise<Result<McpTool[], McpError>> {
     const result = await this.inner.listTools(options);
     if (result.ok)
-      for (const tool of result.value) this.knownNames.add(tool.name);
+      for (const tool of result.value)
+        if (!isUserMcpName(tool.name)) this.knownNames.add(tool.name);
     if (!result.ok) return result;
     const value = result.value.filter(
       (tool) =>

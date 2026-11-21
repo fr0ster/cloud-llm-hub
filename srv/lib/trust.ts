@@ -8,6 +8,7 @@ export type TrustClass =
   | 'session'
   | 'system'
   | 'docs'
+  | 'user-mcp'
   | 'correction'
   | 'target'
   | 'client';
@@ -45,6 +46,10 @@ export const trustMapSchema = z
       .number()
       .refine((v) => normalizeTrust(v) !== undefined)
       .optional(),
+    'user-mcp': z
+      .number()
+      .refine((v) => normalizeTrust(v) !== undefined)
+      .optional(),
   })
   .strict();
 export type TrustDefaults = Record<TrustClass, number>;
@@ -64,6 +69,7 @@ export function parseTrustDefaults(value: string | undefined): TrustDefaults {
     correction: 4.9,
     target: 4.3,
     docs: 4.2,
+    'user-mcp': 4.1,
     client: 4.4,
     user: 3.5,
     session: 4,
@@ -96,6 +102,7 @@ export function classTrust(
     'session',
     'system',
     'docs',
+    'user-mcp',
     'correction',
     'target',
     'client',

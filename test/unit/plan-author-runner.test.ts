@@ -29,8 +29,13 @@ import {
 } from '../../srv/agent-manager';
 import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
 import { makeHubLlm } from '../../srv/lib/llm-factory';
+import { longSessions } from '../../srv/lib/long-session';
 import { startProviders } from '../../srv/lib/providers';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
+import {
+  UserMcpBridge,
+  userMcpRegistration,
+} from '../../srv/lib/user-mcp-bridge';
 import {
   profileToolAllowed,
   runWithProfileTools,
@@ -51,6 +56,7 @@ const config: AgentConfig = {
       correction: 4.9,
       target: 4.3,
       docs: 4.2,
+      'user-mcp': 4.1,
       client: 4.4,
       user: 3.5,
       session: 4,
@@ -120,6 +126,109 @@ beforeAll(async () => {
   jest.mocked(makeHubLlm).mockResolvedValue(model);
   initProviders(await startProviders(config));
   await bindTestCaller(taskCaller);
+});
+
+test('the coordinator and plan author have no user MCP catalogue grants, tools or dispatch path', async () => {
+  const sessionId = liveSession(taskCaller.userId, taskCaller.sessionId);
+  const session = longSessions().get(taskCaller.userId, sessionId);
+  if (!session) throw new Error('Missing long session');
+  const toolName = 'user__work__lookup';
+  const bridge = new UserMcpBridge();
+  session.userMcp = bridge;
+  bridge.register(
+    userMcpRegistration.parse({
+      servers: [
+        {
+          name: 'work',
+          transport: 'browser',
+          tools: [
+            {
+              name: 'lookup',
+              description: 'Lookup',
+              inputSchema: { type: 'object' },
+              annotations: { readOnlyHint: true },
+            },
+          ],
+        },
+      ],
+    }).servers,
+  );
+  const send = jest.fn(() => true);
+  bridge.subscribe('browser', ['work'], {
+    executorId: 'browser-a',
+    send,
+    close: () => {},
+  });
+  const embedded = new MCPClientWrapper({
+    transport: 'embedded',
+    listToolsHandler: async () => [],
+    callToolHandler: async () => ({ content: [] }),
+  });
+  await embedded.connect();
+  const handle = await buildAgentForDestination(
+    new McpClientAdapter(embedded),
+    new ExpositionFilteringRag(new InMemoryRag()),
+    config,
+  );
+  const slots = jest.spyOn(SmartAgentBuilder.prototype, 'withMcpClients');
+  try {
+    await runWithSessionId(
+      sessionId,
+      async () => {
+        const runner = handle.profileRunner;
+        for (const role of [
+          'analyst',
+          'executor',
+          'checker',
+          'coordinator',
+          'planner-author',
+        ]) {
+          const bind = runner.bind({
+            name: role,
+            description: '',
+            systemPrompt: '',
+            result: 'report',
+            tools: { allow: [toolName] },
+          });
+          expect(bind(() => profileToolAllowed(toolName))).toBe(
+            role === 'analyst' || role === 'executor' || role === 'checker',
+          );
+        }
+        for (const prepare of [
+          () => runner.preparePlanner({ systemPrompt: 'Coordinate' }),
+          () =>
+            runner.preparePlanAuthor({ systemPrompt: 'Plan', mode: 'create' }),
+        ]) {
+          const prepared = await prepare();
+          if (!prepared.ok) throw new Error(prepared.error.message);
+          const client = slots.mock.calls.at(-1)?.[0][0];
+          if (!client) throw new Error('Missing planner MCP client');
+          const listed = await client.listTools();
+          if (!listed.ok) throw listed.error;
+          expect(listed.value.map(({ name }) => name)).not.toContain(toolName);
+          await expect(client.callTool(toolName, {})).resolves.toMatchObject({
+            ok: false,
+            error: { code: 'TOOL_FORBIDDEN' },
+          });
+          const options = await bindTestCaller(taskCaller);
+          const result = await prepared.value.process(
+            'Look up a record',
+            options,
+          );
+          expect(result.ok).toBe(true);
+          expect(offered.at(-1)).not.toContain(toolName);
+        }
+      },
+      [],
+      session.userId,
+      { channel: 'openai', admin: false, userMcpSession: session },
+    );
+    expect(send).not.toHaveBeenCalled();
+  } finally {
+    slots.mockRestore();
+    await handle.close();
+    await longSessions().close(session.userId, sessionId, 'explicit');
+  }
 });
 
 test('destination author offers exactly four canonical read tools and inherits caller ceilings', async () => {
