@@ -180,8 +180,6 @@ The response `model` field identifies the serving coordinator model, including s
 - For `POST /v1/messages`, top-level `usage.input_tokens` describes uncached input on the serving model. `cache_read_input_tokens` and `cache_creation_input_tokens` account for reads and writes separately when known. `output_tokens` describes output. Streams include counts known at `message_start` and cumulative counts at `message_delta`. The `models` breakdown uses the same fields as OpenAI.
 - Dialogue responses include `usage.x_hub` with durations in milliseconds and usage for the planner and each delivered subagent result. Each model's counts are independent.
 
-**Honesty guard note *(v6.28+)*:** the response (streaming or non-streaming, and the same on `/v1/messages` and `execute_step`) may carry a trailing `UNVERIFIED_WRITE:` line when the deterministic check finds a claimed write (create/update/activate/…) unsupported by the actual tool results. It's a soft warning — verify against the system before relying on the claim — never a block. Disable via `LLM_AGENT_STEP_REVIEW_ENABLED=false`.
-
 ---
 
 ### 4. List Models
@@ -981,17 +979,14 @@ sessions ahead in a queue, which the service does not time.
 A request can fail while a write tool call was sent and no answer ever came
 back — the connection dropped mid-flight, for instance
 (`srv/lib/recording-mcp-client.ts`, `RecordingMcpClient.unanswered`). When that
-happens the failure text names the tool(s) and is prefixed `UNVERIFIED_WRITE:`;
-it says the write was sent and **not retried**, that it may or may not have
-been applied, and that the caller must read the object back to find out — the
-service never repeats a write it cannot confirm.
+happens, the failure text names the tools and reports that no reply arrived and no retry followed.
 
 | Channel | Where it appears |
 |---|---|
 | `/v1/chat/completions` | the response `message.content`, HTTP `200` (same shape as a normal completion) |
 | `/v1/messages` non-streaming | the response body via `anthropicUnverifiedWrite`, status `500` alone or the throttle status when a throttle also applies |
 | `/v1/messages` streaming | an SSE `event: error` carrying the same envelope |
-| `execute_step` | the step's `ERROR on destination "…": UNVERIFIED_WRITE: …` text |
+| `execute_step` | the step's `ERROR on destination "…": the tool was sent and no answer came back …` text |
 
 The text and the lookup are built in `srv/lib/throttle-surfacing.ts`
 (`unverifiedWriteText`, `unverifiedWriteFor`, `anthropicUnverifiedWrite`).
@@ -1225,6 +1220,8 @@ gets `USER_MCP_UNAVAILABLE`. A write that could not be sent remains pending for
 the next subscription. The worker waits for a reply, revocation, executor
 takeover of a delivered write, session closure, or cancellation. Each call is
 bound to its dispatch registration generation.
+Session closure or cancellation settles an already delivered write with
+`USER_MCP_OUTCOME_UNKNOWN`.
 Deleting a registration ends its pending calls immediately. A replacement ends
 calls when it removes the tool, revokes its write or role permission, or
 changes the transport or the tool's read/write classification. The worker
@@ -1390,7 +1387,7 @@ Trust is a number from 0 to 5 with at most one decimal; strings are rejected. Co
 
 Collection listings expose `trusted: true`, effective `trust`, `trustClass`, and optional `trustOverride`. Document list/read and MCP record attributes expose `trusted: true`, effective `trust`, optional `trustOverride`, and derived provenance `source`. MCP search hits carry `trust` and `source`. An absent record override means inherited trust. Agent collections and records expose `trusted: false` without trust fields. Upload metadata `source` remains the filename; top-level trust provenance is derived separately.
 
-Model-facing informational content uses `[source: <class>:<name>; trust <n>]`, or `[source: <class>; trust <n>]` without a name. Integers have no trailing `.0`; brackets in names are escaped as `&#91;` and `&#93;`. Planner retrieval labels carry the same source and trust. Tags appear in RAG retrieval, session recall, planner memory/knowledge, attachments, informational skills, reranker candidates, embedded target-system results, replayed tool history and checker evidence. Stored tool traces stay raw. Global profile prompts and base skills use `system` (4.8); user profile copies and corrections use `correction` (4.9). Tool results use `target` (4.3), `docs` (4.2), or request-supplied `client` (4.4). Tool groups and hub orchestration results are not tagged.
+Model-facing informational content uses `[source: <class>:<name>; trust <n>]`, or `[source: <class>; trust <n>]` without a name. Integers have no trailing `.0`; brackets in names are escaped as `&#91;` and `&#93;`. Planner retrieval labels carry the same source and trust. Tags appear in RAG retrieval, session recall, planner memory/knowledge, attachments, informational skills, reranker candidates, embedded target-system results, replayed tool history and checker evidence. Stored tool traces stay raw. Global profile prompts and base skills use `system` (4.8); user profile copies and corrections use `correction` (4.9). Tool results use `target` (4.3), `docs` (4.2), `user-mcp` (4.1), or request-supplied `client` (4.4). Tool groups and hub orchestration results are not tagged.
 
 Accepted profile/default classes are `system`, `correction`, `client`, `target`, `docs`, `session`, `user`, and `global`. Collection classes shown by REST and MANAGE remain the informational scopes `session` (4.0), `user` (3.5), and `global` (3.0); agent collections are untrusted.
 
@@ -1410,4 +1407,18 @@ use the deploy `LLM_AGENT_MODELS` allowlist, with main and planner defaults alwa
 allowed. Agents should use their default model and escalate only for hard analysis
 or a failed check.
 
-`UNVERIFIED_WRITE` notices use deterministic tool-journal checks, with no automatic LLM review of workers or answers. Failed/unanswered write notices and recording placeholders remain. `LLM_AGENT_STEP_REVIEW_ENABLED=false` disables claim-based notices only. Verification checks are explicit coordinator decisions each turn: run a planned check, skip it stating why, or add an unplanned check; user input can require `plan_revise`. Checker failures need exact result quotes and cited supplied evidence (or `none provided`); invalid failures are unusable verdicts for the coordinator to assess, not failures. No tools executed alone is never grounds for fail.
+#### Verification brief and verdict
+
+The coordinator selects the check worker. For a verdict profile, provide a JSON list in `delegate_task.context`, the adaptive step's `context.note`, or `execute_step.task` for a direct call. Each entry contains the exact quoted `claim`, `system`, `target` and `evidence`.
+
+`execute_step` appends `[actions]` for writes recorded during the call. Use the same live session and destination when citing those calls in a later `execute_step` verdict. Direct verdicts can also cite the current dialogue plan's journal in that session.
+
+| System | Target | Citation |
+|---|---|---|
+| `sap` | `{ type, name }` | `{ callId }` from `[actions]` |
+| `rag` | `{ scope, collection, record? }` | `{ callId }` from `[actions]` |
+| `source` | `{ scope, collection }` | `{ recordId, quote }` with the exact record quote |
+
+Use an empty evidence object for a missing citation. A write requires a successful write call for the target. The checker reads only evidence named in the brief. It submits `{ verdict, findings: [{ claim, status, evidence, reason }] }` via `submit_verdict`. The verdict is `pass` when every finding is `confirmed`. A `refuted` or `unsupported` finding produces `fail`. An invalid submission is reported as unusable.
+
+The coordinator communicates the findings in its answer. Dialogue delivery enforces the checks still in the coordinator's plan, which it can revise.

@@ -165,10 +165,6 @@ Anthropic-style clients: point `ANTHROPIC_BASE_URL` at `http://localhost:3001`.
   run multiple proxies; change `browser` only to force a non-default browser.
 - **Model:** use `default`, or any the deployment exposes
   (`curl http://localhost:3001/v1/models`).
-- **Trailing `UNVERIFIED_WRITE:` line *(v6.28+)*:** a response may end with one —
-  a soft warning that a claimed create/update/activate wasn't confirmed by the
-  actual tool results. Verify against the system before relying on it; the hub
-  can disable this check entirely via `LLM_AGENT_STEP_REVIEW_ENABLED=false`.
 
 ## If something fails
 
@@ -180,4 +176,4 @@ Anthropic-style clients: point `ANTHROPIC_BASE_URL` at `http://localhost:3001`.
 
 For user JWT authentication through Cloud Connector, see [Principal propagation](principal-propagation.md). PP destinations do not require `x-sap-login` / `x-sap-password`; creates use the connected SAP user, falling back to `x-sap-responsible` (explicit override) or uppercased `x-sap-login` when the endpoint is unavailable.
 
-`UNVERIFIED_WRITE` notices use deterministic tool-journal checks, with no automatic LLM review of workers or answers. Failed/unanswered write notices and recording placeholders remain. `LLM_AGENT_STEP_REVIEW_ENABLED=false` disables claim-based notices only. Verification checks are explicit coordinator decisions each turn: run a planned check, skip it stating why, or add an unplanned check; user input can require `plan_revise`. Checker failures need exact result quotes and cited supplied evidence (or `none provided`); invalid failures are unusable verdicts for the coordinator to assess, not failures. No tools executed alone is never grounds for fail.
+The coordinator chooses when to verify cited evidence and reports the findings in its answer.

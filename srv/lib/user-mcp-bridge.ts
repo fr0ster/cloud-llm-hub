@@ -152,6 +152,10 @@ function outcomeUnknown(): CallResult {
   );
 }
 
+function writeWasDelivered(call: PendingCall): boolean {
+  return call.effect === 'write' && call.deliveredTo !== undefined;
+}
+
 /** Volatile state for one live LongSession object. */
 export class UserMcpBridge {
   private readonly servers = new Map<string, RegisteredServer>();
@@ -217,7 +221,7 @@ export class UserMcpBridge {
       )
         continue;
       call.finish(
-        call.effect === 'write' && call.deliveredTo !== undefined
+        writeWasDelivered(call)
           ? outcomeUnknown()
           : failed(
               'USER_MCP_REVOKED',
@@ -318,7 +322,8 @@ export class UserMcpBridge {
       if (!stream) return unavailable();
       const callId = randomUUID();
       return await new Promise<CallResult>((resolve) => {
-        const aborted = () => finish(cancelled());
+        const aborted = () =>
+          finish(writeWasDelivered(call) ? outcomeUnknown() : cancelled());
         const finish = (result: CallResult, bytes = 0) => {
           if (!this.pending.delete(callId)) return;
           signal?.removeEventListener('abort', aborted);
@@ -388,7 +393,11 @@ export class UserMcpBridge {
     this.closed = true;
     this.servers.clear();
     for (const call of this.pending.values())
-      call.finish(failed('SESSION_CLOSED', 'Session closed'));
+      call.finish(
+        writeWasDelivered(call)
+          ? outcomeUnknown()
+          : failed('SESSION_CLOSED', 'Session closed'),
+      );
     this.executors.clear();
     for (const stream of this.streams) stream.close();
     this.streams.clear();

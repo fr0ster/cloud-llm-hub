@@ -86,7 +86,6 @@ import type {
   ISubAgentInput,
   ISubAgentResult,
   TokenUsage,
-  ToolCallRecord,
   ToolTrace,
 } from '@mcp-abap-adt/llm-agent';
 import { LlmError } from '@mcp-abap-adt/llm-agent';
@@ -130,7 +129,10 @@ import {
   type HubDialogueState,
   hasDialogueState,
 } from '../../srv/lib/dialogue-store';
-import { evaluateGated } from '../../srv/lib/step-reviewer';
+import {
+  type JournalEntry,
+  writeActionMessages,
+} from '../../srv/lib/tool-journal';
 import {
   captureToolScope,
   getRagCallerIdentity,
@@ -151,15 +153,12 @@ const isolationCallers = ['isolation-A', 'isolation-B', 'isolation-C'].map(
 
 let mockTaskResultRegistry = new CollectionRegistry();
 const mockPlannerCallers: (RagCaller | undefined)[] = [];
+const mockJournal = new Map<string, JournalEntry[]>();
+const mockActionMessages: string[] = [];
 const mockRun = jest.fn<Promise<ISubAgentResult>, [ISubAgentInput]>();
 const mockRelease = jest.fn();
 const mockDrain = jest.fn(async () => {});
 const mockDrop = jest.fn();
-const mockToolRecords = new Map<string, ToolCallRecord[]>();
-let mockSessionWriteGeneration = 0;
-let mockSessionReviewedGeneration = 0;
-const mockOpenSession = jest.fn();
-const mockWriteCapability = jest.fn((_traceId?: string) => false);
 const mockPlannerTurns: string[] = [];
 const mockAuthorTurns: string[] = [];
 const mockAuthorOptions: (CallOptions | undefined)[] = [];
@@ -279,6 +278,8 @@ jest.mock('../../srv/agent-manager', () => ({
         options?: CallOptions,
       ) => {
         mockPlannerCallers.push(options?.caller);
+        for (const message of writeActionMessages([]))
+          if (message.content) mockActionMessages.push(message.content);
         mockEnvironments.push(
           messages.find((m) => m.content.startsWith('[environment]'))
             ?.content ?? '',
@@ -412,27 +413,9 @@ jest.mock('../../srv/agent-manager', () => ({
       ],
     ]),
     recMcp: {
-      withSession: <T>(_user: string, _session: string, run: () => T): T =>
-        run(),
-      openSession: () => {
-        mockSessionWriteGeneration = 0;
-        mockSessionReviewedGeneration = 0;
-        mockOpenSession();
-      },
-      closeSession: jest.fn(),
-      hadSessionWriteCapability: () =>
-        mockSessionWriteGeneration > mockSessionReviewedGeneration,
-      writeGeneration: () => mockSessionWriteGeneration,
-      markReviewed: (_user: string, _key: string, snapshot: number) => {
-        mockSessionReviewedGeneration = Math.max(
-          mockSessionReviewedGeneration,
-          snapshot,
-        );
-      },
-      hadWriteCapability: (traceId?: string) => mockWriteCapability(traceId),
-      getToolRecords: (id?: string) => (id && mockToolRecords.get(id)) || [],
+      getToolJournal: (id?: string) => (id && mockJournal.get(id)) || [],
       dropRequest: (id: string) => {
-        mockToolRecords.delete(id);
+        mockJournal.delete(id);
         mockDrop(id);
       },
     },
@@ -450,11 +433,6 @@ jest.mock('../../srv/lib/gatekeeper', () => ({
     },
   })),
 }));
-jest.mock('../../srv/lib/step-reviewer', () => ({
-  ...jest.requireActual('../../srv/lib/step-reviewer'),
-  evaluateGated: jest.fn(async () => ({ ok: true })),
-}));
-
 async function until(fn: () => boolean) {
   for (let i = 0; i < 200; i++) {
     if (fn()) return;
@@ -491,7 +469,6 @@ async function ready(user = 'alice', caller?: RagCaller) {
 beforeEach(() => {
   mockTaskResultRegistry = new CollectionRegistry();
   jest.clearAllMocks();
-  mockWriteCapability.mockReset().mockReturnValue(false);
   mockPlannerTurns.length = 0;
   mockPlannerCallers.length = 0;
   mockEnvironments.length = 0;
@@ -504,11 +481,11 @@ beforeEach(() => {
   mockClientHistory = 'off';
   mockFinalAnswer = undefined;
   mockBackgroundAnswer = undefined;
-  mockToolRecords.clear();
+  mockJournal.clear();
+  mockActionMessages.length = 0;
   mockPlanUsage = undefined;
   mockPlan = undefined;
   mockRun.mockReset().mockResolvedValue({ output: 'read done' });
-  jest.mocked(evaluateGated).mockResolvedValue({ ok: true });
 });
 afterEach(async () => {
   await closeDialogue('alice', 'key', 'ttl');
@@ -869,481 +846,52 @@ test('delegated worker has system, session, owner, an empty history scope, admis
   expect(lease.connection).toBe(connection);
   await lease.release(true);
 });
-test.each([false, true])(
-  'worker inherits only its scheduling turn write capability (%s)',
-  async (offered) => {
-    const { h } = await ready();
-    mockWriteCapability.mockImplementation(
-      (traceId) => offered && traceId === 'planner-capability',
-    );
-    await h.session.send('go', { trace: { traceId: 'planner-capability' } });
-    await until(() => jest.mocked(evaluateGated).mock.calls.length > 0);
-    expect(jest.mocked(evaluateGated).mock.calls[0][0].writeToolOffered).toBe(
-      offered,
-    );
-  },
-);
-
-test.each([
-  [true, 'I created X.'],
-  [false, 'X was created using the older syntax.'],
-] as const)(
-  'coordinator final answer uses this turn worker capability (%s)',
-  async (offered, answer) => {
-    const { h } = await ready();
-    const workerTraces = new Set<string>();
-    mockFinalAnswer = answer;
-    mockWriteCapability.mockImplementation(
-      (id) => !!id && workerTraces.has(id),
-    );
-    mockRun.mockImplementation(async (input) => {
-      if (offered && input.trace?.traceId) {
-        workerTraces.add(input.trace.traceId);
-        mockSessionWriteGeneration++;
-      }
-      return { output: 'Finished analysis.' };
-    });
-    jest
-      .mocked(evaluateGated)
-      .mockImplementation(async (input) =>
-        jest
-          .requireActual<typeof import('../../srv/lib/step-reviewer')>(
-            '../../srv/lib/step-reviewer',
-          )
-          .evaluateGated(input),
-      );
-    await h.session.send('go', { trace: { traceId: 'coordinator-final' } });
-    const content =
-      h.session
-        .snapshot()
-        .conversation.find(
-          (message) =>
-            message.role === 'assistant' &&
-            typeof message.content === 'string' &&
-            message.content.includes(answer),
-        )?.content ?? '';
-    expect(content).toContain(answer);
-    expect(content.includes('UNVERIFIED_WRITE:')).toBe(offered);
-    // A later read-only turn in the same session must not inherit the capability.
-    mockFinalAnswer = 'X was created using the older syntax.';
-    mockRun.mockImplementation(async () => ({ output: 'Finished analysis.' }));
-    await h.session.send('read only', { trace: { traceId: 'next-final' } });
-    expect(h.session.snapshot().conversation.at(-1)?.content).not.toContain(
-      'UNVERIFIED_WRITE:',
-    );
-  },
-);
-
-test('dialogue warns about a failed SAP domain create alongside a same-named RAG record', async () => {
-  const { h } = await ready();
-  const traceId = 'rag-final';
-  const answer = 'I created SAP domain ZREQ.';
-  mockFinalAnswer = answer;
-  mockToolRecords.set(traceId, [
-    {
-      call: {
-        id: 'rag',
-        name: 'record_add',
-        arguments: { collection: 'drafts', record: 'ZREQ' },
-      },
-      result: {
-        content: { collection: 'drafts', record: 'ZREQ', created: true },
-      },
-    },
-    {
-      call: {
-        id: 'sap',
-        name: 'CreateDomain',
-        arguments: { domain_name: 'ZREQ' },
-      },
-      result: { content: { success: false, error: 'Domain already exists' } },
-    },
-  ]);
-  jest
-    .mocked(evaluateGated)
-    .mockImplementation(
-      jest.requireActual<typeof import('../../srv/lib/step-reviewer')>(
-        '../../srv/lib/step-reviewer',
-      ).evaluateGated,
-    );
-  await h.session.send('create the domain', { trace: { traceId } });
-  const content = h.session
-    .snapshot()
-    .conversation.find(
-      (message) =>
-        message.role === 'assistant' &&
-        typeof message.content === 'string' &&
-        message.content.includes(answer),
-    )?.content;
-  expect(content).toContain('UNVERIFIED_WRITE:');
-  expect(content).toContain(
-    'CreateDomain returned error: Domain already exists',
-  );
-});
-
-test.each([true, false, 'close'] as const)(
-  'late worker evidence reaches the next coordinator review (write: %s)',
-  async (write) => {
-    const { h } = await ready();
-    let finish!: () => void;
-    const blocked = new Promise<void>((resolve) => {
-      finish = resolve;
-    });
-    let workerTrace: string | undefined;
-    mockWriteCapability.mockImplementation((id) => !!id && id === workerTrace);
-    mockRun.mockImplementation(async (input) => {
-      workerTrace = input.trace?.traceId;
-      mockSessionWriteGeneration++;
-      await blocked;
-      if (write && workerTrace)
-        mockToolRecords.set(workerTrace, [
-          {
-            call: { id: 'create', name: 'CreateObject', arguments: {} },
-            result: { content: { success: true } },
-          },
-        ]);
-      return { output: 'Finished.' };
-    });
-    await h.session.send('go');
-    await until(() => !!workerTrace);
-    let releaseBackground!: () => void;
-    const backgroundBlocked = new Promise<void>((resolve) => {
-      releaseBackground = resolve;
-    });
-    if (write === 'close')
-      mockPlannerHook = async (text) => {
-        if (text.startsWith('[task events]')) await backgroundBlocked;
-      };
-    mockBackgroundAnswer = 'I created X.';
-    jest
-      .mocked(evaluateGated)
-      .mockImplementation(async (input) =>
-        jest
-          .requireActual<typeof import('../../srv/lib/step-reviewer')>(
-            '../../srv/lib/step-reviewer',
-          )
-          .evaluateGated(input),
-      );
-    finish();
-    if (write === 'close') {
-      // The worker records have been buffered, but no coordinator has reviewed
-      // them yet. Closing must discard this pending evidence.
-      await until(() => mockDrop.mock.calls.some(([id]) => id === workerTrace));
-      const closing = closeDialogue('alice', 'key', 'ttl');
-      releaseBackground();
-      await closing;
-      mockPlannerHook = undefined;
-      const reopened = await ready();
-      mockPlan = { status: 'waiting_user', question: 'Continue?' };
-      jest.mocked(evaluateGated).mockClear();
-      await reopened.h.session.send('next');
-      expect(jest.mocked(evaluateGated)).not.toHaveBeenCalled();
-      return;
-    }
-    await until(() =>
-      h.session
-        .snapshot()
-        .conversation.some(
-          (message) =>
-            typeof message.content === 'string' &&
-            message.content.includes('I created X.'),
-        ),
-    );
-    const answer = h.session
-      .snapshot()
-      .conversation.find(
-        (message) =>
-          message.role === 'assistant' &&
-          typeof message.content === 'string' &&
-          message.content.includes('I created X.'),
-      )?.content;
-    expect(answer).toContain('I created X.');
-    expect(answer?.includes('UNVERIFIED_WRITE:')).toBe(!write);
-  },
-);
-
-test('evicting read-only late worker records grants no write capability', async () => {
-  const { h } = await ready();
-  let finish!: () => void;
-  const blocked = new Promise<void>((resolve) => {
-    finish = resolve;
-  });
-  let workerTrace: string | undefined;
-  mockWriteCapability.mockImplementation(() => false);
+test('dialogue gives the coordinator failed write facts and leaves both answers unchanged', async () => {
+  const answer = 'I created domain ZREQ.';
+  mockBackgroundAnswer = answer;
   mockRun.mockImplementation(async (input) => {
-    workerTrace = input.trace?.traceId;
-    await blocked;
-    if (workerTrace)
-      mockToolRecords.set(
-        workerTrace,
-        Array.from({ length: 129 }, (_, i) => ({
-          call: { id: `read-${i}`, name: 'GetTable', arguments: {} },
-          result: { content: { success: true } },
-        })),
-      );
-    return { output: 'Finished.' };
-  });
-  await h.session.send('go');
-  await until(() => !!workerTrace);
-  mockBackgroundAnswer = 'X was created using the older syntax.';
-  jest
-    .mocked(evaluateGated)
-    .mockImplementation(async (input) =>
-      jest
-        .requireActual<typeof import('../../srv/lib/step-reviewer')>(
-          '../../srv/lib/step-reviewer',
-        )
-        .evaluateGated(input),
-    );
-  jest.mocked(evaluateGated).mockClear();
-  finish();
-  await until(() =>
-    h.session
-      .snapshot()
-      .conversation.some(
-        (message) =>
-          typeof message.content === 'string' &&
-          message.content.includes('X was created using'),
-      ),
-  );
-  expect(
-    jest
-      .mocked(evaluateGated)
-      .mock.calls.every(([input]) => !input.writeToolOffered),
-  ).toBe(true);
-  const answer = h.session
-    .snapshot()
-    .conversation.find(
-      (message) =>
-        typeof message.content === 'string' &&
-        message.content.includes('X was created using'),
-    )?.content;
-  expect(answer).not.toContain('UNVERIFIED_WRITE:');
-});
-
-test('a failed turn settles buffered late worker evidence', async () => {
-  const { h } = await ready();
-  let finish!: () => void;
-  const blocked = new Promise<void>((resolve) => {
-    finish = resolve;
-  });
-  let workerTrace: string | undefined;
-  mockWriteCapability.mockImplementation((id) => !!id && id === workerTrace);
-  mockRun.mockImplementation(async (input) => {
-    workerTrace = input.trace?.traceId;
-    await blocked;
-    return { output: 'Finished.' };
-  });
-  await h.session.send('go');
-  await until(() => !!workerTrace);
-  // The task-event turn that would review the buffered evidence fails.
-  let backgroundFailed = false;
-  mockPlannerHook = async (text) => {
-    if (text.startsWith('[task events]')) {
-      backgroundFailed = true;
-      throw new Error('planner failed');
-    }
-  };
-  finish();
-  await until(() => backgroundFailed);
-  await until(() => mockDrop.mock.calls.some(([id]) => id === workerTrace));
-  mockPlannerHook = undefined;
-  mockWriteCapability.mockImplementation(() => false);
-  mockFinalAnswer = 'X was created using the older syntax.';
-  jest
-    .mocked(evaluateGated)
-    .mockImplementation(async (input) =>
-      jest
-        .requireActual<typeof import('../../srv/lib/step-reviewer')>(
-          '../../srv/lib/step-reviewer',
-        )
-        .evaluateGated(input),
-    );
-  jest.mocked(evaluateGated).mockClear();
-  await h.session.send('read only');
-  expect(
-    jest
-      .mocked(evaluateGated)
-      .mock.calls.every(([input]) => !input.writeToolOffered),
-  ).toBe(true);
-  expect(h.session.snapshot().conversation.at(-1)?.content).not.toContain(
-    'UNVERIFIED_WRITE:',
-  );
-});
-
-test('failed load never registers session write state', async () => {
-  const load = jest
-    .spyOn(getDialogueStoreBackend(), 'load')
-    .mockRejectedValueOnce(new Error('load failed'));
-  try {
-    await expect(dialogueFor('alice', 'key', 'TEST')).rejects.toThrow(
-      'load failed',
-    );
-    expect(mockOpenSession).not.toHaveBeenCalled();
-  } finally {
-    load.mockRestore();
-  }
-});
-
-test.each([
-  ['failure', 'prior'],
-  ['empty', 'prior'],
-  ['failure', 'during'],
-  ['empty', 'during'],
-] as const)(
-  '%s coordinator turn retires %s capability',
-  async (outcome, acquired) => {
-    const { h } = await ready();
-    if (acquired === 'prior') mockSessionWriteGeneration++;
-    mockPlannerHook = async () => {
-      if (acquired === 'during') mockSessionWriteGeneration++;
-      if (outcome === 'failure') throw new Error('planner failed');
-    };
-    mockFinalAnswer = '';
-    if (outcome === 'failure') {
-      await expect(h.session.send('go')).rejects.toThrow('planner failed');
-    } else {
-      await h.session.send('go');
-      await until(
-        () => mockSessionReviewedGeneration === mockSessionWriteGeneration,
-      );
-    }
-    mockPlannerHook = undefined;
-    mockFinalAnswer = 'X was created using the older syntax.';
-    jest.mocked(evaluateGated).mockClear();
-    await h.session.send('read only');
-    expect(
-      jest
-        .mocked(evaluateGated)
-        .mock.calls.every(([input]) => !input.writeToolOffered),
-    ).toBe(true);
-    expect(h.session.snapshot().conversation.at(-1)?.content).not.toContain(
-      'UNVERIFIED_WRITE:',
-    );
-  },
-);
-
-test('worker write arriving during review remains pending for the next answer', async () => {
-  const { h } = await ready();
-  mockPlan = { status: 'waiting_user', question: 'Proceed?' };
-  mockSessionWriteGeneration++;
-  let entered!: () => void;
-  const reviewing = new Promise<void>((resolve) => {
-    entered = resolve;
-  });
-  let finish!: () => void;
-  const release = new Promise<void>((resolve) => {
-    finish = resolve;
-  });
-  jest.mocked(evaluateGated).mockImplementationOnce(async () => {
-    entered();
-    await release;
-    return { ok: true };
-  });
-  const sending = h.session.send('go');
-  await reviewing;
-  mockSessionWriteGeneration++;
-  finish();
-  await sending;
-  expect(mockSessionReviewedGeneration).toBe(1);
-  jest.mocked(evaluateGated).mockClear();
-  await h.session.send('next answer');
-  expect(jest.mocked(evaluateGated).mock.calls[0][0].writeToolOffered).toBe(
-    true,
-  );
-});
-
-test('worker results and coordinator answers never call the critic', async () => {
-  const { h } = await ready();
-  const real = jest.requireActual<typeof import('../../srv/lib/step-reviewer')>(
-    '../../srv/lib/step-reviewer',
-  );
-  const chat = jest.fn();
-  jest.mocked(evaluateGated).mockImplementation((input) => {
-    const legacyInput = { ...input, llm: { chat, async *streamChat() {} } };
-    return real.evaluateGated(legacyInput);
-  });
-  mockRun.mockResolvedValue({
-    output: 'ZSOURCE selects item_id and amount from zitems.',
-  });
-  mockFinalAnswer = 'ZSOURCE analysis complete.';
-  mockSessionWriteGeneration++;
-  await h.session.send('Analyze ZSOURCE');
-  await until(() => h.session.snapshot().tasks[0]?.state === 'done');
-  expect(chat).not.toHaveBeenCalled();
-  expect(h.session.snapshot().tasks[0]?.output).not.toContain(
-    'UNVERIFIED_WRITE:',
-  );
-});
-
-test('honesty notice reaches task output and planner', async () => {
-  const { h } = await ready();
-  const events: DialogueEvent[] = [];
-  h.subscribe((event) => events.push(event));
-  const usage = { promptTokens: 7, completionTokens: 4, totalTokens: 11 };
-  mockRun.mockResolvedValue({ output: 'read done', usage });
-  jest.mocked(evaluateGated).mockResolvedValue({
-    ok: false,
-    issues: [
+    const traceId = input.trace?.traceId;
+    if (!traceId) throw new Error('Expected worker trace');
+    mockJournal.set(traceId, [
       {
-        kind: 'unverified-write',
-        claimedOp: 'created',
-        reason: 'no successful write',
-      },
-    ],
-  });
-  await h.session.send('go');
-  await until(() => h.outbox.pending().length > 0);
-  expect(h.session.snapshot().tasks[0].output).toContain('UNVERIFIED_WRITE:');
-  expect(h.outbox.pending()[0].text).toContain('UNVERIFIED_WRITE:');
-  expect(h.session.snapshot().tasks[0].usage).toEqual(usage);
-  expect(h.outbox.pending()[0].usage).toEqual({
-    plannerMs: expect.any(Number),
-    planner: {
-      promptTokens: 3,
-      completionTokens: 2,
-      totalTokens: 5,
-      models: {
-        m: {
-          promptTokens: 3,
-          completionTokens: 2,
-          totalTokens: 5,
-          requests: 1,
+        call: {
+          id: 'failed-write',
+          name: 'CreateDomain',
+          arguments: { domain_name: 'ZREQ' },
         },
+        result: { content: { success: false, error: 'Domain already exists' } },
+        system: 'sap',
+        write: true,
+        answered: true,
       },
-    },
-    tasks: [
-      {
-        id: h.session.snapshot().tasks[0].id,
-        worker: 'executor',
-        usage,
-        durationMs: expect.any(Number),
-      },
-    ],
+    ]);
+    return { output: answer };
   });
-  expect(events.find((event) => event.kind === 'message')).toEqual({
-    kind: 'message',
-    message: h.outbox.pending()[0],
-  });
+  const { h } = await ready();
+  await h.session.send('Create domain ZREQ');
+  await until(() =>
+    mockActionMessages.some((message) => message.includes('failed-write')),
+  );
+  expect(mockActionMessages.join('\n')).toContain(
+    '{"callId":"failed-write","system":"sap","operation":"CreateDomain","targets":[{"type":"domain","name":"ZREQ"}],"outcome":"failed"}',
+  );
+  expect(h.session.snapshot().tasks[0].output).toBe(answer);
+  await until(() =>
+    h.outbox.pending().some((message) => message.text === answer),
+  );
+  expect(
+    h.outbox
+      .pending()
+      .map((message) => message.text)
+      .join(' '),
+  ).not.toContain('UNVERIFIED_WRITE');
+  const saved = await getDialogueStoreBackend().load('alice', 'key');
+  expect([...h.toolJournal().keys()]).toEqual(['failed-write']);
+  expect(saved?.toolJournal?.entries.map(({ call }) => call.id)).toEqual([
+    'failed-write',
+  ]);
 });
 
-test.each([5, undefined])(
-  'deterministic notices need no LLM or profile trust (%s)',
-  async (system) => {
-    mockWorkerTrust = system === undefined ? undefined : { target: system };
-    try {
-      const { h } = await ready();
-      mockRun.mockResolvedValue({ output: 'read done' });
-      await h.session.send('go');
-      await until(() => h.session.snapshot().tasks[0]?.state === 'done');
-      const args = jest.mocked(evaluateGated).mock.calls.at(-1)?.[0];
-      expect(args).not.toHaveProperty('llm');
-      expect(args).not.toHaveProperty('toolTrust');
-    } finally {
-      mockWorkerTrust = undefined;
-    }
-  },
-);
 test('subscribers receive task events and messages; messages stay in outbox for both tabs until acknowledged', async () => {
   const { h } = await ready();
   const events: DialogueEvent[] = [];
@@ -3868,125 +3416,69 @@ test('closing one user session preserves the other user LLMs and signals', async
 });
 
 test.each([
-  'valid',
-  'quote',
-  'evidence',
-  'bare',
-  'pass',
-  'tool',
-  'retry',
-  'retry-fails',
-] as const)(
-  'dialogue consumes evidence-bound checker verdict: %s',
-  async (kind) => {
+  {
+    output:
+      '{"verdict":"pass","findings":[{"claim":"Created ZREQ","status":"confirmed","evidence":{"callId":"create"},"reason":"Result confirms the claim."}]}',
+    state: 'done',
+    verdict: 'pass',
+  },
+  {
+    output: 'unusable verdict: missing or invalid findings',
+    state: 'pending',
+    verdict: undefined,
+  },
+])(
+  'dialogue preserves the result of a planned check: $state',
+  async ({ output, state, verdict }) => {
     const { h } = await ready();
-    const checked = 'The object is active.';
-    const verdict =
-      kind === 'bare'
-        ? 'FAIL'
-        : kind === 'pass'
-          ? '{"verdict":"pass","count":1,"note":"ok"}'
-          : JSON.stringify({
-              verdict: 'fail',
-              claims: [
-                {
-                  quote: kind === 'quote' ? 'Invented claim' : checked,
-                  evidence:
-                    kind === 'evidence'
-                      ? 'fabricated excerpt'
-                      : 'Expected state: inactive',
-                  reason: 'Brief contradicts claimed state',
-                },
-              ],
-            });
-    let checkerRuns = 0;
-    mockRun.mockImplementation(async (input) => {
-      if (!input.task.startsWith('Verify state')) return { output: checked };
-      checkerRuns++;
-      if (kind === 'tool') {
-        mockToolRecords.set(input.trace?.traceId ?? '', [
-          {
-            call: {
-              id: 'submit',
-              name: 'submit_verdict',
-              arguments: { verdict: 'pass' },
-            },
-            result: { content: 'verdict recorded' },
-          },
-        ]);
-        return { output: 'FAIL' };
-      }
-      if (kind === 'retry')
-        return { output: checkerRuns === 1 ? 'Prose only' : 'PASS' };
-      if (kind === 'retry-fails') return { output: 'Prose only' };
-      return { output: verdict };
-    });
+    mockRun.mockImplementation(async (input) => ({
+      output: input.task.includes('Verify') ? output : 'Created ZREQ',
+    }));
     await h.session.callTool('plan_update', {
       steps: [
-        {
-          id: 'work',
-          goal: 'Read state',
-          worker: 'executor',
-          result: 'report',
-          state: 'pending',
-        },
+        { id: 'write', goal: 'Create ZREQ', result: 'report' },
         {
           id: 'check',
-          goal: 'Verify state',
-          worker: 'checker',
+          goal: 'Verify',
           result: 'verdict',
-          dependsOn: ['work'],
-          state: 'pending',
+          dependsOn: ['write'],
         },
       ],
     });
-    await h.session.callTool('delegate_task', {
+    const work = await h.session.callTool('delegate_task', {
       worker: 'executor',
-      step_id: 'work',
-      goal: 'Read state',
+      step_id: 'write',
+      goal: 'Create ZREQ',
     });
+    expect(work.ok && !work.value.isError).toBe(true);
     await until(() => h.session.snapshot().tasks[0]?.state === 'done');
-    const started = await h.session.callTool('delegate_task', {
+    const check = await h.session.callTool('delegate_task', {
       worker: 'checker',
       step_id: 'check',
-      goal: 'Verify state',
-      context: 'Expected state: inactive',
+      goal: 'Verify',
     });
-    expect(started.ok && !started.value.isError).toBe(true);
+    expect(check.ok && !check.value.isError).toBe(true);
     await until(() => h.session.snapshot().tasks[1]?.state === 'done');
-    const state = h.session.snapshot();
-    if (!state.plan || typeof state.plan === 'string')
-      throw new Error('Missing structured plan');
-    const step = state.plan.steps.find((step) => step.id === 'check');
-    expect(checkerRuns).toBe(
-      kind === 'bare' || kind === 'retry' || kind === 'retry-fails' ? 2 : 1,
+    const plan = h.session.snapshot().plan;
+    if (!plan || typeof plan === 'string')
+      throw new Error('Expected structured plan');
+    const step = plan.steps.find(({ id }) => id === 'check');
+    expect(step?.state).toBe(state);
+    expect(step?.verdict).toBe(verdict);
+    const taskId = h.session.snapshot().tasks[0].id;
+    const delivery: {
+      result?: Awaited<ReturnType<PlannerToolsClient['callTool']>>;
+    } = {};
+    mockPlannerHook = async () => {
+      delivery.result ??= await new PlannerToolsClient().callTool('deliver', {
+        task_id: taskId,
+      });
+    };
+    mockPlan = { status: 'active' };
+    await h.session.send('Deliver the result when the check allows it.');
+    expect(delivery.result?.ok && !delivery.result.value.isError).toBe(
+      verdict === 'pass',
     );
-    if (kind === 'tool' || kind === 'retry') {
-      expect(step?.verdict).toBe('pass');
-      expect(state.tasks[1]?.output).toBe(
-        kind === 'tool' ? '{"verdict":"pass"}' : 'PASS',
-      );
-    } else if (kind === 'valid' || kind === 'pass') {
-      expect(step?.verdict).toBe(kind === 'valid' ? 'fail' : 'pass');
-      expect(state.tasks[1]?.output).toBe(verdict);
-    } else {
-      expect(step?.verdict).toBeUndefined();
-      expect(step?.state).toBe('pending');
-      expect(state.tasks[1]?.output).toMatch(/^unusable verdict:/);
-      // Re-enter a coordinator turn: the internal library failure is cleared
-      // before the coordinator makes its next decision.
-      mockPlan = { status: 'waiting_user', question: 'How should we proceed?' };
-      await h.session.send('Decide what to do with this verdict');
-      const next = h.session.snapshot().plan;
-      if (!next || typeof next === 'string')
-        throw new Error('Missing structured plan');
-      expect(
-        next.steps.find((step) => step.id === 'check')?.verdict,
-      ).toBeUndefined();
-      expect(next.steps.find((step) => step.id === 'check')?.state).toBe(
-        'pending',
-      );
-    }
   },
 );
 

@@ -6,8 +6,7 @@ const taskCaller = {
   isAdmin: false,
 };
 
-import { HandlerExporter } from '@mcp-abap-adt/lib/handlers';
-import type { IMcpClient, IRunRecordStore } from '@mcp-abap-adt/llm-agent';
+import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
 import {
   MCPClientWrapper,
@@ -16,7 +15,6 @@ import {
 import { CompositeSkillManager } from '../../srv/lib/composite-skill-manager';
 import { ragToolEffect, ragToolNames } from '../../srv/lib/rag-tool-catalogue';
 import * as skillsPool from '../../srv/lib/skills-pool';
-import * as reviewer from '../../srv/lib/step-reviewer';
 import { isReadOnlyTools } from '../../srv/request-session';
 
 test.each(['waiting', 'unreachable'] as const)(
@@ -159,9 +157,7 @@ jest.mock('../../srv/lib/llm-factory', () => ({
 }));
 
 import {
-  AdaptiveCoordinatorHandler,
   DagPlanInterpreter,
-  LlmAdaptiveController,
   SmartAgentBuilder,
   type SmartAgentHandle,
   unwrapBuilderResult,
@@ -178,7 +174,6 @@ import { outageClassifier } from '../../srv/lib/mcp-outage';
 import { NoticeFinalizer } from '../../srv/lib/notice-finalizer';
 import { startProviders } from '../../srv/lib/providers';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
-import { getRunRecordStore } from '../../srv/lib/run-record-store';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
 import { runWithSessionId } from '../../srv/request-session';
 
@@ -263,91 +258,21 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
       });
   });
 
-  it.each([
-    [undefined, {}],
-    [
-      {
-        maxSteps: undefined,
-        maxRevisions: undefined,
-        maxDurationMs: undefined,
-      },
-      {},
-    ],
-    [
-      { maxSteps: 7, maxRevisions: undefined, maxDurationMs: 1234 },
-      { maxSteps: 7, maxDurationMs: 1234 },
-    ],
-  ])(
-    'wires adaptive workers, shared dependencies and defined budget fields (%j)',
-    async (planBudget, expectedBudget) => {
-      const handle = await agentManager.buildAgentForDestination(
-        {} as never,
-        {} as never,
-        {
-          ...config,
-          agent: {
-            ...config.agent,
-            chatCoordinator: 'adaptive',
-            planBudget,
-          },
-        },
-      );
-      expect(withDagCoordinator).not.toHaveBeenCalled();
-      expect(withStepperCoordinator).toHaveBeenCalledTimes(1);
-      const handler = withStepperCoordinator.mock.calls[0][0];
-      expect(handler).toBeInstanceOf(AdaptiveCoordinatorHandler);
-      const deps = handler.deps;
-      expect(deps.controller).toBeInstanceOf(
-        agentManager.CheckerAdaptiveController,
-      );
-      expect(deps.controller.inner).toBeInstanceOf(LlmAdaptiveController);
-      expect(deps.finalizer).toBeInstanceOf(NoticeFinalizer);
-      expect(deps.finalizer).toHaveProperty('writeReview.checker');
-      expect(typeof deps.controller.inner.llm.streamChat).toBe('function');
-      const runRecords: IRunRecordStore = deps.runRecords;
-      const load = jest.spyOn(getRunRecordStore(), 'load');
-      try {
-        await runWithSessionId(
-          taskCaller.sessionId,
-          async () => {
-            await runRecords.load(
-              turnOwner(taskCaller.userId, taskCaller.sessionId),
-            );
-            await runRecords.load(
-              turnOwner('another-user', taskCaller.sessionId),
-            );
-          },
-          undefined,
-          taskCaller.userId,
-        );
-        expect(load).toHaveBeenCalledTimes(1);
-        expect(load).toHaveBeenCalledWith(taskCaller.sessionId);
-      } finally {
-        load.mockRestore();
-      }
-      expect(deps.budget).toEqual(expectedBudget);
-      expect(deps.fallbackWorker).toBe('executor');
-      expect([...deps.workers.keys()]).toEqual(['executor', 'checker']);
-      const exposed = handle as unknown as {
-        executor: unknown;
-        recMcp: unknown;
-        criticLlm: unknown;
-      };
-      expect(exposed.executor).toBeDefined();
-      expect(exposed.executor).not.toBe(workerAgent);
-      expect(exposed.recMcp).toBe(withMcpClients.mock.calls[0][0][0]);
-      expect(exposed.recMcp).toBe(deps.finalizer.recMcp);
-      expect(exposed).not.toHaveProperty('criticLlm');
-      workerAgent.process.mockResolvedValue({
-        ok: true,
-        value: { content: 'done' },
-      });
-      // Profiles resolve at execution; no shared raw worker is exposed.
-      for (const worker of deps.workers.values()) {
-        expect(worker.capabilities.contextPolicy).toBe('optional');
-      }
-    },
-  );
+  it('wires an adaptive stage and exposes the journal and reusable workers', async () => {
+    const handle = await agentManager.buildAgentForDestination(
+      new McpClientAdapter(new MCPClientWrapper({ url: 'http://localhost' })),
+      new agentManager.ExpositionFilteringRag(new InMemoryRag()),
+      { ...config, agent: { ...config.agent, chatCoordinator: 'adaptive' } },
+    );
+    expect(withDagCoordinator).not.toHaveBeenCalled();
+    expect(withStepperCoordinator).toHaveBeenCalledTimes(1);
+    expect(typeof withStepperCoordinator.mock.calls[0][0].execute).toBe(
+      'function',
+    );
+    expect([...handle.workers.keys()]).toEqual(['executor', 'checker']);
+    expect(handle.recMcp).toBe(withMcpClients.mock.calls[0][0][0]);
+    expect(handle).not.toHaveProperty('criticLlm');
+  });
 
   it('wires withDagCoordinator exactly once with the correct dep shapes', async () => {
     const handle = await agentManager.buildAgentForDestination(
@@ -369,64 +294,6 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
 
     expect(handle).toBeDefined();
   });
-
-  it.each(['fixed', 'adaptive'] as const)(
-    'uses the expected deterministic notice path with %s coordination',
-    async (chatCoordinator) => {
-      const registry = agentManager.getCollectionRegistry();
-      const collection = await registry.readAgentCollection('agents');
-      const executor = collection?.documents.find(
-        (doc) => doc.id === 'executor',
-      );
-      if (!executor) throw new Error('Missing executor fixture');
-      await registry.updateDocument('agents', 'executor', {
-        metadata: { ...executor.metadata, trust: { target: 5 } },
-      });
-      const spy = jest
-        .spyOn(reviewer, 'evaluateGated')
-        .mockResolvedValue({ ok: true });
-      try {
-        await agentManager.buildAgentForDestination(
-          new McpClientAdapter(
-            new MCPClientWrapper({ url: 'http://localhost' }),
-          ),
-          new agentManager.ExpositionFilteringRag(new InMemoryRag()),
-          {
-            ...config,
-            agent: { ...config.agent, chatCoordinator },
-          },
-        );
-        const wired = (
-          chatCoordinator === 'fixed'
-            ? withDagCoordinator
-            : withStepperCoordinator
-        ).mock.calls[0][0];
-        const deps = chatCoordinator === 'fixed' ? wired : wired.deps;
-        await deps.finalizer.finalize({
-          prompt: 'read',
-          objective: 'read',
-          interpreterOutput: 'done',
-          executionTrace: [],
-        });
-        const tool = new HandlerExporter(
-          agentManager.getHandlerExporterConfig(),
-        ).getToolNames()[0];
-        if (!tool) throw new Error('Missing embedded tool fixture');
-        if (chatCoordinator === 'adaptive') {
-          expect(spy).not.toHaveBeenCalled();
-        } else {
-          expect(spy).toHaveBeenCalledTimes(1);
-          expect(spy.mock.calls[0][0]).not.toHaveProperty('llm');
-          expect(spy.mock.calls[0][0]).not.toHaveProperty('toolTrust');
-        }
-      } finally {
-        spy.mockRestore();
-        await registry.updateDocument('agents', 'executor', {
-          metadata: executor.metadata,
-        });
-      }
-    },
-  );
 
   it('installs no tool-result cache on the destination agent or its worker — the MCP server owns caching', async () => {
     await agentManager.buildAgentForDestination(
@@ -684,34 +551,15 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
     expect(historyQuery).toHaveBeenCalled();
   });
 
-  it('wires a RecordingMcpClient into the worker (withMcpClients) and into the finalizer — same instance', async () => {
-    await agentManager.buildAgentForDestination(
-      {} as never,
-      {} as never,
+  it('exposes the worker journal for trace cleanup', async () => {
+    const handle = await agentManager.buildAgentForDestination(
+      new McpClientAdapter(new MCPClientWrapper({ url: 'http://localhost' })),
+      new agentManager.ExpositionFilteringRag(new InMemoryRag()),
       config,
     );
-
-    // withMcpClients is called twice: once inside buildExecutorWorker (via
-    // configureDestinationAgentBuilder), once for the controller build.
     expect(withMcpClients).toHaveBeenCalledTimes(2);
-    const workerMcpClients = withMcpClients.mock.calls[0][0];
-    expect(workerMcpClients[0]).toBeInstanceOf(RecordingMcpClient);
-
-    const deps = withDagCoordinator.mock.calls[0][0];
-    const finalizer = deps.finalizer as unknown as { recMcp: unknown };
-    expect(finalizer.recMcp).toBe(workerMcpClients[0]);
-  });
-
-  it('exposes recMcp on the returned handle (same instance the finalizer holds)', async () => {
-    const handle = (await agentManager.buildAgentForDestination(
-      {} as never,
-      {} as never,
-      config,
-    )) as unknown as { recMcp: unknown };
-
-    const deps = withDagCoordinator.mock.calls[0][0];
-    const finalizer = deps.finalizer as unknown as { recMcp: unknown };
-    expect(handle.recMcp).toBe(finalizer.recMcp);
+    expect(handle.recMcp).toBeInstanceOf(RecordingMcpClient);
+    expect(handle.recMcp).toBe(withMcpClients.mock.calls[0][0][0]);
   });
 
   it('binds the worker under the key "executor" — matches the planner node', async () => {

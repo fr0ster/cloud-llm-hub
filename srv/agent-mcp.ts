@@ -85,7 +85,6 @@ import { z } from 'zod';
 import {
   closeDestination,
   createAgentProfileSource,
-  type ExecutorAgentHandle,
   getSmartAgent,
   isDestinationClosed,
   retryAfterForDestination,
@@ -101,6 +100,8 @@ import {
   buildConnectionForDestination,
   dumpScopeForConnection,
 } from './lib/background-connection';
+import { lookupDialogue } from './lib/dialogue-sessions';
+import { getDialogueStoreBackend } from './lib/dialogue-store';
 import type { ExpositionLevel } from './lib/exposition';
 import { describeCaller } from './lib/exposition';
 import {
@@ -136,16 +137,46 @@ import {
   destinationClosedText,
   executeStepDoorRefusal,
   failureText,
-  type RecMcpHandle,
   sessionClosedText,
   throttleMessage,
   throttleOf,
   unverifiedWriteFor,
 } from './lib/throttle-surfacing';
 import { logToolCallDiagnostics } from './lib/tool-call-diagnostics';
+import { type JournalEntry, writeActions } from './lib/tool-journal';
 import { usageRuntime } from './lib/usage/runtime';
 import { runWithSessionId } from './request-session';
 import { appendToSession } from './session-store';
+
+const stepJournals = new WeakMap<
+  LongSession,
+  { destination: string; entries: Map<string, JournalEntry> }
+>();
+
+async function priorStepJournal(session: LongSession, destination: string) {
+  const direct = stepJournals.get(session);
+  const journal = new Map(
+    direct?.destination === destination ? direct.entries : undefined,
+  );
+  const dialogue = await lookupDialogue(session.userId, session.key);
+  if (dialogue) {
+    if (dialogue.destination === destination)
+      for (const [id, entry] of dialogue.toolJournal()) journal.set(id, entry);
+  } else {
+    const saved = await getDialogueStoreBackend().load(
+      session.userId,
+      session.key,
+    );
+    const snapshot = saved?.toolJournal;
+    if (
+      session.destination === destination &&
+      snapshot?.requestId === saved?.requests?.at(-1)?.id
+    )
+      for (const entry of snapshot?.entries ?? [])
+        journal.set(entry.call.id, entry);
+  }
+  return journal;
+}
 
 /**
  * The cap on concurrent `execute_step` runs when no door is configured.
@@ -402,6 +433,24 @@ async function executeStepRun(
   // Read from the `catch` below to close a destination an outage error
   // names, so it must be declared in the outer scope like the others.
   let targetDestination: string | undefined;
+  const collectActions = () => {
+    if (!targetDestination || !traceId) return undefined;
+    const entries = (handle?.recMcp?.getToolJournal(traceId) ?? []).filter(
+      (entry) => entry.write && entry.system,
+    );
+    if (!entries.length) return undefined;
+    const saved = stepJournals.get(longSession);
+    const journal =
+      saved?.destination === targetDestination
+        ? saved.entries
+        : new Map<string, JournalEntry>();
+    for (const entry of entries) journal.set(entry.call.id, entry);
+    stepJournals.set(longSession, {
+      destination: targetDestination,
+      entries: journal,
+    });
+    return writeActions(entries);
+  };
   // NOTE: no `req.on('close', ...)` safe-stop hook here. For Node/Express,
   // the request stream's `close` event fires once the BODY is consumed —
   // right after this JSON-RPC call starts — NOT reliably on client abort.
@@ -438,7 +487,7 @@ async function executeStepRun(
     }
 
     await waitForSessionTurns(longSession.key, callerSignal);
-    handle = await getSmartAgent(
+    const agentHandle = await getSmartAgent(
       undefined,
       targetDestination,
       currentRoleModel('executor') !== undefined ||
@@ -446,7 +495,8 @@ async function executeStepRun(
         currentLimit('executor', 'maxToolCalls') !== undefined ||
         currentSessionLimit('toolResultMaxChars') !== undefined,
     );
-    const agentHandle = handle as ExecutorAgentHandle;
+    handle = agentHandle;
+    const stepDestination = targetDestination;
 
     traceId = requestMeasurement(req)?.traceId ?? `agent-step-${randomUUID()}`;
     const sessionId = longSession.key;
@@ -573,7 +623,7 @@ async function executeStepRun(
                 async () => {
                   // An external agent uses this hub as its subagent: the executor
                   // runs alone, no controller. The honesty check the controller's
-                  // NoticeFinalizer gives chat runs here instead, with the same
+                  // Chat collects its own coordinator output, with the same
                   // inputs and the same trailing NOTICE.
                   return runExecutorStep(
                     createAgentProfileSource,
@@ -584,6 +634,7 @@ async function executeStepRun(
                     opts,
                     history,
                     model,
+                    () => priorStepJournal(longSession, stepDestination),
                   );
                 },
                 dumpScope,
@@ -599,6 +650,7 @@ async function executeStepRun(
         );
       }),
     );
+    const actions = collectActions();
 
     if (!r.ok) {
       if (isOutageError(r.error)) {
@@ -616,7 +668,9 @@ async function executeStepRun(
           : unverified
         : failureText(r.error);
       return mcpUsageResult(
-        `ERROR on destination "${targetDestination}": ${message}`,
+        [`ERROR on destination "${targetDestination}": ${message}`, actions]
+          .filter(Boolean)
+          .join('\n'),
         timedUsageToWire(spend.usage(), Date.now() - stepStartedAt),
         true,
       );
@@ -649,9 +703,9 @@ async function executeStepRun(
     );
     const emptyResult = !/\S/.test(rawContent);
     const reply = emptyResult
-      ? `EMPTY_RESULT on destination "${targetDestination}": The executor finished without a reply. The system state of the step is unknown and must be verified by a separate read step.${r.value.iterations !== undefined ? ` iterations=${r.value.iterations}` : ''}${r.value.toolCallCount !== undefined ? ` toolCallCount=${r.value.toolCallCount}` : ''}${r.value.stopReason !== undefined ? ` stopReason=${r.value.stopReason}` : ''}`
+      ? `EMPTY_RESULT on destination "${targetDestination}": The executor finished without a reply.${r.value.iterations !== undefined ? ` iterations=${r.value.iterations}` : ''}${r.value.toolCallCount !== undefined ? ` toolCallCount=${r.value.toolCallCount}` : ''}${r.value.stopReason !== undefined ? ` stopReason=${r.value.stopReason}` : ''}`
       : rawContent;
-    const content = notice ? `${notice}\n${reply}` : reply;
+    const content = [notice, reply, actions].filter(Boolean).join('\n');
     return mcpUsageResult(content, wireUsage, emptyResult);
   } catch (err) {
     if (targetDestination && isOutageError(err)) {
@@ -663,7 +717,7 @@ async function executeStepRun(
     measurement?.end('error');
     log.warn('execute_step failed', { destination, error: message });
     return mcpUsageResult(
-      `ERROR: ${message}`,
+      [`ERROR: ${message}`, collectActions()].filter(Boolean).join('\n'),
       timedUsageToWire(spend.usage(), Date.now() - stepStartedAt),
       true,
     );
@@ -680,7 +734,7 @@ async function executeStepRun(
       // throw here must not skip the release below, which would hold the slot
       // until restart.
       try {
-        (handle as unknown as RecMcpHandle)?.recMcp?.dropRequest(traceId);
+        handle?.recMcp?.dropRequest(traceId);
       } catch (err) {
         log.warn('dropRequest failed', {
           error: err instanceof Error ? err.message : String(err),

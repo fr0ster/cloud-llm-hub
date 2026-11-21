@@ -350,7 +350,7 @@ export function unverifiedWriteText(
 ): string {
   const names = calls.map((c) => c.name).join(', ');
   const verb = calls.length === 1 ? 'was sent' : 'were sent';
-  return `UNVERIFIED_WRITE: ${names} ${verb} and no answer came back (${cause}). It may or may not have been applied, so read the object back before deciding. It was NOT retried.`;
+  return `${names} ${verb} and no answer came back (${cause}). It was NOT retried.`;
 }
 
 /**

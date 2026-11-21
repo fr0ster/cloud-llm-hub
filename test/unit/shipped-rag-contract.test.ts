@@ -250,12 +250,14 @@ it.each(['coordinator', 'planner-create', 'planner-revise'])(
       // The coordinator decides the next action itself; no prescribed check rules.
       expect(prompt).not.toContain('skip a planned check');
       expect(prompt).not.toContain('add an unplanned check');
-      expect(prompt).toContain('an "unusable verdict: <reason>" is not a fail');
+      expect(prompt).toContain('Treat an unusable verdict as undecided');
     } else {
       expect(prompt).toContain(
         'batch checks must return JSON with verdict and a numeric count',
       );
-      expect(prompt).toContain('Fail requires exact checked-result quotes');
+      expect(prompt).toContain(
+        'a finding for every exact quoted claim and its cited evidence',
+      );
       expect(prompt).toContain('Unusable verdicts do not fail the work');
       expect(prompt).toContain(
         'The coordinator may add checks when user input requests verification',

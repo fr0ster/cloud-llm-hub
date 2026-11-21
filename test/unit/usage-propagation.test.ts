@@ -275,15 +275,7 @@ jest.mock('../../srv/agent-manager', (): object => ({
     profileRunner: IAgentProfileRunner;
     recMcp: Pick<
       import('../../srv/lib/recording-mcp-client').RecordingMcpClient,
-      | 'hadWriteCapability'
-      | 'getToolRecords'
-      | 'dropRequest'
-      | 'openSession'
-      | 'hadSessionWriteCapability'
-      | 'writeGeneration'
-      | 'markReviewed'
-      | 'closeSession'
-      | 'withSession'
+      'getToolRecords' | 'getToolJournal' | 'dropRequest'
     >;
     criticLlm: Record<string, never>;
   }> => ({
@@ -294,15 +286,8 @@ jest.mock('../../srv/agent-manager', (): object => ({
       () => mockWorkers,
     ),
     recMcp: {
-      hadWriteCapability: () => false,
-      openSession(): void {},
-      hadSessionWriteCapability: () => false,
-      writeGeneration: () => 0,
-      markReviewed(): void {},
-      closeSession(): void {},
-      withSession: <T>(_userId: string, _sessionId: string, run: () => T): T =>
-        run(),
-      getToolRecords: (): never[] => [],
+      getToolRecords: () => [],
+      getToolJournal: () => [],
       dropRequest(): void {},
     },
     criticLlm: {},

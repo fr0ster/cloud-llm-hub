@@ -532,7 +532,7 @@ describe('an unanswered write, non-streaming', () => {
     await done;
 
     const text = JSON.parse(res.body).choices[0].message.content;
-    expect(text).toContain('UNVERIFIED_WRITE: CreateClass');
+    expect(text).toContain('CreateClass');
     expect(text).toContain('was NOT retried');
     expect(harness.events.filter((e) => e === 'pipeline')).toHaveLength(1);
   });
@@ -564,7 +564,7 @@ describe('an unanswered write, streaming error chunk', () => {
     const { res, done } = call(body(true));
     await done;
 
-    expect(res.body).toContain('UNVERIFIED_WRITE: CreateClass');
+    expect(res.body).toContain('CreateClass');
     expect(res.body).toContain('was NOT retried');
     expect(harness.events.filter((e) => e === 'pipeline')).toHaveLength(1);
   });
@@ -596,7 +596,7 @@ describe('an unanswered write, streaming exception', () => {
     const { res, done } = call(body(true));
     await done;
 
-    expect(res.body).toContain('UNVERIFIED_WRITE: CreateClass');
+    expect(res.body).toContain('CreateClass');
     expect(res.body).toContain('was NOT retried');
     expect(harness.events.filter((e) => e === 'pipeline')).toHaveLength(1);
   });

@@ -24,7 +24,7 @@ export function verdictToolsEnabled(): boolean {
 export const submitVerdictTool = {
   name: 'submit_verdict',
   description:
-    'Submit the checker verdict. Claims are required and non-empty when verdict is fail; each claim must be evidence-bound.',
+    'Submit pass or fail with one finding per cited claim. Copy each claim and citation exactly.',
   inputSchema: z.toJSONSchema(verdictToolSchema, { io: 'input' }),
   annotations: { readOnlyHint: true },
 };

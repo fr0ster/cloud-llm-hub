@@ -1,11 +1,10 @@
-﻿import {
+import {
   type IQueryEmbedding,
   type IRag,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
 import { parseToolGate, parseToolGateTimeoutMs } from '../../srv/agent-config';
 import { ExpositionFilteringRag } from '../../srv/agent-manager';
-import { getReviewSignals } from '../../srv/lib/review-scope';
 import { ToolQueryAnalyzer } from '../../srv/lib/tool-query-analyzer';
 import {
   runWithSessionId,
@@ -170,24 +169,6 @@ it('uses the translation for short non-ASCII text', async () => {
     writes: false,
   });
   expect(chat).toHaveBeenCalledTimes(1);
-});
-it('records the top tool score even when the gate closes', async () => {
-  const { getReviewSignals } = await import('../../srv/lib/review-scope');
-  const { analyzer } = make(response('Hello', false));
-  const query = jest.fn().mockResolvedValue({ ok: true, value: rows });
-  const rag = new ExpositionFilteringRag(
-    { query } as any,
-    undefined,
-    undefined,
-    3,
-    analyzer,
-  );
-  await runWithSessionId('score', async () => {
-    await rag.query(new TextOnlyEmbedding('Hello'), 5, {
-      ragFilter: { exposition: ['readonly'] },
-    });
-    expect(getReviewSignals()?.topToolScore).toBe(0.8);
-  });
 });
 it.each([
   'Zeige die Felder der Tabelle MARA',

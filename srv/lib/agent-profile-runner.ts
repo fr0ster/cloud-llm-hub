@@ -21,7 +21,6 @@ import {
 } from './agent-profile-tools';
 import { runWithVerdictTools } from './checker-verdict-tool';
 import { parseModelAllowlist, resolveAgentModel } from './model-policy';
-import { recordReviewProfile } from './review-scope';
 import {
   currentRoleModel,
   RoleModelNotAllowedError,
@@ -161,7 +160,9 @@ export class AgentProfileRunner implements IAgentProfileRunner {
             [
               input.workerBase ?? '',
               profile.systemPrompt,
-              'Hub RAG knowledge tools include collection_create, record_add and record_update for session results; coordinator persists them. Read-only refers to SAP/system mutations; knowledge storage is available subject to the effective tool policy.',
+              profile.result === 'report'
+                ? 'Hub RAG knowledge tools include collection_create, record_add and record_update for session results; coordinator persists them. Read-only refers to SAP/system mutations; knowledge storage is available subject to the effective tool policy.'
+                : '',
             ].join('\n'),
             options,
           ),
@@ -174,10 +175,8 @@ export class AgentProfileRunner implements IAgentProfileRunner {
           name: worker.name,
           description: worker.description,
           capabilities: worker.capabilities,
-          run: (request) => {
-            recordReviewProfile(profile);
-            return this.bind(profile, parent)(() => worker.run(request));
-          },
+          run: (request) =>
+            this.bind(profile, parent)(() => worker.run(request)),
         },
       };
     } catch (error) {

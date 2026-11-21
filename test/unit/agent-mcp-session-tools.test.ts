@@ -351,7 +351,7 @@ it('runs only the executor and passes its output through verbatim', async () => 
   }
 });
 
-it('execute_step warns about a failed SAP domain create alongside a same-named RAG record', async () => {
+it('execute_step returns worker text unchanged after a failed write', async () => {
   const { handle, recMcp, criticLlm } = await directHandle([
     {
       call: {
@@ -379,13 +379,9 @@ it('execute_step warns about a failed SAP domain create alongside a same-named R
       session: await opened(),
       task: 'create the domain',
     });
-    expect(result.content[0].text).toContain(`${content}UNVERIFIED_WRITE:`);
-    expect(result.content[0].text).toContain(
-      'CreateDomain returned error: Domain already exists',
-    );
-    expect(recMcp.getToolRecords).toHaveBeenCalledWith(
-      expect.stringMatching(/^agent-step-/),
-    );
+    expect(result.content[0].text).toContain(content);
+    expect(result.content[0].text).not.toContain('UNVERIFIED_WRITE');
+    expect(recMcp.getToolRecords).not.toHaveBeenCalled();
     expect(criticLlm.chat).not.toHaveBeenCalled();
   } finally {
     Reflect.deleteProperty(handle, 'executor');
@@ -518,9 +514,6 @@ it.each(['', ' \n\t'])(
     expect(result.isError).toBe(true);
     expect(text).toMatch(/^EMPTY_RESULT on destination "DEST":/);
     expect(text).toContain('executor finished without a reply');
-    expect(text).toContain(
-      'system state of the step is unknown and must be verified by a separate read step',
-    );
     expect(text).toContain('iterations=2 toolCallCount=0 stopReason=stop');
     const [message, usage] = text.split('\n[usage] ');
     expect(result).toMatchObject({

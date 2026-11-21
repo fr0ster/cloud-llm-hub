@@ -1,493 +1,468 @@
-import { readFileSync } from 'node:fs';
-import type { DialogueState, ToolCallRecord } from '@mcp-abap-adt/llm-agent';
-import cds from '@sap/cds';
+import type { ILlm, ISubAgentInput } from '@mcp-abap-adt/llm-agent';
+import { sessionCollectionId } from '../../srv/collection-ids';
+import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
 import {
-  bindCheckerVerdict as bind,
-  type CheckerInputs,
-  checkerInputs,
-  checkerVerdictText,
-  needsCheckerVerdictRetry,
+  checkerRagResultProvenance,
+  readCheckerSource,
+} from '../../srv/lib/checker-source';
+import {
+  createCheckerWorker,
+  withCheckerBrief,
 } from '../../srv/lib/checker-verdict';
+import {
+  type CheckerClaim,
+  type CheckerVerdict,
+  verdictSchema,
+} from '../../srv/lib/checker-verdict-schema';
+import { runWithDialogueRagTools } from '../../srv/lib/dialogue-rag-scope';
+import { systemToolTrust } from '../../srv/lib/system-tool-trust';
+import { createTaskResultStore } from '../../srv/lib/task-result-store';
+import type { JournalEntry } from '../../srv/lib/tool-journal';
+import { parseTrustDefaults } from '../../srv/lib/trust';
+import {
+  resolverFor,
+  runWithTrustResolver,
+  TrustResolver,
+} from '../../srv/lib/trust-resolver';
+import { CollectionRegistry } from '../../srv/rag-collections';
+import { runWithProfileTools } from '../../srv/request-session';
+import { bindTestCaller } from './helpers/bind-test-caller';
 
-const context = {
-  checkedOutputs: ['The object is active.'],
-  checkedToolResults: [],
-  dependencyOutputs: ['inactive'],
-  briefContext: '',
-  briefGoal: '',
-  records: [],
-} satisfies CheckerInputs;
-const bindCheckerVerdict = (
-  output: string,
-  inputs: CheckerInputs,
-  brief: string,
-  records: ToolCallRecord[],
-) => bind(output, { ...inputs, briefGoal: brief, records });
-const fail = (quote = 'The object is active.', evidence = 'inactive') =>
-  JSON.stringify({
-    verdict: 'fail',
-    claims: [
-      { quote, evidence, reason: 'Task t1 evidence contradicts active status' },
-    ],
-  });
-
-test.each([
-  'PASS',
-  '{"verdict":"pass","count":2,"note":"ok"}',
-  '```json\n{"verdict":"pass"}\n```',
-  fail(),
-])('progress text then verdict binds without retry: %s', (verdict) => {
-  const output = `Checking evidence…\n\nReading the record.\n\n ${verdict} \n\n`;
-  expect(checkerVerdictText(output)).toBe(verdict);
-  expect(needsCheckerVerdictRetry(output, [])).toBe(false);
-  expect(bind(output, context)).toBe(verdict);
-});
-
-test.each([
-  '{\n"verdict": "pass",\n\n"note": "checked"\n}',
-  '```json\n{\n"verdict": "pass",\n\n"note": "checked"\n}\n```',
-])('progress text preserves verdict with inner blank lines: %s', (verdict) => {
-  for (const newline of ['\n', '\r\n']) {
-    const expected = verdict.replace(/\n/g, newline);
-    const output = `Checking evidence…${newline}${newline}${expected}`;
-    expect(checkerVerdictText(output)).toBe(expected);
-    expect(needsCheckerVerdictRetry(output, [])).toBe(false);
-    expect(bind(output, context)).toBe(expected);
-  }
-});
-
-test.each([
-  [fail('Invented claim'), 'quote_absent'],
-  [fail(undefined, 'fabricated evidence'), 'evidence_absent'],
-  [fail(undefined, 'none provided'), undefined],
-])('progress text preserves fail claim checks: %s', (verdict, reason) => {
-  const output = `Checking evidence…\n\n${verdict}`;
-  expect(needsCheckerVerdictRetry(output, [])).toBe(false);
-  expect(bind(output, context)).toBe(
-    reason ? `unusable verdict: ${reason}` : verdict,
-  );
-});
-
-test('progress text then garbage remains unusable and needs retry', () => {
-  const output = 'PASS\n\nChecking evidence…\n\ngarbage';
-  expect(checkerVerdictText(output)).toBe('');
-  expect(needsCheckerVerdictRetry(output, [])).toBe(true);
-  expect(bind(output, context)).toBe('unusable verdict: invalid_envelope');
-});
-
-test.each([
-  '{"verdict":"fail"}\n\n{"verdict":"pass"}',
-  '{"verdict":"pass"}\n\nFAIL',
-  '{"verdict":"fail","note":12}\n\n{"verdict":"pass"}',
-  '{"verdict":"fail",}\n\n{"verdict":"pass"}',
-  '{"verdict":"fail","verdict":"pass"}',
-  'The final verdict is FAIL because …\n\nPASS',
-  '{"ver\\u0064ict":"f\\u0061il"}\n\nPASS',
-  'Earlier PASS result\n\nPASS',
-  'Earlier failure: FAIL\n\nPASS',
-  'Earlier verdict pending\n\nPASS',
-  'ｖｅｒｄｉｃｔ pending\n\nPASS',
-  'ＦＡＩＬ\n\nPASS',
-  '｛pending｝\n\nPASS',
-  '＼pending\n\nPASS',
-  'A closing brace }\n\nPASS',
-  '```json\n{"verdict":"fail","verdict":"pass"}\n```',
-  '{"verdict":"fail","ver\\u0064ict":"pass"}',
-  '{"verdict":"pass","count":1,"count":2}',
-  '{"verdict":"pass","note":"first","note":"second"}',
-  '{"verdict":"pass","claims":[],"claims":[]}',
-  'Reading.\n\n{"verdict":"fail","verdict":"pass"}',
-])('ambiguous verdict requires retry and remains unusable: %s', (output) => {
-  expect(needsCheckerVerdictRetry(output, [])).toBe(true);
-  expect(bind(output, context)).toBe('unusable verdict: invalid_envelope');
-});
-
-test('whole verdict accepts nested claims and evidence without scanning their keys', () => {
-  const output = JSON.stringify({
-    verdict: 'fail',
-    claims: [
-      {
-        quote: 'The object is active.',
-        evidence: 'inactive',
-        reason: 'The evidence contradicts the claim.',
-        verdict: 'pass',
-        nested: { verdict: 'fail', claims: [] },
-      },
-    ],
-    note: 'Braces {}, escaped quote ", and verdict text are allowed here.',
-  });
-  expect(checkerVerdictText(output)).toBe(output);
-  expect(needsCheckerVerdictRetry(output, [])).toBe(false);
-  expect(bind(output, context)).toBe(output);
-});
-
-test.each([
-  'PASS',
-  '{\n"verdict": "pass",\n\n"note": "checked"\n}',
-  '```json\n{\n"verdict": "pass",\n\n"note": "checked"\n}\n```',
-])('whole valid verdict is preserved before splitting: %s', (verdict) => {
-  const output = ` \n${verdict}\n `;
-  expect(checkerVerdictText(output)).toBe(verdict);
-  expect(needsCheckerVerdictRetry(output, [])).toBe(false);
-  expect(bind(output, context)).toBe(verdict);
-});
-
-test('blank line extraction supports CRLF and whitespace-only lines', () => {
-  expect(checkerVerdictText('Reading.\r\n \t\r\n\r\n pass \r\n')).toBe('pass');
-  expect(checkerVerdictText(' \n\n ')).toBe('');
-});
-
-test('fail binds exact quote and evidence with normalized whitespace', () => {
-  const output = fail('The  object\nis active.');
-  expect(bindCheckerVerdict(output, context, '', [])).toBe(output);
-});
-test('absent checked-result quote is unusable', () => {
-  expect(bindCheckerVerdict(fail('Invented claim'), context, '', [])).toBe(
-    'unusable verdict: quote_absent',
-  );
-});
-test('fabricated evidence is unusable', () => {
-  expect(
-    bindCheckerVerdict(fail(undefined, 'result: deleted'), context, '', []),
-  ).toBe('unusable verdict: evidence_absent');
-});
-test.each([
-  'The object is active.',
-  'result to check: step work',
-  'tools used by task t1',
-  'ReadObject | ok',
-])(
-  'checked output and generated framing cannot supply evidence: %s',
-  (evidence) => {
-    expect(bindCheckerVerdict(fail(undefined, evidence), context, '', [])).toBe(
-      'unusable verdict: evidence_absent',
-    );
+const entry: JournalEntry = {
+  call: {
+    id: 'create',
+    name: 'CreateTransportTask',
+    arguments: { transport_number: 'PARENT' },
   },
-);
-test('dependency results supply evidence without their headings', () => {
-  const dependency = { ...context, dependencyOutputs: ['Object is inactive'] };
-  const output = fail(undefined, 'Object is inactive');
-  expect(bindCheckerVerdict(output, dependency, '', [])).toBe(output);
-  expect(
-    bindCheckerVerdict(
-      fail(undefined, 'result of step source'),
-      dependency,
-      '',
-      [],
-    ),
-  ).toBe('unusable verdict: evidence_absent');
-});
-test('checker tool results and brief source inputs supply evidence', () => {
-  const output = fail(undefined, 'Object is inactive');
-  expect(bindCheckerVerdict(output, context, 'Object is inactive', [])).toBe(
-    output,
-  );
-  for (const content of [
-    'Object is inactive',
-    [{ type: 'text' as const, text: 'Object is inactive' }],
-  ]) {
-    expect(
-      bindCheckerVerdict(output, context, '', [
-        {
-          call: { id: 'read', name: 'ReadObject', arguments: {} },
-          result: { content },
-        },
-      ]),
-    ).toBe(output);
-  }
-});
-test.each([
-  'Object is "inactive"',
-  'Object is\n"inactive"\nPending activation',
-])('accepts quoted and multiline evidence from MCP text: %s', (text) => {
-  const output = fail(undefined, text);
-  for (const content of [text, [{ type: 'text', text }]]) {
-    expect(
-      bindCheckerVerdict(output, { ...context, dependencyOutputs: [] }, '', [
-        {
-          call: { id: 'read', name: 'ReadObject', arguments: {} },
-          result: { content },
-        },
-      ]),
-    ).toBe(output);
-  }
-});
+  result: { content: { success: true, task_number: 'TASK' } },
+  answered: true,
+  system: 'sap',
+  write: true,
+};
+const write: CheckerClaim = {
+  claim: 'I created transport task TASK.',
+  system: 'sap',
+  target: { type: 'transport', name: 'TASK' },
+  evidence: { callId: entry.call.id },
+};
+const source: CheckerClaim = {
+  claim: 'The record says the batch has finished.',
+  system: 'source',
+  target: { scope: 'session', collection: 'task-results' },
+  evidence: { recordId: 'report', quote: 'batch has finished' },
+};
+const input: ISubAgentInput = {
+  task: 'Library-added context must stay out of the checker.',
+  caller: { userId: 'test-user', sessionId: 'test-session', isAdmin: false },
+  sessionId: 'test-session',
+};
 
-test.each(['FAIL', '{"verdict":"fail"}', '{"verdict":"fail","claims":[]}'])(
-  'unbound failure %s is unusable',
-  (output) => {
-    expect(bindCheckerVerdict(output, context, '', [])).toMatch(
-      /^unusable verdict:/,
-    );
-  },
-);
-test('none provided explicitly binds an unsupported claim', () => {
-  const output = fail(undefined, 'none provided');
-  expect(bindCheckerVerdict(output, context, '', [])).toBe(output);
-});
-test.each(['PASS', '{"verdict":"pass","count":2,"note":"ok"}'])(
-  'pass compatibility: %s',
-  (output) => expect(bindCheckerVerdict(output, context, '', [])).toBe(output),
-);
-test('a quote from the brief alone cannot bind', () => {
-  expect(
-    bindCheckerVerdict(fail('Other claim'), context, 'Other claim', []),
-  ).toBe('unusable verdict: quote_absent');
-});
-test('coordinator profile prescribes no check rules and stays within budget', () => {
-  const profile = readFileSync('srv/agent-profiles/coordinator.md', 'utf8');
-  expect(profile.length).toBeLessThanOrEqual(4300);
-  for (const rule of [
-    'run a planned check',
-    'skip a planned check',
-    'add an unplanned check',
-    'Checks are decisions',
-  ])
-    expect(profile).not.toContain(rule);
-  expect(profile).toContain('plan_revise');
-});
+beforeAll(() => bindTestCaller(input.caller));
 
-test.each(['{"verdict":"pass","count":-1}', '{"verdict":"pass","count":1.5}'])(
-  'malformed count %s remains undecided',
-  (output) => {
-    expect(bindCheckerVerdict(output, context, '', [])).toBe(
-      'unusable verdict: invalid_envelope',
-    );
-  },
-);
-
-test('non-verdict output remains undecided', () => {
-  expect(bindCheckerVerdict('Cannot verify yet', context, '', [])).toBe(
-    'unusable verdict: invalid_envelope',
-  );
-});
-
-test('discarded verdict logs contain only reason codes and counts', () => {
-  const warn = jest
-    .spyOn(cds.log('checker-verdict'), 'warn')
-    .mockImplementation(() => {});
-  try {
-    bindCheckerVerdict(
-      fail('PRIVATE_CLAIM', 'PRIVATE_EVIDENCE'),
-      context,
-      '',
-      [],
-    );
-    expect(warn).toHaveBeenCalledWith('discarded checker verdict', {
-      reason: 'quote_absent',
-      claims: 1,
-      validClaims: 0,
-    });
-    expect(JSON.stringify(warn.mock.calls)).not.toMatch(
-      /PRIVATE_CLAIM|PRIVATE_EVIDENCE/,
-    );
-  } finally {
-    warn.mockRestore();
-  }
-});
-test('every failure claim must bind, including claims after a valid one', () => {
-  const output = JSON.stringify({
-    verdict: 'fail',
-    claims: [
-      {
-        quote: 'The object is active.',
-        evidence: 'inactive',
-        reason: 'Task t1 contradicts this',
-      },
-      {
-        quote: 'Fabricated quote',
-        evidence: 'none provided',
-        reason: 'Unsupported',
-      },
-    ],
-  });
-  expect(bindCheckerVerdict(output, context, '', [])).toBe(
-    'unusable verdict: quote_absent',
-  );
-});
-
-test.each([
-  { verdict: 'pass', count: '2' },
-  { verdict: 'pass', count: null },
-  { verdict: 'pass', note: 2 },
-  { verdict: 'pass', note: null },
-  { verdict: 'other' },
-  { verdict: 'fail' },
-  { verdict: 'PASS' },
-  { verdict: 'fail', count: '2', claims: [] },
-  { verdict: 'fail', note: false, claims: [] },
-  {
-    verdict: 'fail',
-    claims: [
-      { quote: 'The object is active.', evidence: 'inactive', reason: 2 },
-    ],
-  },
-])('rejects invalid downstream envelope: %j', (envelope) => {
-  expect(bindCheckerVerdict(JSON.stringify(envelope), context, '', [])).toBe(
-    'unusable verdict: invalid_envelope',
-  );
-});
-
-test('accepts complete valid fail envelope', () => {
-  const output = JSON.stringify({
-    ...JSON.parse(fail()),
-    count: 1,
-    note: 'checked',
-  });
-  expect(bindCheckerVerdict(output, context, '', [])).toBe(output);
-});
-
-const snapshot = (report: string): DialogueState => ({
-  conversation: [],
-  pending: [],
-  savedAt: 0,
-  tasks: [
-    {
-      id: 't0',
-      worker: 'reader',
-      goal: 'Read',
-      state: 'done',
-      createdAt: 0,
-      output: 'Object is inactive',
-    },
-    {
-      id: 't1',
-      worker: 'writer',
-      goal: 'Report',
-      state: 'done',
-      createdAt: 0,
-      output: report,
-    },
-    {
-      id: 't2',
-      worker: 'checker',
-      goal: 'Check report',
-      state: 'running',
-      createdAt: 0,
-    },
-  ],
-  plan: {
-    version: 1,
-    status: 'active',
-    steps: [
-      {
-        id: 'source',
-        goal: 'Read',
-        state: 'done',
-        taskIds: ['t0'],
-        successfulWorkTaskId: 't0',
-      },
-      {
-        id: 'work',
-        goal: 'Report',
-        state: 'done',
-        taskIds: ['t1'],
-        successfulWorkTaskId: 't1',
-        dependsOn: ['source'],
-      },
-      {
-        id: 'check',
-        goal: 'Check report',
-        state: 'running',
-        taskIds: ['t2'],
-        workTaskId: 't2',
-        dependsOn: ['work'],
-        checkedTaskIds: { work: 't1' },
-      },
-    ],
-  },
-});
-
-test('report headings cannot turn checked content into independent evidence', () => {
-  const state = snapshot(
-    'The object is active.\n\n[Details]\nObject is inactive',
-  );
-  state.conversation = [];
-  state.tasks = state.tasks.filter((task) => task.id !== 't0');
-  expect(
-    bind(
-      fail(undefined, 'Object is inactive'),
-      checkerInputs(state, 't2', 'Check report', []),
-    ),
-  ).toBe('unusable verdict: evidence_absent');
-});
-
-test('another dependency output supplies independent evidence', () => {
-  const state = snapshot('The object is active.');
-  state.conversation = [];
-  const inputs = checkerInputs(state, 't2', 'Check report', []);
-  expect(inputs.checkedOutputs).toEqual(['The object is active.']);
-  expect(inputs.dependencyOutputs).toEqual(['Object is inactive']);
-  const output = fail(undefined, 'Object is inactive');
-  expect(bind(output, inputs)).toBe(output);
-});
-
-test.each(['Object is inactive', 'Object is\n"inactive"'])(
-  'checked task trace results supply independent evidence: %s',
-  (resultExcerpt) => {
-    const state = snapshot('The object is active.\nReport-only evidence');
-    state.tasks = state.tasks.filter((task) => task.id !== 't0');
-    const checked = state.tasks.find((task) => task.id === 't1');
-    if (!checked) throw new Error('Missing checked task');
-    checked.toolTrace = {
-      entries: [
-        {
-          sequence: 1,
-          toolName: 'ReadObject',
-          arguments: 'Argument-only evidence',
-          resultExcerpt,
-          outcome: 'ok',
-        },
-      ],
-      omittedCount: 0,
-      complete: true,
-    };
-    state.tasks.push({
-      ...checked,
-      id: 'unrelated',
-      toolTrace: {
-        ...checked.toolTrace,
-        entries: [
-          {
-            ...checked.toolTrace.entries[0],
-            resultExcerpt: 'Unrelated trace evidence',
-          },
+function finding(
+  claim: CheckerClaim,
+  status: CheckerVerdict['findings'][number]['status'],
+) {
+  return {
+    claim: claim.claim,
+    status,
+    evidence: claim.evidence,
+    reason: 'Assessment of the cited evidence.',
+  };
+}
+function checker(
+  verdict: CheckerVerdict,
+  recordText = 'The batch has finished.',
+  registry?: CollectionRegistry,
+) {
+  const llm: ILlm = {
+    chat: jest.fn(async () => ({
+      ok: true as const,
+      value: {
+        content: '',
+        finishReason: 'tool_calls' as const,
+        toolCalls: [
+          { id: 'verdict', name: 'submit_verdict', arguments: verdict },
         ],
       },
-    });
-    const inputs = checkerInputs(state, 't2', 'Check report', []);
-    expect(inputs.checkedToolResults).toEqual([resultExcerpt]);
-    const output = fail(undefined, resultExcerpt);
-    expect(bind(output, inputs)).toBe(output);
-    for (const evidence of [
-      'Report-only evidence',
-      'The object is active.',
-      'Argument-only evidence',
-      'ReadObject',
-      'Unrelated trace evidence',
-    ]) {
-      expect(bind(fail(undefined, evidence), inputs)).toBe(
-        'unusable verdict: evidence_absent',
+    })),
+    async *streamChat() {},
+  };
+  const read = jest.fn<
+    ReturnType<Parameters<typeof createCheckerWorker>[4]>,
+    Parameters<Parameters<typeof createCheckerWorker>[4]>
+  >(
+    registry
+      ? (caller, target, id) => readCheckerSource(registry, caller, target, id)
+      : async () => ({ text: recordText }),
+  );
+  const worker = createCheckerWorker(
+    'checker',
+    '',
+    'Check only cited evidence.',
+    llm,
+    read,
+    (caller, entry, target) => {
+      if (!registry) return undefined;
+      return 'scope' in target
+        ? checkerRagResultProvenance(registry, caller, target)
+        : systemToolTrust(
+            (name) => name === 'CreateTransportTask',
+            resolverFor(registry),
+          )(entry.call.name);
+    },
+  );
+  return { worker, llm, read };
+}
+
+const note: CheckerClaim = {
+  ...source,
+  target: { scope: 'session', collection: 'notes' },
+};
+const checkerOnly = new AgentToolPermissions(['submit_verdict']);
+const withRead = new AgentToolPermissions(['submit_verdict', 'rag_read']);
+
+async function notes(caller = input.caller) {
+  const registry = new CollectionRegistry();
+  const id = sessionCollectionId('notes', caller.userId, caller.sessionId);
+  await registry.getOrCreateCollection({
+    id,
+    logicalId: 'notes',
+    displayName: 'Notes',
+    description: '',
+    scope: 'session',
+    owner: caller.userId,
+    sessionId: caller.sessionId,
+  });
+  await registry.addDocument(id, {
+    id: 'report',
+    text: 'The batch has finished.',
+    metadata: {},
+  });
+  return { registry, id };
+}
+
+test.each(['profile', 'parent profile'])(
+  'enforces rag_read for ordinary source records with a restrictive %s',
+  async (restricted) => {
+    const { registry } = await notes();
+    const getDocument = jest.spyOn(registry, 'getDocument');
+    const { worker, llm } = checker(
+      { verdict: 'pass', findings: [finding(note, 'confirmed')] },
+      undefined,
+      registry,
+    );
+    const run = () =>
+      runWithDialogueRagTools(() =>
+        worker.run({ ...input, task: JSON.stringify([note]) }),
       );
-    }
-    delete checked.toolTrace;
-    expect(bind(output, checkerInputs(state, 't2', 'Check report', []))).toBe(
-      'unusable verdict: evidence_absent',
+    const result = await runWithProfileTools(checkerOnly, () =>
+      restricted === 'profile' ? run() : runWithProfileTools(withRead, run),
+    );
+    expect(result.output).toBe('unusable verdict: missing or invalid findings');
+    expect(getDocument).not.toHaveBeenCalled();
+    expect(jest.mocked(llm.chat).mock.calls[0][0][1].content).not.toContain(
+      'The batch has finished.',
     );
   },
 );
 
-test('structured coordinator brief context supplies evidence', () => {
-  const state = snapshot('The object is active.');
-  state.tasks = state.tasks.filter((task) => task.id !== 't0');
-  const inputs = checkerInputs(
-    state,
-    't2',
-    'Check report',
-    [],
-    'Brief source: Object is inactive',
-  );
-  expect(inputs.briefContext).toBe('Brief source: Object is inactive');
-  const output = fail(undefined, 'Object is inactive');
-  expect(bind(output, inputs)).toBe(output);
+test('keeps the own task-results exception within dialogue workers and the caller session', async () => {
+  const registry = new CollectionRegistry();
+  const { userId, sessionId } = input.caller;
+  const store = createTaskResultStore(registry, {
+    userId,
+    sessionKey: sessionId,
+  });
+  const stored = await store.put({
+    id: 'report',
+    worker: 'executor',
+    goal: 'Check the batch',
+    result: 'report',
+    outcome: 'done',
+    summary: 'Batch report',
+    output: 'The batch has finished.',
+  });
+  expect(stored.ok).toBe(true);
+  const read = (caller = input.caller) =>
+    readCheckerSource(registry, caller, source.target, 'report');
+  await runWithProfileTools(checkerOnly, async () => {
+    expect(await read()).toBeUndefined();
+    await runWithDialogueRagTools(async () => {
+      expect(await read()).toMatchObject({ text: 'The batch has finished.' });
+      expect(
+        await read({ ...input.caller, sessionId: 'other-session' }),
+      ).toBeUndefined();
+      expect(
+        await read({ ...input.caller, userId: 'someone-else' }),
+      ).toBeUndefined();
+    });
+  });
 });
+
+test('enforces the user ACL even with rag_read allowed by the profile', async () => {
+  const { registry, id } = await notes({
+    ...input.caller,
+    userId: 'someone-else',
+    sessionId: 'foreign-session',
+  });
+  const getCollection = registry.getCollection.bind(registry);
+  const foreign = await getCollection(id);
+  // Model an address that resolves to another owner's collection.
+  jest.spyOn(registry, 'getCollection').mockResolvedValue(foreign);
+  const getDocument = jest.spyOn(registry, 'getDocument');
+  await expect(
+    runWithProfileTools(withRead, () =>
+      readCheckerSource(registry, input.caller, note.target, 'report'),
+    ),
+  ).resolves.toBeUndefined();
+  expect(getDocument).not.toHaveBeenCalled();
+});
+
+test.each([
+  { expected: 1.5 },
+  { collection: 2.5, expected: 2.5 },
+  { collection: 2.5, record: 3.5, expected: 3.5 },
+])(
+  'frames source, RAG and SAP journal evidence with effective trust: $expected',
+  async ({ collection, record, expected }) => {
+    const { registry, id } = await notes();
+    if (collection !== undefined)
+      await registry.updateCollection(id, { trust: collection });
+    if (record !== undefined)
+      await registry.setRecordTrust(id, 'report', record, input.caller.userId);
+    const ragEntry: JournalEntry = {
+      ...entry,
+      call: {
+        id: 'rag-add',
+        name: 'record_add',
+        arguments: { collection: note.target, record: 'report' },
+      },
+      result: {
+        content: {
+          collection: 'session/notes',
+          record: 'report',
+          created: true,
+        },
+      },
+      system: 'rag',
+    };
+    const ragClaim: CheckerClaim = {
+      claim: 'Added a note.',
+      system: 'rag',
+      target: { ...note.target, record: 'report' },
+      evidence: { callId: ragEntry.call.id },
+    };
+    const claims = [note, ragClaim, write];
+    const { worker, llm } = checker(
+      {
+        verdict: 'pass',
+        findings: claims.map((claim) => finding(claim, 'confirmed')),
+      },
+      undefined,
+      registry,
+    );
+    const resolver = new TrustResolver(
+      registry,
+      undefined,
+      parseTrustDefaults(undefined),
+    ).forProfile({ trust: { session: 1.5, target: 4.5 } });
+    const result = await runWithTrustResolver(resolver, () =>
+      runWithProfileTools(withRead, () =>
+        withCheckerBrief(
+          {
+            claims: JSON.stringify(claims),
+            journal: new Map([
+              [entry.call.id, entry],
+              [ragEntry.call.id, ragEntry],
+            ]),
+          },
+          () => worker.run(input),
+        ),
+      ),
+    );
+    expect(JSON.parse(result.output)).toMatchObject({ verdict: 'pass' });
+    const prompt = jest.mocked(llm.chat).mock.calls[0][0][1].content;
+    expect(JSON.parse(prompt ?? '')).toMatchObject([
+      {
+        cited: {
+          content: 'The batch has finished.',
+          provenance: `[source: session:Notes/report; trust ${expected}]`,
+        },
+      },
+      {
+        cited: {
+          provenance: `[source: session:Notes/report; trust ${expected}]`,
+        },
+      },
+      {
+        cited: {
+          provenance: '[source: target:CreateTransportTask; trust 4.5]',
+        },
+      },
+    ]);
+  },
+);
+
+test('confirms a typed write and an exact source quote from only the cited records', async () => {
+  const verdict: CheckerVerdict = {
+    verdict: 'pass',
+    findings: [finding(write, 'confirmed'), finding(source, 'confirmed')],
+  };
+  const { worker, llm, read } = checker(verdict);
+  const result = await withCheckerBrief(
+    {
+      claims: JSON.stringify([write, source]),
+      journal: new Map([
+        [entry.call.id, entry],
+        [
+          'other',
+          {
+            ...entry,
+            result: { content: 'UNRELATED_PRIVATE_RESULT' },
+          },
+        ],
+      ]),
+    },
+    () => worker.run(input),
+  );
+  expect(verdictSchema.parse(JSON.parse(result.output))).toEqual(verdict);
+  expect(read).toHaveBeenCalledTimes(1);
+  expect(read).toHaveBeenCalledWith(input.caller, source.target, 'report');
+  const [messages, tools] = jest.mocked(llm.chat).mock.calls[0];
+  expect(messages[1].content).toContain('TASK');
+  expect(messages[1].content).not.toContain('UNRELATED_PRIVATE_RESULT');
+  expect(messages[1].content).not.toContain(input.task);
+  expect(tools?.map(({ name }) => name)).toEqual(['submit_verdict']);
+});
+
+test('preserves the verified item count in the verdict output for a batch check', async () => {
+  const batchItem: CheckerClaim = {
+    ...source,
+    claim: 'Batch item A was processed.',
+    evidence: { recordId: 'report', quote: 'Batch item A was processed.' },
+  };
+  const verdict: CheckerVerdict = {
+    verdict: 'pass',
+    count: 1,
+    findings: [finding(batchItem, 'confirmed')],
+  };
+  const { worker } = checker(verdict, 'Batch item A was processed.');
+  const result = await worker.run({
+    ...input,
+    task: JSON.stringify([batchItem]),
+  });
+  expect(verdictSchema.parse(JSON.parse(result.output))).toEqual(verdict);
+});
+
+test.each([
+  { cited: { ...entry, answered: false }, claim: write, reason: 'unconfirmed' },
+  {
+    cited: {
+      ...entry,
+      call: {
+        ...entry.call,
+        name: 'AddTransportObject',
+        arguments: { transport_number: 'TASK' },
+      },
+      result: { content: { accepted: true, added: 'unknown' } },
+    },
+    claim: { ...write, claim: 'Attached an object to TASK.' },
+    reason: 'unconfirmed',
+  },
+  { cited: { ...entry, write: false }, claim: write, reason: 'a read' },
+  {
+    cited: { ...entry, system: 'rag' as const },
+    claim: write,
+    reason: 'different system',
+  },
+  {
+    cited: entry,
+    claim: { ...write, target: { type: 'transport', name: 'PARENT' } },
+    reason: 'claimed target',
+  },
+  {
+    cited: entry,
+    claim: { ...write, evidence: {} },
+    reason: 'missing a journal call id',
+  },
+  { cited: entry, claim: source, reason: 'quote is absent' },
+])(
+  'returns unsupported when the evidence has an issue: $reason',
+  async ({ cited, claim, reason }) => {
+    const verdict: CheckerVerdict = {
+      verdict: 'fail',
+      findings: [finding(claim, 'unsupported')],
+    };
+    const { worker, llm } = checker(verdict, 'The batch is still running.');
+    const result = await withCheckerBrief(
+      {
+        claims: JSON.stringify([claim]),
+        journal: new Map([[entry.call.id, cited]]),
+      },
+      () => worker.run(input),
+    );
+    expect(JSON.parse(result.output)).toMatchObject({
+      verdict: 'fail',
+      findings: [
+        { ...verdict.findings[0], reason: expect.stringContaining(reason) },
+      ],
+    });
+    expect(result.summary).toContain(claim.claim);
+    expect(jest.mocked(llm.chat).mock.calls[0][0][1].content).toContain(reason);
+  },
+);
+
+test('accepts a refutation of a claimed write cited to a failed call', async () => {
+  const verdict: CheckerVerdict = {
+    verdict: 'fail',
+    findings: [finding(write, 'refuted')],
+  };
+  const { worker } = checker(verdict);
+  const result = await withCheckerBrief(
+    {
+      claims: JSON.stringify([write]),
+      journal: new Map([
+        [
+          entry.call.id,
+          {
+            ...entry,
+            result: { content: { task_number: 'TASK', success: false } },
+          },
+        ],
+      ]),
+    },
+    () => worker.run(input),
+  );
+  expect(JSON.parse(result.output)).toEqual(verdict);
+  expect(result.summary).toContain('refuted (create)');
+});
+
+test.each([
+  { verdict: 'pass', findings: [finding(write, 'unsupported')] },
+  {
+    verdict: 'pass',
+    findings: [finding({ ...write, claim: 'Fabricated.' }, 'confirmed')],
+  },
+  {
+    verdict: 'pass',
+    findings: [
+      finding({ ...write, evidence: { callId: 'fabricated' } }, 'confirmed'),
+    ],
+  },
+  { verdict: 'pass', findings: [] },
+] satisfies CheckerVerdict[])(
+  'reports invalid verdicts as unusable: %j',
+  async (verdict) => {
+    const { worker, llm } = checker(verdict);
+    const result = await withCheckerBrief(
+      {
+        claims: JSON.stringify([write]),
+        journal: new Map([[entry.call.id, entry]]),
+      },
+      () => worker.run(input),
+    );
+    expect(result.output).toBe('unusable verdict: missing or invalid findings');
+    expect(llm.chat).toHaveBeenCalledTimes(1);
+  },
+);

@@ -100,13 +100,11 @@ test('shipped seeds validate and executor alone owns storage/retry rules', async
   const seeds = await loadAgentProfileSeeds();
   const checker = seeds.find((record) => record.id === 'checker');
   expect(checker?.text).toContain(
-    'Quote exact text from the result being checked.',
+    'Verify only the quoted claims and the evidence attached to each claim.',
   );
+  expect(checker?.text).toContain('A read never proves a write.');
   expect(checker?.text).toContain(
-    'No tools being executed alone is never grounds for fail',
-  );
-  expect(checker?.text).toContain(
-    'Unavailable or omitted traces do not prove no tools ran',
+    'Never search for evidence, redo work, or judge style.',
   );
   expect(seeds.map((record) => record.id).sort()).toEqual([
     '_worker-base',

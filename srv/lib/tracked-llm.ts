@@ -1,6 +1,5 @@
 import type { ILlm } from '@mcp-abap-adt/llm-agent';
 import { trackCall } from './admission-scope';
-import { recordCompletionTokens } from './review-scope';
 
 const tracked = new WeakSet<ILlm>();
 
@@ -10,7 +9,7 @@ const tracked = new WeakSet<ILlm>();
  * A stream is registered when the reader starts it and settles when the reader
  * stops, whether at the end, on an early `break`, or on a throw.
  */
-export function trackedLlm(inner: ILlm, captureCompletionTokens = false): ILlm {
+export function trackedLlm(inner: ILlm): ILlm {
   const healthCheck = inner.healthCheck;
   const getModels = inner.getModels;
   const register = !tracked.has(inner);
@@ -20,22 +19,10 @@ export function trackedLlm(inner: ILlm, captureCompletionTokens = false): ILlm {
     },
     chat: async (...args: Parameters<ILlm['chat']>) => {
       const call = inner.chat(...args);
-      const result = await (register ? trackCall(call) : call);
-      if (captureCompletionTokens && result.ok && result.value.usage) {
-        recordCompletionTokens(
-          args[2]?.model ?? inner.model,
-          result.value.usage.completionTokens,
-        );
-      }
-      return result;
+      return register ? trackCall(call) : call;
     },
     streamChat: (...args: Parameters<ILlm['streamChat']>) =>
-      trackStream(
-        inner.streamChat(...args),
-        captureCompletionTokens,
-        args[2]?.model ?? inner.model,
-        register,
-      ),
+      trackStream(inner.streamChat(...args), register),
     ...(healthCheck
       ? {
           healthCheck: (...a: Parameters<NonNullable<ILlm['healthCheck']>>) =>
@@ -55,8 +42,6 @@ export function trackedLlm(inner: ILlm, captureCompletionTokens = false): ILlm {
 
 async function* trackStream(
   source: ReturnType<ILlm['streamChat']>,
-  capture: boolean,
-  model: string | undefined,
   register: boolean,
 ): ReturnType<ILlm['streamChat']> {
   let done = () => {};
@@ -66,18 +51,9 @@ async function* trackStream(
         done = r;
       }),
     );
-  let completionTokens: number | undefined;
   try {
-    for await (const chunk of source) {
-      if (chunk.ok && chunk.value.usage) {
-        completionTokens = chunk.value.usage.completionTokens;
-      }
-      yield chunk;
-    }
+    yield* source;
   } finally {
-    if (capture && completionTokens !== undefined) {
-      recordCompletionTokens(model, completionTokens);
-    }
     done();
   }
 }

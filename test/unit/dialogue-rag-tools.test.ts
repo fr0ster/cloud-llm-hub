@@ -17,7 +17,6 @@ import {
   withDialogueRagTools,
 } from '../../srv/lib/dialogue-rag-tools';
 import { longSessions } from '../../srv/lib/long-session';
-import { renderNotice } from '../../srv/lib/notify-policy';
 import {
   buildRagToolSchemas,
   ragDescriptions,
@@ -26,7 +25,7 @@ import {
   ragToolNames,
 } from '../../srv/lib/rag-tool-catalogue';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
-import { evaluateWriteClaims } from '../../srv/lib/write-claim-review';
+import { writeActions } from '../../srv/lib/tool-journal';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import {
   runWithProfileTools,
@@ -690,7 +689,7 @@ test('explicit coordinator addresses do not shadow, persistence accepts equal na
   });
 });
 
-test('the real coordinator persistence result supplies evidence to the write reviewer', async () => {
+test('the real coordinator persistence result supplies a scoped journal fact', async () => {
   const { registry, client, inner } = setup();
   const coordinator = new RecordingMcpClient(
     new LocalRagMcpClient(inner, () => registry, true),
@@ -727,42 +726,9 @@ test('the real coordinator persistence result supplies evidence to the write rev
       'rag_persist',
       'rag_read',
     ]);
-    expect(
-      renderNotice(
-        evaluateWriteClaims(
-          [
-            {
-              system: 'rag',
-              operation: 'persisted',
-              target: {
-                scope: 'user',
-                collection: to.collection,
-                record: name,
-              },
-              callId: evidence[0].call.id,
-            },
-          ],
-          evidence,
-          () => false,
-        ),
-      ),
-    ).toBe('');
-    expect(
-      renderNotice(
-        evaluateWriteClaims(
-          [
-            {
-              system: 'sap',
-              operation: 'created',
-              target: { type: 'domain', name: 'ZREQ' },
-              callId: evidence[0].call.id,
-            },
-          ],
-          evidence,
-          (name) => name === 'CreateDomain',
-        ),
-      ),
-    ).toContain('UNVERIFIED_WRITE:');
+    expect(writeActions(evidence)).toContain(
+      '"system":"rag","operation":"rag_persist","targets":[{"scope":"user","collection":"project","record":"business-requirements"}],"outcome":"succeeded"',
+    );
   });
 });
 

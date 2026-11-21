@@ -156,7 +156,7 @@ graph TD
     SRV_DIR --> SRV_AGENT["Agent modules<br/>agent-mcp.ts,<br/>openai-handler.ts,<br/>anthropic-handler.ts,<br/>agent-service.ts,<br/>agent-manager.ts,<br/>agent-config.ts"]
     SRV_DIR --> SRV_AUTH["Auth module<br/>auth.ts, auth.cds"]
     SRV_DIR --> SRV_CONN["connections/<br/>Connection strategies"]
-    SRV_DIR --> SRV_LIB["lib/<br/>errorUtils.ts, logger.ts,<br/>reviewer-core.ts, step-reviewer.ts,<br/>recording-mcp-client.ts, …"]
+    SRV_DIR --> SRV_LIB["lib/<br/>errorUtils.ts, logger.ts,<br/>tool-journal.ts, checker-verdict.ts,<br/>recording-mcp-client.ts, …"]
     SRV_DIR --> SRV_CDS["CDS models<br/>mcp-proxy.cds,<br/>agent-service.cds"]
 
     style SRV_DIR fill:#2563eb,color:#fff
@@ -201,9 +201,9 @@ cloud-llm-hub/
 │       ├── btp-destinations.ts   # BTP Destination Service client
 │       ├── ai-core-models.ts     # AI Core model list (cached)
 │       ├── recording-mcp-client.ts    # IMcpClient decorator capturing McpToolResult per traceId
-│       ├── reviewer-core.ts / notice-finalizer.ts  # IFinalizer/NoticeFinalizer — compares claims vs captured results
-│       ├── notify-policy.ts      # Notice wording policy
-│       ├── step-reviewer.ts / reviewer-subagent.ts  # evaluateGated — deterministic notices; no automatic LLM critic
+│       ├── notice-finalizer.ts    # Fixed DAG answer forwarding
+│       ├── tool-journal.ts        # Typed write facts for coordinator context
+│       ├── checker-verdict.ts     # Cited evidence and findings
 │       ├── step-gate.ts          # Deterministic notice switch; deprecated timeout parser
 │       ├── write-guardrail.ts    # Write-tool result envelope checks
 │       ├── request-connection.ts   # establishRequestConnection + safeStop (release ADT lock on every exit path)
@@ -352,8 +352,8 @@ graph TD
 | **OpenAI Handler** | `openai-handler.ts` | `POST /v1/chat/completions` (streaming + JSON), `GET /v1/models` (destination metadata), `GET /v1/usage`, `/v1/destinations/*`. Reads `X-SAP-Destination` header for per-request destination switching. **Primary** agent entry point. |
 | **Anthropic Handler** | `anthropic-handler.ts` | `POST /v1/messages` — Anthropic Messages API, translated to the SmartAgent pipeline via `getSmartAgent`; enables Claude CLI via `ANTHROPIC_BASE_URL`. **Primary** agent entry point. |
 | **Agent Service** | `agent-service.ts` + `.cds` | CAP service annotated `@path: 'agent'` (mounted at `/odata/v4/agent/`). Exposes `GetHistory()`, `ClearHistory()`, `Health()`. `Health` delegates to `agent-manager.ts` via `getSmartAgent` to probe the LLM; `GetHistory` returns `[]` and `ClearHistory` is a static-success stub. Starts no pipeline (see §1). |
-| **Agent Manager** | `agent-manager.ts` | Creates SmartAgent with RAG pipeline via SmartAgentBuilder. Manages per-destination state (each destination's own `McpClientAdapter`). The **tool RAG is a single shared corpus loaded once** from the build step's output (`sharedToolsRag`, from the destination-independent `HandlerExporter`) and reused by every destination; the embedder and facts/feedback/state RAG stores are likewise shared. Background + on-demand **initialization** for all destinations (no privileged primary; the tool corpus is loaded once, not per destination); requests wait for a destination via `ensureDestinationInit`. LLM provider is configurable via `LLM_AGENT_PROVIDER` — supports `sap-ai-sdk` (default), `openai` (any OpenAI-compatible API via `baseURL`), `anthropic`, and `deepseek`. Builds the dialogue planner and wires the adaptive or fixed chat coordinator and honesty finalizer: `buildAgentForDestination` + `buildExecutorWorker` (v6.28+). Consumed by `agent-mcp.ts`, `openai-handler.ts`, `anthropic-handler.ts`, and `agent-service.ts` (its `Health` probe only). |
-| **Deterministic notices** | `lib/{recording-mcp-client,reviewer-core,notice-finalizer,notify-policy,step-reviewer,step-gate,write-guardrail}.ts` | Tool journals preserve failed/unanswered writes. `evaluateGated` now runs only `evaluateDeterministic`; `NoticeFinalizer(recMcp)` and `execute_step` append claim-based notices without an LLM call. `LLM_AGENT_STEP_REVIEW_ENABLED=false` disables claim-based notices, not failed/unanswered write safeguards. |
+| **Agent Manager** | `agent-manager.ts` | Creates SmartAgent with RAG pipeline via SmartAgentBuilder. Manages per-destination state (each destination's own `McpClientAdapter`). The **tool RAG is a single shared corpus loaded once** from the build step's output (`sharedToolsRag`, from the destination-independent `HandlerExporter`) and reused by every destination; the embedder and facts/feedback/state RAG stores are likewise shared. Background + on-demand **initialization** for all destinations (no privileged primary; the tool corpus is loaded once, not per destination); requests wait for a destination via `ensureDestinationInit`. LLM provider is configurable via `LLM_AGENT_PROVIDER` — supports `sap-ai-sdk` (default), `openai` (any OpenAI-compatible API via `baseURL`), `anthropic`, and `deepseek`. Builds the dialogue planner and wires the adaptive or fixed chat coordinator and fixed answer forwarding: `buildAgentForDestination` + `buildExecutorWorker` (v6.28+). Consumed by `agent-mcp.ts`, `openai-handler.ts`, `anthropic-handler.ts`, and `agent-service.ts` (its `Health` probe only). |
+| **Write journal and checks** | `lib/{recording-mcp-client,tool-journal,checker-verdict}.ts` | `[actions]` shows SAP, RAG and user MCP writes with their outcomes and call ids. The coordinator delegates cited checks explicitly. |
 | **Agent Config** | `agent-config.ts` | Singleton that assembles runtime config from `LLM_AGENT_*` env vars: provider/auth (`LLM_AGENT_PROVIDER`, `LLM_AGENT_API_KEY`, `LLM_AGENT_BASE_URL`, `LLM_AGENT_RESOURCE_GROUP`), model params (`LLM_AGENT_MODEL`, `LLM_AGENT_TEMPERATURE`, `LLM_AGENT_MAX_TOKENS`), agent behaviour (`LLM_AGENT_MODE`, `LLM_AGENT_MAX_ITERATIONS`, `LLM_AGENT_RAG_TYPE`, `LLM_AGENT_RAG_QUERY_K`, `LLM_AGENT_HISTORY_RECENCY_WINDOW`), and MCP wiring (`LLM_AGENT_MCP_DESTINATION`, `LLM_AGENT_MCP_ENDPOINT`). Also reads the AI Core service binding from `VCAP_SERVICES`. See §12 for per-var semantics. |
 | **Auth Service** | `auth.ts` + `.cds` | Standalone CAP OData service annotated `@path: 'auth'` (mounted at `/odata/v4/auth/`). `CheckAuth()` returns the caller's identity, `CheckRoles(required)` reports which roles they hold — a **diagnostic/introspection endpoint** clients can call directly. It is **not** in the `/mcp/*` or `/v1/*` request path — those are gated by `server.ts`'s `requireMcpRole` middleware (`user.is()`), not by this service. |
 | **Connection Factory** | `connections/connectionFactory.ts` | Decision: `destinationName` → `CloudSdkAbapConnection`; no destination → the direct connector for the DECLARED system type (`lib/system-type.ts`, default `onprem`): `cloud` → `AdtCloudConnector` + `CloudHttpTransport`, otherwise `AdtOnPremConnector` + `OnPremHttpTransport`. The credential follows the auth type, from `@mcp-abap-adt/auth-providers`: Basic → `BasicAuthProvider`, JWT → `TokenAuthProvider.fixed`; any other auth type throws. |
@@ -398,14 +398,12 @@ graph TB
         establishRequestConnection"]
     end
 
-    subgraph "Honesty controller (lib/)"
+    subgraph "Journal and verification (lib/)"
         fixed_planner["fixed-executor-planner.ts"]
         notice_finalizer["notice-finalizer.ts"]
         recording_mcp["recording-mcp-client.ts"]
-        reviewer_core["reviewer-core.ts"]
-        notify_policy["notify-policy.ts"]
-        step_reviewer["step-reviewer.ts"]
-        step_gate["step-gate.ts"]
+        tool_journal["tool-journal.ts"]
+        checker_verdict["checker-verdict.ts"]
         write_guardrail["write-guardrail.ts"]
     end
 
@@ -543,19 +541,12 @@ graph TB
     agent_manager --> notice_finalizer
     agent_manager --> recording_mcp
 
-    %% honesty controller lib dependencies
+    %% Journal and verification dependencies
     fixed_planner --> mcp_adt_llm_agent
     notice_finalizer --> mcp_adt_llm_agent
-    notice_finalizer --> notify_policy
-    notice_finalizer --> recording_mcp
-    notice_finalizer --> step_reviewer
     recording_mcp --> mcp_adt_llm_agent
-    reviewer_core --> mcp_adt_llm_agent
-    reviewer_core --> write_guardrail
-    notify_policy --> reviewer_core
-    step_reviewer --> mcp_adt_llm_agent
-    step_reviewer --> reviewer_core
-    step_reviewer --> step_gate
+    recording_mcp --> tool_journal
+    checker_verdict --> tool_journal
 
     %% principal.ts / request-system-context.ts dependencies
     request_system_ts --> mcp_adt_core
@@ -757,7 +748,7 @@ sequenceDiagram
 
 There is **no HTTP self-call** to `/mcp/stream/http` here: `buildEmbeddedMcpAdapter()` (`agent-manager.ts`) wires the executor's tools straight to the in-process `HandlerExporter` from `@mcp-abap-adt/lib`, wrapped by `McpClientAdapter` (`transport: 'embedded'`). See §16 "Agent Tool Access: Embedded, Not Self-Loop-HTTP" for the full picture.
 
-#### Step 4 - Chat coordinator and honesty finalizer
+#### Step 4 - Chat coordinator and fixed answer forwarding
 
 The chat channels (`/v1/chat/completions` and `/v1/messages`) select their coordinator through `LLM_AGENT_CHAT_COORDINATOR`. `buildAgentForDestination` (`srv/agent-manager.ts`) wires adaptive/fixed coordination; the chat handlers select `dialogueChat` for dialogue requests with a long session:
 
@@ -765,9 +756,9 @@ The chat channels (`/v1/chat/completions` and `/v1/messages`) select their coord
 - **`dialogue` (opt-in):** the long-session planner described below. Requests without a long session use adaptive coordination and return `x-clh-coordinator: adaptive`.
 - **`fixed`:** the previous one-step DAG path: `FixedExecutorPlanner`, `DagPlanInterpreter`, one `executor` worker and `NoticeFinalizer`. Set `LLM_AGENT_CHAT_COORDINATOR=fixed` to restore this behavior.
 
-Adaptive registers two `SmartAgentSubAgent` workers, `executor` and `checker`, over the same raw SmartAgent tool loop and `RecordingMcpClient`. The executor reads and changes ABAP objects. A hub controller decorator rewrites every non-self check step returned by planning or revision to the checker worker (with a debug log); self checks and work steps keep their worker. The checker prefixes its task with verification-only instructions and runs inside a request-local read-only tools scope. Tool selection and listing exclude write-capable tools, and both the recording MCP client and embedded authorization reject writes before dispatch. Checker effect checks are separate from unchanged exposition-based role authorization. MCP annotations take precedence: `readOnlyHint: true` allows reads; otherwise `destructiveHint: true` or `readOnlyHint: false` denies them. Without either hint, Get/Read/Search/Check/List/Find/Describe/Validate prefixes and the installed RunUnitTest, RunATC, RunCdsUnitTest, RunProgramUnitTest, RunFunctionGroupUnitTest and RunFunctionModuleUnitTest names are allowed; the installed RuntimeGetDumpById, RuntimeGetProfilerTraceData, RuntimeGetGatewayErrorLog, RuntimeListFeeds, RuntimeListProfilerTraceFiles and RuntimeListSystemMessages evidence readers are also allowed; runtime execution and all other names fail closed. Executor steps run outside this restriction. The library composes its task with a JSON verdict instruction (`pass`, `fail` or `partial`, with a reason), parses the result and follows the check's branches. Planned checks are separate from deterministic notices; there is no automatic LLM critic.
+Adaptive planning discovers enabled profiles and dispatches the worker named by each work or check step. A verdict step passes a JSON list of cited claims in `context.note`. A planned revision after a write lets the coordinator decide from the latest `[actions]` facts.
 
-If initial planning throws or returns invalid plan JSON, the handler falls back to one executor work step plus an answer step. An abort is propagated instead. Completed answers pass through `NoticeFinalizer` at the end, using the same captured tool results; asking, stopping or awaiting external tools does not invoke that finalizer.
+If initial planning throws or returns invalid plan JSON, the handler falls back to one executor work step plus an answer step. An abort is propagated. The fixed DAG uses `NoticeFinalizer` to forward any answer content the interpreter did not stream.
 
 Adaptive execution has optional run-wide limits in `LLM_AGENT_PLAN_MAX_STEPS`, `LLM_AGENT_PLAN_MAX_REVISIONS` and `LLM_AGENT_PLAN_MAX_DURATION_MS`. Each unset value leaves that limit disabled. The interpreter checks configured step and elapsed-time limits between steps and enforces the library's per-step run limits separately. Exceeding a limit produces a stop report.
 
@@ -775,9 +766,9 @@ Run records (`srv/lib/run-record-store.ts`) keep the latest run per authenticate
 
 Both streaming protocols carry step status as SSE comment lines, `: status {json}\n\n`, rather than named events. Status does not consume OpenAI's first role delta or enter the Anthropic adapter's data events. The WebUI parses these comments, updates its status text and renders a compact step trail above the assistant answer (`app/chat/webapp/index.html`). Status is not stored as answer text; non-streaming responses have no status comments.
 
-History remains in `runWithSessionId(..., history)` for the channel scope. Only the fixed chat worker uses the `withConversationHistory` ALS proxy, because its DAG dispatch supplies task text alone. Adaptive workers use the raw agent so the controller's per-step history selection is preserved. The handle still exposes the proxied executor in both modes. The agent MCP `execute_step` path is unchanged: it runs that executor directly with explicit history arrays and applies the same honesty reviewer (`srv/agent-mcp.ts`).
+History remains in `runWithSessionId(..., history)` for the channel scope. Only the fixed chat worker uses the `withConversationHistory` ALS proxy, because its DAG dispatch supplies task text alone. Adaptive workers use the raw agent so the controller's per-step history selection is preserved. The handle still exposes the proxied executor in both modes. The agent MCP `execute_step` path is unchanged: it runs that executor directly with explicit history arrays (`srv/agent-mcp.ts`).
 
-The honesty guard compares response claims against actual captured tool results, not tool names. `NoticeFinalizer` can append a trailing `UNVERIFIED_WRITE:` notice; it does not block the answer. Answer-source worker content can stream live before this check. `LLM_AGENT_STEP_REVIEW_ENABLED=false` disables the honesty review. There is no automatic LLM review of worker results, coordinator final answers, execute_step results or single-agent OpenAI/Anthropic answers. See section 16 for deterministic result checks.
+The coordinator chooses when to verify and which worker performs the check. The checker verifies only cited journal entries and source records. Verification findings reach the user through the coordinator answer.
 
 #### Dialogue coordinator, stateless plan author and background tasks
 
@@ -802,7 +793,7 @@ Background work has a per-session `SessionConnectionFactory` and `SessionConnect
 
 Synchronous internal `execute_step` acquires the same hub-wide executor slot and uses the shared `wrapRun` connection/admission path, binding the session lease, system context, dump scope and exposition. It releases admission and the lease on completion or failure and counts against the session connection limit (three by default).
 
-For each task, TaskBoard acquires the hub-wide slot, then `wrapRun` acquires a connection lease and pipeline admission. The worker adapter rebuilds the async-local storage (ALS) stack with `runWithRequestSystem`, `runWithSessionId` (key, task history, user) and `runWithRequestConnection` (connection, dump scope, exposition). After an ordinary worker result, `evaluateGated` reviews its output against captured tool results and `renderNotice` appends an honesty notice when needed; epic failures, stopped tasks and results awaiting external tools skip this review. Cleanup drains and releases admission, releases the lease according to the outcome and drops trace records; TaskBoard releases the hub-wide slot.
+For each task, TaskBoard acquires the hub-wide slot, then `wrapRun` acquires a connection lease and pipeline admission. The worker adapter rebuilds the async-local storage (ALS) stack with `runWithRequestSystem`, `runWithSessionId` (key, task history, user) and `runWithRequestConnection` (connection, dump scope, exposition). Worker tool results feed the current plan journal, including results from background tasks. Cleanup drains and releases admission, releases the lease according to the outcome and drops trace records; TaskBoard releases the hub-wide slot.
 
 #### Dialogue state and lifecycle
 
@@ -1177,8 +1168,6 @@ graph TB
 | `VCAP_SERVICES` | `agent-config.ts`, `destinationResolver.ts` | Service bindings (AI Core, Destination, Connectivity) |
 | `MCP_SKIP_AUTO_START` | `env-setup.ts` | Prevents mcp-abap-adt auto-start |
 | `MCP_SKIP_ENV_LOAD` | `env-setup.ts` | Prevents mcp-abap-adt .env loading |
-| `LLM_AGENT_STEP_REVIEW_ENABLED` | `lib/step-gate.ts` | Default on; `false` disables deterministic claim notices. Journal-based failed/unanswered write safeguards remain. |
-| `LLM_AGENT_STEP_REVIEW_TIMEOUT_MS` | deprecated | Ignored; no automatic critic or review deadline. |
 | `LLM_AGENT_SAP_RELEVANCE_SCORE` | deprecated | Ignored, including invalid values; automatic suspicion-based review was removed. |
 
 Tool selection uses explicit read-only effects, independently of exposition permissions and retrieval backend. Defaults: `step-kind`, reader k=5, writer k=2. Only writer seeds expand object clusters; cluster members retain permission filtering. Without write rights both strategies return readers only. The analyzer returns strict `writes` in its existing call; missing or invalid responses mean UNKNOWN. `per-collection` ignores step kind; `step-kind` uses it and adds no independent reader seeds to RW.
@@ -1517,13 +1506,11 @@ the second; `srv/lib/gatekeeper.ts` joins them to the real stores.
 - **Observability.** `Health()` returns door, retention, per-destination and
   throttling scopes separately (`srv/lib/gatekeeper-metrics.ts`).
 
-### Honesty controller (executor + reviewer)
+### Coordinator verification and the tool journal
 
-The controller is explicit, in the agent layer — not baked into the `execute_step` tool. Key decisions:
+`RecordingMcpClient` captures each dispatch and its result under the request trace. The registered tool determines the system and operation. `CreateTransportTask` identifies the new task from its number in the terse result, the parsed full result, or the raw XML. The journal uses each tool's result contract to determine the outcome. Pending and acknowledged writes without a confirmed change are `unconfirmed`. A secondary cleanup error is a note on a completed write. The coordinator receives these facts in `[actions]` without a separate model call. Dialogue saves the current request journal with its plan. Transport errors still report writes that were sent without a reply.
 
-- **Explicit controller, not an implicit tool wrapper.** The chat channels (`/v1/chat/completions`, `/v1/messages`) use the adaptive coordinator by default, the previous one-step DAG with `LLM_AGENT_CHAT_COORDINATOR=fixed`, or the long-session planner with `LLM_AGENT_CHAT_COORDINATOR=dialogue`; the SmartAgent runs underneath it as a coordinator-less executor worker (`ISubAgent`). `execute_step` runs that executor directly and applies the same reviewer.
-- **Ground truth = tool RESULTS, not tool names.** `RecordingMcpClient` (`srv/lib/recording-mcp-client.ts`) is a thin `IMcpClient` decorator that captures each executed ABAP tool's `McpToolResult`, scoped per `traceId` and freed after the request. The reviewer parses the write tool's result envelope (`{success, status, error}`) — matching by name alone false-positives, since e.g. `CreateDomain` self-activates via `activate:true`.
-- **Reaction = notify + safe-stop, not a hard block.** On a contradiction the reviewer appends a trailing `UNVERIFIED_WRITE:` notice; it never renders a verdict itself. ADT edit-locks are released (`connection.closeSession()`) on every exit path regardless. Adaptive plan check verdicts are separate from this trailing honesty notice.
+The initial coordinator policy is to verify before delivery when a write or sourced statement matters to the user. Corrections can change that policy. The checker verifies each quoted claim against the exact journal call or source record in its citation and reports `confirmed`, `refuted` or `unsupported` with a reason. A malformed submission produces an unusable verdict. The coordinator communicates findings in its response.
 
 ---
 
@@ -1577,7 +1564,7 @@ The ToolTrust callback classifies external tools by ownership, with destination
 trust overrides preceding the active profile's docs map and deployment defaults.
 Raw MCP results stay raw; the tool loop adds source/trust envelopes for the model.
 
-Dialogue check steps are decisions. The plan author includes explicit check steps where verification is needed. Each turn the coordinator weighs the plan and new user input: run a planned check, skip it with a reason, or add an unplanned check. Changed user input or new evidence can require `plan_revise`. Checker failures require JSON `claims: [{quote, evidence, reason}]`: exact checked-result quotes and evidence excerpts (or `none provided`). Whitespace-normalized quotes must occur in checked results; excerpts must occur in evidence received by the checker. Invalid failures become `unusable verdict: <reason>`, stay undecided, and are logged with reason codes and counts only. PASS and JSON pass/count/note compatibility remains. No tools executed alone is never grounds for fail.
+Dialogue keeps the delivery gate for check steps in the current plan. The coordinator can revise the plan to remove a check it scheduled. It passes cited claims in `delegate_task.context` using call ids from `[actions]` and record ids from task notices.
 
 ### Session tool bridge for user MCP
 
@@ -1599,6 +1586,8 @@ access. A server exposes reads by default and must opt into writes explicitly.
 The bridge treats a tool as read-only only when it declares `readOnlyHint: true`
 and lacks a positive `destructiveHint`. Host profile ceilings, including checker
 read-only scope, still apply. Dispatch checks the live catalogue and role again.
+Verdict profiles use the evidence supplied in their brief and expose
+`submit_verdict` to the model.
 The public namespace is `user__<server>__<tool>`, and retrieval records use the typed
 `tool:` key. Per-server direct, RAG and automatic selection follow the external
 MCP count policy. Tool vectors are held in the session. Failed ranked searches
@@ -1634,7 +1623,9 @@ transport, the bridge immediately settles outstanding delivered writes with
 `USER_MCP_OUTCOME_UNKNOWN` because they may have been applied. The bridge sends
 no further deliveries for those calls and rejects late results with
 `USER_MCP_CALL_NOT_FOUND`. Pending calls also settle on executor reply, session
-closure, or request/task cancellation. The executor can
+closure, or request/task cancellation. Closure or cancellation after delivery
+settles a write with `USER_MCP_OUTCOME_UNKNOWN`. These writes appear as
+`unconfirmed` in the coordinator's `[actions]` journal. The executor can
 unregister during a graceful disconnect. Closing the session discards all
 registrations and settles pending calls before draining active work. Restarted
 sessions begin with an empty catalogue. Call logs contain the tool name, byte
@@ -1655,17 +1646,11 @@ report for its stated goal.
 
 ### Deploy defaults for session roles and limits
 
-All variables below are optional. Session settings override configuration per
-value; unset configuration preserves the existing behavior. Configured
-`LLM_AGENT_EXECUTOR_MODEL` and `LLM_AGENT_CHECKER_MODEL` override the
-coordinator's `delegate_task` model for every session. They must belong to the
-`LLM_AGENT_MODELS` allowlist (which also includes the main and planner models).
-An invalid configured worker model fails startup naming the variable.
+All variables below are optional. Session settings override the deploy settings per role. The checker uses the session checker model, then the coordinator's `delegate_task` model, then the verdict profile model, then `LLM_AGENT_MODEL`. Every selected model must be in the allowlist.
 
 | Variable | Default / behavior |
 |---|---|
 | `LLM_AGENT_EXECUTOR_MODEL` | Coordinator chooses the executor model when unset |
-| `LLM_AGENT_CHECKER_MODEL` | Coordinator chooses the checker model when unset |
 | `LLM_AGENT_<ROLE>_MAX_ITERATIONS` | Falls back to `LLM_AGENT_MAX_ITERATIONS`, then off (unlimited) |
 | `LLM_AGENT_<ROLE>_MAX_TOOL_CALLS` | Falls back to `LLM_AGENT_MAX_TOOL_CALLS`, then off (unlimited; overrides the library default) |
 | `LLM_AGENT_TOOL_RESULT_MAX_CHARS` | Off by default. A positive integer enables the limit. `0` also disables it. |

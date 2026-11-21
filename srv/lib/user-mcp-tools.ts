@@ -75,9 +75,18 @@ function permitted(tool: UserMcpTool): boolean {
   );
 }
 
+export interface UserMcpClient extends IMcpClient {
+  resolveTool(name: string): UserMcpTool | undefined;
+}
+
 /** Resolve ownership at each use, even when the destination agent is shared. */
-export function userMcpClient(role: string): IMcpClient {
+export function userMcpClient(role: string): UserMcpClient {
+  const resolveTool = (name: string) =>
+    userMcpCatalogue(role).find(
+      (tool) => tool.name === name && permitted(tool),
+    );
   return {
+    resolveTool,
     get cacheable() {
       return userMcpCatalogue(role).length === 0;
     },
@@ -89,9 +98,7 @@ export function userMcpClient(role: string): IMcpClient {
     }),
     async callTool(name, args, options) {
       const bridge = currentBridge();
-      const tool = bridge
-        ?.catalogue(role)
-        .find((tool) => tool.name === name && permitted(tool));
+      const tool = resolveTool(name);
       if (!bridge || !tool)
         return {
           ok: false,

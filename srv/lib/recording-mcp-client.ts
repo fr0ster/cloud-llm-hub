@@ -1,8 +1,6 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import type {
   CallOptions,
-  ILlm,
   IMcpClient,
   McpError,
   McpTool,
@@ -19,21 +17,22 @@ import {
 import { compositeMcpClient } from './composite-mcp-client';
 import {
   allowsReadOnlyEffect,
+  isDialogueRagWorker,
   isDialogueResultReader,
 } from './dialogue-rag-scope';
 import { isOutageError } from './mcp-outage';
-import { isRagTool, ragToolEffect } from './rag-tool-catalogue';
-import type { RecordedToolCall } from './reviewer-core';
+import { isRagTool, isRagWriteTool, ragToolEffect } from './rag-tool-catalogue';
 import {
   isReadOnlyTool,
   type ToolEffectAnnotations,
 } from './tool-authorization';
+import type { JournalEntry, JournalSystem } from './tool-journal';
+import { toolObjects } from './tool-objects';
 import { capToolResult, withinToolResultBudget } from './tool-result-cap';
 import { isUserMcpName } from './user-mcp-names';
+import type { UserMcpClient } from './user-mcp-tools';
 import { reportWorkerActivity } from './worker-activity';
 import { isWriteTool } from './write-guardrail';
-
-const sessionWriteRecorder = new AsyncLocalStorage<() => void>();
 
 /**
  * `McpClientAdapter.callTool` (`@mcp-abap-adt/llm-agent-mcp`) never rejects: it
@@ -67,8 +66,8 @@ const TRANSPORT_FAILURE_CODES = new Set([
  *  than answered: one of the transport-failure codes above, or an error
  *  carrying our own outage marker (`McpUnavailableError`, which crosses the
  *  embedded transport as a plain message — see `srv/lib/mcp-outage.ts`). */
-function isTransportFailure(error: unknown): boolean {
-  const code = (error as { code?: unknown } | undefined)?.code;
+function isTransportFailure(error: McpError): boolean {
+  const code = error?.code;
   if (typeof code === 'string' && TRANSPORT_FAILURE_CODES.has(code)) {
     return true;
   }
@@ -77,26 +76,21 @@ function isTransportFailure(error: unknown): boolean {
 
 /**
  * Transparent decorator around an `IMcpClient` that captures every executed
- * tool call WITH its result (ground truth for the honesty reviewer), keyed by
+ * tool call WITH its result (the tool journal), keyed by
  * `options.trace.traceId`. Tool results can be large or sensitive (ABAP
  * source, dumps) and destination handles are long-lived, so records are kept
  * ONLY per-`requestId` delta — there is deliberately NO cumulative/session
  * bucket. A call made without a `trace.traceId` retains nothing.
  *
- * Preserves the reviewer's outcome facts before capping oversized model-visible
+ * Preserves the uncapped tool result before capping oversized model-visible
  * content and otherwise forwards the inner client's `Result` unchanged;
  * never swallows or reshapes errors.
  */
 export class RecordingMcpClient implements IMcpClient {
   private readonly knownNames: Set<string>;
-  private readonly deltas: Map<string, ToolCallRecord[]>;
+  private readonly deltas: Map<string, JournalEntry[]>;
+  private readonly definitions: Map<string, McpTool>;
   private readonly uncappedResults: WeakMap<ToolCallRecord, McpToolResult>;
-  private readonly offeredWrites: Set<string>;
-  private readonly sessionWrites: Map<
-    string,
-    { generation: number; reviewed: number }
-  >;
-
   /** Present iff `inner` implements it, so callers relying on `?.` see the
    *  same optionality the inner client exposes. */
   readonly healthCheck?: (
@@ -105,17 +99,17 @@ export class RecordingMcpClient implements IMcpClient {
 
   constructor(
     private readonly inner: IMcpClient,
-    _expositionFor?: (name: string) => string | undefined,
+    private readonly expositionFor?: (name: string) => string | undefined,
     private readonly maxChars = parseToolResultMaxChars(),
-    // Planner clients emit capped results without retaining reviewer deltas.
+    // Planner clients emit capped results without retaining journal entries.
     private readonly retainRecords = true,
-    // A view shares its origin's records: one reviewer evidence per request.
+    // A view shares its origin's records: one journal per request.
     shared?: RecordingMcpClient,
+    private readonly userMcp?: UserMcpClient,
   ) {
-    this.sessionWrites = shared?.sessionWrites ?? new Map();
-    this.offeredWrites = shared?.offeredWrites ?? new Set<string>();
+    this.definitions = shared?.definitions ?? new Map();
     this.knownNames = shared?.knownNames ?? new Set<string>();
-    this.deltas = shared?.deltas ?? new Map<string, ToolCallRecord[]>();
+    this.deltas = shared?.deltas ?? new Map<string, JournalEntry[]>();
     this.uncappedResults = shared?.uncappedResults ?? new WeakMap();
     if (inner.healthCheck) {
       this.healthCheck = (options?: CallOptions) =>
@@ -134,23 +128,26 @@ export class RecordingMcpClient implements IMcpClient {
    */
   includeClients(
     clients: IMcpClient[],
-    userMcp?: IMcpClient,
+    userMcp = this.userMcp,
   ): RecordingMcpClient {
     if (!clients.length && !userMcp) return this;
     return new RecordingMcpClient(
       compositeMcpClient([...clients, this.inner], userMcp),
-      undefined,
+      this.expositionFor,
       this.maxChars,
       this.retainRecords,
       this,
+      userMcp,
     );
   }
   async listTools(options?: CallOptions): Promise<Result<McpTool[], McpError>> {
     const result = await this.inner.listTools(options);
-    if (result.ok)
-      for (const tool of result.value)
-        if (!isUserMcpName(tool.name)) this.knownNames.add(tool.name);
     if (!result.ok) return result;
+    for (const tool of result.value) {
+      if (isUserMcpName(tool.name)) continue;
+      this.knownNames.add(tool.name);
+      this.definitions.set(tool.name, tool);
+    }
     const value = result.value.filter(
       (tool) =>
         (profileToolAllowed(tool.name) || isDialogueResultReader(tool.name)) &&
@@ -159,36 +156,9 @@ export class RecordingMcpClient implements IMcpClient {
     return value.length === result.value.length ? result : { ok: true, value };
   }
 
-  /** Record tools actually sent to the model, rather than discovery candidates. */
-  trackOfferedTools(inner: ILlm): ILlm {
-    const record = (
-      tools: Parameters<ILlm['chat']>[1],
-      options: Parameters<ILlm['chat']>[2],
-    ) => {
-      const traceId = options?.trace?.traceId;
-      if (tools?.some((tool) => isWriteTool(tool.name))) {
-        this.recordSessionWrite();
-        if (traceId && this.retainRecords) this.offeredWrites.add(traceId);
-      }
-    };
-    return {
-      model: inner.model,
-      chat: (...args) => {
-        record(args[1], args[2]);
-        return inner.chat(...args);
-      },
-      streamChat: (...args) => {
-        record(args[1], args[2]);
-        return inner.streamChat(...args);
-      },
-      ...(inner.healthCheck
-        ? { healthCheck: inner.healthCheck.bind(inner) }
-        : {}),
-      ...(inner.getModels ? { getModels: inner.getModels.bind(inner) } : {}),
-    };
-  }
-
   private isReadOnly(tool: McpTool): boolean {
+    if (isUserMcpName(tool.name))
+      return this.userMcp?.resolveTool(tool.name)?.effect === 'read';
     if (isRagTool(tool.name))
       return allowsReadOnlyEffect(ragToolEffect(tool.name));
     return isReadOnlyTool(
@@ -199,13 +169,9 @@ export class RecordingMcpClient implements IMcpClient {
 
   async callTool(
     name: string,
-    args: Record<string, unknown>,
+    args: Parameters<IMcpClient['callTool']>[1],
     options?: CallOptions,
   ): Promise<Result<McpToolResult, McpError>> {
-    if (isWriteTool(name)) this.recordSessionWrite();
-    const requestId = options?.trace?.traceId;
-    if (requestId && this.retainRecords && isWriteTool(name))
-      this.offeredWrites.add(requestId);
     if (!profileToolAllowed(name) && !isDialogueResultReader(name))
       return {
         ok: true,
@@ -226,32 +192,31 @@ export class RecordingMcpClient implements IMcpClient {
         };
     }
     const traceId = options?.trace?.traceId;
-    // Opened BEFORE the call, so "sent, unanswered" is a state the error path
-    // can read rather than an absence it has to infer. Written after the await,
-    // a thrown transport error leaves nothing at all.
-    //
-    // `isError: true` on the placeholder — not `false` — because this record
-    // can be read (by `getToolRecords`, hence by the reviewer) BEFORE it is
-    // ever overwritten: while still in flight, or forever if the call never
-    // settles. An empty `content` with `isError:false` parses as a SUCCESSFUL
-    // write to `reviewer-core.ts`'s `parseToolOutcome` (a missing envelope
-    // `success` field defaults to success), which would let a never-answered
-    // CreateClass satisfy a "created" claim and suppress its own
-    // UNVERIFIED_WRITE notice. `isError:true` keeps the placeholder read as
-    // "not (yet) a success", which is the only honest default.
-    //
-    // `content: 'no answer yet'` — not `''` — because `reviewer-core.ts`
-    // reports a failed write as `write tool X returned error: <content>`; an
-    // empty string there reads as `returned error: ` with nothing after the
-    // colon, which looks like a formatting bug rather than the true state
-    // ("no answer has arrived"). This is read ONLY while unanswered — the
-    // very next line below always overwrites it once one arrives.
-    const record: RecordedToolCall & {
-      answered?: boolean;
-    } = {
+    // Start the journal entry before dispatch so an in-flight write remains unconfirmed.
+    const userTool = this.userMcp?.resolveTool(name);
+    let system: JournalSystem | undefined;
+    if (userTool) system = 'user-mcp';
+    else if (isRagTool(name)) system = 'rag';
+    else if (
+      this.expositionFor?.(name) !== undefined ||
+      Object.hasOwn(toolObjects, name)
+    )
+      system = 'sap';
+    const tool = this.definitions.get(name);
+    const record: JournalEntry = {
       call: { id: randomUUID(), name, arguments: args },
       result: { content: 'no answer yet', isError: true },
       answered: false,
+      system,
+      ...(system === 'rag' && isDialogueRagWorker() && name !== 'rag_persist'
+        ? { ragScope: 'session' as const }
+        : {}),
+      write: userTool
+        ? userTool.effect === 'write'
+        : system === 'rag'
+          ? isRagWriteTool(name)
+          : system === 'sap' &&
+            (tool ? !this.isReadOnly(tool) : isWriteTool(name)),
     };
     if (traceId && this.retainRecords) this.deltaFor(traceId).push(record);
 
@@ -284,12 +249,16 @@ export class RecordingMcpClient implements IMcpClient {
     record.result = res.ok
       ? res.value
       : { content: res.error?.message ?? String(res.error), isError: true };
-    record.answered = res.ok || !isTransportFailure(res.error);
+    record.answered =
+      res.ok ||
+      (system === 'user-mcp'
+        ? res.error.code !== 'USER_MCP_OUTCOME_UNKNOWN'
+        : !isTransportFailure(res.error));
     if (isRagTool(name)) getRagCallerIdentity().onToolResult?.(record);
     return res;
   }
 
-  private deltaFor(traceId: string): ToolCallRecord[] {
+  private deltaFor(traceId: string): JournalEntry[] {
     let bucket = this.deltas.get(traceId);
     if (!bucket) {
       bucket = [];
@@ -304,96 +273,35 @@ export class RecordingMcpClient implements IMcpClient {
    * Writes only. An unanswered `GetClass` is a lost answer and nothing more;
    * reporting it as possibly-applied would teach a planner to distrust reads
    * and to re-check objects nothing touched. `isWriteTool` is the same
-   * classifier the write guardrail already uses, so the two cannot drift.
+   * fallback for transport failures before tool discovery.
    */
   unanswered(traceId: string): ToolCallRecord[] {
     return (this.deltas.get(traceId) ?? []).filter(
-      (r) =>
-        (r as ToolCallRecord & { answered?: boolean }).answered !== true &&
-        isWriteTool(r.call.name),
+      (r) => !r.answered && (r.write || isWriteTool(r.call.name)),
     );
   }
 
   /** Tool-call records for `requestId`'s delta. No id (or an unknown id)
    *  yields `[]` — there is no cumulative/session-wide fallback. */
-  getToolRecords(requestId?: string): ToolCallRecord[] {
+  getToolRecords(requestId?: string): JournalEntry[] {
     return requestId ? [...(this.deltas.get(requestId) ?? [])] : [];
   }
 
   /** Review evidence includes the result before model-facing size rejection. */
-  getToolJournal(requestId?: string): ToolCallRecord[] {
+  getToolJournal(requestId?: string): JournalEntry[] {
     return this.getToolRecords(requestId).map((record) => ({
-      call: record.call,
+      ...record,
       result: this.uncappedResults.get(record) ?? record.result,
     }));
-  }
-
-  /** Capability is scoped to one turn and shared by all recorder views. */
-  hadWriteCapability(requestId?: string): boolean {
-    return (
-      !!requestId &&
-      (this.offeredWrites.has(requestId) ||
-        this.getToolRecords(requestId).some((record) =>
-          isWriteTool(record.call.name),
-        ))
-    );
-  }
-
-  /** Register only dialogue sessions; ordinary request reviews remain trace-scoped. */
-  openSession(userId: string, sessionId: string): void {
-    this.sessionWrites.set(JSON.stringify([userId, sessionId]), {
-      generation: 0,
-      reviewed: 0,
-    });
-  }
-
-  hadSessionWriteCapability(userId: string, sessionId: string): boolean {
-    const state = this.sessionWrites.get(JSON.stringify([userId, sessionId]));
-    return !!state && state.generation > state.reviewed;
-  }
-
-  writeGeneration(userId: string, sessionId: string): number {
-    return (
-      this.sessionWrites.get(JSON.stringify([userId, sessionId]))?.generation ??
-      0
-    );
-  }
-
-  markReviewed(userId: string, sessionId: string, snapshot: number): void {
-    const state = this.sessionWrites.get(JSON.stringify([userId, sessionId]));
-    if (state)
-      state.reviewed = Math.max(
-        state.reviewed,
-        Math.min(snapshot, state.generation),
-      );
-  }
-
-  closeSession(userId: string, sessionId: string): void {
-    this.sessionWrites.delete(JSON.stringify([userId, sessionId]));
-  }
-
-  withSession<T>(userId: string, sessionId: string, run: () => T): T {
-    const key = JSON.stringify([userId, sessionId]);
-    return sessionWriteRecorder.run(() => {
-      const state = this.sessionWrites.get(key);
-      if (state) state.generation++;
-    }, run);
-  }
-
-  private recordSessionWrite(): void {
-    sessionWriteRecorder.getStore()?.();
   }
 
   /** Frees `requestId`'s delta bucket. */
   dropRequest(requestId?: string): void {
     if (!requestId) return;
     this.deltas.delete(requestId);
-    this.offeredWrites.delete(requestId);
   }
 
   reset(): void {
-    this.sessionWrites.clear();
     this.deltas.clear();
-    this.offeredWrites.clear();
   }
 }

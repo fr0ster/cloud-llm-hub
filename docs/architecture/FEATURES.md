@@ -202,26 +202,9 @@ Access to full ABAP ADT capabilities.
 - ✅ Batch operations
 - ✅ Rich metadata
 
-### 7. **Honesty Guard — claim verification against tool results** *(v6.28+)*
+### 7. **Coordinator verification**
 
-Every channel (`execute_step`, `/v1/chat/completions`, `/v1/messages`) runs the executor and a **reviewer** that compares what the response claims to have written against the actual tool results; the chat channels put a controller in front of the executor, `execute_step` (the hub as an external agent's subagent) does not. No automatic LLM critic runs on results or answers; notices use deterministic tool-journal checks. Explicit checks are coordinator decisions (run, skip with a reason, or add a check), reconsidered each turn with user input. Negative checker verdicts must quote the checked result and cite supplied evidence; unbound verdicts are unusable, not failures.
-
-**Features:**
-
-- Result-based ground truth via `RecordingMcpClient` — captures each executed ABAP tool's real result, not just its name (so `CreateDomain(activate:true)` isn't mistaken for a bare read)
-- Appends a trailing `UNVERIFIED_WRITE:` notice when a claim contradicts the captured results
-- NOTICE-ONLY — the executor's content still streams live; the notice never blocks or rewrites the response
-- Uniform across all three channels (previously `execute_step`-only)
-- Env kill-switch: `LLM_AGENT_STEP_REVIEW_ENABLED=false`
-
-**Benefits:**
-
-- ✅ Soft warning, not a hard gate — the consumer decides
-- ✅ Catches "created/activated" hallucinations before a human trusts them blind
-- ✅ Same guard everywhere, not just the MCP planner surface
-- ✅ Fully disable-able for deployments that don't want the extra check
-
-## 🎯 Use Cases
+The coordinator chooses when to verify and which worker performs the check. The checker verifies only cited journal entries and source records. Verification findings reach the user through the coordinator answer.
 
 ### 1. AI-Assisted Development
 
@@ -420,4 +403,4 @@ mcpConnection:
 
 **Questions?** Check the [documentation](./) or open an issue!
 
-`UNVERIFIED_WRITE` notices use deterministic tool-journal checks, with no automatic LLM review of workers or answers. Failed/unanswered write notices and recording placeholders remain. `LLM_AGENT_STEP_REVIEW_ENABLED=false` disables claim-based notices only. Verification checks are explicit coordinator decisions each turn: run a planned check, skip it stating why, or add an unplanned check; user input can require `plan_revise`. Checker failures need exact result quotes and cited supplied evidence (or `none provided`); invalid failures are unusable verdicts for the coordinator to assess, not failures. No tools executed alone is never grounds for fail.
+Dialogue delivery enforces checks the coordinator scheduled in the current plan. The coordinator can revise the plan to remove a check.

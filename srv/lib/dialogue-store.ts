@@ -23,6 +23,7 @@ import {
   type RagCtors,
 } from './rag-provider-factory';
 import { type SessionConfig, sessionConfig } from './session-config';
+import { type JournalSnapshot, journalSnapshotSchema } from './tool-journal';
 import { storageSnapshots } from './usage/storage-snapshot';
 import { type DialogueBytes, storageEnabled } from './usage/storage-values';
 
@@ -36,6 +37,7 @@ export type HubDialogueState = DialogueState & {
   outbox?: OutboxEntry[];
   ackMode?: boolean;
   agentsCollectionId?: string;
+  toolJournal?: JournalSnapshot;
 };
 
 export const DIALOGUE_TOOL_CONTRACT_VERSION = 3;
@@ -370,6 +372,9 @@ function stored(record: HubDialogueState): HubDialogueState {
   const raw = JSON.parse(text);
   const state = schema.parse(raw.state ?? raw);
   const outbox = raw.outbox;
+  const journal = journalSnapshotSchema.safeParse(
+    raw.toolJournal ?? raw.state?.toolJournal,
+  );
   const ackMode = z
     .boolean()
     .optional()
@@ -407,6 +412,7 @@ function stored(record: HubDialogueState): HubDialogueState {
       : {}),
     ...(agentsCollectionId !== undefined ? { agentsCollectionId } : {}),
     ...(parsed?.length ? { outbox: parsed } : {}),
+    ...(journal.success ? { toolJournal: journal.data } : {}),
     ...(ackMode !== undefined ? { ackMode } : {}),
   };
 }

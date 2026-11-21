@@ -26,6 +26,10 @@ const withCoordinator = jest.fn();
 const withDagCoordinator = jest.fn();
 const withToolCache = jest.fn();
 const buildMock = jest.fn();
+const mockLlmChat = jest.fn<
+  ReturnType<ILlm['chat']>,
+  Parameters<ILlm['chat']>
+>();
 
 function makeChainableBuilder() {
   const builder: Record<string, jest.Mock> = {};
@@ -77,10 +81,13 @@ jest.mock('@mcp-abap-adt/llm-agent-libs', () => {
 
 jest.mock('../../srv/lib/llm-factory', () => ({
   ...jest.requireActual('../../srv/lib/llm-factory'),
-  makeHubLlm: jest.fn(async () => ({ chat: jest.fn(), streamChat: jest.fn() })),
+  makeHubLlm: jest.fn(async () => ({
+    chat: mockLlmChat,
+    streamChat: jest.fn(),
+  })),
 }));
 
-import type { IMcpClient, ISmartAgent } from '@mcp-abap-adt/llm-agent';
+import type { ILlm, IMcpClient, ISmartAgent } from '@mcp-abap-adt/llm-agent';
 import {
   MCPClientWrapper,
   McpClientAdapter,
@@ -469,20 +476,43 @@ describe('compatibility profile cancellation', () => {
           },
         });
       let started: (() => void) | undefined;
-      const building = new Promise<void>((resolve) => {
+      const waiting = new Promise<void>((resolve) => {
         started = resolve;
-      });
-      buildMock.mockImplementation(() => {
-        started?.();
-        return new Promise<never>(() => {});
       });
       jest.useFakeTimers();
       const controller = new AbortController();
+      let task = 'task';
+      if (mode === 'checker') {
+        task = JSON.stringify([
+          {
+            claim: 'Created class ZTEST.',
+            system: 'sap',
+            target: { type: 'class', name: 'ZTEST' },
+            evidence: {},
+          },
+        ]);
+        mockLlmChat.mockImplementationOnce((_messages, _tools, options) => {
+          started?.();
+          expect(options?.signal).toBe(controller.signal);
+          return new Promise((_resolve, reject) => {
+            controller.signal.addEventListener(
+              'abort',
+              () => reject(controller.signal.reason),
+              { once: true },
+            );
+          });
+        });
+      } else {
+        buildMock.mockImplementation(() => {
+          started?.();
+          return new Promise<never>(() => {});
+        });
+      }
       const pending =
         mode === 'worker' || mode === 'checker'
           ? selectedWorker.run({
               caller: taskCaller,
-              task: 'task',
+              task,
               signal: controller.signal,
             })
           : mode === 'process'
@@ -509,7 +539,7 @@ describe('compatibility profile cancellation', () => {
         },
       );
       const rejected = expect(pending).rejects.toThrow();
-      await building;
+      await Promise.race([waiting, pending]);
       await jest.advanceTimersByTimeAsync(100);
       expect(settled).toBe(false);
       controller.abort();

@@ -1,234 +1,311 @@
-import type { DialogueState, ToolCallRecord } from '@mcp-abap-adt/llm-agent';
-import cds from '@sap/cds';
-import { type CheckerVerdict, verdictSchema } from './checker-verdict-schema';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import type {
+  DialogueState,
+  ILlm,
+  ISubAgent,
+  RagCaller,
+} from '@mcp-abap-adt/llm-agent';
+import { formatTrustTag, RagAccessDeniedError } from '@mcp-abap-adt/llm-agent';
+import { profileToolAllowed } from '../request-session';
+import type { CheckerSource, EvidenceProvenance } from './checker-source';
+import {
+  type CheckerClaim,
+  type CheckerVerdict,
+  checkerClaimsSchema,
+  verdictSchema,
+} from './checker-verdict-schema';
 import { submitVerdictTool } from './checker-verdict-tool';
+import {
+  type JournalEntry,
+  type JournalTarget,
+  journalOutcome,
+  journalPayload,
+  journalTargets,
+} from './tool-journal';
 
-export { type CheckerVerdict, verdictSchema } from './checker-verdict-schema';
-
-export function parseCheckerVerdict(
-  output: string,
-): CheckerVerdict | undefined {
-  try {
-    const result = verdictSchema.safeParse(
-      JSON.parse(
-        output.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, '$1'),
-      ),
-    );
-    return result.success ? result.data : undefined;
-  } catch {
-    return undefined;
-  }
+interface CheckerBrief {
+  claims: string;
+  journal: ReadonlyMap<string, JournalEntry>;
 }
 
-export function recordedCheckerVerdict(
-  records: ToolCallRecord[],
-): CheckerVerdict | undefined {
-  for (const record of [...records].reverse()) {
-    if (record.call.name !== submitVerdictTool.name || record.result.isError)
-      continue;
-    const result = verdictSchema.safeParse(record.call.arguments);
-    if (result.success) return result.data;
-  }
-  return undefined;
+const briefScope = new AsyncLocalStorage<CheckerBrief>();
+export function withCheckerBrief<T>(brief: CheckerBrief, run: () => T): T {
+  return briefScope.run(brief, run);
 }
 
-/** Inspect raw keys before JSON.parse can discard duplicate envelope fields. */
-function hasDuplicateVerdictKeys(output: string): boolean {
-  const json = output
-    .trim()
-    .replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, '$1');
-  const seen = new Set<string>();
-  let depth = 0;
-  for (let index = 0; index < json.length; index++) {
-    const character = json[index];
-    if (character === '"') {
-      const start = index;
-      for (index++; index < json.length; index++) {
-        if (json[index] === '\\') index++;
-        else if (json[index] === '"') break;
-      }
-      if (depth !== 1 || !/^\s*:/.test(json.slice(index + 1))) continue;
-      const key: string = JSON.parse(json.slice(start, index + 1));
-      if (!['verdict', 'count', 'note', 'claims'].includes(key)) continue;
-      if (seen.has(key)) return true;
-      seen.add(key);
-    } else if (character === '{' || character === '[') depth++;
-    else if (character === '}' || character === ']') depth--;
-  }
-  return false;
+interface ClaimEvidence {
+  issue?: string;
+  content?: object | string | number | boolean | null;
+  provenance?: string;
+  operation?: string;
+  arguments?: JournalEntry['call']['arguments'];
+  outcome?: ReturnType<typeof journalOutcome>;
 }
 
-function isCheckerVerdictText(text: string): boolean {
-  return (
-    /^PASS$/i.test(text) ||
-    (!!parseCheckerVerdict(text) && !hasDuplicateVerdictKeys(text))
-  );
-}
+export const unusableVerdict = (reason: string) =>
+  `unusable verdict: ${reason}`;
 
-export function checkerVerdictText(output: string): string {
-  const text = output.trim();
-  if (isCheckerVerdictText(text)) return text;
-  const parts = text.split(/(\r?\n[\t ]*\r?\n)/);
-  for (let index = parts.length - 1; index >= 0; index -= 2) {
-    const suffix = parts.slice(index).join('').trim();
-    if (!isCheckerVerdictText(suffix)) continue;
-    const prefix = parts.slice(0, index).join('').normalize('NFKC');
-    return /[{}\\]|verdict|\b(?:PASS|FAIL)\b/i.test(prefix) ? '' : suffix;
-  }
-  return '';
-}
-
-export function checkerVerdictInput(
-  output: string,
-  records: ToolCallRecord[],
-): string {
-  const verdict = recordedCheckerVerdict(records);
-  return verdict ? JSON.stringify(verdict) : output;
-}
-
-export function needsCheckerVerdictRetry(
-  output: string,
-  records: ToolCallRecord[],
+function sameTarget(
+  target: CheckerClaim['target'],
+  observed: JournalTarget,
 ): boolean {
-  const text = checkerVerdictText(output);
+  if ('type' in target)
+    return (
+      'type' in observed &&
+      target.type === observed.type &&
+      target.name.toUpperCase() === observed.name.toUpperCase()
+    );
   return (
-    !recordedCheckerVerdict(records) &&
-    !parseCheckerVerdict(text) &&
-    !/^PASS$/i.test(text)
+    'scope' in observed &&
+    target.scope === observed.scope &&
+    target.collection === observed.collection &&
+    ('record' in target ? target.record : undefined) === observed.record
   );
 }
-const normalize = (text: string): string => text.replace(/\s+/g, ' ').trim();
 
-export interface CheckerInputs {
-  checkedOutputs: string[];
-  checkedToolResults: string[];
-  dependencyOutputs: string[];
-  briefContext: string;
-  briefGoal: string;
-  records: ToolCallRecord[];
-}
+type ReadSource = (
+  caller: RagCaller,
+  target: Extract<CheckerClaim, { system: 'source' }>['target'],
+  recordId: string,
+) => Promise<CheckerSource | undefined>;
 
-/** Resolve provenance from task identities, never from worker-authored headings. */
-export function checkerInputs(
-  state: DialogueState | undefined,
-  taskId: string,
-  briefGoal: string,
-  records: ToolCallRecord[],
-  briefContext = '',
-): CheckerInputs {
-  const steps = typeof state?.plan === 'object' ? state.plan.steps : [];
-  const step = steps.find((entry) => entry.workTaskId === taskId);
-  const checkedIds = new Set(Object.values(step?.checkedTaskIds ?? {}));
-  const dependencyIds = new Set<string>();
-  const visited = new Set<string>();
-  const visit = (id: string): void => {
-    if (visited.has(id)) return;
-    visited.add(id);
-    const dependency = steps.find((entry) => entry.id === id);
-    if (dependency?.successfulWorkTaskId)
-      dependencyIds.add(dependency.successfulWorkTaskId);
-    for (const parent of dependency?.dependsOn ?? []) visit(parent);
-  };
-  for (const id of step?.dependsOn ?? []) visit(id);
+type JournalProvenance = (
+  caller: RagCaller,
+  entry: JournalEntry,
+  target: JournalTarget,
+) => EvidenceProvenance | undefined | Promise<EvidenceProvenance | undefined>;
+
+async function citedEvidence(
+  claim: CheckerClaim,
+  journal: ReadonlyMap<string, JournalEntry>,
+  read: (
+    target: Parameters<ReadSource>[1],
+    id: string,
+  ) => Promise<CheckerSource | undefined>,
+  journalProvenance: (
+    entry: JournalEntry,
+    target: JournalTarget,
+  ) => ReturnType<JournalProvenance>,
+): Promise<ClaimEvidence> {
+  const { callId, recordId, quote } = claim.evidence;
+  if (claim.system === 'source') {
+    if (!recordId || !quote || callId)
+      return { issue: 'Source citation requires a record id and exact quote.' };
+    const source = await read(claim.target, recordId);
+    if (!source)
+      return {
+        issue: 'The cited record is unavailable at the claimed target.',
+      };
+    if (!source.text.includes(quote))
+      return { issue: 'The quote is absent from the cited record.' };
+    return {
+      content: source.text,
+      provenance:
+        source.provenance &&
+        formatTrustTag(source.provenance.source, source.provenance.trust),
+    };
+  }
+  if (!callId || recordId)
+    return {
+      issue:
+        'The write citation is missing a journal call id or includes a record id.',
+    };
+  const entry = journal.get(callId);
+  if (!entry)
+    return { issue: 'The cited call is absent from the current journal.' };
+  if (entry.system !== claim.system)
+    return { issue: 'The cited call belongs to a different system.' };
+  if (!entry.write)
+    return { issue: 'The cited call is a read and cannot prove a write.' };
+  const target = journalTargets(entry).find((target) =>
+    sameTarget(claim.target, target),
+  );
+  if (!target)
+    return { issue: 'The cited call does not identify the claimed target.' };
+  const outcome = journalOutcome(entry);
+  if (outcome === 'unconfirmed')
+    return { issue: 'The cited call is unconfirmed.' };
+  const content = journalPayload(entry.result.content);
+  if (
+    quote &&
+    !JSON.stringify(content ?? '').includes(quote) &&
+    !(typeof content === 'string' && content.includes(quote))
+  )
+    return { issue: 'The quote is absent from the cited tool result.' };
+  const provenance = await journalProvenance(entry, target);
   return {
-    checkedOutputs: (state?.tasks ?? [])
-      .filter((task) => checkedIds.has(task.id))
-      .map((task) => task.output ?? ''),
-    checkedToolResults: (state?.tasks ?? [])
-      .filter((task) => checkedIds.has(task.id))
-      .flatMap((task) =>
-        (task.toolTrace?.entries ?? []).map((entry) => entry.resultExcerpt),
-      ),
-    dependencyOutputs: (state?.tasks ?? [])
-      .filter((task) => dependencyIds.has(task.id) && !checkedIds.has(task.id))
-      .map((task) => task.output ?? ''),
-    briefContext,
-    briefGoal,
-    records,
+    content,
+    provenance:
+      provenance && formatTrustTag(provenance.source, provenance.trust),
+    operation: entry.call.name,
+    arguments: entry.call.arguments,
+    outcome,
   };
 }
 
-/** Bind negative verdicts before the dialogue library interprets worker output. */
-export function bindCheckerVerdict(
-  output: string,
-  inputs: CheckerInputs,
-): string {
-  output = checkerVerdictText(output);
-  const parsed = parseCheckerVerdict(output);
-  if (/^PASS$/i.test(output.trim())) return output;
-  if (!parsed) {
-    cds.log('checker-verdict').warn('discarded checker verdict', {
-      reason: 'invalid_envelope',
-      claims: 0,
-      validClaims: 0,
-    });
-    return 'unusable verdict: invalid_envelope';
-  }
-  if (parsed.verdict === 'pass') return output;
+function negativeFindings(findings: CheckerVerdict['findings']): string {
+  return findings
+    .filter(({ status }) => status !== 'confirmed')
+    .map(
+      ({ claim, status, evidence, reason }) =>
+        `"${claim}" ${status} (${evidence.callId ?? evidence.recordId ?? 'citation missing'}). ${reason}`,
+    )
+    .join('\n');
+}
 
-  const checked = inputs.checkedOutputs.map(normalize);
-  const evidence = normalize(
-    [
-      ...inputs.dependencyOutputs,
-      ...inputs.checkedToolResults,
-      inputs.briefContext,
-      inputs.briefGoal,
-      ...inputs.records.map((record) =>
-        typeof record.result.content === 'string'
-          ? record.result.content
-          : Array.isArray(record.result.content)
-            ? record.result.content
-                .map((part) =>
-                  part.type === 'text' && typeof part.text === 'string'
-                    ? part.text
-                    : JSON.stringify(part),
-                )
-                .join('\n')
-            : JSON.stringify(record.result.content),
-      ),
-    ].join('\n'),
-  );
-  const claims =
-    parsed?.verdict.toLowerCase() === 'fail' ? (parsed.claims ?? []) : [];
-  let valid = 0;
-  let reason =
-    parsed?.verdict.toLowerCase() === 'fail' || /^FAIL$/i.test(output.trim())
-      ? claims.length
-        ? 'quote_absent'
-        : 'claims_missing'
-      : 'invalid_verdict';
-  for (const claim of claims) {
-    if ('system' in claim) {
-      reason = 'quote_absent';
-      continue;
-    }
-    const quote = normalize(claim.quote);
-    if (!quote || !checked.some((result) => result.includes(quote))) {
-      reason = 'quote_absent';
-      continue;
-    }
-    const excerpt = normalize(claim.evidence);
-    if (
-      !excerpt ||
-      (excerpt !== 'none provided' && !evidence.includes(excerpt))
-    ) {
-      reason = 'evidence_absent';
-      continue;
-    }
-    if (!normalize(claim.reason)) {
-      reason = 'reason_missing';
-      continue;
-    }
-    valid++;
+/** Supply the reason consumed by the adaptive interpreter's fix step. */
+export function adaptiveCheckerOutput(output: string): string {
+  try {
+    const verdict = verdictSchema.safeParse(JSON.parse(output));
+    if (verdict.success && verdict.data.verdict === 'fail')
+      return JSON.stringify({
+        ...verdict.data,
+        reason: negativeFindings(verdict.data.findings),
+      });
+  } catch {
+    // The interpreter handles malformed output.
   }
-  // Every claim must bind; a fabricated claim cannot hitchhike on a valid one.
-  if (valid > 0 && valid === claims.length) return output;
-  cds.log('checker-verdict').warn('discarded checker verdict', {
-    reason,
-    claims: claims.length,
-    validClaims: valid,
-  });
-  return `unusable verdict: ${reason}`;
+  return output;
+}
+
+function boundVerdict(
+  verdict: CheckerVerdict,
+  claims: readonly CheckerClaim[],
+  evidence: readonly ClaimEvidence[],
+): boolean {
+  return (
+    verdict.findings.length === claims.length &&
+    verdict.findings.every((finding, index) => {
+      const claim = claims[index];
+      const cited = evidence[index];
+      return (
+        finding.claim === claim.claim &&
+        finding.evidence.callId === claim.evidence.callId &&
+        finding.evidence.recordId === claim.evidence.recordId &&
+        finding.evidence.quote === claim.evidence.quote &&
+        finding.reason.trim().length > 0 &&
+        (!cited.issue || finding.status === 'unsupported') &&
+        (cited.outcome !== 'failed' || finding.status !== 'confirmed')
+      );
+    })
+  );
+}
+
+export function createCheckerWorker(
+  name: string,
+  description: string,
+  systemPrompt: string,
+  llm: ILlm,
+  readSource: ReadSource,
+  journalProvenance: JournalProvenance,
+): ISubAgent {
+  return {
+    name,
+    description,
+    capabilities: { contextPolicy: 'optional' },
+    async run(input) {
+      if (
+        input.sessionId !== undefined &&
+        input.sessionId !== input.caller.sessionId
+      )
+        throw new RagAccessDeniedError(
+          'Caller session does not match checker session',
+        );
+      if (input.stopSignal?.aborted) return { output: '', stopped: true };
+      if (!profileToolAllowed(submitVerdictTool.name))
+        return { output: unusableVerdict('profile cannot submit findings') };
+      const brief = briefScope.getStore();
+      let claims: CheckerClaim[];
+      try {
+        claims = checkerClaimsSchema.parse(
+          JSON.parse(brief?.claims ?? input.task),
+        );
+      } catch {
+        return {
+          output: unusableVerdict('expected a JSON list of cited claims'),
+        };
+      }
+      const journal = brief?.journal ?? new Map<string, JournalEntry>();
+      const evidence = await Promise.all(
+        claims.map((claim) =>
+          citedEvidence(
+            claim,
+            journal,
+            async (target, id) => {
+              try {
+                return await readSource(input.caller, target, id);
+              } catch {
+                input.signal?.throwIfAborted();
+                return undefined;
+              }
+            },
+            (entry, target) => journalProvenance(input.caller, entry, target),
+          ),
+        ),
+      );
+      input.signal?.throwIfAborted();
+      const response = await llm
+        .chat(
+          [
+            {
+              role: 'system',
+              content: [
+                systemPrompt,
+                'Verify only the cited evidence below. Sources establish what the record says. Use the hub source and trust tags in cited.provenance when weighing the cited content. A write requires a succeeded write call for the claimed operation and target.',
+                'Submit exactly one finding per input claim, in order, through submit_verdict. Copy the claim and citation exactly. An evidence issue is unsupported. Pass requires all findings to be confirmed.',
+                'For a batch check, include count as the number of distinct expected items whose results the cited evidence confirms.',
+              ].join('\n'),
+            },
+            {
+              role: 'user',
+              content: JSON.stringify(
+                claims.map((claim, index) => ({
+                  ...claim,
+                  cited: evidence[index],
+                })),
+              ),
+            },
+          ],
+          [submitVerdictTool],
+          {
+            trace: input.trace,
+            sessionId: input.sessionId,
+            signal: input.signal,
+            usage: input.usage?.with({ role: 'checker' }),
+          },
+        )
+        .catch(() => undefined);
+      if (input.stopSignal?.aborted) return { output: '', stopped: true };
+      if (!response?.ok) {
+        input.signal?.throwIfAborted();
+        return {
+          output: unusableVerdict('checker model could not submit findings'),
+        };
+      }
+      const { toolCalls, usage } = response.value;
+      const call = toolCalls?.length === 1 ? toolCalls[0] : undefined;
+      const parsed =
+        call?.name === submitVerdictTool.name
+          ? verdictSchema.safeParse(call.arguments)
+          : undefined;
+      if (!parsed?.success || !boundVerdict(parsed.data, claims, evidence))
+        return {
+          output: unusableVerdict('missing or invalid findings'),
+          usage,
+          metadata: { model: llm.model },
+        };
+      const findings = parsed.data.findings.map((finding, index) => ({
+        ...finding,
+        reason: evidence[index].issue ?? finding.reason,
+      }));
+      return {
+        output: JSON.stringify({ ...parsed.data, findings }),
+        summary: negativeFindings(findings) || 'All cited claims confirmed.',
+        usage,
+        metadata: { model: llm.model },
+      };
+    },
+  };
 }
 
 /** The library maps malformed verdicts to fail; the hub keeps them undecided. */

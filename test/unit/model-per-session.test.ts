@@ -29,7 +29,7 @@ import { handleChatCompletions, handleModels } from '../../srv/openai-handler';
 
 const mockCalls: string[] = [];
 const mockOfferedTools: string[][] = [];
-const mockWriteReviewCalls: { sessionId?: string; model: string }[] = [];
+const mockCheckerCalls: { sessionId?: string; model: string }[] = [];
 let mockLoop = false;
 let mockRolePlan = false;
 // Model selection does not exercise discovery. Do not leave startup retry
@@ -56,13 +56,8 @@ jest.mock('../../srv/lib/llm-factory', () => ({
         };
       mockOfferedTools.push((tools ?? []).map((tool) => tool.name));
       mockCalls.push(config.model ?? '');
-      if (
-        tools?.some((tool) => tool.name === 'submit_verdict') &&
-        messages.some((message) =>
-          message.content?.includes('Final response write review'),
-        )
-      ) {
-        mockWriteReviewCalls.push({
+      if (tools?.some((tool) => tool.name === 'submit_verdict')) {
+        mockCheckerCalls.push({
           sessionId: options?.sessionId,
           model: config.model ?? '',
         });
@@ -72,9 +67,19 @@ jest.mock('../../srv/lib/llm-factory', () => ({
             content: '',
             toolCalls: [
               {
-                id: 'write-review',
+                id: 'verdict',
                 name: 'submit_verdict',
-                arguments: { verdict: 'pass', claims: [] },
+                arguments: {
+                  verdict: 'fail',
+                  findings: [
+                    {
+                      claim: 'Created ZREQ.',
+                      status: 'unsupported',
+                      evidence: {},
+                      reason: 'Citation missing.',
+                    },
+                  ],
+                },
               },
             ],
             finishReason: 'tool_calls',
@@ -115,6 +120,16 @@ jest.mock('../../srv/lib/llm-factory', () => ({
                         kind: 'work',
                         goal: 'Review',
                         worker: 'checker',
+                        context: {
+                          note: JSON.stringify([
+                            {
+                              claim: 'Created ZREQ.',
+                              system: 'sap',
+                              target: { type: 'domain', name: 'ZREQ' },
+                              evidence: {},
+                            },
+                          ]),
+                        },
                       },
                       { id: 'answer', kind: 'answer', from: 'exec' },
                     ]
@@ -432,7 +447,7 @@ test.each(
       { agent: base.agent, model: 'worker-default', checker: undefined },
     ];
     mockCalls.length = 0;
-    mockWriteReviewCalls.length = 0;
+    mockCheckerCalls.length = 0;
     const sessionId = (index: number) =>
       `request-${coordinator}-${stream}-${index}`;
     await Promise.all(
@@ -467,19 +482,11 @@ test.each(
       expect.arrayContaining(['A', 'B', 'worker-default']),
     );
     if (coordinator === 'adaptive') {
-      expect(mockCalls).toHaveLength(6);
-      expect(mockWriteReviewCalls).toHaveLength(sessions.length);
-      expect(mockWriteReviewCalls).toEqual(
-        expect.arrayContaining(
-          sessions.map(({ checker }, index) => ({
-            sessionId: sessionId(index),
-            model: checker ?? 'worker-default',
-          })),
-        ),
-      );
+      expect(mockCalls).toHaveLength(sessions.length);
+      expect(mockCheckerCalls).toEqual([]);
     }
     mockCalls.length = 0;
-    mockWriteReviewCalls.length = 0;
+    mockCheckerCalls.length = 0;
     await base.agent.process('Hello again', {
       caller: taskCaller,
       sessionId: taskCaller.sessionId,
@@ -487,10 +494,7 @@ test.each(
     expect(mockCalls).toContain('worker-default');
     expect(mockCalls).not.toContain('A');
     expect(mockCalls).not.toContain('B');
-    if (coordinator === 'adaptive')
-      expect(mockWriteReviewCalls).toEqual([
-        { sessionId: taskCaller.sessionId, model: 'worker-default' },
-      ]);
+    expect(mockCheckerCalls).toEqual([]);
   },
 );
 

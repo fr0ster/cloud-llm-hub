@@ -94,7 +94,7 @@ Roles are assigned through standard BTP role collections by your platform team. 
 
 ## A response may end with a soft warning
 
-A response can carry a trailing `UNVERIFIED_WRITE:` line. It means the assistant claimed a create/update/activate (or similar) action that the actual tool results did not confirm. Treat it as a soft warning, not proof of failure — verify against the system (e.g. SE11/SM12, or ask the assistant for a raw read-back) before relying on the claim.
+The coordinator chooses when to verify cited evidence and reports the findings in its answer.
 
 ## What it does not replace
 
@@ -114,4 +114,4 @@ Cloud LLM Hub matters when the user wants the same controlled assistant across c
 
 The user does not have to rebuild the connection model in each client. The hub provides the shared server-side pieces: sign-in, token issuance, destination selection, role-scoped ABAP tools, RAG collections, streaming, and session continuity.
 
-`UNVERIFIED_WRITE` notices use deterministic tool-journal checks, with no automatic LLM review of workers or answers. Failed/unanswered write notices and recording placeholders remain. `LLM_AGENT_STEP_REVIEW_ENABLED=false` disables claim-based notices only. Verification checks are explicit coordinator decisions each turn: run a planned check, skip it stating why, or add an unplanned check; user input can require `plan_revise`. Checker failures need exact result quotes and cited supplied evidence (or `none provided`); invalid failures are unusable verdicts for the coordinator to assess, not failures. No tools executed alone is never grounds for fail.
+The coordinator chooses when to verify cited evidence and reports the findings in its answer.

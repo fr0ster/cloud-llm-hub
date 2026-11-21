@@ -7,7 +7,13 @@ import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
 import { parseExternalMcp } from '../../srv/lib/external-mcp';
 import { LongSessionRegistry } from '../../srv/lib/long-session';
 import { buildEmbedding } from '../../srv/lib/providers';
+import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { SapAiCoreEmbedder } from '../../srv/lib/sap-ai-core-embedder';
+import {
+  journalOutcome,
+  journalSnapshotSchema,
+  writeActions,
+} from '../../srv/lib/tool-journal';
 import {
   assertToolSearchHealthy,
   toolSearchFailure,
@@ -135,6 +141,114 @@ test('role filtering, default read-only, write opt-in and profile ceilings apply
   });
   expect(send).not.toHaveBeenCalled();
 });
+
+test('the recorder offers checker reads and blocks writes despite the server write opt-in', async () => {
+  const { scope, bridge } = openSessions();
+  bridge.register(
+    userMcpRegistration.parse({
+      servers: [{ ...documents, writes: true, tools: [read, destructive] }],
+    }).servers,
+  );
+  const send = jest.fn((call: UserMcpCall) =>
+    bridge.answer(call.callId, { result: { content: 'document' } }),
+  );
+  bridge.subscribe('browser', ['documents'], {
+    executorId: 'browser-a',
+    send,
+    close: () => {},
+  });
+  const recorder = new RecordingMcpClient({
+    listTools: async () => ({ ok: true, value: [] }),
+    callTool: jest.fn(),
+  }).includeClients([], userMcpClient('checker'));
+  const options = { trace: { traceId: 'checker-read' } };
+  await scope(() =>
+    runWithReadOnlyTools(async () => {
+      const listed = await recorder.listTools();
+      if (!listed.ok) throw listed.error;
+      expect(listed.value.map(({ name }) => name)).toEqual([
+        'user__documents__read',
+      ]);
+      await expect(
+        recorder.callTool('user__documents__destructive', {}, options),
+      ).resolves.toMatchObject({ ok: true, value: { isError: true } });
+      await expect(
+        recorder.callTool('user__documents__read', {}, options),
+      ).resolves.toMatchObject({ ok: true, value: { content: 'document' } });
+    }),
+  );
+  expect(send).toHaveBeenCalledTimes(1);
+  const entries = recorder.getToolJournal('checker-read');
+  expect(entries).toMatchObject([{ system: 'user-mcp', write: false }]);
+  expect(writeActions(entries)).toBeUndefined();
+});
+
+test.each([
+  ['tool error', 'failed'],
+  ['unknown reply', 'unconfirmed'],
+  ['cancellation', 'unconfirmed'],
+  ['session close', 'unconfirmed'],
+] as const)(
+  'records a user MCP write after %s as %s',
+  async (settlement, outcome) => {
+    const { scope, bridge } = openSessions();
+    const sent: UserMcpCall[] = [];
+    bridge.subscribe('companion', ['records'], {
+      executorId: 'companion-a',
+      send: (call) => {
+        sent.push(call);
+        return true;
+      },
+      close: () => {},
+    });
+    const recorder = new RecordingMcpClient({
+      listTools: async () => ({ ok: true, value: [] }),
+      callTool: jest.fn(),
+    }).includeClients([], userMcpClient('executor'));
+    const requestId = 'user-write';
+    const signal = new AbortController();
+    const pending = scope(() =>
+      recorder.callTool(
+        'user__records__write',
+        {},
+        {
+          trace: { traceId: requestId },
+          signal: signal.signal,
+        },
+      ),
+    );
+    expect(sent).toHaveLength(1);
+    expect(journalOutcome(recorder.getToolJournal(requestId)[0])).toBe(
+      'unconfirmed',
+    );
+    if (settlement === 'tool error')
+      bridge.answer(sent[0].callId, { error: 'Write failed' });
+    else if (settlement === 'unknown reply')
+      bridge.answer(sent[0].callId, { outcome: 'unknown' });
+    else if (settlement === 'cancellation') signal.abort();
+    else bridge.close();
+    const result = await pending;
+    if (outcome === 'unconfirmed')
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: 'USER_MCP_OUTCOME_UNKNOWN' },
+      });
+    const entries = journalSnapshotSchema.parse({
+      requestId,
+      entries: recorder.getToolJournal(requestId),
+    }).entries;
+    expect(entries).toMatchObject([{ system: 'user-mcp', write: true }]);
+    expect(writeActions(entries)).toContain(
+      JSON.stringify({
+        callId: entries[0].call.id,
+        system: 'user-mcp',
+        operation: 'user__records__write',
+        targets: [],
+        outcome,
+      }),
+    );
+  },
+);
 
 test.each(['missing', 'query', 'empty query', 'document'])(
   'ranked user MCP search fails on %s and stays down until its probe succeeds',
