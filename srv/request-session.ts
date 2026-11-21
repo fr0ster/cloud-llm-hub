@@ -8,7 +8,6 @@ import {
   currentVerdictTools,
   runWithVerdictTools,
 } from './lib/checker-verdict-tool';
-import { runWithReviewSignals } from './lib/review-scope';
 
 const als = new AsyncLocalStorage<{
   sessionId?: string;
@@ -49,9 +48,7 @@ export function runWithSessionId<T>(
   userId?: string,
   ragIdentity: RagCallerIdentity = getRagCallerIdentity(),
 ): T {
-  return als.run({ sessionId, history, userId, ragIdentity }, () =>
-    runWithReviewSignals(fn),
-  );
+  return als.run({ sessionId, history, userId, ragIdentity }, () => fn());
 }
 
 export function getRequestSessionId(): string | undefined {

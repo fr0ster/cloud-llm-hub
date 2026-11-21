@@ -257,21 +257,16 @@ describe('deploy configuration parity', () => {
       expect(() => loadAgentConfig()).toThrow(name);
     }
   });
-  it('checker configuration overrides delegation and session settings override configuration', async () => {
-    process.env.LLM_AGENT_CHECKER_MODEL = 'worker';
-    expect(loadAgentConfig().llm.checkerModel).toBe('worker');
+  it('checker model overrides come from session settings', async () => {
     await withRoleModels({}, async () =>
-      expect(currentRoleModel('checker')).toBe('worker'),
+      expect(currentRoleModel('checker')).toBeUndefined(),
     );
     await withRoleModels({ checker: { model: 'session' } }, async () =>
       expect(currentRoleModel('checker')).toBe('session'),
     );
     expect(effectiveRoleModels('user', 'key').checker).toMatchObject({
-      model: 'worker',
-      source: 'config',
+      model: null,
     });
-    process.env.LLM_AGENT_EXECUTOR_MODEL = 'invalid';
-    expect(() => loadAgentConfig()).toThrow('LLM_AGENT_EXECUTOR_MODEL');
   });
   it('global off limits reach every role without restoring library limits', () => {
     process.env.LLM_AGENT_MAX_ITERATIONS = 'off';

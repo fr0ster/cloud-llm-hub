@@ -246,7 +246,7 @@ describe('unverifiedWriteText', () => {
       'socket hang up',
     );
     expect(text).toContain(
-      'UNVERIFIED_WRITE: CreateClass was sent and no answer came back (socket hang up)',
+      'CreateClass was sent and no answer came back (socket hang up)',
     );
     expect(text).toContain('It was NOT retried.');
   });
@@ -257,7 +257,7 @@ describe('unverifiedWriteText', () => {
       'timeout',
     );
     expect(text).toContain(
-      'UNVERIFIED_WRITE: CreateClass, ActivateClass were sent and no answer came back (timeout)',
+      'CreateClass, ActivateClass were sent and no answer came back (timeout)',
     );
   });
 });

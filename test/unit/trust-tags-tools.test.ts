@@ -98,7 +98,6 @@ import {
 import { ContextAssembler } from '../../node_modules/@mcp-abap-adt/llm-agent-libs/dist/context/context-assembler';
 import { renderToolTrace } from '../../node_modules/@mcp-abap-adt/llm-agent-libs/dist/coordinator/dialogue/tool-trace-render';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
-import { parseToolOutcome } from '../../srv/lib/reviewer-core';
 
 test.each(['chat', 'planner', 'executor', 'checker'])(
   '%s real model boundary tags once after an explicitly configured size-limit rejection',
@@ -183,7 +182,6 @@ test.each(['chat', 'planner', 'executor', 'checker'])(
     expect(records).toHaveLength(3);
     for (const record of records) {
       expect(JSON.stringify(record)).not.toContain('[source:');
-      expect(parseToolOutcome(record).name).toBe(record.call.name);
     }
     const trace = collector.snapshot();
     expect(JSON.stringify(trace)).not.toContain('[source:');

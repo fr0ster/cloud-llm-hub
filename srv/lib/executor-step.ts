@@ -6,12 +6,9 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import type { getSmartAgent } from '../agent-manager';
 import { runWithToolGateBypass } from '../request-session';
-import { renderNotice } from './notify-policy';
 import { callOptionsFor } from './rag-caller';
-import { captureReviewProfile, recordReviewProfile } from './review-scope';
 import { currentRoleModel, roleOfProfile } from './role-models-scope';
 import { waitForSessionTurns } from './session-turns';
-import { evaluateGated } from './step-reviewer';
 import { assertToolSearchHealthy } from './tool-search-health';
 
 const executorModel = new AsyncLocalStorage<string | undefined>();
@@ -53,81 +50,63 @@ export async function runExecutorStep(
   const caller = opts.caller;
   await waitForSessionTurns(caller.sessionId, opts.signal);
   opts = { ...opts, ...callOptionsFor(caller) };
-  const traceId = opts.trace?.traceId ?? '';
-  const { result } = await captureReviewProfile(() =>
-    runWithToolGateBypass(async () => {
-      if (worker !== 'executor') {
-        if (!agentHandle.profileRunner)
-          throw new Error('Destination profile runner unavailable');
-        const source = createAgentProfileSource(userId);
-        const profile = await source.get(worker, opts);
-        if (!profile.ok) throw new Error(profile.error.message);
-        recordReviewProfile(profile.value);
-        const prompts = await source.getPrompts(opts);
-        if (!prompts.ok) throw new Error(prompts.error.message);
-        const prepared = await agentHandle.profileRunner.createWorker(
-          {
-            profile: profile.value,
-            model: currentRoleModel(roleOfProfile(profile.value)) ?? model,
-            workerBase: prompts.value.workerBase,
-          },
-          opts,
-        );
-        if (!prepared.ok)
-          throw new Error(`${prepared.error.code}: ${prepared.error.message}`);
-        const result = await prepared.value.run({
-          task,
-          ...opts,
-          ...callOptionsFor(caller),
-          ...(history.length
-            ? {
-                context: `Previous session conversation:\n${JSON.stringify(history)}`,
-              }
-            : {}),
-        });
-        if (
-          result.errorClass ||
-          result.stopped ||
-          result.status === 'awaiting-external'
-        )
-          return {
-            ok: false as const,
-            error: new Error(result.output || 'Worker did not complete'),
-          };
-        return {
-          ok: true as const,
-          value: {
-            content: result.output,
-            usage: result.usage,
-            iterations: undefined,
-            toolCallCount: undefined,
-            stopReason: undefined,
-          },
-        };
-      }
-      return executorModel.run(currentRoleModel('executor') ?? model, () =>
-        (agentHandle.executor ?? agentHandle.agent).process(
-          [...history, { role: 'user', content: task }],
-          opts,
-        ),
+  return runWithToolGateBypass(async () => {
+    if (worker !== 'executor') {
+      if (!agentHandle.profileRunner)
+        throw new Error('Destination profile runner unavailable');
+      const source = createAgentProfileSource(userId);
+      const profile = await source.get(worker, opts);
+      if (!profile.ok) throw new Error(profile.error.message);
+      const prompts = await source.getPrompts(opts);
+      if (!prompts.ok) throw new Error(prompts.error.message);
+      const prepared = await agentHandle.profileRunner.createWorker(
+        {
+          profile: profile.value,
+          model:
+            profile.value.result === 'report'
+              ? (currentRoleModel(roleOfProfile(profile.value)) ?? model)
+              : undefined,
+          workerBase: prompts.value.workerBase,
+        },
+        opts,
       );
-    }),
-  );
-  if (result.ok && agentHandle.executor && agentHandle.recMcp) {
-    const verdict = await evaluateGated({
-      content: result.value.content ?? '',
-      records: agentHandle.recMcp.getToolRecords(traceId),
-      writeToolOffered: agentHandle.recMcp.hadWriteCapability(traceId),
-    });
-    if (!verdict.ok) {
+      if (!prepared.ok)
+        throw new Error(`${prepared.error.code}: ${prepared.error.message}`);
+      const result = await prepared.value.run({
+        task,
+        ...opts,
+        ...callOptionsFor(caller),
+        ...(history.length
+          ? {
+              context: `Previous session conversation:\n${JSON.stringify(history)}`,
+            }
+          : {}),
+      });
+      if (
+        result.errorClass ||
+        result.stopped ||
+        result.status === 'awaiting-external'
+      )
+        return {
+          ok: false as const,
+          error: new Error(result.output || 'Worker did not complete'),
+        };
       return {
-        ...result,
+        ok: true as const,
         value: {
-          ...result.value,
-          content: (result.value.content ?? '') + renderNotice(verdict),
+          content: result.output,
+          usage: result.usage,
+          iterations: undefined,
+          toolCallCount: undefined,
+          stopReason: undefined,
         },
       };
     }
-  }
-  return result;
+    return executorModel.run(currentRoleModel('executor') ?? model, () =>
+      (agentHandle.executor ?? agentHandle.agent).process(
+        [...history, { role: 'user', content: task }],
+        opts,
+      ),
+    );
+  });
 }

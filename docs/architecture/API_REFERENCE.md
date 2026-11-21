@@ -180,8 +180,6 @@ The response `model` field identifies the serving coordinator model, including s
 - For `POST /v1/messages`, top-level `usage.input_tokens` describes uncached input on the serving model. `cache_read_input_tokens` and `cache_creation_input_tokens` account for reads and writes separately when known. `output_tokens` describes output. Streams include counts known at `message_start` and cumulative counts at `message_delta`. The `models` breakdown uses the same fields as OpenAI.
 - Dialogue responses include `usage.x_hub` with durations in milliseconds and usage for the planner and each delivered subagent result. Each model's counts are independent.
 
-**Honesty guard note *(v6.28+)*:** the response (streaming or non-streaming, and the same on `/v1/messages` and `execute_step`) may carry a trailing `UNVERIFIED_WRITE:` line when the deterministic check finds a claimed write (create/update/activate/…) unsupported by the actual tool results. It's a soft warning — verify against the system before relying on the claim — never a block. Disable via `LLM_AGENT_STEP_REVIEW_ENABLED=false`.
-
 ---
 
 ### 4. List Models
@@ -981,17 +979,14 @@ sessions ahead in a queue, which the service does not time.
 A request can fail while a write tool call was sent and no answer ever came
 back — the connection dropped mid-flight, for instance
 (`srv/lib/recording-mcp-client.ts`, `RecordingMcpClient.unanswered`). When that
-happens the failure text names the tool(s) and is prefixed `UNVERIFIED_WRITE:`;
-it says the write was sent and **not retried**, that it may or may not have
-been applied, and that the caller must read the object back to find out — the
-service never repeats a write it cannot confirm.
+happens, the failure text names the tools and reports that no reply arrived and no retry followed.
 
 | Channel | Where it appears |
 |---|---|
 | `/v1/chat/completions` | the response `message.content`, HTTP `200` (same shape as a normal completion) |
 | `/v1/messages` non-streaming | the response body via `anthropicUnverifiedWrite`, status `500` alone or the throttle status when a throttle also applies |
 | `/v1/messages` streaming | an SSE `event: error` carrying the same envelope |
-| `execute_step` | the step's `ERROR on destination "…": UNVERIFIED_WRITE: …` text |
+| `execute_step` | the step's `ERROR on destination "…": the tool was sent and no answer came back …` text |
 
 The text and the lookup are built in `srv/lib/throttle-surfacing.ts`
 (`unverifiedWriteText`, `unverifiedWriteFor`, `anthropicUnverifiedWrite`).
@@ -1281,4 +1276,16 @@ use the deploy `LLM_AGENT_MODELS` allowlist, with main and planner defaults alwa
 allowed. Agents should use their default model and escalate only for hard analysis
 or a failed check.
 
-`UNVERIFIED_WRITE` notices use deterministic tool-journal checks, with no automatic LLM review of workers or answers. Failed/unanswered write notices and recording placeholders remain. `LLM_AGENT_STEP_REVIEW_ENABLED=false` disables claim-based notices only. Verification checks are explicit coordinator decisions each turn: run a planned check, skip it stating why, or add an unplanned check; user input can require `plan_revise`. Checker failures need exact result quotes and cited supplied evidence (or `none provided`); invalid failures are unusable verdicts for the coordinator to assess, not failures. No tools executed alone is never grounds for fail.
+#### Verification brief and verdict
+
+The coordinator selects the check worker. For a verdict profile, provide a JSON list in `delegate_task.context`, the adaptive step's `context.note`, or `execute_step.task` for a direct call. Each entry contains the exact quoted `claim`, `system`, `target` and `evidence`.
+
+| System | Target | Citation |
+|---|---|---|
+| `sap` | `{ type, name }` | `{ callId }` from `[actions]` |
+| `rag` | `{ scope, collection, record? }` | `{ callId }` from `[actions]` |
+| `source` | `{ scope, collection }` | `{ recordId, quote }` with the exact record quote |
+
+Use an empty evidence object for a missing citation. A write requires a successful write call for the target. The checker reads only evidence named in the brief. It submits `{ verdict, findings: [{ claim, status, evidence, reason }] }` via `submit_verdict`. The verdict is `pass` when every finding is `confirmed`. A `refuted` or `unsupported` finding produces `fail`. An invalid submission is reported as unusable.
+
+The coordinator communicates the findings in its answer. Dialogue delivery enforces the checks still in the coordinator's plan, which it can revise.

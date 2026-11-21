@@ -477,7 +477,7 @@ describe('an unanswered write, non-streaming', () => {
     await done;
 
     const text = JSON.parse(res.body).error.message;
-    expect(text).toContain('UNVERIFIED_WRITE: CreateClass');
+    expect(text).toContain('CreateClass');
     expect(text).toContain('was NOT retried');
     expect(harness.events.filter((e) => e === 'pipeline')).toHaveLength(1);
   });
@@ -513,7 +513,7 @@ describe('an unanswered write, streaming (swallowed error chunk)', () => {
     await done;
 
     expect(res.body).toContain('event: error');
-    expect(res.body).toContain('UNVERIFIED_WRITE: CreateClass');
+    expect(res.body).toContain('CreateClass');
     expect(res.body).toContain('was NOT retried');
     expect(harness.events.filter((e) => e === 'pipeline')).toHaveLength(1);
     // Anthropic clients, the Claude CLI among them, stop reading at
@@ -639,7 +639,7 @@ describe('an unanswered write, streaming exception', () => {
     await done;
 
     expect(res.body).toContain('event: error');
-    expect(res.body).toContain('UNVERIFIED_WRITE: CreateClass');
+    expect(res.body).toContain('CreateClass');
     expect(res.body).toContain('was NOT retried');
     expect(harness.events.filter((e) => e === 'pipeline')).toHaveLength(1);
   });
@@ -679,7 +679,7 @@ describe('an unanswered write together with a throttle', () => {
     expect(res.headers['Retry-After']).toBe('42');
     const payload = JSON.parse(res.body);
     expect(payload.error.type).toBe('overloaded_error');
-    expect(payload.error.message).toContain('UNVERIFIED_WRITE: CreateClass');
+    expect(payload.error.message).toContain('CreateClass');
     expect(payload.error.message).toContain('42 seconds');
   });
 });

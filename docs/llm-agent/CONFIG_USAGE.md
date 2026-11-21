@@ -142,9 +142,9 @@ Precomputed vectors also require matching document text. Qdrant evaluations use 
 
 All `LLM_GATEKEEPER_*` values: unset means off. A value that is not plain digits for a positive integer (`0x10`, `1e3`, ` 5` and `5.0` are refused) — or a combination the notes above forbid — stops `cds serve` before it listens, naming the variable. The values in force are logged at startup and returned in `Health()`.
 
-`LLM_AGENT_STEP_REVIEW_ENABLED=false` disables deterministic claim-based notices. Journal-based failed/unanswered write safeguards remain. No automatic LLM critic runs on worker results, final answers or execute_step. Checks are explicit plan steps that the coordinator may run, skip with a reason, or add after considering new user input.
+The coordinator chooses when to verify cited evidence. Verification findings reach the user through the coordinator answer.
 
-`LLM_AGENT_SAP_RELEVANCE_SCORE` and `LLM_AGENT_STEP_REVIEW_TIMEOUT_MS` are deprecated and ignored; they do not trigger validation errors or deadlines.
+`LLM_AGENT_SAP_RELEVANCE_SCORE` is deprecated and ignored.
 
 ## Tool-search health and recovery
 
@@ -309,7 +309,7 @@ Unset or blank budget fields remain undefined so the library applies its default
 
 Checker context includes a redacted `[tools used by task ?]` block for the checked task. Successful calls provide evidence of execution; claimed system changes without matching successful calls fail unless independently verified. Unavailable or omitted evidence does not prove that no tools ran. Traces persist with dialogue tasks; older tasks without traces remain valid. Startup applies changed built-in checker profiles to the global `agents` collection automatically.
 
-Planning and revision route every check targeting a worker other than self to the checker; work steps keep their assigned worker. Checker workers verify SAP state: request-local enforcement filters out SAP/system write tools and rejects attempted system writes before the MCP adapter, even for developers. All dialogue workers, including read-only analyst and verdict checker profiles, can read hub RAG and store results using collection_create, record_add and record_update in user/session collections. Explicit allow/deny policies, caller grants and parent ceilings still apply. Trust setters and global mutations remain system writes. The coordinator retains RAG read tools only. Startup replaces changed built-in profile text from release seeds; code also supplies the capability in planner worker descriptions and enforces permissions independently of that text. Effect checks are independent of exposition-based role permissions. MCP read-only/destructive annotations take precedence, then read/check name prefixes and the installed RunUnitTest/RunATC family are allowed. The installed RuntimeGetDumpById, RuntimeGetProfilerTraceData, RuntimeGetGatewayErrorLog, RuntimeListFeeds, RuntimeListProfilerTraceFiles and RuntimeListSystemMessages evidence readers are also allowed; runtime execution remains blocked. Executor steps retain their normal permissions. No new setting is required.
+Adaptive planning and revision preserve the coordinator’s chosen check worker. A verdict profile receives only the journal calls and authorized records cited in its brief and submits findings through `submit_verdict`. See the [verification brief and verdict](../architecture/API_REFERENCE.md#verification-brief-and-verdict).
 
 ### Tool gate
 
@@ -533,7 +533,7 @@ tools. A later agent preparation retries after a 30-second cooldown.
 
 
 Timeout policy (2026-11-02): work waits until caller cancellation or an external limit.
-`LLM_AGENT_TOOL_GATE_TIMEOUT_MS`, `LLM_AGENT_STEP_REVIEW_TIMEOUT_MS`,
+`LLM_AGENT_TOOL_GATE_TIMEOUT_MS`,
 `LLM_AGENT_DESTINATION_INIT_WAIT_MS`, and `LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS`
 are legacy parsed settings and no longer bound work or response following.
 `SAP_TIMEOUT_CSRF` is retired; SAP HTTP requests use no hub deadline.
@@ -568,17 +568,11 @@ Dialogue workers store results only in their current session collections. The co
 
 ### Deploy defaults for session roles and limits
 
-All variables below are optional. Session settings override configuration per
-value; unset configuration preserves the existing behavior. Configured
-`LLM_AGENT_EXECUTOR_MODEL` and `LLM_AGENT_CHECKER_MODEL` override the
-coordinator's `delegate_task` model for every session. They must belong to the
-`LLM_AGENT_MODELS` allowlist (which also includes the main and planner models).
-An invalid configured worker model fails startup naming the variable.
+All variables below are optional. Session settings override the deploy settings per role. The checker uses the session checker model, then the coordinator's `delegate_task` model, then the verdict profile model, then `LLM_AGENT_MODEL`. Every selected model must be in the allowlist. The legacy `LLM_AGENT_CHECKER_MODEL` value is still parsed for configuration compatibility.
 
 | Variable | Default / behavior |
 |---|---|
 | `LLM_AGENT_EXECUTOR_MODEL` | Coordinator chooses the executor model when unset |
-| `LLM_AGENT_CHECKER_MODEL` | Coordinator chooses the checker model when unset |
 | `LLM_AGENT_<ROLE>_MAX_ITERATIONS` | Falls back to `LLM_AGENT_MAX_ITERATIONS`, then off (unlimited) |
 | `LLM_AGENT_<ROLE>_MAX_TOOL_CALLS` | Falls back to `LLM_AGENT_MAX_TOOL_CALLS`, then off (unlimited; overrides the library default) |
 | `LLM_AGENT_TOOL_RESULT_MAX_CHARS` | Off by default. A positive integer enables the limit. `0` also disables it. |

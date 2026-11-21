@@ -5,10 +5,7 @@ import {
   parseToolResultMaxChars,
 } from '../../srv/agent-config';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
-import {
-  evaluateDeterministic,
-  parseToolOutcome,
-} from '../../srv/lib/reviewer-core';
+import { journalOutcome } from '../../srv/lib/tool-journal';
 import {
   capToolResult,
   withToolResultCap,
@@ -45,25 +42,16 @@ test.each([
       capToolResult({ content }, 50, 'CreateClass').result.content,
     );
     expect(() => JSON.parse(records[0].result.content as string)).toThrow();
-    const outcome = parseToolOutcome(records[0]);
-    expect(outcome).toMatchObject({
-      name: 'CreateClass',
-      ok: false,
-      rejection: {
-        rejected: true,
-        originalLength: content.length,
-        maxChars: 50,
-      },
+    expect(records[0].rejection).toEqual({
+      rejected: true,
+      originalLength: content.length,
+      maxChars: 50,
     });
-    expect(outcome.error).toBe(records[0].result.content);
+    expect(journalOutcome(worker.getToolJournal('create')[0])).toBe(
+      facts.success ? 'succeeded' : 'failed',
+    );
     expect(records[0].result.isError).toBe(true);
     expect(records[0].result.content).not.toContain('x'.repeat(10));
-    expect(evaluateDeterministic('I created the class.', records).ok).toBe(
-      false,
-    );
-    expect(evaluateDeterministic('I activated the class.', records).ok).toBe(
-      false,
-    );
   },
 );
 

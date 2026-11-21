@@ -179,12 +179,7 @@ The response is Server-Sent Events. Extract the assistant content from each chun
 Keep `[SmartAgent: Executing X...]` markers in the output verbatim — they are
 evidence of real tool calls.
 
-**Server-side signal *(v6.28+)*:** independently of the client-side hallucination
-check below, the hub itself may append a trailing `UNVERIFIED_WRITE:` line when
-its reviewer finds a claimed write (create/update/activate) unsupported by the
-actual tool results. Keep it verbatim too — it is a soft warning, not a hard
-failure — and treat the claim as unconfirmed until verified against the system.
-Disable-able hub-side via `LLM_AGENT_STEP_REVIEW_ENABLED=false`.
+If a write was sent and the connection ended before the reply, the error names that tool call.
 
 ## Hard rules
 
@@ -272,4 +267,4 @@ The session shares dialogue state with WebUI and protocol clients; orchestration
 calls are refused while a dialogue turn runs. See the [API reference](../architecture/API_REFERENCE.md#long-sessions)
 for schemas, limits and error behavior.
 
-`UNVERIFIED_WRITE` notices use deterministic tool-journal checks, with no automatic LLM review of workers or answers. Failed/unanswered write notices and recording placeholders remain. `LLM_AGENT_STEP_REVIEW_ENABLED=false` disables claim-based notices only. Verification checks are explicit coordinator decisions each turn: run a planned check, skip it stating why, or add an unplanned check; user input can require `plan_revise`. Checker failures need exact result quotes and cited supplied evidence (or `none provided`); invalid failures are unusable verdicts for the coordinator to assess, not failures. No tools executed alone is never grounds for fail.
+The coordinator chooses when to verify cited evidence and reports the findings in its answer.

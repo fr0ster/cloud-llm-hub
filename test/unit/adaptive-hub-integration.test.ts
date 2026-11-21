@@ -5,9 +5,8 @@ const taskCaller = {
   userId: 'test-user',
   isAdmin: false,
 };
-const sessionCaller1 = { ...taskCaller, sessionId: 'dialogue-checker' };
 
-import type { ILlm, ISubAgent, Message } from '@mcp-abap-adt/llm-agent';
+import type { ILlm, Message } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
 import type { AgentConfig } from '../../srv/agent-config';
 import {
@@ -26,10 +25,7 @@ import { getRunRecordStore } from '../../srv/lib/run-record-store';
 import { recordTurn } from '../../srv/lib/session-turns';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
 import { isWriteTool } from '../../srv/lib/write-guardrail';
-import {
-  profileToolAllowed,
-  runWithSessionId,
-} from '../../srv/request-session';
+import { runWithSessionId } from '../../srv/request-session';
 
 jest.mock('../../srv/lib/llm-factory', () => ({
   ...jest.requireActual('../../srv/lib/llm-factory'),
@@ -89,9 +85,14 @@ const config: AgentConfig = {
 };
 
 describe('adaptive chat through the real hub build and library pipeline', () => {
-  let scenario: 'hello' | 'throw' | 'invalid' | 'check-write' | 'revise';
+  let scenario:
+    | 'hello'
+    | 'throw'
+    | 'invalid'
+    | 'check-write'
+    | 'explicit-check'
+    | 'revise';
   const revisionCount = 21;
-  const checkerScopes: boolean[] = [];
   const calls: string[] = [];
   const controllerPrompts: string[] = [];
   const answer = 'I created and activated class ZTEST.';
@@ -113,14 +114,24 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
             : { id: 'answer', kind: 'answer', text: 'Plan complete' };
         return JSON.stringify({ steps: [step] });
       }
-      if (scenario === 'check-write')
+      if (scenario === 'check-write' || scenario === 'explicit-check')
         return JSON.stringify({
           steps: [
             {
               id: 'verify',
               kind: 'check',
-              worker: 'executor',
+              worker: scenario === 'explicit-check' ? 'checker' : 'executor',
               goal: 'verify',
+              context: {
+                note: JSON.stringify([
+                  {
+                    claim: 'Created class ZTEST.',
+                    system: 'sap',
+                    target: { type: 'class', name: 'ZTEST' },
+                    evidence: {},
+                  },
+                ]),
+              },
               targets: [],
               onPass: 'done',
               onFail: 'done',
@@ -138,33 +149,30 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
   const llm: ILlm = {
     model: 'test',
     chat: jest.fn(async (messages, tools) => {
-      if (
-        messages.some(
-          (m) =>
-            m.role === 'system' &&
-            m.content?.includes('Final response write review'),
-        )
-      ) {
-        calls.push('write-review');
-        expect(tools?.map((tool) => tool.name)).toEqual(['submit_verdict']);
-        const claims =
-          scenario === 'throw' || scenario === 'invalid'
-            ? ['created', 'activated'].map((operation) => ({
-                system: 'sap',
-                operation,
-                target: { type: 'class', name: 'ZTEST' },
-              }))
-            : [];
+      if (tools?.some(({ name }) => name === 'submit_verdict')) {
+        calls.push('checker');
+        expect(tools.map(({ name }) => name)).toEqual(['submit_verdict']);
         return {
           ok: true as const,
           value: {
             content: '',
             finishReason: 'tool_calls' as const,
+            usage: { promptTokens: 7, completionTokens: 3, totalTokens: 10 },
             toolCalls: [
               {
-                id: 'write-review',
+                id: 'verdict',
                 name: 'submit_verdict',
-                arguments: { verdict: claims.length ? 'fail' : 'pass', claims },
+                arguments: {
+                  verdict: 'fail',
+                  findings: [
+                    {
+                      claim: 'Created class ZTEST.',
+                      status: 'unsupported',
+                      evidence: {},
+                      reason: 'Citation missing.',
+                    },
+                  ],
+                },
               },
             ],
           },
@@ -176,21 +184,6 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       };
     }),
     streamChat: jest.fn(async function* (messages) {
-      if (
-        scenario === 'check-write' &&
-        !messages.some((m) => m.role === 'tool')
-      ) {
-        checkerScopes.push(!profileToolAllowed('CreateClass'));
-        yield {
-          ok: true as const,
-          value: {
-            content: '',
-            toolCalls: [{ id: 'write', name: 'CreateClass', arguments: {} }],
-            finishReason: 'tool_calls' as const,
-          },
-        };
-        return;
-      }
       if (scenario === 'check-write') {
         yield {
           ok: true as const,
@@ -272,6 +265,7 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
         }),
       ).toBe(true);
     const chunks: string[] = [];
+    const usage: number[] = [];
     await runWithSessionId(
       sessionId,
       async () => {
@@ -281,16 +275,21 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
           trace: { traceId: sessionId },
         })) {
           expect(chunk.ok).toBe(true);
-          if (chunk.ok) chunks.push(chunk.value.content);
+          if (chunk.ok) {
+            chunks.push(chunk.value.content);
+            if (chunk.value.usage) usage.push(chunk.value.usage.totalTokens);
+          }
         }
       },
       [],
       userId,
     );
     lease.release();
-    expect(retention.isKnown(userId, sessionId)).toBe(true);
+    if (runConfig.agent.chatCoordinator === 'adaptive')
+      expect(retention.isKnown(userId, sessionId)).toBe(true);
     return {
       text: chunks.join(''),
+      usage,
       callTool,
       record: await runWithSessionId(
         sessionId,
@@ -301,11 +300,12 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     };
   }
 
-  it('reviews a direct adaptive answer without an executor tool-loop or SAP calls', async () => {
+  it('answers directly with zero checker calls and zero checker token usage', async () => {
     scenario = 'hello';
     const result = await run('adaptive-hello', 'Hello');
     expect(result.text).toBe('Hello!');
-    expect(calls).toEqual(['controller', 'write-review']);
+    expect(calls).toEqual(['controller']);
+    expect(result.usage.reduce((total, tokens) => total + tokens, 0)).toBe(0);
     expect(controllerPrompts[0]).toContain(HUB_ADAPTIVE_CONTROLLER_SYSTEM);
     expect(result.callTool).not.toHaveBeenCalled();
     expect(result.record?.outcome).toBe('answered');
@@ -375,98 +375,44 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       clock.mockRestore();
     }
   });
-  it('routes a generated executor check to read-only checker and blocks writes before MCP', async () => {
+  it('preserves the executor selected by the adaptive plan', async () => {
     scenario = 'check-write';
-    checkerScopes.length = 0;
-    const registry = getCollectionRegistry();
-    const checker = await registry.getDocument('agents', 'checker');
-    if (!checker) throw new Error('Missing checker');
-    await registry.updateDocument('agents', 'checker', {
-      metadata: { ...checker.metadata, tools: 'all', result: 'verdict' },
+    const result = await run('adaptive-check-executor', 'Verify the class');
+    expect(calls).not.toContain('checker');
+    expect(result.record?.plan.steps[0]).toMatchObject({
+      kind: 'check',
+      worker: 'executor',
     });
-    try {
-      const result = await run('adaptive-check-write', 'Verify the class');
-      expect(checkerScopes).toEqual([true]);
-      expect(result.callTool).not.toHaveBeenCalled();
-      expect(result.record?.plan.steps[0]).toMatchObject({
-        kind: 'check',
-        worker: 'checker',
-      });
-      expect(result.text).toBe('Verified');
-    } finally {
-      await registry.updateDocument('agents', 'checker', {
-        metadata: checker.metadata,
-      });
-    }
+    expect(result.text).toBe('Verified');
   });
 
-  it('rejects a report checker before running its tool loop', async () => {
-    scenario = 'check-write';
-    checkerScopes.length = 0;
-    const registry = getCollectionRegistry();
-    const checker = await registry.getDocument('agents', 'checker');
-    if (!checker) throw new Error('Missing checker');
-    await registry.updateDocument('agents', 'checker', {
-      metadata: { ...checker.metadata, result: 'report', tools: 'all' },
-    });
-    try {
-      const result = await run('adaptive-report-checker', 'Verify the class');
-      expect(checkerScopes).toEqual([]);
-      expect(result.callTool).not.toHaveBeenCalled();
-      expect(JSON.stringify(result.record)).toContain(
-        'Checker profile must have result: verdict',
-      );
-    } finally {
-      await registry.updateDocument('agents', 'checker', {
-        metadata: checker.metadata,
-      });
-    }
+  it('uses the cited-claim contract for an explicitly chosen checker', async () => {
+    scenario = 'explicit-check';
+    const result = await run('adaptive-explicit-check', 'Verify the class');
+    expect(calls).toEqual(['controller', 'checker']);
+    expect(result.usage.reduce((total, tokens) => total + tokens, 0)).toBe(10);
+    expect(result.record?.steps[0].verdict?.verdict).toBe('fail');
+    expect(result.callTool).not.toHaveBeenCalled();
   });
 
-  it('dialogue exposes the same raw executor and read-only checker workers', async () => {
-    scenario = 'check-write';
-    checkerScopes.length = 0;
-    const callTool = jest.fn();
-    const handle = (await buildAgentForDestination(
-      {
-        listTools: async () => ({ ok: true, value: [] }),
-        callTool,
-      } as never,
-      new ExpositionFilteringRag(new InMemoryRag()),
+  it('returns fixed answers unchanged even when the text claims a write', async () => {
+    scenario = 'hello';
+    const result = await run(
+      'fixed-unverified-write',
+      'Create class ZTEST',
+      'alice',
+      undefined,
       {
         ...config,
-        agent: { ...config.agent, chatCoordinator: 'dialogue' },
+        agent: { ...config.agent, chatCoordinator: 'fixed' },
       },
-    )) as Awaited<ReturnType<typeof buildAgentForDestination>> & {
-      workers: Map<string, ISubAgent>;
-    };
-    expect([...handle.workers.keys()]).toEqual(['executor', 'checker']);
-    const checker = handle.workers.get('checker');
-    if (!checker) throw new Error('checker missing');
-    await bindTestCaller(sessionCaller1);
-    await runWithSessionId(
-      'dialogue-checker',
-      () =>
-        checker.run({
-          caller: sessionCaller1,
-          task: 'Verify the class',
-          sessionId: 'dialogue-checker',
-          externalTools: [
-            {
-              name: 'CreateClass',
-              description: 'write',
-              inputSchema: { type: 'object' },
-            },
-          ],
-        }),
-      [],
-      'alice',
     );
-    expect(checkerScopes).toEqual([true]);
-    expect(callTool).not.toHaveBeenCalled();
+    expect(result.text).toBe(answer);
+    expect(calls).not.toContain('checker');
   });
+
   it.each(['throw', 'invalid'] as const)(
-    'reviews the fallback answer after %s planning and warns about writes without citations',
+    'preserves the fallback answer after %s planning without calling the checker',
     async (failure) => {
       scenario = failure;
       const result = await run(
@@ -484,10 +430,8 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
         .flatMap((call) => call[1] ?? []);
       expect(offered.length).toBeGreaterThan(0);
       expect(offered.some((tool) => isWriteTool(tool.name))).toBe(false);
-      expect(result.text).toContain('UNVERIFIED_WRITE:');
-      expect(result.text).toContain(
-        'SAP created class ZTEST: no write call cited',
-      );
+      expect(result.text).not.toContain('UNVERIFIED_WRITE');
+      expect(calls).not.toContain('checker');
       expect(result.callTool).not.toHaveBeenCalled();
       expect(result.record?.outcome).toBe('answered');
       expect(result.record?.steps.some((s) => s.kind === 'work')).toBe(true);

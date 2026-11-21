@@ -573,7 +573,7 @@ async function executeStepRun(
                 async () => {
                   // An external agent uses this hub as its subagent: the executor
                   // runs alone, no controller. The honesty check the controller's
-                  // NoticeFinalizer gives chat runs here instead, with the same
+                  // Chat collects its own coordinator output, with the same
                   // inputs and the same trailing NOTICE.
                   return runExecutorStep(
                     createAgentProfileSource,
@@ -649,7 +649,7 @@ async function executeStepRun(
     );
     const emptyResult = !/\S/.test(rawContent);
     const reply = emptyResult
-      ? `EMPTY_RESULT on destination "${targetDestination}": The executor finished without a reply. The system state of the step is unknown and must be verified by a separate read step.${r.value.iterations !== undefined ? ` iterations=${r.value.iterations}` : ''}${r.value.toolCallCount !== undefined ? ` toolCallCount=${r.value.toolCallCount}` : ''}${r.value.stopReason !== undefined ? ` stopReason=${r.value.stopReason}` : ''}`
+      ? `EMPTY_RESULT on destination "${targetDestination}": The executor finished without a reply.${r.value.iterations !== undefined ? ` iterations=${r.value.iterations}` : ''}${r.value.toolCallCount !== undefined ? ` toolCallCount=${r.value.toolCallCount}` : ''}${r.value.stopReason !== undefined ? ` stopReason=${r.value.stopReason}` : ''}`
       : rawContent;
     const content = notice ? `${notice}\n${reply}` : reply;
     return mcpUsageResult(content, wireUsage, emptyResult);

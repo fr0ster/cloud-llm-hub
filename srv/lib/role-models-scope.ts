@@ -56,9 +56,7 @@ export class RoleModelNotAllowedError extends Error {
 export function currentRoleModel(role: RoleName): string | undefined {
   const model =
     settingsScope.getStore()?.[role]?.model ??
-    (role === 'executor' || role === 'checker'
-      ? configuredRoleModel(role)
-      : undefined);
+    (role === 'executor' ? configuredRoleModel(role) : undefined);
   if (model !== undefined && !parseModelAllowlist().has(model))
     throw new RoleModelNotAllowedError(role, model);
   return model;
@@ -123,7 +121,7 @@ export function effectiveRoleModels(
     return model === undefined ? fallback : { model, source: 'user' };
   };
   const workerDefault = (role: 'executor' | 'checker'): EffectiveModel => {
-    const model = configuredRoleModel(role);
+    const model = role === 'executor' ? configuredRoleModel(role) : undefined;
     return model
       ? { model, source: 'config' }
       : { model: null, source: 'coordinator' };

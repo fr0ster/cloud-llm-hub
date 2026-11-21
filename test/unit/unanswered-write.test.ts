@@ -1,6 +1,5 @@
 import { McpClientAdapter } from '@mcp-abap-adt/llm-agent-mcp';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
-import { evaluateDeterministic } from '../../srv/lib/reviewer-core';
 
 function hangingClient(never: Promise<never>) {
   return {
@@ -174,36 +173,5 @@ describe('unanswered() against the real McpClientAdapter', () => {
       trace: { traceId: 'ta-read' },
     } as never);
     expect(rec.unanswered('ta-read')).toHaveLength(0);
-  });
-});
-
-describe('an unanswered write does not satisfy the reviewer', () => {
-  // Controller finding: the placeholder opened at dispatch must not parse as
-  // a successful write, or the reviewer could count a never-answered
-  // CreateClass as created and suppress its own UNVERIFIED_WRITE notice.
-  it('is not read as "created" from the placeholder alone', async () => {
-    const rec = new RecordingMcpClient(
-      hangingClient(new Promise(() => {})) as never,
-    );
-    void rec.callTool('CreateClass', { name: 'ZCL_X' }, {
-      trace: { traceId: 't5' },
-    } as never);
-    await Promise.resolve();
-
-    const verdict = evaluateDeterministic(
-      'The class ZCL_X was created successfully.',
-      rec.getToolRecords('t5'),
-    );
-    expect(verdict.ok).toBe(false);
-    // Ruling 34: the placeholder's content must read correctly through
-    // reviewer-core.ts's `write tool X returned error: <text>` wording — not
-    // as a blank trailing the colon.
-    if (!verdict.ok) {
-      expect(verdict.issues[0]).toMatchObject({
-        kind: 'unverified-write',
-        claimedOp: 'created',
-        reason: 'write tool CreateClass returned error: no answer yet',
-      });
-    }
   });
 });

@@ -45,7 +45,6 @@ import {
 import { ExternalMcp, parseExternalMcp } from '../../srv/lib/external-mcp';
 import { makeHubLlm } from '../../srv/lib/llm-factory';
 import { startProviders } from '../../srv/lib/providers';
-import { ragToolEffect, ragToolNames } from '../../srv/lib/rag-tool-catalogue';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
 import { withRoleModels } from '../../srv/lib/role-models-scope';
 import { WaitIfShortEnough } from '../../srv/lib/throttle-strategy';
@@ -407,7 +406,17 @@ test('dialogue tool-loop offers hub storage to executor and only readback to che
         runWithDialogueRagTools(() =>
           workers.get(name)?.run({
             caller: taskCaller,
-            task: 'Read stored analysis from the hub collection',
+            task:
+              name === 'checker'
+                ? JSON.stringify([
+                    {
+                      claim: 'A source stated the task was complete.',
+                      system: 'source',
+                      target: { scope: 'session', collection: 'task-results' },
+                      evidence: {},
+                    },
+                  ])
+                : 'Read stored analysis from the hub collection',
             history: [],
           }),
         ),
@@ -415,8 +424,6 @@ test('dialogue tool-loop offers hub storage to executor and only readback to che
       'alice',
     );
     const offered = [...new Set(model.tools.flat())].sort();
-    if (name === 'checker') expect(offered).toContain('submit_verdict');
-    else expect(offered).not.toContain('submit_verdict');
     expect(offered).toEqual(
       name === 'executor'
         ? [
@@ -429,18 +436,7 @@ test('dialogue tool-loop offers hub storage to executor and only readback to che
             'record_set_enabled',
             'record_update',
           ].sort()
-        : [
-            ...ragToolNames.filter(
-              (tool) =>
-                ![
-                  'rag_persist',
-                  'collection_delete',
-                  'collection_set_enabled',
-                  'record_delete',
-                ].includes(tool) && ragToolEffect(tool) !== 'write',
-            ),
-            'submit_verdict',
-          ].sort(),
+        : ['submit_verdict'],
     );
   }
   expect(model.messages.join('\n')).toContain(

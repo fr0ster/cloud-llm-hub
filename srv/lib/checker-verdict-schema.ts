@@ -1,76 +1,57 @@
 import { z } from 'zod';
+import { collectionAddress } from './collection-address';
 
-const evidenceClaimSchema = z.object({
-  quote: z.string().min(1),
-  evidence: z.string().min(1),
-  reason: z.string().min(1),
+const text = z.string().min(1);
+const citationSchema = z.strictObject({
+  callId: text.optional(),
+  recordId: text.optional(),
+  quote: text.optional(),
 });
-const identifier = z.string().min(1);
-const citation = {
-  callId: identifier
-    .optional()
-    .describe(
-      'Journal ID of the write call. Omit if no call supports the claim.',
-    ),
-};
-const writeClaimSchema = z.discriminatedUnion('system', [
-  z.object({
-    ...citation,
-    system: z.literal('sap'),
-    operation: z.enum(['created', 'updated', 'deleted', 'activated']),
-    target: z.object({ type: identifier, name: identifier }),
-  }),
-  z.object({
-    ...citation,
-    system: z.literal('rag'),
-    operation: z.enum([
-      'created',
-      'updated',
-      'deleted',
-      'persisted',
-      'enabled',
-      'disabled',
+const claim = { claim: text, evidence: citationSchema };
+export const checkerClaimsSchema = z
+  .array(
+    z.discriminatedUnion('system', [
+      z.strictObject({
+        ...claim,
+        system: z.literal('sap'),
+        target: z.strictObject({ type: text, name: text }),
+      }),
+      z.strictObject({
+        ...claim,
+        system: z.literal('rag'),
+        target: collectionAddress.extend({ record: text.optional() }),
+      }),
+      z.strictObject({
+        ...claim,
+        system: z.literal('source'),
+        target: collectionAddress,
+      }),
     ]),
-    target: z.object({
-      scope: z.enum(['global', 'user', 'session']),
-      collection: identifier,
-      record: identifier.optional(),
-    }),
-  }),
-]);
-export type WriteClaim = z.infer<typeof writeClaimSchema>;
+  )
+  .min(1);
 
-const verdictFields = {
+export type CheckerClaim = z.infer<typeof checkerClaimsSchema>[number];
+
+export const verdictToolSchema = z.strictObject({
   verdict: z.enum(['pass', 'fail']),
-  count: z.number().int().nonnegative().optional(),
-  note: z.string().optional(),
-};
-const claimsDescription =
-  'Claims are required and non-empty when verdict is fail.';
-const claims = z
-  .array(z.union([writeClaimSchema, evidenceClaimSchema]))
-  .describe(claimsDescription);
-export const verdictToolSchema = z.object({
-  ...verdictFields,
-  claims: z.array(evidenceClaimSchema).describe(claimsDescription).optional(),
+  count: z.int().nonnegative().optional(),
+  findings: z
+    .array(
+      z.strictObject({
+        claim: text,
+        status: z.enum(['confirmed', 'refuted', 'unsupported']),
+        evidence: citationSchema,
+        reason: text,
+      }),
+    )
+    .min(1),
 });
-export const verdictSchema = z.discriminatedUnion('verdict', [
-  z.object({
-    ...verdictFields,
-    verdict: z.literal(verdictFields.verdict.enum.pass),
-    claims: claims.optional(),
-  }),
-  z.object({
-    ...verdictFields,
-    verdict: z.literal(verdictFields.verdict.enum.fail),
-    claims: claims.min(1),
-  }),
-]);
-export type CheckerVerdict = z.infer<typeof verdictSchema>;
 
-export const writeReviewVerdictSchema = z
-  .object({
-    ...verdictFields,
-    claims: z.array(writeClaimSchema),
-  })
-  .refine(({ verdict, claims }) => verdict === 'pass' || claims.length > 0);
+export const verdictSchema = verdictToolSchema.refine(
+  ({ verdict, findings }) =>
+    (verdict === 'pass') ===
+    findings.every(({ status }) => status === 'confirmed'),
+  'Pass requires every claim to be confirmed.',
+);
+
+export type CheckerVerdict = z.infer<typeof verdictSchema>;

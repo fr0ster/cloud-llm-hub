@@ -160,7 +160,7 @@ The SmartAgent behind this API has:
 - **RAG**: Retrieval-Augmented Generation with facts, feedback, and state stores
 - **Multi-turn**: Maintains conversation context within a session
 
-**Note *(v6.28+)*:** a response may end with an `UNVERIFIED_WRITE:` line — a soft warning that a claimed write (create/update/activate) wasn't confirmed by the actual tool results. Verify against the system before relying on it; disable via `LLM_AGENT_STEP_REVIEW_ENABLED=false`.
+The coordinator chooses when to verify cited evidence and reports the findings in its answer.
 
 ## Smoke Testing
 
@@ -179,7 +179,7 @@ See `.env.example` for token setup instructions.
 - [MCP Proxy Connection](MCP_CONNECTION.md) - Connecting to MCP Stream-HTTP endpoint
 - [CAP Express Auth](../development/CAP_EXPRESS_AUTH.md) - How auth works on custom routes
 
-`UNVERIFIED_WRITE` notices use deterministic tool-journal checks, with no automatic LLM review of workers or answers. Failed/unanswered write notices and recording placeholders remain. `LLM_AGENT_STEP_REVIEW_ENABLED=false` disables claim-based notices only. Verification checks are explicit coordinator decisions each turn: run a planned check, skip it stating why, or add an unplanned check; user input can require `plan_revise`. Checker failures need exact result quotes and cited supplied evidence (or `none provided`); invalid failures are unusable verdicts for the coordinator to assess, not failures. No tools executed alone is never grounds for fail.
+The coordinator chooses when to verify cited evidence and reports the findings in its answer.
 
 
 ## Session role models and limits

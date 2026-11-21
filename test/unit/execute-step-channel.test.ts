@@ -385,7 +385,7 @@ describe('an unanswered write', () => {
     const result = await step();
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('UNVERIFIED_WRITE: CreateClass');
+    expect(result.content[0].text).toContain('CreateClass');
     expect(result.content[0].text).toContain('was NOT retried');
     expect(harness.events.filter((e) => e === 'pipeline')).toHaveLength(1);
   });
@@ -417,7 +417,7 @@ describe('an unanswered write, thrown from the pipeline', () => {
     const result = await step();
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('UNVERIFIED_WRITE: CreateClass');
+    expect(result.content[0].text).toContain('CreateClass');
     expect(result.content[0].text).toContain('was NOT retried');
     expect(harness.events.filter((e) => e === 'pipeline')).toHaveLength(1);
   });

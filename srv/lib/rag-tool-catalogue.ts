@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { isReadOnlyTools, profileToolAllowed } from '../request-session';
+import { collectionAddress } from './collection-address';
 import {
   allowsReadOnlyEffect,
   isDialogueRagWorker,
@@ -101,16 +102,11 @@ export const ragMcpSchemas = {
     enabled,
   }),
 };
-export const collectionAddress = z
-  .object({
-    scope: z.enum(['session', 'user', 'global']),
-    collection: z
-      .string()
-      .regex(/^(?!.*__)(?:[a-z0-9][a-z0-9_-]*|@skills)$/)
-      .describe('Exact logical collection name, never a physical id'),
-  })
-  .strict();
-export type CollectionAddress = z.infer<typeof collectionAddress>;
+export {
+  type CollectionAddress,
+  collectionAddress,
+} from './collection-address';
+
 const logicalName = z.string().regex(/^(?!.*__)[a-z0-9][a-z0-9_-]*$/);
 const sessionName = logicalName.describe(
   'Logical collection name in this session only',
