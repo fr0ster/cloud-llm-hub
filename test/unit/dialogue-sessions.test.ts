@@ -928,6 +928,53 @@ test.each([
   },
 );
 
+test('dialogue warns about a failed SAP domain create alongside a same-named RAG record', async () => {
+  const { h } = await ready();
+  const traceId = 'rag-final';
+  const answer = 'I created SAP domain ZREQ.';
+  mockFinalAnswer = answer;
+  mockToolRecords.set(traceId, [
+    {
+      call: {
+        id: 'rag',
+        name: 'record_add',
+        arguments: { collection: 'drafts', record: 'ZREQ' },
+      },
+      result: {
+        content: { collection: 'drafts', record: 'ZREQ', created: true },
+      },
+    },
+    {
+      call: {
+        id: 'sap',
+        name: 'CreateDomain',
+        arguments: { domain_name: 'ZREQ' },
+      },
+      result: { content: { success: false, error: 'Domain already exists' } },
+    },
+  ]);
+  jest
+    .mocked(evaluateGated)
+    .mockImplementation(
+      jest.requireActual<typeof import('../../srv/lib/step-reviewer')>(
+        '../../srv/lib/step-reviewer',
+      ).evaluateGated,
+    );
+  await h.session.send('create the domain', { trace: { traceId } });
+  const content = h.session
+    .snapshot()
+    .conversation.find(
+      (message) =>
+        message.role === 'assistant' &&
+        typeof message.content === 'string' &&
+        message.content.includes(answer),
+    )?.content;
+  expect(content).toContain('UNVERIFIED_WRITE:');
+  expect(content).toContain(
+    'CreateDomain returned error: Domain already exists',
+  );
+});
+
 test.each([true, false, 'close'] as const)(
   'late worker evidence reaches the next coordinator review (write: %s)',
   async (write) => {

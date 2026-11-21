@@ -17,6 +17,7 @@ import {
   withDialogueRagTools,
 } from '../../srv/lib/dialogue-rag-tools';
 import { longSessions } from '../../srv/lib/long-session';
+import { renderNotice } from '../../srv/lib/notify-policy';
 import {
   buildRagToolSchemas,
   ragDescriptions,
@@ -25,6 +26,7 @@ import {
   ragToolNames,
 } from '../../srv/lib/rag-tool-catalogue';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
+import { evaluateWriteClaims } from '../../srv/lib/write-claim-review';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import {
   runWithProfileTools,
@@ -685,6 +687,82 @@ test('explicit coordinator addresses do not shadow, persistence accepts equal na
       },
     });
     expect(listed.ok && listed.value.content).not.toContain('__');
+  });
+});
+
+test('the real coordinator persistence result supplies evidence to the write reviewer', async () => {
+  const { registry, client, inner } = setup();
+  const coordinator = new RecordingMcpClient(
+    new LocalRagMcpClient(inner, () => registry, true),
+  );
+  await inSession(async () => {
+    const name = 'business-requirements';
+    const from = { scope: 'session', collection: 'drafts' };
+    const to = { scope: 'user', collection: 'project' };
+    const options = { trace: { traceId: 'persist' } };
+    await client.callTool('collection_create', {
+      name: from.collection,
+      scope: from.scope,
+    });
+    await client.callTool('record_add', {
+      collection: from.collection,
+      record: name,
+      text: 'Full requirements',
+    });
+    await coordinator.callTool(
+      'rag_persist',
+      { from, to, records: [name] },
+      options,
+    );
+    const read = await coordinator.callTool(
+      'rag_read',
+      { collection: to, id: name },
+      options,
+    );
+    expect(read).toMatchObject({
+      value: { content: expect.stringContaining('Full requirements') },
+    });
+    const evidence = coordinator.getToolJournal(options.trace.traceId);
+    expect(evidence.map((record) => record.call.name)).toEqual([
+      'rag_persist',
+      'rag_read',
+    ]);
+    expect(
+      renderNotice(
+        evaluateWriteClaims(
+          [
+            {
+              system: 'rag',
+              operation: 'persisted',
+              target: {
+                scope: 'user',
+                collection: to.collection,
+                record: name,
+              },
+              callId: evidence[0].call.id,
+            },
+          ],
+          evidence,
+          () => false,
+        ),
+      ),
+    ).toBe('');
+    expect(
+      renderNotice(
+        evaluateWriteClaims(
+          [
+            {
+              system: 'sap',
+              operation: 'created',
+              target: { type: 'domain', name: 'ZREQ' },
+              callId: evidence[0].call.id,
+            },
+          ],
+          evidence,
+          (name) => name === 'CreateDomain',
+        ),
+      ),
+    ).toContain('UNVERIFIED_WRITE:');
   });
 });
 

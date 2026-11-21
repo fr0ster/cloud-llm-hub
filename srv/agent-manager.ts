@@ -3541,6 +3541,15 @@ export async function buildAgentForDestination(
 
   if (!rawExecutor) throw new Error('Executor agent was not built');
   const profileRunner = destinationProfileRunner(recMcp, toolsRag, config);
+  const resolveChecker = async (options: CallOptions) => {
+    options.signal?.throwIfAborted();
+    const source = createAgentProfileSource(getRequestUserId() ?? 'anonymous');
+    const resolved = await source.resolveWorker('checker', options);
+    if (!resolved.ok) throw new Error('Checker profile unavailable');
+    if (resolved.value.profile.result !== 'verdict')
+      throw new Error('Checker profile must have result: verdict');
+    return resolved.value;
+  };
   const workers = new Map<string, ISubAgent>([
     ['executor', executorWorker],
     [
@@ -3554,17 +3563,10 @@ export async function buildAgentForDestination(
             config,
             input,
             async (options) => {
-              options.signal?.throwIfAborted();
-              const source = createAgentProfileSource(
-                getRequestUserId() ?? 'anonymous',
-              );
-              const resolved = await source.resolveWorker('checker', options);
-              if (!resolved.ok) throw new Error('Checker profile unavailable');
-              if (resolved.value.profile.result !== 'verdict')
-                throw new Error('Checker profile must have result: verdict');
+              const resolved = await resolveChecker(options);
               options.signal?.throwIfAborted();
               const worker = await profileRunner.createWorker(
-                resolved.value,
+                resolved,
                 options,
               );
               if (!worker.ok) throw new Error(worker.error.message);
@@ -3577,7 +3579,6 @@ export async function buildAgentForDestination(
       },
     ],
   ]);
-  const noticeFinalizer = new NoticeFinalizer(recMcp);
   if (config.agent.chatCoordinator !== 'fixed') {
     // Resolve at call time: the destination and controller are shared across requests.
     const coordinatorLlm = async (): Promise<ILlm> => {
@@ -3615,7 +3616,41 @@ export async function buildAgentForDestination(
         }),
       ),
       workers,
-      finalizer: noticeFinalizer,
+      finalizer: new NoticeFinalizer(recMcp, {
+        async checker(signal) {
+          const { profile } = await resolveChecker({ signal });
+          const requested = currentRoleModel('checker');
+          const fallback = getAgentConfig().llm.model;
+          const selected = resolveAgentModel(
+            { requested, profile: profile.model },
+            parseModelAllowlist(),
+            fallback,
+          );
+          if (
+            !selected.ok &&
+            (requested || profile.model || process.env.LLM_AGENT_MODEL)
+          )
+            throw new Error(selected.error);
+          return {
+            llm: await getOrCreateSharedLlms(
+              {
+                ...config,
+                llm: {
+                  ...config.llm,
+                  model: selected.ok ? selected.value : fallback,
+                },
+              },
+              'chat',
+              'checker',
+            ).mainLlm,
+            systemPrompt: profile.systemPrompt,
+          };
+        },
+        isSapWriteTool: (name) =>
+          getToolExpositionMap().has(name) &&
+          !isRagTool(name) &&
+          !isReadOnlyTool(name, getToolAnnotations().get(name)),
+      }),
       runRecords: adaptiveRunRecordStore(getRunRecordStore()),
       // Only explicit limits reach the handler; unset means no limit.
       budget: {
@@ -3641,7 +3676,7 @@ export async function buildAgentForDestination(
       // interpreter throw PLAN_INVALID.
       workers: new Map([['executor', executorWorker]]),
       // Reads the SAME recMcp the worker was built with.
-      finalizer: noticeFinalizer,
+      finalizer: new NoticeFinalizer(recMcp),
       // errorStrategy omitted -> AbortErrorStrategy default;
       // reviewer omitted -> no plan-gate (NoopReviewStrategy default).
     });

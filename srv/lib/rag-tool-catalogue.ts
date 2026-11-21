@@ -296,6 +296,9 @@ const ragToolEffects = {
 export function ragToolEffect(name: RagMcpTool) {
   return ragToolEffects[name];
 }
+export function isRagWriteTool(name: string): boolean {
+  return isRagTool(name) && ragToolEffect(name) !== 'read';
+}
 export function eligibleRagTools(coordinator = false): RagMcpTool[] {
   return ragToolNames.filter(
     (name) =>

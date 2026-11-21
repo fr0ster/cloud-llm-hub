@@ -1150,7 +1150,7 @@ export function registerRagRoutes(
           enabled,
         );
         if (!result.updated) return error(res, 404, 'Source file not found');
-        json(res, 200, result);
+        json(res, 200, { updated: result.updated });
       } catch (err) {
         failure(res, err, 400);
       }

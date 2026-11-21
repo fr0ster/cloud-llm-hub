@@ -219,6 +219,9 @@ const responseSchema = z.object({
   next: z.number().optional(),
   text: z.string().optional(),
   updated: z.number().optional(),
+  collection: z.string().optional(),
+  enabled: z.boolean().optional(),
+  recordIds: z.array(z.string()).optional(),
 });
 const body = async (result: ReturnType<typeof call>) =>
   responseSchema.parse(JSON.parse((await result).content[0].text));
@@ -714,7 +717,12 @@ test('record mutations affect search and all chunks of a selected upload only', 
         uploadId: 'upload',
       }),
     ),
-  ).toMatchObject({ updated: 2 });
+  ).toMatchObject({
+    updated: 2,
+    collection: cid,
+    recordIds: ['a', 'b'],
+    enabled: false,
+  });
   expect((await registry.getDocument(cid, 'a'))?.enabled).toBe(false);
   expect((await registry.getDocument(cid, 'c'))?.enabled).toBe(true);
 });

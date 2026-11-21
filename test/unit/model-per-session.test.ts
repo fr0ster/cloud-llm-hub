@@ -24,10 +24,12 @@ import { withCoordinatorModel } from '../../srv/lib/coordinator-model';
 import { MemoryDialogueStore } from '../../srv/lib/dialogue-store';
 import { runExecutorStep } from '../../srv/lib/executor-step';
 import type { HubLlmConfig } from '../../srv/lib/llm-factory';
+import { withRoleModels } from '../../srv/lib/role-models-scope';
 import { handleChatCompletions, handleModels } from '../../srv/openai-handler';
 
 const mockCalls: string[] = [];
 const mockOfferedTools: string[][] = [];
+const mockWriteReviewCalls: { sessionId?: string; model: string }[] = [];
 let mockLoop = false;
 let mockRolePlan = false;
 // Model selection does not exercise discovery. Do not leave startup retry
@@ -39,7 +41,7 @@ jest.mock('../../srv/lib/llm-factory', () => ({
   ...jest.requireActual('../../srv/lib/llm-factory'),
   makeHubLlm: async (config: HubLlmConfig): Promise<ILlm> => ({
     model: config.model,
-    chat: async (messages, tools) => {
+    chat: async (messages, tools, options) => {
       if (
         messages.some((message) =>
           message.content?.includes('Classify the last user request'),
@@ -54,6 +56,31 @@ jest.mock('../../srv/lib/llm-factory', () => ({
         };
       mockOfferedTools.push((tools ?? []).map((tool) => tool.name));
       mockCalls.push(config.model ?? '');
+      if (
+        tools?.some((tool) => tool.name === 'submit_verdict') &&
+        messages.some((message) =>
+          message.content?.includes('Final response write review'),
+        )
+      ) {
+        mockWriteReviewCalls.push({
+          sessionId: options?.sessionId,
+          model: config.model ?? '',
+        });
+        return {
+          ok: true,
+          value: {
+            content: '',
+            toolCalls: [
+              {
+                id: 'write-review',
+                name: 'submit_verdict',
+                arguments: { verdict: 'pass', claims: [] },
+              },
+            ],
+            finishReason: 'tool_calls',
+          },
+        };
+      }
       if (mockLoop && mockCalls.length <= 35)
         return {
           ok: true,
@@ -399,44 +426,60 @@ test.each(
       new ExpositionFilteringRag(new InMemoryRag()),
       { ...config, agent: { ...config.agent, chatCoordinator: coordinator } },
     );
-    const agents = [
-      withRequestModel(base.agent, 'A'),
-      withRequestModel(base.agent, 'B'),
-      base.agent,
+    const sessions = [
+      { agent: withRequestModel(base.agent, 'A'), model: 'A', checker: 'B' },
+      { agent: withRequestModel(base.agent, 'B'), model: 'B', checker: 'A' },
+      { agent: base.agent, model: 'worker-default', checker: undefined },
     ];
     mockCalls.length = 0;
+    mockWriteReviewCalls.length = 0;
+    const sessionId = (index: number) =>
+      `request-${coordinator}-${stream}-${index}`;
     await Promise.all(
-      agents.map(async (agent, index) => {
-        const options = {
-          ...(await bindTestCaller({
-            ...taskCaller,
-            sessionId: `request-${coordinator}-${stream}-${index}`,
-          })),
-        };
-        if (stream) {
-          const chunks: string[] = [];
-          for await (const result of agent.streamProcess('Hello', options)) {
-            expect(result.ok).toBe(true);
-            if (result.ok) chunks.push(result.value.content);
-          }
-          expect(chunks.join('')).toContain(
-            ['A', 'B', 'worker-default'][index],
-          );
-        } else {
-          const result = await agent.process('Hello', options);
-          expect(result.ok).toBe(true);
-          if (result.ok)
-            expect(result.value.content).toContain(
-              ['A', 'B', 'worker-default'][index],
-            );
-        }
+      sessions.map(async ({ agent, model, checker }, index) => {
+        const options = await bindTestCaller({
+          ...taskCaller,
+          sessionId: sessionId(index),
+        });
+        await withRoleModels(
+          checker ? { checker: { model: checker } } : {},
+          async () => {
+            if (stream) {
+              const chunks: string[] = [];
+              for await (const result of agent.streamProcess(
+                'Hello',
+                options,
+              )) {
+                expect(result.ok).toBe(true);
+                if (result.ok) chunks.push(result.value.content);
+              }
+              expect(chunks.join('')).toBe(model);
+            } else {
+              const result = await agent.process('Hello', options);
+              expect(result.ok).toBe(true);
+              if (result.ok) expect(result.value.content).toBe(model);
+            }
+          },
+        );
       }),
     );
     expect(mockCalls).toEqual(
       expect.arrayContaining(['A', 'B', 'worker-default']),
     );
-    if (coordinator === 'adaptive') expect(mockCalls).toHaveLength(3);
+    if (coordinator === 'adaptive') {
+      expect(mockCalls).toHaveLength(6);
+      expect(mockWriteReviewCalls).toHaveLength(sessions.length);
+      expect(mockWriteReviewCalls).toEqual(
+        expect.arrayContaining(
+          sessions.map(({ checker }, index) => ({
+            sessionId: sessionId(index),
+            model: checker ?? 'worker-default',
+          })),
+        ),
+      );
+    }
     mockCalls.length = 0;
+    mockWriteReviewCalls.length = 0;
     await base.agent.process('Hello again', {
       caller: taskCaller,
       sessionId: taskCaller.sessionId,
@@ -444,6 +487,10 @@ test.each(
     expect(mockCalls).toContain('worker-default');
     expect(mockCalls).not.toContain('A');
     expect(mockCalls).not.toContain('B');
+    if (coordinator === 'adaptive')
+      expect(mockWriteReviewCalls).toEqual([
+        { sessionId: taskCaller.sessionId, model: 'worker-default' },
+      ]);
   },
 );
 
