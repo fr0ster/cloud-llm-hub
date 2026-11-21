@@ -353,7 +353,7 @@ graph TD
 | **Anthropic Handler** | `anthropic-handler.ts` | `POST /v1/messages` — Anthropic Messages API, translated to the SmartAgent pipeline via `getSmartAgent`; enables Claude CLI via `ANTHROPIC_BASE_URL`. **Primary** agent entry point. |
 | **Agent Service** | `agent-service.ts` + `.cds` | CAP service annotated `@path: 'agent'` (mounted at `/odata/v4/agent/`). Exposes `GetHistory()`, `ClearHistory()`, `Health()`. `Health` delegates to `agent-manager.ts` via `getSmartAgent` to probe the LLM; `GetHistory` returns `[]` and `ClearHistory` is a static-success stub. Starts no pipeline (see §1). |
 | **Agent Manager** | `agent-manager.ts` | Creates SmartAgent with RAG pipeline via SmartAgentBuilder. Manages per-destination state (each destination's own `McpClientAdapter`). The **tool RAG is a single shared corpus loaded once** from the build step's output (`sharedToolsRag`, from the destination-independent `HandlerExporter`) and reused by every destination; the embedder and facts/feedback/state RAG stores are likewise shared. Background + on-demand **initialization** for all destinations (no privileged primary; the tool corpus is loaded once, not per destination); requests wait for a destination via `ensureDestinationInit`. LLM provider is configurable via `LLM_AGENT_PROVIDER` — supports `sap-ai-sdk` (default), `openai` (any OpenAI-compatible API via `baseURL`), `anthropic`, and `deepseek`. Builds the dialogue planner and wires the adaptive or fixed chat coordinator and fixed answer forwarding: `buildAgentForDestination` + `buildExecutorWorker` (v6.28+). Consumed by `agent-mcp.ts`, `openai-handler.ts`, `anthropic-handler.ts`, and `agent-service.ts` (its `Health` probe only). |
-| **Write journal and checks** | `lib/{recording-mcp-client,tool-journal,checker-verdict}.ts` | `[actions]` shows SAP and RAG operations, targets, outcomes and call ids. The coordinator delegates checks explicitly. |
+| **Write journal and checks** | `lib/{recording-mcp-client,tool-journal,checker-verdict}.ts` | `[actions]` shows SAP, RAG and user MCP writes with their outcomes and call ids. The coordinator delegates cited checks explicitly. |
 | **Agent Config** | `agent-config.ts` | Singleton that assembles runtime config from `LLM_AGENT_*` env vars: provider/auth (`LLM_AGENT_PROVIDER`, `LLM_AGENT_API_KEY`, `LLM_AGENT_BASE_URL`, `LLM_AGENT_RESOURCE_GROUP`), model params (`LLM_AGENT_MODEL`, `LLM_AGENT_TEMPERATURE`, `LLM_AGENT_MAX_TOKENS`), agent behaviour (`LLM_AGENT_MODE`, `LLM_AGENT_MAX_ITERATIONS`, `LLM_AGENT_RAG_TYPE`, `LLM_AGENT_RAG_QUERY_K`, `LLM_AGENT_HISTORY_RECENCY_WINDOW`), and MCP wiring (`LLM_AGENT_MCP_DESTINATION`, `LLM_AGENT_MCP_ENDPOINT`). Also reads the AI Core service binding from `VCAP_SERVICES`. See §12 for per-var semantics. |
 | **Auth Service** | `auth.ts` + `.cds` | Standalone CAP OData service annotated `@path: 'auth'` (mounted at `/odata/v4/auth/`). `CheckAuth()` returns the caller's identity, `CheckRoles(required)` reports which roles they hold — a **diagnostic/introspection endpoint** clients can call directly. It is **not** in the `/mcp/*` or `/v1/*` request path — those are gated by `server.ts`'s `requireMcpRole` middleware (`user.is()`), not by this service. |
 | **Connection Factory** | `connections/connectionFactory.ts` | Decision: `destinationName` → `CloudSdkAbapConnection`; no destination → the direct connector for the DECLARED system type (`lib/system-type.ts`, default `onprem`): `cloud` → `AdtCloudConnector` + `CloudHttpTransport`, otherwise `AdtOnPremConnector` + `OnPremHttpTransport`. The credential follows the auth type, from `@mcp-abap-adt/auth-providers`: Basic → `BasicAuthProvider`, JWT → `TokenAuthProvider.fixed`; any other auth type throws. |
@@ -691,7 +691,7 @@ graph LR
 
 ## 7. Request Lifecycle — Agent / LLM Flow
 
-Each tool search asks `ToolQueryAnalyzer` to translate and classify its query. The analyzer uses one classifier-model call and up to six recent user or assistant messages (500 characters each) as context. Matching queries can share valid or pending analysis when the context and quota scope also match. A confident negative suppresses MCP tools and skills for that search. Short queries, uncertain results, errors and cancellation keep tools. Hard mode, delegated `execute_step` and `LLM_AGENT_TOOL_GATE=off` bypass the gate and still use the translation. Analysis waits for completion or caller cancellation.
+Each tool search asks `ToolQueryAnalyzer` to translate and classify its query. The analyzer uses one classifier-model call and the full user and assistant messages supplied as context. Matching queries can share valid or pending analysis when the context and quota scope also match. A confident negative suppresses MCP tools and skills for that search. Short queries, uncertain results, errors and cancellation keep tools. Hard mode, delegated `execute_step` and `LLM_AGENT_TOOL_GATE=off` bypass the gate and still use the translation. Analysis waits for completion or caller cancellation.
 
 
 > This is the flow through the **primary** agent surfaces — `/mcp/agent/stream/http` (`execute_step`), `/v1/chat/completions`, `/v1/messages`. The two `/v1/*` handlers build their per-request connection via `establishRequestConnection` (`request-connection.ts`); `/mcp/agent/stream/http` builds its own via the local `buildConnectionForDestination` in `agent-mcp.ts`. All three then call `getSmartAgent` directly, enter the per-request ALS scope through `runWithRequestConnection` (exported from `agent-manager.ts`), then the chat surfaces converge on the selected chat coordinator shown in Step 4, and `execute_step` on its executor (Step 4 explains why).
@@ -805,7 +805,7 @@ Explicit close and TTL expiry stop the dialogue, suppress further event turns, c
 
 Chat delivers pending outbox messages before the new reply, regardless of event subscribers, with blank-line separators and no `**Planner:**` prefix. Empty or `NO_MESSAGE` replies create no message ID or empty paragraph. A streaming request whose turn leaves a plan then follows the outbox on the same response after releasing session and pipeline admission. Follow sends pending messages not already carried by that response in outbox order. It checks stops at start and on settled turns, after outbox writes: done, waiting for the user, or idle can stop only with no active turn or queued input, and after pending messages have been sent. Idle additionally requires an active plan with no running tasks or ready steps. Ordinary replies without a plan do not follow.
 
-Follow also stops on disconnect, supersession by a new request in the same session, or the positive-integer `LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS` limit (default 1800000 ms from follow start). The limit note is exactly `still running: <done> of <total> steps done`, or `still running` when there are no steps. Supersession writes `A new message arrived; the work continues in its response.` These stops end the response without cancelling background work.
+Follow has no duration deadline. The response ends when the dialogue settles, the client disconnects, or a new request takes over delivery in the same session. On supersession, the previous stream emits `A new message arrived; the work continues in its response.` The background task continues after disconnect or supersession.
 
 Transient `planner` SSE events report tools selected/available and executed tool calls for the current user turn, without persistence or replay.
 
@@ -821,7 +821,7 @@ A worker-local async scope observes RecordingMcpClient, embedded agent-manager M
 
 Session observers receive activity and source-labelled turn events. Chat streams forward these as comments during planner execution and background follow. The WebUI renders foreign requests as user bubbles and shows each active task's current action and idle minutes, refreshed every 15 seconds. A five-minute authenticated ping keeps the approuter session alive while work is visible or a chat stream is open.
 
-`GET /v1/session/events` is a read-only view for the authenticated long session (404 without an owned session, 409 outside dialogue mode). It sends the current `tasks` snapshot and plan, then retained complete messages, including confirmed messages. Messages carry `id: <messageId>` and `event: message`; live plans/tasks use `plan`/`task` events. `Last-Event-ID` replays retained messages after that ID; an absent or unknown cursor replays all retained messages. Internal settled events are not sent. Multiple tabs can observe the same messages without affecting chat delivery. The deprecated `POST /v1/session/events/ack` route retains ownership/mode checks and returns 204 without changing state, for compatibility with old tabs.
+`GET /v1/session/events` opens an event stream for the authenticated long session. Dialogue observers receive the current `tasks` snapshot and plan, then retained complete messages, including confirmed messages. Messages carry `id: <messageId>` and `event: message`. Live plans and tasks use `plan` and `task` events. `Last-Event-ID` replays retained messages after that ID, or all retained messages if the cursor is absent or unrecognized. Multiple tabs can observe messages without affecting chat delivery. An opted-in user MCP executor can subscribe in any coordinator mode. Outside dialogue mode, an observer without executor parameters receives 409. The deprecated `POST /v1/session/events/ack` retains ownership and mode checks and returns 204 without changing state.
 
 Every 15 seconds the events channel writes `: heartbeat` and touches the long session. Lifecycle touches refresh the dialogue row's savedAt at most once per 60 seconds. Running dialogue work also holds the session against inactivity expiry; releasing the hold touches the session so its TTL starts from that activity. Closing a browser tab disconnects its subscription; explicit session close or expiry ends work.
 
@@ -1531,12 +1531,12 @@ Trust is ordered by LEVEL first (system > MCP > informational), then GROUP withi
 | Level / Group | session | user | global |
 | --- | --- | --- | --- |
 | system (prompt, base skills, corrections) | 5.0 (reserved) | 4.9 (`correction`) | 4.8 (`system`) |
-| MCP (tool results) | 4.5 (reserved) | 4.4 (`client`) | 4.3 (`target`, built-in ABAP/SAP MCP); 4.2 (`docs`, docs MCP) |
+| MCP (tool results) | 4.1 (`user-mcp`), 4.5 (reserved) | 4.4 (`client`) | 4.3 (`target`, built-in ABAP/SAP MCP), 4.2 (`docs`, docs MCP) |
 | informational (collection records) | 4.0 (`session`) | 3.5 (`user`) | 3.0 (`global`) |
 
 Session system (5.0) and session MCP (4.5) have no producers yet. Deploy-configured ABAP and docs MCP belong to the global group. `client` describes results of tools supplied by the client in its own request, in the user group. It is accepted in deployment defaults and profile maps for completeness. The OpenAI and Anthropic request paths register validated client tool definitions in request scope. Replayed results receive `[source: client:<tool-name>; trust 4.4]` wherever the existing model-facing tool-message formatter applies trust tags; profile and deployment overrides apply. Unknown tools and hub orchestration results remain untagged. Registered ABAP and docs MCP ownership takes precedence over client names.
 
-An **assistant** is the future memory-and-learning entity. An **agent** performs a role described by a **profile** within a **pipeline**. Each role has its own profile trust map; informational trust resolves record override, collection/source override, profile class map, deployment defaults, then built-in defaults (`correction=4.9,system=4.8,client=4.4,target=4.3,docs=4.2,session=4,user=3.5,global=3`). Informational presets use class `user`; session recall and planner memory use `session`. Embedded SAP/ABAP tool results use `target`; external docs MCP results use `docs`. Global preset prompts and base skills use `system`. User profile copies and corrective skills (`kind: correction`) use `correction`. Corrections outrank their base; instruction classes outrank informational records; MCP results outrank session information. Explicit admin, user and profile overrides retain precedence.
+An **assistant** is the future memory-and-learning entity. An **agent** performs a role described by a **profile** within a **pipeline**. Each role has its own profile trust map; informational trust resolves record override, collection/source override, profile class map, deployment defaults, then built-in defaults (`correction=4.9,system=4.8,client=4.4,target=4.3,docs=4.2,user-mcp=4.1,session=4,user=3.5,global=3`). Informational presets use class `user`; session recall and planner memory use `session`. Embedded SAP/ABAP tool results use `target`; external docs MCP results use `docs`. Global preset prompts and base skills use `system`. User profile copies and corrective skills (`kind: correction`) use `correction`. Corrections outrank their base; instruction classes outrank informational records; MCP results outrank session information. Explicit admin, user and profile overrides retain precedence.
 
 `TrustResolver` resolves current metadata on each read, including already-built agents. Collection and record overrides persist with bounded audit history (last 20 changes); the internal `h_trust` store holds informational skill source/record overrides. Writes invalidate only the affected provider cache entry. Defaults are not persisted on reads. Caller metadata cannot set informational trust or impersonate provenance.
 
@@ -1565,6 +1565,84 @@ trust overrides preceding the active profile's docs map and deployment defaults.
 Raw MCP results stay raw; the tool loop adds source/trust envelopes for the model.
 
 Dialogue keeps the delivery gate for check steps in the current plan. The coordinator can revise the plan to remove a check it scheduled. It passes cited claims in `delegate_task.context` using call ids from `[actions]` and record ids from task notices.
+
+### Session tool bridge for user MCP
+
+The hybrid design approved on 2026-11-20 lets an authenticated user add their
+own system tools to a long session. The browser executes remote HTTPS MCP when
+the server permits the browser origin and can authenticate there. The local
+companion covers local and stdio MCP and can also handle remote servers whose
+browser access is blocked. Both use the same outbound SSE and HTTP bridge to
+the hub and keep MCP credentials on the executor. The approved companion is an
+`npx` package in the `llm-agent` monorepo, reusing `llm-agent-mcp` and released
+with `llm-agent`. Browser settings, the browser MCP client, and the companion
+are later delivery steps. Their configuration can follow `.mcp.json`.
+
+The hub holds each catalogue, executor stream, and pending call in the owning
+long session's memory. Only the analyst, executor, and checker can receive user
+MCP tools. A registration may select any subset of those roles and defaults to
+all three. The coordinator and plan author retain their configured docs MCP
+access. A server exposes reads by default and must opt into writes explicitly.
+The bridge treats a tool as read-only only when it declares `readOnlyHint: true`
+and lacks a positive `destructiveHint`. Host profile ceilings, including checker
+read-only scope, still apply. Dispatch checks the live catalogue and role again.
+Verdict profiles use the evidence supplied in their brief and expose
+`submit_verdict` to the model.
+The public namespace is `user__<server>__<tool>`, and retrieval records use the typed
+`tool:` key. Per-server direct, RAG and automatic selection follow the external
+MCP count policy. Tool vectors are held in the session. Failed ranked searches
+use the shared tool-search health guard for infrastructure errors. A failed
+private tool embedding returns `USER_MCP_CATALOGUE_INVALID` with the server and
+tool name to the originating session. If the embedder rejects a private
+document, the hub checks the same embedding operation with a fixed probe text.
+Shared embedder and vector-store outages affect hub readiness. Recovery probes
+for user MCP exercise the embedder with fixed text. Authenticated registration
+and removal remain available during an outage.
+Model-facing results carry the `user-mcp` trust class, below target and docs by
+default. Their content is external data and gives no instructions to the agent.
+
+A request or deferred worker uses the registration belonging to its originating
+authenticated HTTP chat session. Each executor generates a stable opaque ID,
+stores it in browser storage or companion configuration or state, and provides
+it when registering or subscribing. The hub sends each call to the active
+stream for the server and transport. It records the registration generation at
+dispatch and the executor ID on delivery. A server without a connected executor
+returns `USER_MCP_UNAVAILABLE` immediately. If an active stream cannot send a
+write, it stays pending for its first delivery to the next executor. Removing
+a registration or replacing it in a way that disallows a pending call settles
+the call immediately. A revoked read or undelivered write returns
+`USER_MCP_REVOKED`. A revoked delivered write returns `USER_MCP_OUTCOME_UNKNOWN`
+because it may have been applied.
+Reconnects replay still-permitted calls with the same call IDs and
+`replay: true`. A read may be replayed to any executor for that server and
+transport. The bridge replays a delivered write only to the executor ID that
+received it. Executors record the call ID before executing a write and use that
+record to return the stored result or report an unknown outcome on replay.
+When a different executor registers or subscribes for the same server and
+transport, the bridge immediately settles outstanding delivered writes with
+`USER_MCP_OUTCOME_UNKNOWN` because they may have been applied. The bridge sends
+no further deliveries for those calls and rejects late results with
+`USER_MCP_CALL_NOT_FOUND`. Pending calls also settle on executor reply, session
+closure, or request/task cancellation. Closure or cancellation after delivery
+settles a write with `USER_MCP_OUTCOME_UNKNOWN`. These writes appear as
+`unconfirmed` in the coordinator's `[actions]` journal. The executor can
+unregister during a graceful disconnect. Closing the session discards all
+registrations and settles pending calls before draining active work. Restarted
+sessions begin with an empty catalogue. Call logs contain the tool name, byte
+counts and duration.
+
+Agent MCP is an exception to tool parity across connections. It has no user MCP
+executor for its requests or dialogue tasks, so the channel omits registered
+session tools. Workers continue to reject ad-hoc client tool definitions and
+result replay. See [the session user MCP API](API_REFERENCE.md#session-user-mcp)
+for the executor protocol.
+
+The analyst reads the user's request and answers the questions in its brief.
+It gathers evidence through SAP read tools, docs MCP, and user MCP, and stores
+the evidence in session RAG. Its report quotes and answers each question with
+record IDs, describes the source and contents of each gathered record, and
+reports unsuccessful searches. A brief with no questions receives the same
+report for its stated goal.
 
 ### Deploy defaults for session roles and limits
 

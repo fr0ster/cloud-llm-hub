@@ -21,7 +21,6 @@ import {
 } from './agent-profile-tools';
 import { runWithVerdictTools } from './checker-verdict-tool';
 import { parseModelAllowlist, resolveAgentModel } from './model-policy';
-import { withCompactRagSearch } from './rag-search-context';
 import {
   currentRoleModel,
   RoleModelNotAllowedError,
@@ -34,8 +33,8 @@ export interface AgentProfileRunnerHost {
   prepareTools?(role: string, options?: CallOptions): Promise<void>;
   plannerKnowledgeTools?(): string[];
   acceptsPolicyName?: (name: string) => boolean;
-  catalogue(): readonly RegisteredProfileTool[];
-  grants(): ReadonlySet<string>;
+  catalogue(role?: string): readonly RegisteredProfileTool[];
+  grants(role?: string): ReadonlySet<string>;
   buildWorker(
     profile: WorkerProfile,
     preamble: string,
@@ -66,8 +65,8 @@ export class AgentProfileRunner implements IAgentProfileRunner {
   ): <T>(run: () => T) => T {
     const permissions = effectiveProfileTools({
       acceptsPolicyName: this.host.acceptsPolicyName,
-      catalogue: this.host.catalogue(),
-      grants: this.host.grants(),
+      catalogue: this.host.catalogue(profile.name),
+      grants: this.host.grants(profile.name),
       result: profile.result,
       policy: profile.tools,
       parent,
@@ -131,7 +130,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
     const parent = currentProfileTools();
     try {
       await this.host.prepareTools?.(profile.name, options);
-      const catalogue = this.host.catalogue();
+      const catalogue = this.host.catalogue(profile.name);
       effectiveProfileTools({
         acceptsPolicyName: this.host.acceptsPolicyName,
         catalogue,
@@ -204,7 +203,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
       if (!this.host.buildPlanAuthor)
         throw new Error('Plan author unavailable');
       await this.host.prepareTools?.('planner', options);
-      const bind = this.bind({
+      const scope = this.bind({
         name: 'planner-author',
         trust: input.trust,
         description: '',
@@ -220,8 +219,6 @@ export class AgentProfileRunner implements IAgentProfileRunner {
           ],
         },
       });
-      const scope = <T>(run: () => T): T =>
-        withCompactRagSearch(() => bind(run));
       const build = this.host.buildPlanAuthor;
       const agent = await scope(() => build(input, options));
       options?.signal?.throwIfAborted();

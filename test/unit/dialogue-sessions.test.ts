@@ -47,6 +47,12 @@ import {
 import { systemToolTrust } from '../../srv/lib/system-tool-trust';
 import type { TrustResolver } from '../../srv/lib/trust-resolver';
 import { sumPlannerUsage } from '../../srv/lib/usage-wire';
+import {
+  UserMcpBridge,
+  type UserMcpCall,
+  userMcpRegistration,
+} from '../../srv/lib/user-mcp-bridge';
+import { userMcpClient } from '../../srv/lib/user-mcp-tools';
 import { reportWorkerActivity } from '../../srv/lib/worker-activity';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { fixtureTrustResolver } from './helpers/agent-profiles';
@@ -942,6 +948,101 @@ test('ttl cooperatively stops tasks, closes connections, forgets credentials, de
   expect(mockPlannerTurns).toHaveLength(turns);
   await expect(h.session.send('after')).rejects.toThrow('closed');
   expect(mockRelease).toHaveBeenCalledTimes(1);
+});
+
+test('a deferred dialogue worker can call the authenticated turn’s registered MCP tool', async () => {
+  const registry = new LongSessionRegistry(
+    { ttlMs: 100, maxSessions: 1, maxPerUser: 1, queueLength: 0 },
+    { onClose: async () => {} },
+  );
+  setLongSessionsForTest(registry);
+  const session = registry.open(ragCaller.userId, { key: ragCaller.sessionId });
+  if ('refused' in session) throw new Error(session.refused);
+  const bridge = new UserMcpBridge();
+  session.userMcp = bridge;
+  const name = 'user__documents__lookup';
+  const data = 'Session document result';
+  bridge.register(
+    userMcpRegistration.parse({
+      servers: [
+        {
+          name: 'documents',
+          transport: 'companion',
+          roles: ['executor'],
+          tools: [
+            {
+              name: 'lookup',
+              description: 'Look up a document',
+              inputSchema: { type: 'object' },
+              annotations: { readOnlyHint: true },
+            },
+          ],
+        },
+      ],
+    }).servers,
+  );
+  const send = jest.fn((call: UserMcpCall) =>
+    bridge.answer(call.callId, { result: { content: data } }),
+  );
+  bridge.subscribe('companion', ['documents'], {
+    executorId: 'companion-a',
+    send,
+    close: () => {},
+  });
+  const llm: ILlm = {
+    model: 'fake',
+    async chat(messages, tools) {
+      if (
+        messages.some(
+          (message) =>
+            message.role === 'tool' && message.content?.includes(data),
+        )
+      )
+        return { ok: true, value: { content: data, finishReason: 'stop' } };
+      expect(tools?.some((tool) => tool.name === name)).toBe(true);
+      return {
+        ok: true,
+        value: {
+          content: '',
+          finishReason: 'tool_calls',
+          toolCalls: [{ id: 'lookup', name, arguments: {} }],
+        },
+      };
+    },
+    async *streamChat(...args) {
+      yield await llm.chat(...args);
+    },
+  };
+  const built = unwrapBuilderResult(
+    await new SmartAgentBuilder({ skipModelValidation: true })
+      .withMode('hard')
+      .withClassification(false)
+      .withRagAccess(testAccess([ragCaller]))
+      .withMainLlm(llm)
+      .withMcpClients([userMcpClient('executor')])
+      .build(),
+  );
+  const worker = new SmartAgentSubAgent('executor', built.agent);
+  mockRun.mockImplementation((input) => worker.run(input));
+  const { h } = await ready();
+  try {
+    await runWithSessionId(
+      session.key,
+      () => h.session.send('Look up a document'),
+      [],
+      session.userId,
+      { admin: false, channel: 'anthropic', userMcpSession: session },
+    );
+    await until(() =>
+      h.session.snapshot().tasks.some((task) => task.state === 'done'),
+    );
+    expect(h.session.snapshot().tasks[0]?.output).toBe(data);
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ server: 'documents', tool: 'lookup' }),
+    );
+  } finally {
+    await registry.close(session.userId, session.key, 'explicit');
+  }
 });
 
 test('close settles a real SmartAgent continuous tool loop within a few iterations', async () => {
@@ -1983,7 +2084,6 @@ test.each(
             channel: 'openai',
             onToolResult: originalSink,
           }),
-        maxMs: 10000,
         onError: (error) => ({ error: String(error) }),
       });
       await continuation();
@@ -2130,19 +2230,18 @@ test.each([false, true])(
     const { h } = await ready();
     const detach = h.subscribe(() => {});
     const controller = new AbortController();
-    const follow = (maxMs: number, signal = new AbortController().signal) =>
+    const follow = (signal: AbortSignal) =>
       followDialogue(h, {
         delivery: h.outbox.beginDelivery(),
         since: 0,
         signal,
-        maxMs,
       });
     try {
       await h.session.send('go');
       await until(() => report !== undefined);
       if (disconnect) {
         const items = [];
-        const iterator = follow(1, controller.signal)[Symbol.asyncIterator]();
+        const iterator = follow(controller.signal)[Symbol.asyncIterator]();
         let settled = false;
         const next = iterator.next().then((item) => {
           settled = true;
@@ -2168,7 +2267,7 @@ test.each([false, true])(
       report?.(record);
       const resultController = new AbortController();
       const items = [];
-      for await (const item of follow(1, resultController.signal)) {
+      for await (const item of follow(resultController.signal)) {
         items.push(item);
         if (item.kind === 'tool-result') {
           item.written?.();
@@ -2179,7 +2278,7 @@ test.each([false, true])(
         { kind: 'tool-result', record, written: expect.any(Function) },
       ]);
       const replayController = new AbortController();
-      const replayIterator = follow(1, replayController.signal)[
+      const replayIterator = follow(replayController.signal)[
         Symbol.asyncIterator
       ]();
       const replayNext = replayIterator.next();
@@ -3160,7 +3259,7 @@ test('worker scope emits content-free activity and background turns identify com
   });
 });
 
-test('turn requests are truncated and retain their source', async () => {
+test('turn events carry the full request and its source', async () => {
   const { h } = await ready();
   const events: DialogueEvent[] = [];
   h.subscribe((event) => events.push(event));
@@ -3170,7 +3269,7 @@ test('turn requests are truncated and retain their source', async () => {
   expect(events).toContainEqual({
     kind: 'turn',
     source: 'webui',
-    text: 'x'.repeat(300),
+    text: 'x'.repeat(350),
     clientTurnId: 'request-123',
   });
 });

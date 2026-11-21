@@ -105,10 +105,7 @@ export function dialogueChat(
     messages: Message[],
     opts?: AgentCallOptions,
   ): AsyncIterable<Result<DialogueStreamChunk, OrchestratorError>>;
-  follow(
-    signal: AbortSignal,
-    maxMs: number,
-  ): AsyncIterable<FollowItem> | undefined;
+  follow(signal: AbortSignal): AsyncIterable<FollowItem> | undefined;
   hasFollow(): boolean;
 } {
   const requestStartedAt = requestStart(req);
@@ -185,14 +182,13 @@ export function dialogueChat(
 
   return {
     hasFollow: () => followHandle !== undefined,
-    follow(signal, maxMs) {
+    follow(signal) {
       return followHandle
         ? followDialogue(followHandle, {
             delivery,
             responseEnded,
             since,
             signal,
-            maxMs,
           })
         : undefined;
     },

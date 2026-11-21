@@ -664,6 +664,10 @@ async function open(
       async run(input) {
         const ctx = scope.getStore();
         if (!ctx) throw new Error('Background task context unavailable');
+        const taskSignal =
+          input.signal && ctx.pipeline.signal
+            ? AbortSignal.any([input.signal, ctx.pipeline.signal])
+            : (input.signal ?? ctx.pipeline.signal);
         // Stage 2 gap: TaskRecord.model exists, but TaskBoard passes a copy to
         // wrapRun and offers no public setter for the resolved worker model.
         if (
@@ -715,7 +719,7 @@ async function open(
                                 ...input,
                                 ...callOptionsFor(ctx.ragCaller),
                                 trace: { traceId: ctx.traceId },
-                                signal: ctx.pipeline.signal,
+                                signal: taskSignal,
                               }),
                           ),
                       ),
@@ -803,10 +807,11 @@ async function open(
   };
   const signals = dialogueSignals();
   const dialogueIdentity = (): RagCallerIdentity => {
-    const { admin, channel } = getRagCallerIdentity();
+    const { admin, channel, userMcpSession } = getRagCallerIdentity();
     return {
       admin,
       channel,
+      userMcpSession,
       onToolResult: (record) => emit({ kind: 'tool-result', record }),
     };
   };
@@ -897,6 +902,13 @@ async function open(
           ...origin,
           identity: {
             ...origin.identity,
+            userMcpSession: callers.every(
+              (caller) =>
+                caller.identity.userMcpSession ===
+                origin.identity.userMcpSession,
+            )
+              ? origin.identity.userMcpSession
+              : undefined,
             admin: callers.every(
               (caller) =>
                 caller.identity.admin && caller.userId === origin.userId,
@@ -1638,7 +1650,7 @@ async function open(
         async wrapRun(task, run) {
           // TaskBoard starts execution in the scheduling planner scope; its
           // async context survives pool waits and later user turns.
-          const caller = {
+          const caller = taskCallers.get(task.id) ?? {
             ragCaller: trustedCaller.getStore() ?? boundCaller.value,
             userId: getRequestUserId() ?? userId,
             identity: dialogueIdentity(),
@@ -1838,7 +1850,7 @@ async function open(
       ...(clientTurnId.getStore()
         ? { clientTurnId: clientTurnId.getStore() }
         : {}),
-      text: text.slice(0, 300),
+      text,
     });
     // Each queued input owns its snapshot even if callers reuse a trace object.
     const trace = options.trace

@@ -61,6 +61,7 @@ export interface Embedding {
   retrieval: IRetrievalEmbedder;
   /** Tool queries retry only rate limits; document writes retain composition. */
   toolSearchRetrieval?: IRetrievalEmbedder;
+  userMcpToolSearchRetrieval?: IRetrievalEmbedder;
   toolSearchEmbedder?: CircuitBreakerEmbedder;
   breaker: CircuitBreaker;
   fingerprint: EmbedderFingerprint;
@@ -234,6 +235,11 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
     toolSearchEmbedder,
     toolSearchRetrieval: asymmetricEmbedder({
       document: documentEmbedder,
+      query: toolSearchEmbedder,
+    }),
+    userMcpToolSearchRetrieval: asymmetricEmbedder({
+      // Private document rejections must not trip the shared breaker.
+      document: toolSearch,
       query: toolSearchEmbedder,
     }),
     breaker,

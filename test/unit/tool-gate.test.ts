@@ -38,7 +38,7 @@ it.each([
   await analyzer.analyze(input);
   expect(chat).toHaveBeenCalledTimes(2);
 });
-it('classifies ASCII and short non-ASCII, keys by bounded history, and shares requests', async () => {
+it('classifies ASCII and short non-ASCII, keys by full history, and shares requests', async () => {
   const { chat, analyzer } = make(response('Hello', false));
   const history = Array.from({ length: 8 }, (_, i) => ({
     role: 'user' as const,
@@ -52,15 +52,17 @@ it('classifies ASCII and short non-ASCII, keys by bounded history, and shares re
   const context = JSON.parse(
     chat.mock.calls[0][0][1].content.split('context only): ')[1],
   );
-  expect(context).toHaveLength(6);
-  expect(context[0].content).toHaveLength(500);
-  expect(context[0].content[0]).toBe('2');
-  await analyzer.analyze('Hello', history.slice(2));
+  expect(context).toHaveLength(8);
+  expect(context[0].content).toHaveLength(701);
+  expect(context[0].content[0]).toBe('0');
+  await analyzer.analyze('Hello', history);
   expect(chat).toHaveBeenCalledTimes(1);
+  await analyzer.analyze('Hello', history.slice(2));
+  expect(chat).toHaveBeenCalledTimes(2);
   await analyzer.analyze('Hello', []);
   await analyzer.analyze('hey');
   await analyzer.analyze('abc');
-  expect(chat).toHaveBeenCalledTimes(4);
+  expect(chat).toHaveBeenCalledTimes(5);
 });
 it('resets the factory after a failed chat', async () => {
   const chat = jest

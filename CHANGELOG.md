@@ -20,6 +20,7 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Fixed
 
+- Return complete RAG search hits, collection failure notes and SAP error bodies. Mask SAP credentials in diagnostic logs. Retire the chat dialogue follow deadline and remove its environment setting.
 - Apply the SAP tool gate to each tool search so documentation steps cannot hide SAP readers from later adaptive workers. Use the provider's output token default across workers and tool query analysis unless an explicit limit is configured. Keep retrying 429s without a default attempt or total wait cap, and disable global adaptive step, revision and duration limits by default. Log received, rejected and executable tool calls of every worker response on the chat, `execute_step` and dialogue paths, with the rejected tool name, reason and argument length but no content. Persist terminal request errors and terminal task error codes in dialogue state (llm-agent 34.1.0, llm-agent-libs 35.0.0, anthropic-llm 31.0.0).
 
 - Return provider-reported input, output and cache usage per model in OpenAI, Anthropic and agent MCP responses. Report embedding usage under its own model, expose persisted usage and run time for MCP tasks, and use Anthropic's uncached input semantics in JSON and SSE. Wait for built-in profile synchronization before serving agent MCP requests.

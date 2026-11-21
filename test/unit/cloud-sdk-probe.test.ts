@@ -74,6 +74,18 @@ describe('CloudSdkAbapConnection.probe', () => {
     expect(r.rawMessage).toContain('Anmeldung fehlgeschlagen');
   });
 
+  it('returns a full SAP error body from the probe', async () => {
+    const rawMessage = `${'x'.repeat(2500)}
+Last SAP diagnostic`;
+    mockExec.mockRejectedValueOnce({
+      response: { status: 400, data: rawMessage },
+    });
+    await expect(makeConn().probe('/sap/bc/adt/discovery')).resolves.toEqual({
+      httpCode: 400,
+      rawMessage,
+    });
+  });
+
   it('does NOT retry on 500 either — single attempt for diagnostics', async () => {
     mockExec.mockRejectedValue({
       response: {

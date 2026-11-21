@@ -8,6 +8,10 @@ const textCredential = new RegExp(
   `(?<![\\w-])(["']?)(${secretKey.source.slice(1, -1).replaceAll('.*', '[\\w-]*')})\\1(\\s*[=:]\\s*)("(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|(?:Basic|Bearer)\\s+[^\\s&;,}]+|[^\\s&;,}]+)`,
   'gi',
 );
+const xmlCredential = new RegExp(
+  `(<(?:[\\w.-]+:)?(${secretKey.source.slice(1, -1).replaceAll('.*', '[\\w.-]*')})(?=[\\s>])[^>]*>)[\\s\\S]*?(<\\/(?:[\\w.-]+:)?\\2\\s*>)`,
+  'gi',
+);
 const usageKey =
   /^(?:tokens|(?:input|output|total|cached|prompt|completion|reasoning|cache_read_input|cache_creation_input|max)[_-]?tokens)$/i;
 const replacement = '\u00abredacted\u00bb';
@@ -54,6 +58,7 @@ export function redactContext(value: string): string {
       /-----BEGIN ([A-Z0-9 ]*PRIVATE KEY)-----[\s\S]*?-----END \1-----/g,
       replacement,
     )
+    .replace(xmlCredential, `$1${replacement}$3`)
     .replace(
       /\b((?:Set-)?Cookie)(:\s*)([^\r\n]+)/gi,
       (_match, key: string, separator: string, item: string) =>

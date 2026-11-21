@@ -286,7 +286,6 @@ when running `npx tsx tools/measure-tool-rag.ts` to measure production tool-quer
 | `LLM_AGENT_DIALOGUE_MAX_CORRECTIONS` | `2` | Maximum end-of-turn corrective turns (nonnegative integer); `0` disables corrections. |
 | `LLM_AGENT_DIALOGUE_TASK_OUTPUT_CHARS` | unset (unlimited) | Optional maximum retained characters per task output. Set a positive safe integer to enable it. |
 | `LLM_AGENT_DIALOGUE_MAX_TASKS` | `50` | Task board capacity per dialogue session (positive integer). |
-| `LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS` | Ignored (legacy parser default `1800000`) | No duration cutoff; follow ends on completion, supersession or caller disconnect. |
 | `LLM_AGENT_DIALOGUE_WAIT_TICK_MS` | `30000` (library default) | Non-negative safe integer; 0 disables live wait ticks. Unset or blank uses the library default; invalid values reject startup. |
 | `LLM_AGENT_DIALOGUE_LONG_TASK_MS` | `300000` (library default) | Non-negative safe integer; 0 disables long-running task wakes. Unset or blank uses the library default; invalid values reject startup. |
 | `LLM_AGENT_PLAN_MAX_STEPS` | Unlimited | Optional positive integer step limit. |
@@ -432,7 +431,7 @@ Plain OpenAI and Anthropic chat clients must open a live caller-owned long sessi
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `LLM_AGENT_TRUST_DEFAULTS` | `correction=4.9,system=4.8,client=4.4,target=4.3,docs=4.2,session=4,user=3.5,global=3` | Partial comma-separated class defaults; explicit profile/source/record values take precedence. |
+| `LLM_AGENT_TRUST_DEFAULTS` | `correction=4.9,system=4.8,client=4.4,target=4.3,docs=4.2,user-mcp=4.1,session=4,user=3.5,global=3` | Partial comma-separated class defaults; explicit profile/source/record values take precedence. |
 
 Trust is ordered by LEVEL first (system > MCP > informational), then GROUP within a level (session > user > global). Overrides beat the base; explicit profile, source and record overrides retain precedence over defaults.
 
@@ -444,7 +443,7 @@ Trust is ordered by LEVEL first (system > MCP > informational), then GROUP withi
 
 Session system (5.0) and session MCP (4.5) have no producers yet. Deploy-configured ABAP and docs MCP belong to the global group. `client` describes results of tools supplied by the client in its own request, in the user group. It is accepted in deployment defaults and profile maps for completeness. The OpenAI and Anthropic request paths register validated client tool definitions in request scope. Replayed results receive `[source: client:<tool-name>; trust 4.4]` wherever the existing model-facing tool-message formatter applies trust tags; profile and deployment overrides apply. Unknown tools and hub orchestration results remain untagged. Registered ABAP and docs MCP ownership takes precedence over client names.
 
-`LLM_AGENT_TRUST_DEFAULTS` is a comma-separated class map, for example `correction=4.9,system=4.8,client=4.4,target=4.3,docs=4.2,session=4,user=3.5,global=3`. These are also the built-in defaults; omitted classes retain them. Unknown classes, nonnumeric values, values outside 0 to 5, or more than one decimal fail startup.
+`LLM_AGENT_TRUST_DEFAULTS` is a comma-separated class map, for example `correction=4.9,system=4.8,client=4.4,target=4.3,docs=4.2,user-mcp=4.1,session=4,user=3.5,global=3`. These are also the built-in defaults; omitted classes retain them. Unknown classes, nonnumeric values, values outside 0 to 5, or more than one decimal fail startup.
 
 Profile front matter accepts an optional `trust` map:
 
@@ -533,9 +532,11 @@ tools. A later agent preparation retries after a 30-second cooldown.
 
 
 Timeout policy (2026-11-02): work waits until caller cancellation or an external limit.
-`LLM_AGENT_TOOL_GATE_TIMEOUT_MS`,
-`LLM_AGENT_DESTINATION_INIT_WAIT_MS`, and `LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS`
-are legacy parsed settings and no longer bound work or response following.
+`LLM_AGENT_TOOL_GATE_TIMEOUT_MS` and
+`LLM_AGENT_DESTINATION_INIT_WAIT_MS` are legacy parsed settings that no longer
+bound work. `LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS` has been removed. Remove it from
+deployment environment overrides. Streaming dialogue delivery has no duration
+deadline.
 `SAP_TIMEOUT_CSRF` is retired; SAP HTTP requests use no hub deadline.
 External docs discovery runs in the background, never blocks profiles, and has a
 logged ten-minute safety net. Its MCP client no longer overrides tool-call timeouts.

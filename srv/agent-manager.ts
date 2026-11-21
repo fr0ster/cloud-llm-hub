@@ -47,6 +47,16 @@ import {
 import { selectStepTools, type ToolSelection } from './lib/tool-selection';
 import { resolverFor, TrustResolver } from './lib/trust-resolver';
 import { TrustStore } from './lib/trust-store';
+import { userMcpRoles } from './lib/user-mcp-bridge';
+import { acceptsUserMcpPolicyName, isUserMcpName } from './lib/user-mcp-names';
+import {
+  ownsUserMcpTool,
+  userMcpCatalogue,
+  userMcpClient,
+  userMcpDataPrompt,
+  userMcpToolTrust,
+  withUserMcpToolsRag,
+} from './lib/user-mcp-tools';
 import { reportWorkerActivity } from './lib/worker-activity';
 
 export function runExecutorStep(...args: ExecutorStepArgs) {
@@ -1782,18 +1792,45 @@ export function docsMcp(): ExternalMcp {
     undefined,
     undefined,
     undefined,
-    () =>
-      providers?.embedding?.toolSearchRetrieval ??
-      providers?.embedding?.retrieval,
+    externalToolEmbedder,
     () => providers?.embedding?.probeQueryEmbedder,
   );
   return externalDocs;
 }
+function externalToolEmbedder() {
+  return (
+    providers?.embedding?.toolSearchRetrieval ?? providers?.embedding?.retrieval
+  );
+}
+
+function withExternalToolsRag(
+  rag: IRag,
+  role: string,
+  config: AgentConfig,
+): IRag {
+  return withUserMcpToolsRag(
+    docsMcp().withToolsRag(rag, role),
+    role,
+    config.externalMcp,
+    () =>
+      providers?.embedding?.userMcpToolSearchRetrieval ??
+      externalToolEmbedder(),
+    () => providers?.embedding?.probeQueryEmbedder,
+  );
+}
+
+function acceptsExternalPolicyName(name: string): boolean {
+  return acceptsUserMcpPolicyName(name) || docsMcp().acceptsPolicyName(name);
+}
+
 function builtInToolTrust(resolver: TrustResolver): ToolTrust {
   const system = systemToolTrust(isEmbeddedSystemTool, resolver);
   const client = clientToolTrust(resolver);
   return (name) =>
-    docsMcp().toolTrust(name, resolver) ?? system(name) ?? client(name);
+    userMcpToolTrust(name, resolver) ??
+    docsMcp().toolTrust(name, resolver) ??
+    system(name) ??
+    client(name);
 }
 
 export function isEmbeddedSystemTool(name: string): boolean {
@@ -2747,22 +2784,18 @@ export async function buildEmbeddedMcpAdapter(
       const outage = outageFromToolResult(result, destinationName);
       if (outage) throw outage;
 
-      const resultStr = JSON.stringify(result).slice(0, 1000);
       log.info('MCP tool call', {
         destination: destinationName,
         tool: name,
         argsKeys: Object.keys(args || {}),
-        args: JSON.stringify(args).slice(0, 300),
-        resultLength: resultStr.length,
-        resultPreview: resultStr.slice(0, 500),
+        isError: result.isError === true,
         connectionOverride: !!requestScope,
       });
       return result;
     } catch (err) {
       log.error('MCP tool call failed', {
         tool: name,
-        args: JSON.stringify(args).slice(0, 500),
-        error: err instanceof Error ? err.message : String(err),
+        argsKeys: Object.keys(args || {}),
       });
       // The connector has already decided what happened and written its verdict
       // into the message; this re-raises it in a form that survives the
@@ -2922,7 +2955,18 @@ export async function configureDestinationAgentBuilder(
   const roleResolver = resolverFor(getCollectionRegistry());
   const skillsPool = buildSkillsPool({ resolver: () => roleResolver });
   await logSkillsPool(skillsPool);
-  const system = await appendBaseSkills(opts?.systemPrompt ?? '', skillsPool);
+  const role = opts?.role ?? 'executor';
+  // Runtime workers declare their profile role. Shared warm-up builds reuse the base client.
+  const sessionTools = userMcpRoles.some((allowed) => allowed === opts?.role)
+    ? userMcpClient(role)
+    : undefined;
+  const system = await appendBaseSkills(
+    [opts?.systemPrompt, sessionTools && userMcpDataPrompt]
+      .filter(Boolean)
+      .join('\n'),
+    skillsPool,
+  );
+  const externalClients = await docsMcp().clients(role, opts, roleResolver);
   const builder = new SmartAgentBuilder({
     skipModelValidation,
     agent: {
@@ -2968,32 +3012,24 @@ export async function configureDestinationAgentBuilder(
     .withClassifierLlm(classifierLlm)
     .withMcpClients([
       mcpAdapter instanceof RecordingMcpClient
-        ? mcpAdapter.includeClients(
-            await docsMcp().clients(
-              opts?.role ?? 'executor',
-              opts,
-              roleResolver,
-            ),
-          )
+        ? mcpAdapter.includeClients(externalClients, sessionTools)
         : withToolResultCap(
-            compositeMcpClient([
-              ...(await docsMcp().clients(
-                opts?.role ?? 'executor',
-                opts,
-                roleResolver,
-              )),
-              new DialogueRagMcpClient(mcpAdapter),
-            ]),
+            compositeMcpClient(
+              [...externalClients, new DialogueRagMcpClient(mcpAdapter)],
+              sessionTools,
+            ),
             config.agent.toolResultMaxChars,
           ),
     ]);
 
-  // Docs candidates are role-scoped reads, merged after SAP exposition filtering.
-  // Their runtime index never writes into the prebuilt corpus.
+  // External candidates join the role after SAP exposition filtering.
+  // Their runtime indexes never write into the prebuilt corpus.
   if (!opts?.skipRetrieval)
     builder.setToolsRag(
       withDialogueRagTools(
-        docsMcp().withToolsRag(toolsRag, opts?.role ?? 'executor'),
+        sessionTools
+          ? withExternalToolsRag(toolsRag, role, config)
+          : docsMcp().withToolsRag(toolsRag, role),
       ),
     );
 
@@ -3100,18 +3136,20 @@ export async function buildPlannerAgent(
   const plannerClient =
     authorClient ??
     new DialogueRagMcpClient(coordinatorToolsClient(), undefined, true);
-  // Hard planners retain every SAP/control tool; only docs use semantic selection.
+  // Hard planners retain every SAP/control tool and select external tools separately.
   const plannerTools: IRag = {
     query: async (_query, _k, options) => {
       const listed = await plannerClient.listTools(options);
       if (!listed.ok) return listed;
       return {
         ok: true,
-        value: listed.value.map((tool) => ({
-          text: `Tool: ${tool.name}`,
-          metadata: { id: `tool:${tool.name}`, name: tool.name },
-          score: 1,
-        })),
+        value: listed.value
+          .filter((tool) => !isUserMcpName(tool.name))
+          .map((tool) => ({
+            text: `Tool: ${tool.name}`,
+            metadata: { id: `tool:${tool.name}`, name: tool.name },
+            score: 1,
+          })),
       };
     },
     getById: async () => ({ ok: true, value: null }),
@@ -3175,7 +3213,7 @@ export function createAgentProfileSource(
   };
   const sessionId = getRequestSessionId();
   return new AgentProfileSource(getCollectionRegistry(), {
-    acceptsPolicyName: (name) => docsMcp().acceptsPolicyName(name),
+    acceptsPolicyName: acceptsExternalPolicyName,
     prepareCatalogue: async () => {
       docsMcp().refresh();
     },
@@ -3189,6 +3227,7 @@ export function createAgentProfileSource(
             : ('write' as const),
         })),
       ...docsMcp().catalogue(),
+      ...userMcpCatalogue(),
       ...ragToolNames.map((name) => ({ name, effect: ragToolEffect(name) })),
     ],
     userId,
@@ -3262,9 +3301,12 @@ function destinationProfileRunner(
   config: AgentConfig,
   injectHistory = false,
 ): AgentProfileRunner {
-  const catalogue = () => destinationProfileToolCatalogue();
+  const catalogue = (role?: string) => [
+    ...destinationProfileToolCatalogue(),
+    ...(role ? userMcpCatalogue(role) : []),
+  ];
   return new AgentProfileRunner({
-    acceptsPolicyName: (name) => docsMcp().acceptsPolicyName(name),
+    acceptsPolicyName: acceptsExternalPolicyName,
     trustResolver: getTrustResolver,
     prepareTools: async (role, options) => {
       await docsMcp().clients(role, options);
@@ -3274,13 +3316,14 @@ function destinationProfileRunner(
         .catalogue('planner')
         .map((tool) => tool.name),
     catalogue,
-    grants: () =>
+    grants: (role) =>
       new Set(
-        catalogue()
+        catalogue(role)
           .filter((tool) => {
             if (
               tool.name === submitVerdictTool.name ||
-              docsMcp().owns(tool.name)
+              docsMcp().owns(tool.name) ||
+              ownsUserMcpTool(tool.name)
             )
               return true;
             if (isRagTool(tool.name)) return Boolean(getRequestUserId());
@@ -3466,7 +3509,7 @@ function destinationProfileRunner(
  * Shares LLM, embedder, facts/feedback/state RAG, metrics across all agents.
  */
 export async function buildAgentForDestination(
-  mcpAdapter: McpClientAdapter,
+  mcpAdapter: IMcpClient,
   toolsRag: ExpositionFilteringRag,
   config: AgentConfig,
 ): Promise<DestinationAgentHandle> {
@@ -3810,6 +3853,7 @@ export async function buildExecutorWorker(
             },
           },
           {
+            role: resolved.profile.name,
             signal: callOptions.signal,
             systemPrompt: [
               resolved.workerBase ?? '',
@@ -3837,6 +3881,7 @@ export async function buildExecutorWorker(
             prepared.agent.process(args[0], {
               ...args[1],
               ...(args[1]?.caller ? callOptionsFor(args[1].caller) : {}),
+              // Registered session tools run through the guarded MCP client.
               externalTools: [],
               externalResults: undefined,
             }),

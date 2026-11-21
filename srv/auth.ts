@@ -40,7 +40,6 @@ export default async function registerAuthHandlers(
       userId: user?.id,
       isAnonymous: user?._is_anonymous,
       hasAuthHeader: !!headers?.authorization,
-      authHeaderPrefix: headers?.authorization?.substring(0, 20),
     });
 
     if (!user || user._is_anonymous) {

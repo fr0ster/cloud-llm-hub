@@ -13,7 +13,8 @@ import {
 import { toolObjects } from './tool-objects';
 import type { ToolResultRejection } from './tool-result-cap';
 
-export type JournalSystem = 'sap' | 'rag';
+const journalSystem = z.enum(['sap', 'rag', 'user-mcp']);
+export type JournalSystem = z.infer<typeof journalSystem>;
 export type JournalOutcome = 'succeeded' | 'failed' | 'unconfirmed';
 export interface JournalEntry extends ToolCallRecord {
   answered: boolean;
@@ -96,7 +97,7 @@ export const journalSnapshotSchema = z.object({
       }),
       answered: z.boolean(),
       write: z.boolean(),
-      system: z.enum(['sap', 'rag']).optional(),
+      system: journalSystem.optional(),
       ragScope: collectionAddress.shape.scope.optional(),
     }),
   ),
@@ -116,6 +117,8 @@ const failure = z.object({
 
 export function journalOutcome(entry: JournalEntry): JournalOutcome {
   if (!entry.answered) return 'unconfirmed';
+  if (entry.system === 'user-mcp')
+    return entry.result.isError ? 'failed' : 'succeeded';
   const result = failure.safeParse(journalPayload(entry.result.content)).data;
   const status = result?.status;
   return entry.result.isError ||
@@ -305,7 +308,7 @@ export function writeActions(
     );
   }
   return lines.length
-    ? `[actions] SAP and RAG writes
+    ? `[actions] Tool writes
 ${lines.join('\n')}`
     : undefined;
 }

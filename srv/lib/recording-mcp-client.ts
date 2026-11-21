@@ -29,6 +29,8 @@ import {
 import type { JournalEntry, JournalSystem } from './tool-journal';
 import { toolObjects } from './tool-objects';
 import { capToolResult, withinToolResultBudget } from './tool-result-cap';
+import { isUserMcpName } from './user-mcp-names';
+import type { UserMcpClient } from './user-mcp-tools';
 import { reportWorkerActivity } from './worker-activity';
 import { isWriteTool } from './write-guardrail';
 
@@ -64,8 +66,8 @@ const TRANSPORT_FAILURE_CODES = new Set([
  *  than answered: one of the transport-failure codes above, or an error
  *  carrying our own outage marker (`McpUnavailableError`, which crosses the
  *  embedded transport as a plain message — see `srv/lib/mcp-outage.ts`). */
-function isTransportFailure(error: unknown): boolean {
-  const code = (error as { code?: unknown } | undefined)?.code;
+function isTransportFailure(error: McpError): boolean {
+  const code = error?.code;
   if (typeof code === 'string' && TRANSPORT_FAILURE_CODES.has(code)) {
     return true;
   }
@@ -103,6 +105,7 @@ export class RecordingMcpClient implements IMcpClient {
     private readonly retainRecords = true,
     // A view shares its origin's records: one journal per request.
     shared?: RecordingMcpClient,
+    private readonly userMcp?: UserMcpClient,
   ) {
     this.definitions = shared?.definitions ?? new Map();
     this.knownNames = shared?.knownNames ?? new Set<string>();
@@ -123,24 +126,28 @@ export class RecordingMcpClient implements IMcpClient {
    * mutates this instance: the recorder is shared by every build for a
    * destination, so extending it in place would nest clients per request.
    */
-  includeClients(clients: IMcpClient[]): RecordingMcpClient {
-    if (!clients.length) return this;
+  includeClients(
+    clients: IMcpClient[],
+    userMcp = this.userMcp,
+  ): RecordingMcpClient {
+    if (!clients.length && !userMcp) return this;
     return new RecordingMcpClient(
-      compositeMcpClient([...clients, this.inner]),
+      compositeMcpClient([...clients, this.inner], userMcp),
       this.expositionFor,
       this.maxChars,
       this.retainRecords,
       this,
+      userMcp,
     );
   }
   async listTools(options?: CallOptions): Promise<Result<McpTool[], McpError>> {
     const result = await this.inner.listTools(options);
-    if (result.ok)
-      for (const tool of result.value) {
-        this.knownNames.add(tool.name);
-        this.definitions.set(tool.name, tool);
-      }
     if (!result.ok) return result;
+    for (const tool of result.value) {
+      if (isUserMcpName(tool.name)) continue;
+      this.knownNames.add(tool.name);
+      this.definitions.set(tool.name, tool);
+    }
     const value = result.value.filter(
       (tool) =>
         (profileToolAllowed(tool.name) || isDialogueResultReader(tool.name)) &&
@@ -150,6 +157,8 @@ export class RecordingMcpClient implements IMcpClient {
   }
 
   private isReadOnly(tool: McpTool): boolean {
+    if (isUserMcpName(tool.name))
+      return this.userMcp?.resolveTool(tool.name)?.effect === 'read';
     if (isRagTool(tool.name))
       return allowsReadOnlyEffect(ragToolEffect(tool.name));
     return isReadOnlyTool(
@@ -184,12 +193,15 @@ export class RecordingMcpClient implements IMcpClient {
     }
     const traceId = options?.trace?.traceId;
     // Start the journal entry before dispatch so an in-flight write remains unconfirmed.
-    const system: JournalSystem | undefined = isRagTool(name)
-      ? 'rag'
-      : this.expositionFor?.(name) !== undefined ||
-          Object.hasOwn(toolObjects, name)
-        ? 'sap'
-        : undefined;
+    const userTool = this.userMcp?.resolveTool(name);
+    let system: JournalSystem | undefined;
+    if (userTool) system = 'user-mcp';
+    else if (isRagTool(name)) system = 'rag';
+    else if (
+      this.expositionFor?.(name) !== undefined ||
+      Object.hasOwn(toolObjects, name)
+    )
+      system = 'sap';
     const tool = this.definitions.get(name);
     const record: JournalEntry = {
       call: { id: randomUUID(), name, arguments: args },
@@ -199,8 +211,9 @@ export class RecordingMcpClient implements IMcpClient {
       ...(system === 'rag' && isDialogueRagWorker() && name !== 'rag_persist'
         ? { ragScope: 'session' as const }
         : {}),
-      write:
-        system === 'rag'
+      write: userTool
+        ? userTool.effect === 'write'
+        : system === 'rag'
           ? isRagWriteTool(name)
           : system === 'sap' &&
             (tool ? !this.isReadOnly(tool) : isWriteTool(name)),
@@ -236,7 +249,11 @@ export class RecordingMcpClient implements IMcpClient {
     record.result = res.ok
       ? res.value
       : { content: res.error?.message ?? String(res.error), isError: true };
-    record.answered = res.ok || !isTransportFailure(res.error);
+    record.answered =
+      res.ok ||
+      (system === 'user-mcp'
+        ? res.error.code !== 'USER_MCP_OUTCOME_UNKNOWN'
+        : !isTransportFailure(res.error));
     if (isRagTool(name)) getRagCallerIdentity().onToolResult?.(record);
     return res;
   }

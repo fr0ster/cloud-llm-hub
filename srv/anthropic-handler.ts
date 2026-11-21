@@ -119,6 +119,7 @@ import {
   throttleOf,
   unverifiedWriteFor,
 } from './lib/throttle-surfacing';
+import { isUserMcpName } from './lib/user-mcp-names';
 import { runWithSessionId } from './request-session';
 import { sessionIdOf, type WithSession } from './session-id';
 
@@ -317,6 +318,10 @@ async function handleAnthropicMessagesScoped(
   for (const entry of normalized.options.externalTools ?? []) {
     const parsed = z.object({ name: z.string() }).safeParse(entry);
     const name = parsed.success ? parsed.data.name : '';
+    if (isUserMcpName(name)) {
+      reject('The user__ namespace is reserved for registered session tools.');
+      return;
+    }
     if (removed.has(name)) {
       reject(`${name} was removed. ${removed.get(name)}`);
       return;
@@ -497,6 +502,7 @@ async function serveMessages(
   const ragIdentity = {
     admin: authenticatedCaller.admin,
     channel: 'anthropic' as const,
+    userMcpSession: s,
   };
   const destination =
     requestedDestination ||
@@ -841,7 +847,6 @@ async function serveMessages(
         agent: chatAgent as ReturnType<typeof dialogueChat>,
         source: chatAgent.streamProcess(messages, agentOpts),
         run: runAgent,
-        maxMs: getAgentConfig().agent.dialogue?.followMaxMs ?? 1_800_000,
         onError: (error) => {
           if (isOutageError(error))
             closeDestination(destination, describeCause(error));

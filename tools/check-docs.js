@@ -211,7 +211,13 @@ function knownEnvNames() {
 // Pin counts per file so new claims cannot silently inherit an exemption.
 const RETIRED_ENV_MENTIONS = new Map([
   ['docs/architecture/ARCHITECTURE.md', { LLM_AGENT_SAP_RELEVANCE_SCORE: 1 }],
-  ['docs/llm-agent/CONFIG_USAGE.md', { LLM_AGENT_SAP_RELEVANCE_SCORE: 2 }],
+  [
+    'docs/llm-agent/CONFIG_USAGE.md',
+    {
+      LLM_AGENT_SAP_RELEVANCE_SCORE: 2,
+      LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS: 1,
+    },
+  ],
   [
     'docs/superpowers/plans/2026-10-21-agent-latency.md',
     { LLM_AGENT_SAP_RELEVANCE_SCORE: 2, LLM_AGENT_STEP_REVIEW_ENABLED: 1 },

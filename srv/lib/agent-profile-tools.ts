@@ -68,7 +68,7 @@ export function effectiveProfileTools(input: {
   );
 }
 
-/** Today's client tools have no trusted host registration or execution guard. */
+/** Session MCP goes through the guarded host MCP client. Refuse ad-hoc client tools. */
 export function guardProfileWorker(worker: ISubAgent): ISubAgent {
   return {
     name: worker.name,

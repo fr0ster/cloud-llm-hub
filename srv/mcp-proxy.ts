@@ -6,7 +6,7 @@ import {
   getAvailableDestinations,
   refuseDestination,
 } from './lib/btp-destinations';
-import { logErrorSafely } from './lib/errorUtils';
+import { logErrorSafely, responseBodyText } from './lib/errorUtils';
 import { gatekeeperSnapshot } from './lib/gatekeeper-metrics';
 import { maskLoginForLog } from './lib/log-mask';
 import { bearerToken } from './lib/principal';
@@ -368,28 +368,18 @@ export default async function registerMcpProxyHandlers(
             },
           );
           httpCode = response.status || 200;
+          rawMessage = responseBodyText(response.data) ?? '';
+        } catch (error) {
+          const failure = error as {
+            response?: { status?: number; data?: string | object };
+            statusCode?: number;
+            message?: string;
+          };
+          httpCode = failure?.response?.status ?? failure?.statusCode ?? 0;
           rawMessage =
-            typeof response.data === 'string'
-              ? response.data.slice(0, 500)
-              : '';
-          // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK error type
-        } catch (probeErr: any) {
-          httpCode =
-            probeErr?.response?.status ||
-            probeErr?.statusCode ||
-            (probeErr?.code === 'ENOTFOUND' ? 0 : 0);
-          const respData = probeErr?.response?.data;
-          if (typeof respData === 'string') {
-            rawMessage = respData.slice(0, 500);
-          } else if (respData && typeof respData === 'object') {
-            try {
-              rawMessage = JSON.stringify(respData).slice(0, 500);
-            } catch {
-              rawMessage = String(respData).slice(0, 500);
-            }
-          } else {
-            rawMessage = (probeErr?.message || 'Unknown error').slice(0, 500);
-          }
+            responseBodyText(failure?.response?.data) ??
+            failure?.message ??
+            'Unknown error';
         }
         const latencyMs = Date.now() - t0;
         const { status, hint } = classifyProbe(httpCode, rawMessage, proxyType);

@@ -25,7 +25,6 @@ import { userCollectionId } from '../../srv/collection-ids';
 import { turnOwner } from '../../srv/lib/history-turn';
 import { planAuthorContextNotes } from '../../srv/lib/planner-memory';
 import { createHubRagAccess, initHubRagAccess } from '../../srv/lib/rag-access';
-import { withCompactRagSearch } from '../../srv/lib/rag-search-context';
 import { historyCollectionName } from '../../srv/lib/session-history-collection';
 import { parseTrustDefaults } from '../../srv/lib/trust';
 import { TrustResolver } from '../../srv/lib/trust-resolver';
@@ -182,12 +181,6 @@ test('rag_search, rag_read and collection_records expose derived trust', async (
     query: 'text',
   });
   expect(search.content[0].text).toContain(
-    '"source":"user:Notes/r1","trust":3',
-  );
-  const compact = await withCompactRagSearch(() =>
-    callRag(registry, 'rag_search', { collections: ['notes'], query: 'text' }),
-  );
-  expect(compact.content[0].text).toContain(
     '"source":"user:Notes/r1","trust":3',
   );
   const read = await callRag(registry, 'rag_read', {
