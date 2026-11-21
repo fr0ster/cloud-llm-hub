@@ -188,7 +188,7 @@ describe('LLM-only guard', () => {
     },
   );
 
-  it('bounds decision context and strips non-text fields without changing delegated context', async () => {
+  it('keeps full decision context and strips non-text fields without changing delegated context', async () => {
     const { chat, guarded, agent } = setup('{"action":false}');
     const history: Message[] = Array.from({ length: 20 }, (_, i) => ({
       role: i % 2 ? 'user' : 'assistant',
@@ -203,16 +203,15 @@ describe('LLM-only guard', () => {
     }));
     await guarded.process(history, opts);
     const [context, tools, options] = chat.mock.calls[0];
-    expect(context.length).toBeLessThanOrEqual(7);
+    expect(context).toHaveLength(history.length + 1);
     expect(context[0].role).toBe('system');
     expect(context[context.length - 1].content).toContain('19:');
     for (const message of context.slice(1)) {
       expect(Object.keys(message).sort()).toEqual(['content', 'role']);
     }
-    // Earlier messages are trimmed; the current request stays whole.
-    for (const message of context.slice(1, -1))
-      expect(message.content.length).toBeLessThanOrEqual(4000);
-    expect(context[context.length - 1].content.length).toBe(5004);
+    expect(context.slice(1)).toEqual(
+      history.map(({ role, content }) => ({ role, content })),
+    );
     expect(tools).toBeUndefined();
     expect(options.signal).toBeInstanceOf(AbortSignal);
     expect(agent.process.mock.calls[0][0]).toBe(history);
@@ -371,7 +370,7 @@ describe('LLM-only guard', () => {
     );
     expect(sent.join('')).toContain('save these records to my collection');
     for (const [context] of chat.mock.calls)
-      expect(context[1].content.length).toBeLessThanOrEqual(4000);
+      expect(context[1].content).toBe('earlier '.repeat(1000));
     expect(result.ok && result.value.content).toContain('Це неможливо');
     expect(agent.process).not.toHaveBeenCalled();
   });
@@ -384,23 +383,15 @@ describe('LLM-only guard', () => {
     expect(chat.mock.calls[0][0][1].content).toBe(short);
   });
 
-  it('fails closed for a request too long to classify', async () => {
+  it('classifies the last part of a request beyond the old eight-part limit', async () => {
     const { chat, guarded, agent } = setup('{"action":false}');
-    const warn = jest
-      .spyOn(cds.log('llm-only-guard'), 'warn')
-      .mockImplementation(() => {});
-    try {
-      const result = await guarded.process([
-        { role: 'user', content: 'x'.repeat(16000 * 8 + 1) },
-      ]);
-      expect(result.ok && result.value.content).toContain(
-        'could not be classified',
-      );
-      expect(chat).not.toHaveBeenCalled();
-      expect(agent.process).not.toHaveBeenCalled();
-    } finally {
-      warn.mockRestore();
-    }
+    const history: Message[] = [
+      { role: 'user', content: `${'x'.repeat(16000 * 8)}Last part` },
+    ];
+    await guarded.process(history);
+    expect(chat).toHaveBeenCalledTimes(9);
+    expect(chat.mock.calls[8][0].at(-1)?.content).toContain('Last part');
+    expect(agent.process).toHaveBeenCalledWith(history, undefined);
   });
 
   it('cancels the other part calls when one part fails', async () => {

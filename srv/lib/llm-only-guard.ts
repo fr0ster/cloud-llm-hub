@@ -62,14 +62,10 @@ function decisionJson(text: string): { action: boolean; language?: unknown } {
 
 /** Characters of the current request per decision call. */
 const PART = 16_000;
-/** Decision calls per request; a longer request is not classified. */
-const MAX_PARTS = 8;
-
 /** The current request in parts that each fit one decision call. */
 function parts(text: string): string[] {
   if (text.length <= PART) return [text];
   const count = Math.ceil(text.length / PART);
-  if (count > MAX_PARTS) throw new Error('Request too long to classify');
   return Array.from(
     { length: count },
     (_, i) =>
@@ -103,18 +99,15 @@ export function guardLlmOnlyAgent<T extends ISmartAgent>(
       (m) => m.role === 'user' || m.role === 'assistant',
     );
     const lastUser = dialogue.map((m) => m.role).lastIndexOf('user');
-    // Six conversation messages plus the fixed system instruction: seven total.
-    // Earlier messages are context and get trimmed. The current request is
-    // never trimmed: an action can stand anywhere in it, so a long one is
-    // classified in parts, and it is an action when any part asks for one.
-    const recent = dialogue.slice(Math.max(0, lastUser - 5), lastUser + 1);
-    const earlier = recent.slice(0, -1).map(
+    // An action can appear anywhere in the current request. Classify it in
+    // parts, with the same conversation context for each decision.
+    const earlier = dialogue.slice(0, Math.max(0, lastUser)).map(
       (m): Message => ({
         role: m.role,
-        content: userTextOf(m).slice(0, 4000),
+        content: userTextOf(m),
       }),
     );
-    const current = recent[recent.length - 1];
+    const current = dialogue[lastUser];
     const controller = new AbortController();
     const abort = () => controller.abort();
     opts?.signal?.addEventListener('abort', abort, { once: true });

@@ -34,6 +34,16 @@ describe('ToolQueryAnalyzer', () => {
     expect(chat).toHaveBeenCalledTimes(3);
   });
 
+  it('sends the full supplied conversation to the classifier', async () => {
+    const chat = jest.fn().mockResolvedValue({ ok: false });
+    const history = Array.from({ length: 8 }, (_, index) => ({
+      role: 'assistant' as const,
+      content: `${'x'.repeat(750)} tail-${index}`,
+    }));
+    await new ToolQueryAnalyzer(llmWith(chat)).analyze('do the same', history);
+    expect(chat.mock.calls[0][0][1].content).toContain(JSON.stringify(history));
+  });
+
   it('skips requests shorter than three characters', async () => {
     const chat = jest.fn();
     expect(await new ToolQueryAnalyzer(llmWith(chat)).analyze('hi')).toEqual({

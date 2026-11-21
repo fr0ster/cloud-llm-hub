@@ -1972,7 +1972,7 @@ async function open(
       ...(clientTurnId.getStore()
         ? { clientTurnId: clientTurnId.getStore() }
         : {}),
-      text: text.slice(0, 300),
+      text,
     });
     // Each queued input owns its snapshot even if callers reuse a trace object.
     const trace = options.trace

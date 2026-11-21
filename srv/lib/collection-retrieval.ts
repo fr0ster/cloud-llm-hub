@@ -300,7 +300,6 @@ export function collectionRetrieval(agent: object) {
                 log.info('RAG search result', {
                   collection: colId,
                   score: r.score.toFixed(4),
-                  preview: r.text.slice(0, 80),
                 });
                 const threshold =
                   Number(process.env.RAG_SCORE_THRESHOLD) || 0.15;

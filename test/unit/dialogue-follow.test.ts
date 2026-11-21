@@ -1,3 +1,4 @@
+import { type ChatStream, streamDialogue } from '../../srv/lib/chat-stream';
 import { followDialogue, supersedeFollow } from '../../srv/lib/dialogue-follow';
 import { DialogueOutbox } from '../../srv/lib/dialogue-outbox';
 import type {
@@ -36,12 +37,11 @@ function fixture(priorFailure = false) {
   const since = state.settledSeq;
   const delivery = outbox.beginDelivery();
   const controller = new AbortController();
-  const start = () =>
+  const start = (signal = controller.signal) =>
     followDialogue(handle, {
       delivery,
       since,
-      signal: controller.signal,
-      maxMs: 1000,
+      signal,
     })[Symbol.asyncIterator]();
   return {
     emit: (event: DialogueEvent) => {
@@ -66,6 +66,62 @@ function fixture(priorFailure = false) {
 
 beforeEach(() => jest.useFakeTimers());
 afterEach(() => jest.useRealTimers());
+
+test.each(['openai', 'anthropic'] as const)(
+  '%s sends a dialogue reply after the former 30-minute deadline',
+  async (protocol) => {
+    const f = fixture();
+    const write = jest.fn<void, [string]>();
+    const stream: ChatStream = {
+      createdAt: Date.now(),
+      toolResults: false,
+      measurement: undefined,
+      signal: f.controller.signal,
+      opened: true,
+      ensureStream: jest.fn(),
+      error: jest.fn(),
+      end: jest.fn(),
+      out: {
+        detached: false,
+        detach: jest.fn(),
+        writeHead: jest.fn(),
+        setHeader: jest.fn(),
+        write,
+        end: jest.fn(),
+        json: jest.fn(),
+      },
+    };
+    const continueStream = await streamDialogue({
+      stream,
+      protocol,
+      model: 'test',
+      context: { adapterName: protocol, protocol: {} },
+      agent: {
+        process: jest.fn(),
+        streamProcess: jest.fn(),
+        hasFollow: () => true,
+        follow: (signal) => ({
+          [Symbol.asyncIterator]: () => f.start(signal),
+        }),
+      },
+      source: (async function* () {
+        yield { ok: true as const, value: { content: 'Initial reply' } };
+      })(),
+      run: (fn) => fn(),
+      onError: String,
+    });
+    const finished = continueStream();
+    await jest.advanceTimersByTimeAsync(1_800_001);
+    expect(stream.end).not.toHaveBeenCalled();
+    await f.add('Late reply');
+    f.state.status = 'done';
+    f.settled();
+    await finished;
+    expect(write.mock.calls.flat().join('')).toContain('Late reply');
+    expect(stream.end).toHaveBeenCalledTimes(1);
+    expect(stream.error).not.toHaveBeenCalled();
+  },
+);
 
 test('a message added before the reply is still streamed', async () => {
   const f = fixture();
@@ -142,17 +198,26 @@ test('ends idle only on a settled state with nothing running', async () => {
   await iterator.next();
 });
 
-test.each([5, 0])(
-  'follow waits beyond the old limit until disconnected, total %s',
-  async (total) => {
+test.each(['done', 'disconnected'] as const)(
+  'delivers a message after the former 30-minute deadline and ends on %s',
+  async (reason) => {
     const f = fixture();
-    f.state.total = total;
     const iterator = f.start();
     const next = iterator.next();
-    await jest.advanceTimersByTimeAsync(1000);
-    f.controller.abort();
-    expect((await next).value).toEqual({ kind: 'end', reason: 'disconnected' });
-    await iterator.next();
+    await jest.advanceTimersByTimeAsync(1_800_001);
+    await f.add('late reply');
+    expect((await next).value).toMatchObject({
+      kind: 'message',
+      message: { text: 'late reply' },
+    });
+    if (reason === 'done') {
+      f.state.status = 'done';
+      f.settled();
+    } else {
+      f.controller.abort();
+    }
+    expect((await iterator.next()).value).toEqual({ kind: 'end', reason });
+    expect((await iterator.next()).done).toBe(true);
   },
 );
 
@@ -287,7 +352,6 @@ test('supersede waits for response completion beyond five seconds', async () => 
     delivery: f.delivery,
     since: 0,
     signal: f.controller.signal,
-    maxMs: 10000,
     responseEnded: new Promise<void>((resolve) => {
       endResponse = resolve;
     }),

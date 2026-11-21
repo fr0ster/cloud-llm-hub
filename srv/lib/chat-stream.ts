@@ -108,7 +108,6 @@ export async function streamDialogue(opts: {
   agent: ReturnType<typeof dialogueChat>;
   source: AsyncIterable<Result<DialogueStreamChunk, OrchestratorError>>;
   run: (fn: () => Promise<void>) => Promise<void>;
-  maxMs: number;
   onError: (error: unknown) => unknown;
   onTurnEnd?: (text: string, following: boolean) => void;
   onEnd?: (text: string) => void;
@@ -293,7 +292,7 @@ export async function streamDialogue(opts: {
   return async () => {
     try {
       if (failure) throw failure;
-      const follow = opts.agent.follow(stream.signal, opts.maxMs);
+      const follow = opts.agent.follow(stream.signal);
       if (follow)
         for await (const item of follow) {
           if (item.kind === 'message') {

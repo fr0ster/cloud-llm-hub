@@ -41,8 +41,7 @@ export class ToolQueryAnalyzer {
     if (text.length < 3) return fallback;
     const context = history
       .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .slice(-6)
-      .map((m) => ({ role: m.role, content: (m.content ?? '').slice(0, 500) }));
+      .map((m) => ({ role: m.role, content: m.content ?? '' }));
     const key = JSON.stringify([
       sessionLlms.getStore()?.quotaScope ?? 'non-session',
       text,

@@ -216,7 +216,11 @@ const RETIRED_ENV_MENTIONS = new Map([
   ],
   [
     'docs/llm-agent/CONFIG_USAGE.md',
-    { LLM_AGENT_SAP_RELEVANCE_SCORE: 2, LLM_AGENT_STEP_REVIEW_TIMEOUT_MS: 2 },
+    {
+      LLM_AGENT_SAP_RELEVANCE_SCORE: 2,
+      LLM_AGENT_STEP_REVIEW_TIMEOUT_MS: 2,
+      LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS: 1,
+    },
   ],
   [
     'docs/superpowers/plans/2026-10-21-agent-latency.md',

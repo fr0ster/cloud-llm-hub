@@ -841,7 +841,6 @@ async function serveMessages(
         agent: chatAgent as ReturnType<typeof dialogueChat>,
         source: chatAgent.streamProcess(messages, agentOpts),
         run: runAgent,
-        maxMs: getAgentConfig().agent.dialogue?.followMaxMs ?? 1_800_000,
         onError: (error) => {
           if (isOutageError(error))
             closeDestination(destination, describeCause(error));

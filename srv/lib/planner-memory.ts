@@ -149,7 +149,7 @@ export async function planAuthorContextNotes(
   request: PlannerRequestRecord,
   options: CallOptions = {},
 ): Promise<string[]> {
-  const query = request.text.slice(0, 2_000);
+  const query = request.text;
   const memory: PlannerMemoryEntry[] = [];
   const knowledge: PlannerKnowledgeEntry[][] = [];
   const controller = new AbortController();

@@ -75,7 +75,7 @@ export const ragMcpSchemas = {
     session,
     query: z.string().min(1),
     collections: z.array(collection).optional(),
-    k: z.number().int().min(1).max(20).default(8),
+    k: z.number().int().min(1).default(8),
   }),
   rag_read: z.object({
     session,
@@ -259,7 +259,7 @@ export const ragDescriptions: Record<RagMcpTool, string> = {
     writeConditions,
   record_delete: `Delete one record by exact document id.${writeConditions}`,
   rag_search:
-    'Search RAG content in collections enabled for this session; collections only narrows the selection.',
+    'Search enabled RAG collections, optionally narrowed by collections. Return up to k hits with full record text and a note for every unavailable collection.',
   rag_read:
     'Read a RAG record, paged by characters. Disabled content exposes attributes and a reason only.',
   collections_list:

@@ -898,7 +898,7 @@ use the same id/name resolver and ownership checks as the REST API.
 
 | Tool | Arguments and result |
 |---|---|
-| `rag_search` | `{ query, collections?, k? }`; returns `{ hits: [{ collection, id, title?, text, score? }], unavailable?: [{ collection, error }] }`. Searches only collections enabled for the session; `collections` only narrows that set (an empty list searches none). `k` defaults to 8, maximum 20 across collections. Unavailable collections are skipped; bounded failure notes share the 24,000-character JSON output cap with hits, with `[truncated]` on cut text. |
+| `rag_search` | `{ query, collections?, k? }`; returns `{ hits: [{ collection, id, title?, text, score? }], unavailable?: [{ collection, error }] }`. Searches only collections enabled for the session; `collections` only narrows that set (an empty list searches none). `k` defaults to 8 across collections. Every hit contains the full record text. Each unavailable collection contributes a complete error note. |
 | `rag_read` | `{ collection, id, offset?, limit? }`; returns `{ id, offset, total, next?, text, attributes }`. Character offsets start at zero; limit defaults to 32,000, maximum 32,000; the existing tool-result character cap still applies. Within an agent loop, unchanged pages whose original round remains in the context window return `{ id, offset, total, alreadyRead: true, note }`. Pointer responses do not refresh that round; expired pages and changed records return full text. `next` is absent at the end. |
 | `collections_list` | `{}`; returns `{ collections: [{ id, name, scope, enabled, defaultEnabled, documents }] }`, including effective session enablement. |
 | `collection_set_enabled` | `{ collection, enabled }`; sets a persisted session override, leaving the collection default and other sessions unchanged. |
@@ -1112,7 +1112,7 @@ Reconnects can pass `Last-Event-ID` to skip the rendered prefix.
 
 `GET /v1/session/events` publishes live `activity` events with `{ kind: "activity", taskId, worker, action, at }` (epoch milliseconds). Worker tool dispatch and model calls produce content-free `tool <ToolName>` / `llm call` labels, throttled to one event per second per task. No arguments, results, credentials or headers are included.
 
-Live `turn` events carry `{ kind: "turn", source, text }`. Sources are `webui`, `api`, `mcp`, or `background`; requests are limited to 300 characters. Background turns carry only an `after task tN` summary. WebUI requests identify themselves with `x-clh-client: webui`. These transient events have no replay cursor.
+Live `turn` events carry `{ kind: "turn", source, text }`. Sources are `webui`, `api`, `mcp`, or `background`; Request events carry the full request text. Background turns carry only an `after task tN` summary. WebUI requests identify themselves with `x-clh-client: webui`. These transient events have no replay cursor.
 
 Both streaming chat endpoints (`/v1/chat/completions`, `/v1/messages`) forward these events as SSE comments: `: activity <json>` and `: turn <json>`. They are never assistant content, including during background follow.
 

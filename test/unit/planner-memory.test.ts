@@ -29,6 +29,17 @@ it('contains provider initialization failures during session opening and cleanup
   expect(await forgetPlannerMemory('owner')).toBe(true);
 });
 
+it('uses the full request for planning knowledge retrieval', async () => {
+  const text = `${'x'.repeat(3_000)} lookup target`;
+  const search = jest.fn(async () => []);
+  await planAuthorContextNotes(
+    { plannerKnowledge: [{ name: 'rules', search }] },
+    'key',
+    { id: 'current', text, openedAt: 1 },
+  );
+  expect(search).toHaveBeenCalledWith({ text }, 4, expect.anything());
+});
+
 it('bounds and escapes author knowledge and memory notes and excludes other sessions', async () => {
   const rag = new InMemoryRag();
   const embedding = symmetricEmbedder({ embed: async () => ({ vector: [1] }) });

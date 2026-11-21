@@ -274,7 +274,6 @@ export interface AgentConfig {
       executorPool?: number;
       maxTasks: number;
       maxCorrections: number;
-      followMaxMs: number;
       waitTickMs?: number;
       longTaskMs?: number;
       taskOutputChars?: number;
@@ -740,11 +739,6 @@ export function loadAgentConfig(): AgentConfig {
         maxCorrections: dialogueMaxCorrections(),
         waitTickMs: dialogueWaitLimit('LLM_AGENT_DIALOGUE_WAIT_TICK_MS'),
         longTaskMs: dialogueWaitLimit('LLM_AGENT_DIALOGUE_LONG_TASK_MS'),
-        followMaxMs:
-          readPositiveIntFrom(
-            process.env,
-            'LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS',
-          ) ?? 1800000,
       },
       planBudget: {
         maxSteps: readPositiveIntFrom(process.env, 'LLM_AGENT_PLAN_MAX_STEPS'),
