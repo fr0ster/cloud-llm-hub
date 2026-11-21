@@ -608,13 +608,18 @@ cds.on('bootstrap', (app: Application) => {
   const guardRagReadiness = ragReadinessGuard(isRagMigrationReady);
   app.use((req: Request, res: Response, next: NextFunction) => {
     if (
+      (req.method === 'PUT' || req.method === 'DELETE') &&
+      /^\/v1\/session\/user-mcp\/?$/i.test(req.path)
+    )
+      return next();
+    const checkToolSearch = () => toolSearchReadinessGuard(req, res, next);
+    if (
       req.method === 'POST' &&
       /^\/mcp\/agent\/stream\/http\/?$/i.test(req.path)
     )
-      return next();
-    return guardRagReadiness(req, res, next);
+      return checkToolSearch();
+    return guardRagReadiness(req, res, checkToolSearch);
   });
-  app.use(toolSearchReadinessGuard);
 
   // Before CAP's own /health (mounted after `bootstrap`), so this one answers.
   // 200 { status: 'UP' } as CAP's does; with persistent collections, 503 with

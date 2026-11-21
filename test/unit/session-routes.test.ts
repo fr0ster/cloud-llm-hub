@@ -91,9 +91,14 @@ jest.mock('../../srv/anthropic-handler', () => ({
   ) => res.json({ reached: 'messages', session: req.longSession?.key ?? null }),
 }));
 
-import { RagError } from '@mcp-abap-adt/llm-agent';
+import {
+  type IRag,
+  RagError,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import express from 'express';
 import { z } from 'zod';
+import { parseExternalMcp } from '../../srv/lib/external-mcp';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { longSessions } from '../../srv/lib/long-session';
 import { clearSessionConfig } from '../../srv/lib/session-config';
@@ -102,7 +107,11 @@ import {
   queryToolCorpus,
   toolSearchFailure,
 } from '../../srv/lib/tool-search-health';
-import { userMcpClient } from '../../srv/lib/user-mcp-tools';
+import type { UserMcpCall } from '../../srv/lib/user-mcp-bridge';
+import {
+  userMcpClient,
+  withUserMcpToolsRag,
+} from '../../srv/lib/user-mcp-tools';
 import type { CollectionMeta } from '../../srv/rag-collections';
 import { runWithSessionId } from '../../srv/request-session';
 import { SESSION_COOKIE, SESSION_HEADER } from '../../srv/session-id';
@@ -253,6 +262,45 @@ test('user MCP registration validates the whole catalogue, replaces a server and
   ]);
   expect((await bridgeRequest(session.key, 'DELETE')).status).toBe(204);
   expect(session.userMcp?.catalogue()).toEqual([]);
+});
+
+test('deleting an invalid ranked user MCP catalogue restores search in its session', async () => {
+  const session = await openMcpSession();
+  const payload = { servers: [bridgeRegistration] };
+  expect((await bridgeRequest(session.key, 'PUT', '', payload)).status).toBe(
+    204,
+  );
+  const tools: IRag = {
+    query: async () => ({ ok: true, value: [] }),
+    getById: async () => ({ ok: true, value: null }),
+    healthCheck: async () => ({ ok: true, value: undefined }),
+  };
+  const rag = withUserMcpToolsRag(
+    tools,
+    'executor',
+    parseExternalMcp({ LLM_AGENT_MCP_SELECTION: 'user__work=rag' }),
+    () => ({
+      embedQuery: async () => ({ vector: [1, 0] }),
+      embedDocument: async () => ({ vector: [] }),
+    }),
+  );
+  const search = () =>
+    runWithSessionId(
+      session.key,
+      () => rag.query(new TextOnlyEmbedding('read'), 1),
+      [],
+      session.userId,
+      { admin: false, channel: 'openai', userMcpSession: session },
+    );
+  await expect(search()).resolves.toMatchObject({
+    ok: false,
+    error: { code: 'USER_MCP_CATALOGUE_INVALID' },
+  });
+  expect((await fetch(`${base}/health`)).status).toBe(200);
+  expect(
+    (await bridgeRequest(session.key, 'DELETE', '?server=work')).status,
+  ).toBe(204);
+  await expect(search()).resolves.toEqual({ ok: true, value: [] });
 });
 
 const callEvent = z.object({
@@ -520,6 +568,91 @@ test('a replayed user MCP write can settle as outcome unknown and is not replaye
   }
 });
 
+test.each(['unregister', 'remove tool', 'revoke writes'] as const)(
+  'a pending write settles and rejects late results after %s',
+  async (change) => {
+    const session = await openMcpSession();
+    const registration = {
+      ...bridgeRegistration,
+      writes: true,
+      tools: [
+        ...bridgeRegistration.tools,
+        {
+          name: 'write',
+          description: 'Write',
+          inputSchema: { type: 'object' },
+        },
+      ],
+    };
+    const register = (server = registration) =>
+      bridgeRequest(session.key, 'PUT', '', { servers: [server] });
+    expect((await register()).status).toBe(204);
+    const bridge = session.userMcp;
+    if (!bridge) throw new Error('Bridge missing');
+    const events: UserMcpCall[] = [];
+    const detach = bridge.subscribe('browser', ['work'], {
+      send: (event) => {
+        events.push(event);
+        return true;
+      },
+      close: () => {},
+    });
+    const pending = runWithSessionId(
+      session.key,
+      () =>
+        userMcpClient('executor').callTool('user__work__write', { id: '1' }),
+      [],
+      session.userId,
+      { admin: false, channel: 'openai', userMcpSession: session },
+    );
+    expect(events).toHaveLength(1);
+    detach();
+    const response =
+      change === 'unregister'
+        ? await bridgeRequest(session.key, 'DELETE', '?server=work')
+        : await register({
+            ...registration,
+            writes: change !== 'revoke writes',
+            tools:
+              change === 'remove tool'
+                ? bridgeRegistration.tools
+                : registration.tools,
+          });
+    expect(response.status).toBe(204);
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: 'USER_MCP_OUTCOME_UNKNOWN',
+        message: expect.stringContaining(
+          'The write may or may not have been applied',
+        ),
+      },
+    });
+    const send = jest.fn(() => true);
+    const reconnected = bridge.subscribe('browser', ['work'], {
+      send,
+      close: () => {},
+    });
+    expect(send).not.toHaveBeenCalled();
+    reconnected();
+    expect((await register()).status).toBe(204);
+    bridge.subscribe('browser', ['work'], { send, close: () => {} });
+    expect(send).not.toHaveBeenCalled();
+    const late = await bridgeRequest(
+      session.key,
+      'POST',
+      `/results/${events[0].callId}`,
+      {
+        result: { content: 'stored' },
+      },
+    );
+    expect(late.status).toBe(404);
+    expect(await late.json()).toMatchObject({
+      error: { code: 'USER_MCP_CALL_NOT_FOUND' },
+    });
+  },
+);
+
 function chat(headers: Record<string, string> = {}, path = 'chat/completions') {
   return fetch(`${base}/v1/${path}`, {
     method: 'POST',
@@ -528,9 +661,10 @@ function chat(headers: Record<string, string> = {}, path = 'chat/completions') {
   });
 }
 
-test('bootstrap rejects every route while tool search is unhealthy and admits traffic only after a successful probe', async () => {
+test('bootstrap allows catalogue recovery while other routes wait for tool search readiness', async () => {
   process.env.LLM_AGENT_PLAIN_API = 'true';
   process.env.LLM_AGENT_PLAIN_MCP = 'true';
+  const session = await openMcpSession();
   let failed = true;
   const failure = {
     ok: false as const,
@@ -559,6 +693,25 @@ test('bootstrap rejects every route while tool search is unhealthy and admits tr
           expect(await response.json()).toMatchObject({ status: 'DOWN' });
       }
     }
+    expect(probe).not.toHaveBeenCalled();
+    const payload = { servers: [bridgeRegistration] };
+    expect((await bridgeRequest(session.key, 'PUT', '', payload)).status).toBe(
+      204,
+    );
+    expect(session.userMcp?.catalogue()).toHaveLength(1);
+    expect(
+      (
+        await fetch(`${base}/V1/SESSION/USER-MCP/?server=work`, {
+          method: 'DELETE',
+          headers: { [SESSION_HEADER]: session.key },
+        })
+      ).status,
+    ).toBe(204);
+    expect(session.userMcp?.catalogue()).toEqual([]);
+    expect((await bridgeRequest(session.key, 'PUT', '', payload)).status).toBe(
+      204,
+    );
+    expect((await bridgeRequest(undefined, 'DELETE')).status).toBe(400);
     expect(probe).not.toHaveBeenCalled();
     const routes = [
       '/v1/chat/completions',
@@ -594,6 +747,11 @@ test('bootstrap rejects every route while tool search is unhealthy and admits tr
         'DELETE',
         'OPTIONS',
       ]) {
+        if (
+          route === '/v1/session/user-mcp' &&
+          (method === 'PUT' || method === 'DELETE')
+        )
+          continue;
         const response = await fetch(base + route, { method });
         expect(response.status).toBe(503);
         if (method !== 'HEAD')
@@ -609,7 +767,7 @@ test('bootstrap rejects every route while tool search is unhealthy and admits tr
       body: '{',
     });
     expect(malformed.status).toBe(503);
-    expect(longSessions().size()).toBe(0);
+    expect(longSessions().size()).toBe(1);
     failed = false;
     probe.mockClear();
     expect((await fetch(`${base}/health`)).status).toBe(503);

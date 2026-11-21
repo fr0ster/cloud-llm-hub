@@ -1859,7 +1859,9 @@ function withExternalToolsRag(
     docsMcp().withToolsRag(rag, role),
     role,
     config.externalMcp,
-    externalToolEmbedder,
+    () =>
+      providers?.embedding?.userMcpToolSearchRetrieval ??
+      externalToolEmbedder(),
     () => providers?.embedding?.probeQueryEmbedder,
   );
 }

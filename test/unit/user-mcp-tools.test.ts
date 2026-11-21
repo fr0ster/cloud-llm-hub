@@ -6,6 +6,8 @@ import {
 import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
 import { parseExternalMcp } from '../../srv/lib/external-mcp';
 import { LongSessionRegistry } from '../../srv/lib/long-session';
+import { buildEmbedding } from '../../srv/lib/providers';
+import { SapAiCoreEmbedder } from '../../srv/lib/sap-ai-core-embedder';
 import {
   assertToolSearchHealthy,
   toolSearchFailure,
@@ -14,6 +16,7 @@ import {
 import { resolverFor } from '../../srv/lib/trust-resolver';
 import {
   UserMcpBridge,
+  type UserMcpCall,
   userMcpRegistration,
 } from '../../srv/lib/user-mcp-bridge';
 import {
@@ -125,7 +128,7 @@ test('role filtering, default read-only, write opt-in and profile ceilings apply
   expect(send).not.toHaveBeenCalled();
 });
 
-test.each(['missing', 'query', 'empty query', 'document', 'empty document'])(
+test.each(['missing', 'query', 'empty query', 'document'])(
   'ranked user MCP search fails on %s and stays down until its probe succeeds',
   async (failure) => {
     const { scope } = openSessions();
@@ -143,7 +146,7 @@ test.each(['missing', 'query', 'empty query', 'document', 'empty document'])(
       embedDocument: async () => {
         if (broken && failure === 'document')
           throw new Error('Private document');
-        return { vector: broken && failure === 'empty document' ? [] : [1, 0] };
+        return { vector: [1, 0] };
       },
     };
     const config = parseExternalMcp({
@@ -189,56 +192,218 @@ test.each(['missing', 'query', 'empty query', 'document', 'empty document'])(
   },
 );
 
-test('a successful probe for one session cannot clear another session’s search failure', async () => {
-  const first = openSessions();
-  const second = openSessions();
-  for (const [session, description] of [
-    [first, 'first'],
-    [second, 'second'],
-  ] as const) {
-    session.bridge.register(
+test.each([
+  ['empty vector', []],
+  ['non-finite vector', [NaN, 0]],
+  ['wrong dimension', [1]],
+  ['provider rejects the document', undefined],
+] as const)(
+  'isolates a private catalogue with %s',
+  async (_failure, vector) => {
+    const { bridge, bob, scope } = openSessions();
+    bridge.register(
       userMcpRegistration.parse({
-        servers: [{ ...documents, tools: [{ ...read, description }] }],
+        servers: [
+          {
+            ...documents,
+            tools: [{ ...read, description: 'Invalid document' }],
+          },
+        ],
       }).servers,
     );
-  }
+    bob.userMcp = new UserMcpBridge();
+    bob.userMcp.register(
+      catalogue.servers.filter((server) => server.name === documents.name),
+    );
+    const base: IRag = {
+      query: async () => ({ ok: true, value: [] }),
+      getById: async () => ({ ok: true, value: null }),
+      healthCheck: async () => ({ ok: true, value: undefined }),
+    };
+    const embedDocument = jest.fn(async (text: string) => {
+      if (text.endsWith('Invalid document')) {
+        if (!vector) throw new Error('Provider rejected private input');
+        return { vector: [...vector] };
+      }
+      return { vector: [1, 0] };
+    });
+    const rag = withUserMcpToolsRag(
+      base,
+      'executor',
+      parseExternalMcp({
+        LLM_AGENT_MCP_SELECTION: 'user__documents=rag,user__records=direct',
+      }),
+      () => ({
+        embedQuery: async () => ({ vector: [1, 0] }),
+        embedDocument,
+      }),
+    );
+    const search = () => rag.query(new TextOnlyEmbedding('read'), 1);
+    expect(await scope(search)).toMatchObject({
+      ok: false,
+      error: {
+        code: 'USER_MCP_CATALOGUE_INVALID',
+        message: 'USER_MCP_CATALOGUE_INVALID: Could not index documents/read',
+      },
+    });
+    expect(toolSearchFailure()).toBeUndefined();
+    await assertToolSearchHealthy();
+    const result = await runWithSessionId(bob.key, search, [], bob.userId, {
+      channel: 'openai',
+      admin: false,
+      userMcpSession: bob,
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      value: [{ metadata: { id: 'tool:user__documents__read' } }],
+    });
+    expect(embedDocument.mock.calls.map(([input]) => input)).toEqual([
+      expect.stringContaining('Invalid document'),
+      ...(vector ? [] : ['tool search readiness probe']),
+      expect.stringContaining('Read documentation'),
+    ]);
+  },
+);
+
+test('document outage recovery probes only infrastructure even after the owner replaces its catalogue', async () => {
+  const { bridge, scope } = openSessions();
+  bridge.register(
+    userMcpRegistration.parse({
+      servers: [
+        {
+          ...documents,
+          tools: [{ ...read, description: 'Private description' }],
+        },
+      ],
+    }).servers,
+  );
   const base: IRag = {
     query: async () => ({ ok: true, value: [] }),
     getById: async () => ({ ok: true, value: null }),
     healthCheck: async () => ({ ok: true, value: undefined }),
   };
-  const broken = new Set(['first', 'second']);
+  let broken = true;
+  const embedDocument = jest.fn(async (text: string) => {
+    if (broken || text.endsWith('Private description'))
+      throw new Error('Could not index document');
+    return { vector: [1, 0] };
+  });
   const rag = withUserMcpToolsRag(
     base,
     'executor',
     parseExternalMcp({ LLM_AGENT_MCP_SELECTION: 'user__documents=rag' }),
     () => ({
       embedQuery: async () => ({ vector: [1, 0] }),
-      embedDocument: async (text) => {
-        if ([...broken].some((description) => text.endsWith(description)))
-          throw new Error('Could not index document');
-        return { vector: [1, 0] };
-      },
+      embedDocument,
     }),
   );
   try {
-    for (const { scope } of [first, second]) {
-      const result = await scope(() =>
-        rag.query(new TextOnlyEmbedding('read'), 1),
-      );
-      expect(result).toMatchObject({
-        ok: false,
-        error: { code: 'TOOL_SEARCH_UNAVAILABLE' },
-      });
-    }
-    broken.delete('second');
-    await expect(assertToolSearchHealthy()).rejects.toMatchObject({
-      statusCode: 503,
+    expect(
+      await scope(() => rag.query(new TextOnlyEmbedding('read'), 1)),
+    ).toMatchObject({
+      ok: false,
+      error: { code: 'TOOL_SEARCH_UNAVAILABLE' },
     });
+    bridge.register(catalogue.servers);
+    embedDocument.mockClear();
+    broken = false;
+    await assertToolSearchHealthy();
+    expect(embedDocument.mock.calls).toEqual([['tool search readiness probe']]);
+    expect(toolSearchFailure()).toBeUndefined();
   } finally {
-    broken.clear();
+    broken = false;
     await assertToolSearchHealthy();
   }
+});
+
+test('private document rejections leave the production embedding breaker untouched', async () => {
+  const { scope } = openSessions();
+  const provider = jest
+    .spyOn(SapAiCoreEmbedder.prototype, 'embed')
+    .mockImplementation(async (text) => {
+      if (text.startsWith('Tool:'))
+        throw new Error('Provider rejected private input');
+      return { vector: [1, 0] };
+    });
+  try {
+    const embedding = buildEmbedding({ kind: 'sap-ai-core', model: 'test' });
+    if (!embedding) throw new Error('Embedding missing');
+    const failures = jest.spyOn(embedding.breaker, 'recordFailure');
+    const base: IRag = {
+      query: async () => ({ ok: true, value: [] }),
+      getById: async () => ({ ok: true, value: null }),
+      healthCheck: async () => ({ ok: true, value: undefined }),
+    };
+    const rag = withUserMcpToolsRag(
+      base,
+      'executor',
+      parseExternalMcp({ LLM_AGENT_MCP_SELECTION: 'user__documents=rag' }),
+      () => embedding.userMcpToolSearchRetrieval,
+    );
+    await expect(
+      scope(() => rag.query(new TextOnlyEmbedding('read'), 1)),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'USER_MCP_CATALOGUE_INVALID' },
+    });
+    expect(failures).not.toHaveBeenCalled();
+    expect(toolSearchFailure()).toBeUndefined();
+  } finally {
+    provider.mockRestore();
+  }
+});
+
+test('unregistering a write before delivery revokes it without an uncertain outcome', async () => {
+  const { bridge, scope } = openSessions();
+  const attempted: UserMcpCall[] = [];
+  bridge.subscribe('companion', ['records'], {
+    send: (event) => {
+      attempted.push(event);
+      bridge.unregister();
+      return false;
+    },
+    close: () => {},
+  });
+  await expect(
+    scope(() => userMcpClient('executor').callTool('user__records__write', {})),
+  ).resolves.toMatchObject({ ok: false, error: { code: 'USER_MCP_REVOKED' } });
+  expect(attempted).toHaveLength(1);
+  expect(
+    bridge.answer(attempted[0].callId, { result: { content: 'late' } }),
+  ).toBe(false);
+  const send = jest.fn(() => true);
+  bridge.subscribe('companion', ['records'], { send, close: () => {} });
+  expect(send).not.toHaveBeenCalled();
+});
+
+test('a compatible replacement preserves replay until the read registration is removed', async () => {
+  const { bridge, scope } = openSessions();
+  const original: UserMcpCall[] = [];
+  const detach = bridge.subscribe('browser', ['documents'], {
+    send: (event) => {
+      original.push(event);
+      return true;
+    },
+    close: () => {},
+  });
+  const pending = scope(() =>
+    userMcpClient('executor').callTool('user__documents__read', {}),
+  );
+  detach();
+  const [event] = original;
+  expect(event).toBeDefined();
+  bridge.register(catalogue.servers);
+  const send = jest.fn((_event: UserMcpCall) => true);
+  bridge.subscribe('browser', ['documents'], { send, close: () => {} });
+  expect(send).toHaveBeenCalledWith({ ...event, replay: true });
+  bridge.unregister('documents');
+  await expect(pending).resolves.toMatchObject({
+    ok: false,
+    error: { code: 'USER_MCP_REVOKED' },
+  });
+  expect(bridge.answer(event.callId, { result: { content: 'late' } })).toBe(
+    false,
+  );
 });
 
 test('one shared tool client isolates users, session instances and the agent MCP channel', async () => {

@@ -1602,18 +1602,28 @@ read-only scope, still apply. Dispatch checks the live catalogue and role again.
 The public namespace is `user__<server>__<tool>`, and retrieval records use the typed
 `tool:` key. Per-server direct, RAG and automatic selection follow the external
 MCP count policy. Tool vectors are held in the session. Failed ranked searches
-in user MCP or docs MCP use the shared tool-search health guard. A missing
-embedder, failed embedding, or unavailable tool index returns an explicit
-search error. The hub rejects API traffic until the readiness probes succeed.
+use the shared tool-search health guard for infrastructure errors. A failed
+private tool embedding returns `USER_MCP_CATALOGUE_INVALID` with the server and
+tool name to the originating session. If the embedder rejects a private
+document, the hub checks the same embedding operation with a fixed probe text.
+Shared embedder and vector-store outages affect hub readiness. Recovery probes
+for user MCP exercise the embedder with fixed text. Authenticated registration
+and removal remain available during an outage.
 Model-facing results carry the `user-mcp` trust class, below target and docs by
 default. Their content is external data and gives no instructions to the agent.
 
 A request or deferred worker uses the registration belonging to its originating
-authenticated HTTP chat session. A call waits for its reply, session closure or
-request/task cancellation. A server without a connected executor returns
-`USER_MCP_UNAVAILABLE` immediately. The hub sends each call to an opted-in stream
-for that server and transport. Reconnects replay outstanding calls with the same
-call IDs and `replay: true`. Executors can re-execute reads. For writes, they
+authenticated HTTP chat session. A call waits for a reply, revocation, session
+closure, or request/task cancellation. A server without a connected executor
+returns `USER_MCP_UNAVAILABLE` immediately. The hub sends each call to an opted-in stream
+for that server and transport and records the registration generation used at
+dispatch. Removing a registration or replacing it in a way that disallows a
+pending call settles the call immediately. Any revoked read or write awaiting
+delivery returns `USER_MCP_REVOKED`. Revoked writes already sent to an executor
+return `USER_MCP_OUTCOME_UNKNOWN` because the write may have been applied. A
+late result for a revoked call returns `USER_MCP_CALL_NOT_FOUND`.
+Reconnects replay still-permitted calls with the same call IDs and
+`replay: true`. Executors can re-execute reads. For writes, they
 record the call ID before execution and use it to return the stored result or
 report an unknown outcome on replay. The bridge settles an unknown outcome as
 `USER_MCP_OUTCOME_UNKNOWN` without an automatic retry. The executor can

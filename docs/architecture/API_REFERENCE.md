@@ -1172,9 +1172,13 @@ deployment MCP, based on the number of tools in the server catalogue. Deployers
 can select `direct`, `rag`, or `auto` with a `user__<server>` entry in
 `LLM_AGENT_MCP_SELECTION`. Registration roles and profile permissions filter
 both selection and execution. Ranked searches require a working embedder and
-tool index. A search failure puts the hub in tool-search `DOWN` state. All API
-requests receive 503 until the existing readiness probes succeed. Health
-endpoints report the state without starting a probe.
+tool index. A private catalogue that cannot be indexed returns
+`USER_MCP_CATALOGUE_INVALID` to the originating session and identifies the
+server and tool. Shared embedder or vector-store failures put the hub in
+tool-search `DOWN` state. API requests receive 503 until the readiness probes
+succeed. Authenticated `PUT` and `DELETE /v1/session/user-mcp` remain available
+for catalogue recovery. Health endpoints report the state without starting a
+probe.
 
 An executor stream can open before registration and can run in any coordinator
 mode. The latest connection for a given server and transport receives the calls.
@@ -1189,8 +1193,9 @@ data: {"callId":"c1143887-95b4-4086-9325-2a7587935412","server":"work","tool":"l
 ```
 
 On reconnect, send the usual `Last-Event-ID` for dialogue messages. The bridge
-also replays outstanding calls for the selected servers with the original
-`callId` and `"replay": true`. These events leave the dialogue cursor intact.
+replays outstanding calls still permitted by the current registration with the
+original `callId` and `"replay": true`. These events leave the dialogue cursor
+intact.
 Executors may re-execute reads on replay. For writes, the executor must record
 the `callId` before executing and retain it and its result across reconnections.
 On replay of a write:
@@ -1202,7 +1207,14 @@ On replay of a write:
 
 Only calls with a connected executor at dispatch enter the pending queue. A
 worker gets `USER_MCP_UNAVAILABLE` immediately when it cannot dispatch. Once
-dispatched, the worker waits for a reply, session closure, or cancellation.
+dispatched, the worker waits for a reply, revocation, session closure, or
+cancellation. Each call is bound to its dispatch registration generation.
+Deleting a registration ends its pending calls immediately. A replacement ends
+calls when it removes the tool, revokes its write or role permission, or
+changes the transport or the tool's read/write classification. The worker
+receives `USER_MCP_REVOKED` for any revoked read and for a revoked write awaiting
+delivery. It receives `USER_MCP_OUTCOME_UNKNOWN` for revoked writes already sent
+to an executor.
 
 An executor can answer with `{ "result": { "content": [{ "type": "text",
 "text": "found" }] } }`. The hub also accepts string or object `content`,
@@ -1213,8 +1225,8 @@ hub accepts
 An error is returned to the worker as a tool error. `{ "outcome": "unknown" }`
 settles the call with the typed failure `USER_MCP_OUTCOME_UNKNOWN`, meaning the
 write may or may not have been applied. The hub never automatically retries
-this write. A valid call ID that is finished, cancelled, or owned by another
-session returns 404
+this write. A valid call ID that is finished, cancelled, revoked, or owned by
+another session returns 404
 `USER_MCP_CALL_NOT_FOUND`. Missing session headers on bridge requests return 400
 `SESSION_REQUIRED`, and keys without an owned session return 404
 `SESSION_NOT_FOUND`. Invalid bodies, names, or executor parameters return 400.

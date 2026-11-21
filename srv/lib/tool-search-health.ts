@@ -85,6 +85,7 @@ export async function queryToolCorpus(
   query: () => Promise<SearchResult>,
   probe: () => Promise<SearchResult>,
   signal?: AbortSignal,
+  isBackendFailure: (error: RagError) => boolean = () => true,
 ): Promise<SearchResult> {
   const message = `Tool search unavailable: ${label} backend or embedder failed`;
   let result: SearchResult;
@@ -97,7 +98,8 @@ export async function queryToolCorpus(
     };
   }
   // Caller cancellation says nothing about backend availability.
-  if (!result.ok && !signal?.aborted) failures.set(store, { message, probe });
+  if (!result.ok && !signal?.aborted && isBackendFailure(result.error))
+    failures.set(store, { message, probe });
   return result;
 }
 
