@@ -37,6 +37,7 @@ import {
   renderTurn,
   type StoredTurn,
 } from './history-turn';
+import { runWithoutLlmSpend } from './llm-failure';
 import { getHubRagAccess } from './rag-access';
 import {
   sessionHistoryRepair,
@@ -788,7 +789,10 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
       id: input.id ?? `turn:${randomUUID()}`,
       createdAt: (this.options.now?.() ?? new Date()).toISOString(),
     });
-    return queue.repair ? false : this.drainTurns(sessionId, queue);
+    // The retained history queue drains independently of response delivery.
+    return queue.repair
+      ? false
+      : runWithoutLlmSpend(() => this.drainTurns(sessionId, queue));
   }
 
   private async storeTurn(

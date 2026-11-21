@@ -10,10 +10,22 @@ import { throttleCallScope, withThrottleCall } from './throttle-strategy';
 import { reportWorkerActivity } from './worker-activity';
 
 // Observe provider calls independently of the pipeline's usage and result.
-const spendObserver = new AsyncLocalStorage<{
+interface SpendObserver {
   record: (usage: TokenUsage) => void;
   preview?: (call: symbol, usage?: TokenUsage) => void;
-}>();
+  onSuccessfulStreamAttempt?: () => void;
+}
+const spendObserver = new AsyncLocalStorage<SpendObserver | undefined>();
+const zeroTokenUsage: TokenUsage = {
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+};
+
+export function runWithoutLlmSpend<T>(run: () => T): T {
+  return spendObserver.run(undefined, run);
+}
+
 export function observeLlmSpend<T>(
   run: () => T,
   record: (usage: TokenUsage) => void,
@@ -25,6 +37,15 @@ export function observeLlmSpend<T>(
 /** Attribute one provider attempt, preserving an existing per-model breakdown. */
 export function reportLlmSpend(usage: TokenUsage, model: string): void {
   spendObserver.getStore()?.record(attributeTokenUsage(usage, model));
+}
+
+/** Record a physical attempt when the provider supplied no token counters. */
+export function reportUsageFreeLlmAttempt(
+  model: string,
+  succeeded: boolean,
+): void {
+  if (succeeded) spendObserver.getStore()?.onSuccessfulStreamAttempt?.();
+  reportLlmSpend(zeroTokenUsage, model);
 }
 
 export function attributeTokenUsage(
@@ -82,24 +103,26 @@ export function captureTokenUsage() {
 export function observeEmbeddingUsage(
   recorder?: IUsageRecorder,
 ): IUsageRecorder {
-  return {
+  const observer = spendObserver.getStore();
+  const wrap = (delegate?: IUsageRecorder): IUsageRecorder => ({
     record(input) {
       if (input.kind === 'embedding.call' && input.inputTokens !== undefined) {
-        reportLlmSpend(
-          {
-            promptTokens: input.inputTokens,
-            completionTokens: 0,
-            totalTokens: input.inputTokens,
-          },
-          input.model,
+        observer?.record(
+          attributeTokenUsage(
+            {
+              promptTokens: input.inputTokens,
+              completionTokens: 0,
+              totalTokens: input.inputTokens,
+            },
+            input.model,
+          ),
         );
       }
-      recorder?.record(input);
+      delegate?.record(input);
     },
-    with(context) {
-      return observeEmbeddingUsage(recorder?.with(context));
-    },
-  };
+    with: (context) => wrap(delegate?.with(context)),
+  });
+  return wrap(recorder);
 }
 
 const anthropicErrorCodes = new Set([
@@ -222,8 +245,11 @@ export function reliableLlm(inner: ILlm): ILlm {
             try {
               reportWorkerActivity('llm call');
               const result = await target.chat(...args);
-              if (result.ok && result.value.usage)
-                reportLlmSpend(result.value.usage, target.model ?? 'unknown');
+              if (result.ok)
+                reportLlmSpend(
+                  result.value.usage ?? zeroTokenUsage,
+                  target.model ?? 'unknown',
+                );
               return result.ok
                 ? result
                 : {
@@ -242,9 +268,20 @@ export function reliableLlm(inner: ILlm): ILlm {
           // Async generators execute on next(), so enter the call scope around consumption.
           return withThrottleCall(() => {
             reportWorkerActivity('llm call');
-            const iterator = target.streamChat(...args)[Symbol.asyncIterator]();
             const next = throttleCallScope();
-            const preview = spendObserver.getStore()?.preview;
+            const observer = spendObserver.getStore();
+            let successfulAttemptReported = false;
+            const streamObserver = observer && {
+              ...observer,
+              onSuccessfulStreamAttempt() {
+                successfulAttemptReported = true;
+              },
+            };
+            const advance = <T>(run: () => T): T =>
+              spendObserver.run(streamObserver, () => next(run));
+            const iterator = advance(() =>
+              target.streamChat(...args)[Symbol.asyncIterator](),
+            );
             const call = Symbol();
             const model = target.model ?? 'unknown';
             return (async function* () {
@@ -255,15 +292,20 @@ export function reliableLlm(inner: ILlm): ILlm {
               const report = () => {
                 if (reported || !spent) return;
                 reported = true;
-                preview?.(call);
+                observer?.preview?.(call);
                 // The adapter's configured model serves the call; it deliberately
                 // ignores client-facing model aliases in CallOptions.
-                reportLlmSpend(spent, model);
+                observer?.record(attributeTokenUsage(spent, model));
               };
               try {
                 while (true) {
-                  const item = await next(() => iterator.next());
-                  if (item.done) return;
+                  const item = await advance(() => iterator.next());
+                  if (item.done) {
+                    // A provider that reports physical attempts may have counted it.
+                    if (!successfulAttemptReported && !args[2]?.signal?.aborted)
+                      spent ??= zeroTokenUsage;
+                    return;
+                  }
                   const result = item.value;
                   if (!result.ok) {
                     report();
@@ -275,7 +317,10 @@ export function reliableLlm(inner: ILlm): ILlm {
                   }
                   if (result.value.usage) {
                     spent = mergeStreamUsage(spent, result.value.usage);
-                    preview?.(call, attributeTokenUsage(spent, model));
+                    observer?.preview?.(
+                      call,
+                      attributeTokenUsage(spent, model),
+                    );
                   }
                   yield result;
                 }
@@ -287,7 +332,7 @@ export function reliableLlm(inner: ILlm): ILlm {
                 };
               } finally {
                 report();
-                await iterator.return?.();
+                await advance(() => iterator.return?.());
               }
             })();
           });

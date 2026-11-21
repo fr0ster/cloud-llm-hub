@@ -19,6 +19,7 @@ import { buildHeadersForDestination } from '@sap-cloud-sdk/connectivity';
 import { resolveHttpDestination } from '../connections/destinationResolver';
 import { profileToolAllowed } from '../request-session';
 import { BuildValidationError } from './build-validation-error';
+import { runWithoutLlmSpend } from './llm-failure';
 import { queryToolCorpus, waitForBackendWork } from './tool-search-health';
 import { resolverFor, type TrustResolver } from './trust-resolver';
 import { isUserMcpName } from './user-mcp-names';
@@ -294,7 +295,10 @@ export class ExternalMcp {
                   .map(([name]) => name),
               });
             indexing = true;
-            await this.indexDestination(destination, controller.signal);
+            // This index serves all callers, including when a profile starts discovery.
+            await runWithoutLlmSpend(() =>
+              this.indexDestination(destination, controller.signal),
+            );
           })(),
           new Promise<never>((_resolve, reject) => {
             timer = setTimeout(() => {

@@ -96,6 +96,7 @@ import {
   captureTokenUsage,
   isLlmFailure,
   llmFailure,
+  runWithoutLlmSpend,
 } from './llm-failure';
 import { longSessionsIfReady } from './long-session';
 import { withModelCatalog } from './model-catalog';
@@ -1481,8 +1482,10 @@ async function open(
                   withCoordinatorModel(
                     currentRoleModel('coordinator') ?? selectedModel,
                     () =>
-                      observeProfilePreparation(options?.signal, () =>
-                        profileRunner.preparePlanner(input, options),
+                      observeRetrieval(() =>
+                        observeProfilePreparation(options?.signal, () =>
+                          profileRunner.preparePlanner(input, options),
+                        ),
                       ),
                   ),
               );
@@ -1853,8 +1856,10 @@ async function open(
       ragCaller: options.caller ?? boundCaller.value,
       identity: dialogueIdentity(),
     });
+    // The library can drain several users and task events in one async chain.
+    // The turn and TaskBoard callbacks own their spend independently.
     return llms.run(() =>
-      send(text, { ...options, trace })
+      runWithoutLlmSpend(() => send(text, { ...options, trace }))
         .then((reply) => {
           const retrieval = replyRetrieval.get(reply.id);
           replyRetrieval.delete(reply.id);

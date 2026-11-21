@@ -32,7 +32,11 @@ import {
   clientTurnMessages,
   turnSource,
 } from '../../srv/lib/dialogue-turn-source';
-import { reportLlmSpend } from '../../srv/lib/llm-failure';
+import {
+  captureTokenUsage,
+  reliableLlm,
+  reportLlmSpend,
+} from '../../srv/lib/llm-failure';
 import { parseModelAllowlist } from '../../srv/lib/model-policy';
 import * as plannerMemory from '../../srv/lib/planner-memory';
 import { getHubRagAccess } from '../../srv/lib/rag-access';
@@ -1920,14 +1924,26 @@ test('reused handle captures caller privileges and channel for each queued turn'
   await recorder.close(1000);
 });
 
-test('queued background tasks keep their scheduling turn identity across later callers', async () => {
+test('queued background tasks keep their scheduling identity and account for their own provider calls', async () => {
   const { h } = await ready();
   const release = await requiredExecutorPool().acquire();
+  const releaseSpend = captureTokenUsage();
+  const usage = { promptTokens: 7, completionTokens: 3, totalTokens: 10 };
+  const llm = reliableLlm({
+    model: 'worker-model',
+    chat: async () => ({
+      ok: true,
+      value: { content: 'done', finishReason: 'stop', usage },
+    }),
+    async *streamChat() {},
+  });
   const identities: { admin: boolean; channel: string }[] = [];
   mockRun.mockImplementation(async () => {
     const { admin, channel } = getRagCallerIdentity();
     identities.push({ admin, channel });
-    return { output: 'done' };
+    const result = await llm.chat([]);
+    if (!result.ok) throw result.error;
+    return { output: result.value.content };
   });
   try {
     await runWithSessionId('key', () => h.session.send('first'), [], 'alice', {
@@ -1940,13 +1956,25 @@ test('queued background tasks keep their scheduling turn identity across later c
     });
     expect(identities).toEqual([]);
   } finally {
-    release();
+    releaseSpend.run(release);
   }
   await until(() => identities.length === 2);
   expect(identities).toEqual([
     { admin: true, channel: 'anthropic' },
     { admin: false, channel: 'openai' },
   ]);
+  await until(
+    () =>
+      h.session.snapshot().tasks.filter((task) => task.state === 'done')
+        .length === 2,
+  );
+  expect(h.session.snapshot().tasks.map((task) => task.usage)).toEqual(
+    Array.from({ length: 2 }, () => ({
+      ...usage,
+      models: { 'worker-model': { ...usage, requests: 1 } },
+    })),
+  );
+  expect(releaseSpend.usage()).toBeUndefined();
 });
 
 test('event planner uses the originating task identity when an earlier caller owns the drain', async () => {

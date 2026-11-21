@@ -1,5 +1,6 @@
 import { RagError, type RagResult, type Result } from '@mcp-abap-adt/llm-agent';
 import type { RequestHandler } from 'express';
+import { runWithoutLlmSpend } from './llm-failure';
 
 type SearchResult = Result<RagResult[], RagError>;
 type Failure = { message: string } & (
@@ -114,7 +115,7 @@ export async function assertToolSearchHealthy(
         [...failures].map(async ([store, failure]) => {
           if (!('probe' in failure)) return;
           try {
-            const result = await failure.probe();
+            const result = await runWithoutLlmSpend(failure.probe);
             // A concurrent search failure must not be cleared by an older probe.
             if (result.ok && failures.get(store) === failure)
               failures.delete(store);
