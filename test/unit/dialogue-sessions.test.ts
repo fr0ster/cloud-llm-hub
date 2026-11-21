@@ -1437,7 +1437,11 @@ test('a deferred dialogue worker can call the authenticated turn’s registered 
   const send = jest.fn((call: UserMcpCall) =>
     bridge.answer(call.callId, { result: { content: data } }),
   );
-  bridge.subscribe('companion', ['documents'], { send, close: () => {} });
+  bridge.subscribe('companion', ['documents'], {
+    executorId: 'companion-a',
+    send,
+    close: () => {},
+  });
   const llm: ILlm = {
     model: 'fake',
     async chat(messages, tools) {

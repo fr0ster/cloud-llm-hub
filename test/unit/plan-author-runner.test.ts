@@ -154,7 +154,11 @@ test('the coordinator and plan author have no user MCP catalogue grants, tools o
     }).servers,
   );
   const send = jest.fn(() => true);
-  bridge.subscribe('browser', ['work'], { send, close: () => {} });
+  bridge.subscribe('browser', ['work'], {
+    executorId: 'browser-a',
+    send,
+    close: () => {},
+  });
   const embedded = new MCPClientWrapper({
     transport: 'embedded',
     listToolsHandler: async () => [],

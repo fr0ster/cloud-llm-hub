@@ -1613,20 +1613,28 @@ Model-facing results carry the `user-mcp` trust class, below target and docs by
 default. Their content is external data and gives no instructions to the agent.
 
 A request or deferred worker uses the registration belonging to its originating
-authenticated HTTP chat session. A call waits for a reply, revocation, session
-closure, or request/task cancellation. A server without a connected executor
-returns `USER_MCP_UNAVAILABLE` immediately. The hub sends each call to an opted-in stream
-for that server and transport and records the registration generation used at
-dispatch. Removing a registration or replacing it in a way that disallows a
-pending call settles the call immediately. Any revoked read or write awaiting
-delivery returns `USER_MCP_REVOKED`. Revoked writes already sent to an executor
-return `USER_MCP_OUTCOME_UNKNOWN` because the write may have been applied. A
-late result for a revoked call returns `USER_MCP_CALL_NOT_FOUND`.
+authenticated HTTP chat session. Each executor generates a stable opaque ID,
+stores it in browser storage or companion configuration or state, and provides
+it when registering or subscribing. The hub sends each call to the active
+stream for the server and transport. It records the registration generation at
+dispatch and the executor ID on delivery. A server without a connected executor
+returns `USER_MCP_UNAVAILABLE` immediately. If an active stream cannot send a
+write, it stays pending for its first delivery to the next executor. Removing
+a registration or replacing it in a way that disallows a pending call settles
+the call immediately. A revoked read or undelivered write returns
+`USER_MCP_REVOKED`. A revoked delivered write returns `USER_MCP_OUTCOME_UNKNOWN`
+because it may have been applied.
 Reconnects replay still-permitted calls with the same call IDs and
-`replay: true`. Executors can re-execute reads. For writes, they
-record the call ID before execution and use it to return the stored result or
-report an unknown outcome on replay. The bridge settles an unknown outcome as
-`USER_MCP_OUTCOME_UNKNOWN` without an automatic retry. The executor can
+`replay: true`. A read may be replayed to any executor for that server and
+transport. The bridge replays a delivered write only to the executor ID that
+received it. Executors record the call ID before executing a write and use that
+record to return the stored result or report an unknown outcome on replay.
+When a different executor registers or subscribes for the same server and
+transport, the bridge immediately settles outstanding delivered writes with
+`USER_MCP_OUTCOME_UNKNOWN` because they may have been applied. The bridge sends
+no further deliveries for those calls and rejects late results with
+`USER_MCP_CALL_NOT_FOUND`. Pending calls also settle on executor reply, session
+closure, or request/task cancellation. The executor can
 unregister during a graceful disconnect. Closing the session discards all
 registrations and settles pending calls before draining active work. Restarted
 sessions begin with an empty catalogue. Call logs contain the tool name, byte

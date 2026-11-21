@@ -85,9 +85,10 @@ export async function handleDialogueEvents(
     }
   };
   if (subscription?.success) {
-    const { userMcp, server } = subscription.data;
+    const { userMcp, executorId, server } = subscription.data;
     session.userMcp ??= new UserMcpBridge();
     detachExecutor = session.userMcp.subscribe(userMcp, server, {
+      executorId,
       send: (call) => send('user_mcp_call', call),
       close: () => {
         cleanup();

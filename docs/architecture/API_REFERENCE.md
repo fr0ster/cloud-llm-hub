@@ -1126,10 +1126,10 @@ requests can run while chat or worker execution is active.
 
 | Method and path | Request | Success |
 |---|---|---|
-| `PUT /v1/session/user-mcp` | `{ "servers": [...] }` with one or more server registrations | `204` |
+| `PUT /v1/session/user-mcp` | `{ "servers": [...], "executorId": "<id>" }` with one or more server registrations. Omit `executorId` for catalogue-only changes. | `204` |
 | `DELETE /v1/session/user-mcp?server=<name>` | Delete the named registration. Omit `server` to delete all registrations in the session. | `204` |
 | `POST /v1/session/user-mcp/results/{callId}` | Exactly one of `result`, `error`, or `outcome: "unknown"` | `204` |
-| `GET /v1/session/events?userMcp=<transport>&server=<name>` | Open an executor SSE stream. Repeat `server` for each server the executor serves. | `200` with `text/event-stream` |
+| `GET /v1/session/events?userMcp=<transport>&server=<name>&executorId=<id>` | Open an executor SSE stream. Repeat `server` for each server the executor serves. | `200` with `text/event-stream` |
 
 An example registration follows.
 
@@ -1180,8 +1180,16 @@ succeed. Authenticated `PUT` and `DELETE /v1/session/user-mcp` remain available
 for catalogue recovery. Health endpoints report the state without starting a
 probe.
 
+Each executor generates an opaque, case-sensitive `executorId` and reuses it
+across reconnects and when registering the servers it executes. Use a non-empty
+string of ASCII letters, digits, underscores and hyphens. The WebUI keeps the ID
+in browser storage and the companion keeps it in its configuration or state.
+Executors with independent write call records must use distinct IDs.
+
 An executor stream can open before registration and can run in any coordinator
-mode. The latest connection for a given server and transport receives the calls.
+mode. The latest subscription for a server and transport receives the calls. A
+registration with an `executorId` also takes over that server and transport,
+superseding a stream with a different ID.
 Regular dialogue observers receive dialogue events. Opted-in streams in dialogue
 mode receive those events as well as their server calls. The event carries the
 executor's original tool name.
@@ -1192,12 +1200,18 @@ data: {"callId":"c1143887-95b4-4086-9325-2a7587935412","server":"work","tool":"l
 
 ```
 
-On reconnect, send the usual `Last-Event-ID` for dialogue messages. The bridge
-replays outstanding calls still permitted by the current registration with the
-original `callId` and `"replay": true`. These events leave the dialogue cursor
-intact.
+On reconnect, send the usual `Last-Event-ID` for dialogue messages. Replayed
+calls keep the original `callId`, carry `"replay": true`, and leave the dialogue
+cursor intact. Reads still permitted by the registration may be replayed to any
+executor subscribed to that server and transport. A delivered write may be
+replayed only to the `executorId` that received it. If a different executor
+registers or subscribes for that server and transport, the hub immediately
+settles the delivered write with `USER_MCP_OUTCOME_UNKNOWN` and discards it from
+the outbox. A write awaiting its first delivery can go to the new executor.
+
 Executors may re-execute reads on replay. For writes, the executor must record
-the `callId` before executing and retain it and its result across reconnections.
+the `callId` before executing and retain it and its result across reconnections
+with the same ID.
 On replay of a write:
 
 - If a result is stored for the `callId`, return that result.
@@ -1205,10 +1219,12 @@ On replay of a write:
   `{ "outcome": "unknown" }`.
 - If the `callId` has never been seen, record it and execute the call.
 
-Only calls with a connected executor at dispatch enter the pending queue. A
-worker gets `USER_MCP_UNAVAILABLE` immediately when it cannot dispatch. Once
-dispatched, the worker waits for a reply, revocation, session closure, or
-cancellation. Each call is bound to its dispatch registration generation.
+Only calls with a connected executor at dispatch enter the pending queue. With
+no connected executor, or when sending a read fails, the worker immediately
+gets `USER_MCP_UNAVAILABLE`. A write that could not be sent remains pending for
+the next subscription. The worker waits for a reply, revocation, executor
+takeover of a delivered write, session closure, or cancellation. Each call is
+bound to its dispatch registration generation.
 Deleting a registration ends its pending calls immediately. A replacement ends
 calls when it removes the tool, revokes its write or role permission, or
 changes the transport or the tool's read/write classification. The worker
@@ -1225,8 +1241,8 @@ hub accepts
 An error is returned to the worker as a tool error. `{ "outcome": "unknown" }`
 settles the call with the typed failure `USER_MCP_OUTCOME_UNKNOWN`, meaning the
 write may or may not have been applied. The hub never automatically retries
-this write. A valid call ID that is finished, cancelled, revoked, or owned by
-another session returns 404
+this write. A valid call ID that is finished, cancelled, revoked, settled on
+executor takeover, or owned by another session returns 404
 `USER_MCP_CALL_NOT_FOUND`. Missing session headers on bridge requests return 400
 `SESSION_REQUIRED`, and keys without an owned session return 404
 `SESSION_NOT_FOUND`. Invalid bodies, names, or executor parameters return 400.

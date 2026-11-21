@@ -15,6 +15,7 @@ import {
 
 export const userMcpTransport = z.enum(['browser', 'companion']);
 type Transport = z.infer<typeof userMcpTransport>;
+export const userMcpExecutorId = z.string().regex(/^[A-Za-z0-9_-]+$/);
 export const userMcpServerName = z
   .string()
   .refine(validUserMcpServer, 'Invalid or reserved server name');
@@ -56,7 +57,10 @@ const serverSchema = z
     },
   );
 export const userMcpRegistration = z
-  .strictObject({ servers: z.array(serverSchema).min(1) })
+  .strictObject({
+    executorId: userMcpExecutorId.optional(),
+    servers: z.array(serverSchema).min(1),
+  })
   .refine(
     ({ servers }) =>
       new Set(servers.map((server) => server.name)).size === servers.length,
@@ -116,11 +120,11 @@ export interface UserMcpCall {
 }
 interface PendingCall {
   event: UserMcpCall;
-  executor: string;
+  executorKey: string;
   generation: symbol;
   role?: string;
   effect: UserMcpTool['effect'];
-  delivered: boolean;
+  deliveredTo?: string;
   finish(result: CallResult, resultBytes?: number): void;
 }
 interface RegisteredServer {
@@ -128,6 +132,7 @@ interface RegisteredServer {
   tools: UserMcpTool[];
 }
 interface ExecutorStream {
+  executorId: string;
   send(event: UserMcpCall): boolean;
   close(): void;
 }
@@ -155,7 +160,7 @@ export class UserMcpBridge {
   private readonly pending = new Map<string, PendingCall>();
   private closed = false;
 
-  register(registrations: Registration[]): void {
+  register(registrations: Registration[], executorId?: string): void {
     if (this.closed) return;
     for (const server of registrations) {
       const tools = server.tools.flatMap((definition): UserMcpTool[] => {
@@ -176,6 +181,16 @@ export class UserMcpBridge {
       this.servers.set(server.name, { generation: Symbol(), tools });
     }
     this.revokeDisallowedCalls();
+    if (executorId !== undefined) {
+      this.takeOver(
+        new Set(
+          registrations.map(({ transport, name }) =>
+            executorKey(transport, name),
+          ),
+        ),
+        executorId,
+      );
+    }
   }
 
   unregister(server?: string): void {
@@ -197,12 +212,12 @@ export class UserMcpBridge {
             entry.effect === call.effect &&
             (call.role === undefined ||
               entry.server.roles.some((role) => role === call.role)) &&
-            executorKey(entry.server.transport, server) === call.executor,
+            executorKey(entry.server.transport, server) === call.executorKey,
         )
       )
         continue;
       call.finish(
-        call.effect === 'write' && call.delivered
+        call.effect === 'write' && call.deliveredTo !== undefined
           ? outcomeUnknown()
           : failed(
               'USER_MCP_REVOKED',
@@ -226,6 +241,23 @@ export class UserMcpBridge {
     return this.servers.get(tool.server.name)?.tools.includes(tool) ?? false;
   }
 
+  private takeOver(keys: ReadonlySet<string>, executorId: string): void {
+    for (const key of keys) {
+      const stream = this.executors.get(key);
+      if (stream && stream.executorId !== executorId)
+        this.executors.delete(key);
+    }
+    for (const call of this.pending.values()) {
+      if (
+        keys.has(call.executorKey) &&
+        call.effect === 'write' &&
+        call.deliveredTo !== undefined &&
+        call.deliveredTo !== executorId
+      )
+        call.finish(outcomeUnknown());
+    }
+  }
+
   subscribe(
     transport: Transport,
     servers: string[],
@@ -239,6 +271,7 @@ export class UserMcpBridge {
     const keys = new Set(
       servers.map((server) => executorKey(transport, server)),
     );
+    this.takeOver(keys, stream.executorId);
     for (const key of keys) this.executors.set(key, stream);
     const detach = () => {
       this.streams.delete(stream);
@@ -248,8 +281,12 @@ export class UserMcpBridge {
     // Outstanding calls are the outbox. Replaying them leaves the dialogue's
     // Last-Event-ID cursor intact and covers a disconnect before acknowledgment.
     for (const call of this.pending.values()) {
-      if (!keys.has(call.executor)) continue;
-      if (stream.send({ ...call.event, replay: true })) call.delivered = true;
+      if (!keys.has(call.executorKey)) continue;
+      const event =
+        call.deliveredTo === undefined
+          ? call.event
+          : { ...call.event, replay: true as const };
+      if (stream.send(event)) call.deliveredTo = stream.executorId;
       else {
         detach();
         break;
@@ -296,17 +333,21 @@ export class UserMcpBridge {
         };
         const call: PendingCall = {
           event,
-          executor,
+          executorKey: executor,
           generation: registration.generation,
           role,
           effect: tool.effect,
-          delivered: false,
           finish,
         };
         this.pending.set(callId, call);
         signal?.addEventListener('abort', aborted, { once: true });
-        if (stream.send(event)) call.delivered = true;
-        else finish(unavailable());
+        if (stream.send(event)) call.deliveredTo = stream.executorId;
+        else {
+          if (this.executors.get(executor) === stream)
+            this.executors.delete(executor);
+          // An unsent write can still be delivered by the next subscription.
+          if (call.effect === 'read') finish(unavailable());
+        }
       });
     } finally {
       cds.log('user-mcp').info('User MCP call', {

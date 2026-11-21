@@ -402,7 +402,11 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     const send = jest.fn((call: UserMcpCall) =>
       bridge.answer(call.callId, { result: { content: bridgedValue } }),
     );
-    bridge.subscribe('browser', ['documents'], { send, close: () => {} });
+    bridge.subscribe('browser', ['documents'], {
+      executorId: 'browser-a',
+      send,
+      close: () => {},
+    });
     const bridgeConfig = {
       ...config,
       agent: { ...config.agent, toolResultMaxChars: 1 },

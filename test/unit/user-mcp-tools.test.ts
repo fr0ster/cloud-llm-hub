@@ -102,8 +102,16 @@ test('role filtering, default read-only, write opt-in and profile ceilings apply
       'user__records__destructive',
     ]);
   const send = jest.fn(() => true);
-  bridge.subscribe('browser', ['documents'], { send, close: () => {} });
-  bridge.subscribe('companion', ['records'], { send, close: () => {} });
+  bridge.subscribe('browser', ['documents'], {
+    executorId: 'browser-a',
+    send,
+    close: () => {},
+  });
+  bridge.subscribe('companion', ['records'], {
+    executorId: 'companion-a',
+    send,
+    close: () => {},
+  });
   const checkForbidden = (result: ReturnType<typeof client.callTool>) =>
     expect(result).resolves.toMatchObject({
       ok: false,
@@ -357,6 +365,7 @@ test('unregistering a write before delivery revokes it without an uncertain outc
   const { bridge, scope } = openSessions();
   const attempted: UserMcpCall[] = [];
   bridge.subscribe('companion', ['records'], {
+    executorId: 'companion-a',
     send: (event) => {
       attempted.push(event);
       bridge.unregister();
@@ -372,14 +381,47 @@ test('unregistering a write before delivery revokes it without an uncertain outc
     bridge.answer(attempted[0].callId, { result: { content: 'late' } }),
   ).toBe(false);
   const send = jest.fn(() => true);
-  bridge.subscribe('companion', ['records'], { send, close: () => {} });
+  bridge.subscribe('companion', ['records'], {
+    executorId: 'companion-a',
+    send,
+    close: () => {},
+  });
   expect(send).not.toHaveBeenCalled();
+});
+
+test('a write that could not be sent goes to the next executor as a first delivery', async () => {
+  const { bridge, scope } = openSessions();
+  const attempted: UserMcpCall[] = [];
+  bridge.subscribe('companion', ['records'], {
+    executorId: 'companion-a',
+    send: (event) => {
+      attempted.push(event);
+      return false;
+    },
+    close: () => {},
+  });
+  const pending = scope(() =>
+    userMcpClient('executor').callTool('user__records__write', { id: '1' }),
+  );
+  expect(attempted).toHaveLength(1);
+  const [event] = attempted;
+  const send = jest.fn((_event: UserMcpCall) => true);
+  bridge.subscribe('companion', ['records'], {
+    executorId: 'companion-b',
+    send,
+    close: () => {},
+  });
+  expect(send.mock.calls).toEqual([[event]]);
+  const result = { content: 'stored' };
+  expect(bridge.answer(event.callId, { result })).toBe(true);
+  await expect(pending).resolves.toMatchObject({ ok: true, value: result });
 });
 
 test('a compatible replacement preserves replay until the read registration is removed', async () => {
   const { bridge, scope } = openSessions();
   const original: UserMcpCall[] = [];
   const detach = bridge.subscribe('browser', ['documents'], {
+    executorId: 'browser-a',
     send: (event) => {
       original.push(event);
       return true;
@@ -394,7 +436,11 @@ test('a compatible replacement preserves replay until the read registration is r
   expect(event).toBeDefined();
   bridge.register(catalogue.servers);
   const send = jest.fn((_event: UserMcpCall) => true);
-  bridge.subscribe('browser', ['documents'], { send, close: () => {} });
+  bridge.subscribe('browser', ['documents'], {
+    executorId: 'browser-b',
+    send,
+    close: () => {},
+  });
   expect(send).toHaveBeenCalledWith({ ...event, replay: true });
   bridge.unregister('documents');
   await expect(pending).resolves.toMatchObject({

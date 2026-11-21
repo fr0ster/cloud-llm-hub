@@ -174,6 +174,17 @@ const bridgeRegistration = {
     },
   ],
 };
+const writeRegistration = {
+  ...bridgeRegistration,
+  writes: true,
+  tools: [
+    {
+      name: 'write',
+      description: 'Write',
+      inputSchema: { type: 'object' },
+    },
+  ],
+};
 
 function bridgeRequest(
   key: string | undefined,
@@ -264,6 +275,34 @@ test('user MCP registration validates the whole catalogue, replaces a server and
   expect(session.userMcp?.catalogue()).toEqual([]);
 });
 
+test('user MCP rejects missing or invalid executor IDs on subscriptions and invalid IDs on registration', async () => {
+  const session = await openMcpSession();
+  for (const query of [
+    '',
+    '&executorId=',
+    '&executorId=a%20b',
+    '&executorId=a%0A',
+    '&executorId=a&executorId=b',
+  ]) {
+    const response = await fetch(
+      `${base}/v1/session/events?userMcp=browser&server=work${query}`,
+      { headers: { [SESSION_HEADER]: session.key } },
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: { code: 'INVALID_USER_MCP_REQUEST' },
+    });
+  }
+  for (const executorId of [123, '', 'a b', ['a']]) {
+    const response = await bridgeRequest(session.key, 'PUT', '', {
+      executorId,
+      servers: [bridgeRegistration],
+    });
+    expect(response.status).toBe(400);
+  }
+  expect(session.userMcp).toBeUndefined();
+});
+
 test('deleting an invalid ranked user MCP catalogue restores search in its session', async () => {
   const session = await openMcpSession();
   const payload = { servers: [bridgeRegistration] };
@@ -311,16 +350,22 @@ const callEvent = z.object({
   replay: z.literal(true).optional(),
 });
 
-async function connectExecutor(key: string, cursor?: string) {
-  const response = await fetch(
-    `${base}/v1/session/events?userMcp=browser&server=work`,
-    {
-      headers: {
-        [SESSION_HEADER]: key,
-        ...(cursor ? { 'Last-Event-ID': cursor } : {}),
-      },
+async function connectExecutor(
+  key: string,
+  executorId = 'browser-a',
+  cursor?: string,
+) {
+  const query = new URLSearchParams({
+    userMcp: 'browser',
+    server: 'work',
+    executorId,
+  });
+  const response = await fetch(`${base}/v1/session/events?${query}`, {
+    headers: {
+      [SESSION_HEADER]: key,
+      ...(cursor ? { 'Last-Event-ID': cursor } : {}),
     },
-  );
+  });
   expect(response.status).toBe(200);
   const reader = response.body?.getReader();
   if (!reader) throw new Error('Missing SSE body');
@@ -384,7 +429,11 @@ test('user MCP delivers and resumes calls over SSE, isolates results and release
       arguments: { lookup: 'sample' },
     });
     await first.cancel();
-    const again = await connectExecutor(session.key, 'last-dialogue-message');
+    const again = await connectExecutor(
+      session.key,
+      'browser-b',
+      'last-dialogue-message',
+    );
     try {
       expect(await again.nextCall()).toEqual({ ...event, replay: true });
       const path = `/results/${event.callId}`;
@@ -480,19 +529,7 @@ test('a replayed user MCP write can settle as outcome unknown and is not replaye
   expect(
     (
       await bridgeRequest(session.key, 'PUT', '', {
-        servers: [
-          {
-            ...bridgeRegistration,
-            writes: true,
-            tools: [
-              {
-                name: 'write',
-                description: 'Write',
-                inputSchema: { type: 'object' },
-              },
-            ],
-          },
-        ],
+        servers: [writeRegistration],
       })
     ).status,
   ).toBe(204);
@@ -568,6 +605,77 @@ test('a replayed user MCP write can settle as outcome unknown and is not replaye
   }
 });
 
+test.each(['subscription', 'registration'])(
+  'a different executor taking over via %s never receives a delivered write',
+  async (takeover) => {
+    const session = await openMcpSession();
+    const register = (executorId: string) =>
+      bridgeRequest(session.key, 'PUT', '', {
+        executorId,
+        servers: [writeRegistration],
+      });
+    expect((await register('browser-a')).status).toBe(204);
+    const bridge = session.userMcp;
+    const [tool] = bridge?.catalogue() ?? [];
+    if (!bridge || !tool) throw new Error('Write registration missing');
+
+    const first = await connectExecutor(session.key, 'browser-a');
+    try {
+      const pending = bridge.call(tool, { id: 'original' });
+      const sent = await first.nextCall();
+      const reply = { result: { content: 'applied' } };
+      const rejectLateResult = async () => {
+        const late = await bridgeRequest(
+          session.key,
+          'POST',
+          `/results/${sent.callId}`,
+          reply,
+        );
+        expect(late.status).toBe(404);
+        expect(await late.json()).toMatchObject({
+          error: { code: 'USER_MCP_CALL_NOT_FOUND' },
+        });
+        await expect(pending).resolves.toMatchObject({
+          ok: false,
+          error: { code: 'USER_MCP_OUTCOME_UNKNOWN' },
+        });
+      };
+      if (takeover === 'registration') {
+        expect((await register('browser-b')).status).toBe(204);
+        await rejectLateResult();
+      }
+      const second = await connectExecutor(session.key, 'browser-b');
+      try {
+        await rejectLateResult();
+        const [currentTool] = bridge.catalogue();
+        const next = bridge.call(currentTool, { id: 'next' });
+        const received = await second.nextCall();
+        expect(received.callId).not.toBe(sent.callId);
+        expect(received.arguments).toEqual({ id: 'next' });
+        expect(received.replay).toBeUndefined();
+        expect(
+          (
+            await bridgeRequest(
+              session.key,
+              'POST',
+              `/results/${received.callId}`,
+              reply,
+            )
+          ).status,
+        ).toBe(204);
+        await expect(next).resolves.toMatchObject({
+          ok: true,
+          value: reply.result,
+        });
+      } finally {
+        await second.cancel();
+      }
+    } finally {
+      await first.cancel();
+    }
+  },
+);
+
 test.each(['unregister', 'remove tool', 'revoke writes'] as const)(
   'a pending write settles and rejects late results after %s',
   async (change) => {
@@ -591,6 +699,7 @@ test.each(['unregister', 'remove tool', 'revoke writes'] as const)(
     if (!bridge) throw new Error('Bridge missing');
     const events: UserMcpCall[] = [];
     const detach = bridge.subscribe('browser', ['work'], {
+      executorId: 'browser-a',
       send: (event) => {
         events.push(event);
         return true;
@@ -630,13 +739,18 @@ test.each(['unregister', 'remove tool', 'revoke writes'] as const)(
     });
     const send = jest.fn(() => true);
     const reconnected = bridge.subscribe('browser', ['work'], {
+      executorId: 'browser-a',
       send,
       close: () => {},
     });
     expect(send).not.toHaveBeenCalled();
     reconnected();
     expect((await register()).status).toBe(204);
-    bridge.subscribe('browser', ['work'], { send, close: () => {} });
+    bridge.subscribe('browser', ['work'], {
+      executorId: 'browser-a',
+      send,
+      close: () => {},
+    });
     expect(send).not.toHaveBeenCalled();
     const late = await bridgeRequest(
       session.key,

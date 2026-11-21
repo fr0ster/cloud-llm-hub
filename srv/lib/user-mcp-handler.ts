@@ -6,6 +6,7 @@ import { type LongSession, longSessionsIfReady } from './long-session';
 import type { LongSessionRequest } from './session-connection';
 import {
   UserMcpBridge,
+  userMcpExecutorId,
   userMcpRegistration,
   userMcpReply,
   userMcpServerName,
@@ -14,6 +15,7 @@ import {
 
 export const userMcpExecutorQuery = z.object({
   userMcp: userMcpTransport,
+  executorId: userMcpExecutorId,
   server: z.union([
     userMcpServerName.transform((name) => [name]),
     z.array(userMcpServerName).min(1),
@@ -76,7 +78,7 @@ export function handlePutUserMcp(req: Request, res: Response): void {
     return;
   }
   session.userMcp ??= new UserMcpBridge();
-  session.userMcp.register(parsed.data.servers);
+  session.userMcp.register(parsed.data.servers, parsed.data.executorId);
   res.status(204).end();
 }
 
