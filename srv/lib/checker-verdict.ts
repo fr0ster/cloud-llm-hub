@@ -198,6 +198,10 @@ export function bindCheckerVerdict(
         : 'claims_missing'
       : 'invalid_verdict';
   for (const claim of claims) {
+    if ('system' in claim) {
+      reason = 'quote_absent';
+      continue;
+    }
     const quote = normalize(claim.quote);
     if (!quote || !checked.some((result) => result.includes(quote))) {
       reason = 'quote_absent';

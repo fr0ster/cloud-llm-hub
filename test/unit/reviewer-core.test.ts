@@ -1,4 +1,5 @@
 import type { ToolCallRecord } from '@mcp-abap-adt/llm-agent';
+import { renderNotice } from '../../srv/lib/notify-policy';
 import {
   evaluateDeterministic,
   parseToolOutcome,
@@ -271,6 +272,51 @@ describe('evaluateDeterministic (result-based)', () => {
     ]);
     expect(verdict).toEqual({ ok: true });
   });
+});
+
+describe('RAG results in prose review', () => {
+  it('keeps the notice when a successful record write belongs to a different collection', () => {
+    const records = [
+      record('record_add', {
+        collection: 'user/a',
+        record: 'requirements',
+        created: true,
+      }),
+      record('record_add', {
+        collection: 'user/b',
+        record: 'requirements',
+        created: false,
+      }),
+    ];
+    const verdict = evaluateDeterministic(
+      'I created the record requirements in user/b.',
+      records,
+      true,
+    );
+    expect(renderNotice(verdict)).toContain('no successful Create* tool ran');
+  });
+
+  it.each([false, true])(
+    'keeps the SAP write-capability gate for a RAG collection deletion (offered: %s)',
+    (writeToolOffered) => {
+      const deletion = {
+        call: {
+          id: 'delete',
+          name: 'collection_delete',
+          arguments: { collection: 'drafts' },
+        },
+        result: {
+          content: { collection: 'drafts__u_1234567890abcdef', deleted: true },
+        },
+      } satisfies ToolCallRecord;
+      const verdict = evaluateDeterministic(
+        'The RAG collection drafts was deleted.',
+        [deletion],
+        writeToolOffered,
+      );
+      expect(verdict.ok).toBe(!writeToolOffered);
+    },
+  );
 });
 
 // lib 13 answers a successful write with the terse text `SUCCESS` and no

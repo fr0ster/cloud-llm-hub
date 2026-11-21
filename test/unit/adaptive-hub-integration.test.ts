@@ -132,23 +132,49 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
         steps: [{ id: 'hello', kind: 'answer', text: 'Hello!' }],
       });
     }
-    if (system.includes('REVIEWER')) {
-      calls.push('reviewer');
-      return JSON.stringify({
-        possiblyFake: false,
-        confidence: 'high',
-        reasons: 'test',
-      });
-    }
     calls.push('executor');
     return answer;
   }
   const llm: ILlm = {
     model: 'test',
-    chat: jest.fn(async (messages) => ({
-      ok: true as const,
-      value: { content: respond(messages), finishReason: 'stop' as const },
-    })),
+    chat: jest.fn(async (messages, tools) => {
+      if (
+        messages.some(
+          (m) =>
+            m.role === 'system' &&
+            m.content?.includes('Final response write review'),
+        )
+      ) {
+        calls.push('write-review');
+        expect(tools?.map((tool) => tool.name)).toEqual(['submit_verdict']);
+        const claims =
+          scenario === 'throw' || scenario === 'invalid'
+            ? ['created', 'activated'].map((operation) => ({
+                system: 'sap',
+                operation,
+                target: { type: 'class', name: 'ZTEST' },
+              }))
+            : [];
+        return {
+          ok: true as const,
+          value: {
+            content: '',
+            finishReason: 'tool_calls' as const,
+            toolCalls: [
+              {
+                id: 'write-review',
+                name: 'submit_verdict',
+                arguments: { verdict: claims.length ? 'fail' : 'pass', claims },
+              },
+            ],
+          },
+        };
+      }
+      return {
+        ok: true as const,
+        value: { content: respond(messages), finishReason: 'stop' as const },
+      };
+    }),
     streamChat: jest.fn(async function* (messages) {
       if (
         scenario === 'check-write' &&
@@ -275,11 +301,11 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     };
   }
 
-  it('answers small talk in one controller call, with no executor tool-loop or SAP calls', async () => {
+  it('reviews a direct adaptive answer without an executor tool-loop or SAP calls', async () => {
     scenario = 'hello';
     const result = await run('adaptive-hello', 'Hello');
     expect(result.text).toBe('Hello!');
-    expect(calls).toEqual(['controller']);
+    expect(calls).toEqual(['controller', 'write-review']);
     expect(controllerPrompts[0]).toContain(HUB_ADAPTIVE_CONTROLLER_SYSTEM);
     expect(result.callTool).not.toHaveBeenCalled();
     expect(result.record?.outcome).toBe('answered');
@@ -440,7 +466,7 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     expect(callTool).not.toHaveBeenCalled();
   });
   it.each(['throw', 'invalid'] as const)(
-    'falls back after %s planning without a write notice when no SAP write tool is offered',
+    'reviews the fallback answer after %s planning and warns about writes without citations',
     async (failure) => {
       scenario = failure;
       const result = await run(
@@ -458,7 +484,10 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
         .flatMap((call) => call[1] ?? []);
       expect(offered.length).toBeGreaterThan(0);
       expect(offered.some((tool) => isWriteTool(tool.name))).toBe(false);
-      expect(result.text).not.toContain('UNVERIFIED_WRITE:');
+      expect(result.text).toContain('UNVERIFIED_WRITE:');
+      expect(result.text).toContain(
+        'SAP created class ZTEST: no write call cited',
+      );
       expect(result.callTool).not.toHaveBeenCalled();
       expect(result.record?.outcome).toBe('answered');
       expect(result.record?.steps.some((s) => s.kind === 'work')).toBe(true);

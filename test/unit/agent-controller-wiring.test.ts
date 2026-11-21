@@ -302,8 +302,7 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
       );
       expect(deps.controller.inner).toBeInstanceOf(LlmAdaptiveController);
       expect(deps.finalizer).toBeInstanceOf(NoticeFinalizer);
-      // The adaptive controller resolves its LLM per request; the finalizer keeps the critic.
-      expect(deps.controller.inner.llm).not.toBe(deps.finalizer.criticLlm);
+      expect(deps.finalizer).toHaveProperty('writeReview.checker');
       expect(typeof deps.controller.inner.llm.streamChat).toBe('function');
       const runRecords: IRunRecordStore = deps.runRecords;
       const load = jest.spyOn(getRunRecordStore(), 'load');
@@ -372,7 +371,7 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
   });
 
   it.each(['fixed', 'adaptive'] as const)(
-    'notice requires no critic or profile trust with %s coordination',
+    'uses the expected deterministic notice path with %s coordination',
     async (chatCoordinator) => {
       const registry = agentManager.getCollectionRegistry();
       const collection = await registry.readAgentCollection('agents');
@@ -413,8 +412,13 @@ describe('buildAgentForDestination — DAG coordinator wiring', () => {
           agentManager.getHandlerExporterConfig(),
         ).getToolNames()[0];
         if (!tool) throw new Error('Missing embedded tool fixture');
-        expect(spy.mock.calls.at(-1)?.[0]).not.toHaveProperty('llm');
-        expect(spy.mock.calls.at(-1)?.[0]).not.toHaveProperty('toolTrust');
+        if (chatCoordinator === 'adaptive') {
+          expect(spy).not.toHaveBeenCalled();
+        } else {
+          expect(spy).toHaveBeenCalledTimes(1);
+          expect(spy.mock.calls[0][0]).not.toHaveProperty('llm');
+          expect(spy.mock.calls[0][0]).not.toHaveProperty('toolTrust');
+        }
       } finally {
         spy.mockRestore();
         await registry.updateDocument('agents', 'executor', {

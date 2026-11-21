@@ -336,6 +336,7 @@ test('all-disabled retrieval terminates, tags stay inactive, and legacy source t
   expect(empty.ok && empty.value).toEqual([]);
   expect(await registry.setSourceEnabled(id, 'legacy.txt', '', true)).toEqual({
     updated: 25,
+    recordIds: Array.from({ length: 25 }, (_, index) => String(index)),
   });
   await registry.updateDocument(id, '0', {
     metadata: { tags: ['deprecated'] },
