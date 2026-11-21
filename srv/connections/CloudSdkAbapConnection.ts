@@ -18,7 +18,7 @@ import { classifyProbe } from '../lib/probe-classifier';
 
 /**
  * Carry the outage label in the error message and SAP's response body.
- * ADT tools render the body directly for HTTP errors.
+ * Put the tag first so it survives the ADT tool renderer's body limit.
  */
 export function withOutageTagInResponseData(
   data: unknown,
@@ -28,14 +28,14 @@ export function withOutageTagInResponseData(
     return data.includes(tag) ? data : `${tag} ${data}`;
   }
   if (data && typeof data === 'object' && !Array.isArray(data)) {
-    const body = data as Record<string, unknown> & { _sapOutageTag?: unknown };
-    if (
-      typeof body._sapOutageTag === 'string' &&
-      body._sapOutageTag.includes(tag)
-    ) {
-      return body;
-    }
-    return { ...body, _sapOutageTag: tag };
+    const { _sapOutageTag, ...body } = data as { _sapOutageTag?: string };
+    return {
+      _sapOutageTag:
+        typeof _sapOutageTag === 'string' && _sapOutageTag.includes(tag)
+          ? _sapOutageTag
+          : tag,
+      ...body,
+    };
   }
   return data;
 }

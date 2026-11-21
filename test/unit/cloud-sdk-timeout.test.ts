@@ -21,7 +21,6 @@ jest.mock('@sap-cloud-sdk/http-client', () => ({
 }));
 jest.mock('../../srv/env-setup', () => ({}), { virtual: true });
 
-import { return_error } from '@mcp-abap-adt/lib/utils';
 import { CloudSdkAbapConnection } from '../../srv/connections/CloudSdkAbapConnection';
 import { logger } from '../../srv/lib/logger';
 
@@ -83,7 +82,7 @@ describe('CloudSdkAbapConnection.makeAdtRequest deadline', () => {
 });
 
 it.each(['text', 'object'] as const)(
-  'keeps the full SAP %s failure in MCP errors and masks credentials in logs',
+  'forwards the full SAP %s failure and masks credentials in the full diagnostic log',
   async (format) => {
     const detail = 'SAP refused the operation. '.repeat(150);
     const tail = 'Last SAP diagnostic';
@@ -95,6 +94,15 @@ it.each(['text', 'object'] as const)(
             password: 'object-secret-value',
             req: { reason: tail },
           };
+    const loggedBody =
+      format === 'text'
+        ? `<error>${detail}<Password>«redacted»</Password> [redacted] ${tail}</error>`
+        : JSON.stringify({
+            message: detail,
+            password: '«redacted»',
+            req: { reason: tail },
+          });
+    const forwardedBody = structuredClone(data);
     const error = Object.assign(new Error('Request failed'), {
       response: {
         status: 400,
@@ -108,26 +116,21 @@ it.each(['text', 'object'] as const)(
     mockExec.mockRejectedValueOnce(error);
     const log = jest.spyOn(logger, 'error').mockImplementation(() => {});
     try {
-      const result = await makeConn()
-        .makeAdtRequest({
+      await expect(
+        makeConn().makeAdtRequest({
           url: '/sap/bc/adt/discovery',
           method: 'GET',
           timeout: 0,
-        })
-        .catch(return_error);
-      expect(result).toMatchObject({
-        isError: true,
-        content: [
-          {
-            type: 'text',
-            text: typeof data === 'string' ? data : JSON.stringify(data),
-          },
-        ],
+        }),
+      ).rejects.toMatchObject({
+        response: { status: 400, data: forwardedBody },
       });
       expect(log).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith(
+        expect.stringContaining('ADT request failed'),
+        expect.objectContaining({ responseData: loggedBody }),
+      );
       const logged = JSON.stringify(log.mock.calls);
-      expect(logged).toContain(detail);
-      expect(logged).toContain(tail);
       expect(logged).not.toMatch(
         /xml-secret-value|configured-sap-password|object-secret-value|secret-cookie|csrf-secret/,
       );
