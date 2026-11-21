@@ -656,11 +656,6 @@ async function serveChatCompletions(
     rawHistorySize,
     historySize: normalizedMessages.length,
     roles: normalizedMessages.map((m) => m.role).join(','),
-    userMessage: normalizedMessages
-      .filter((m) => m.role === 'user')
-      .slice(-1)[0]
-      ?.content?.toString()
-      .slice(0, 200),
   });
 
   // Resolve the request model without changing deployment defaults.
@@ -1138,7 +1133,6 @@ async function serveChatCompletions(
           pipeline.run(() =>
             runWithSessionId(sessionId, fn, priorTurns, userId, ragIdentity),
           ),
-        maxMs: getAgentConfig().agent.dialogue?.followMaxMs ?? 1_800_000,
         onError: (error) => {
           if (isOutageError(error))
             closeDestination(destAfter, describeCause(error));

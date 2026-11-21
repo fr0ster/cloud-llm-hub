@@ -16,7 +16,6 @@ export type FollowItem =
         | 'done'
         | 'waiting_user'
         | 'idle'
-        | 'limit'
         | 'superseded'
         | 'disconnected'
         | 'error';
@@ -49,8 +48,6 @@ export function followDialogue(
     responseEnded?: Promise<void>;
     since: number;
     signal: AbortSignal;
-    maxMs: number;
-    now?: () => number;
   },
 ): AsyncIterable<FollowItem> {
   // Register eagerly so even simultaneous callers supersede in invocation order.

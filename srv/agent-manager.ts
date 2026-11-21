@@ -2831,22 +2831,18 @@ export async function buildEmbeddedMcpAdapter(
       const outage = outageFromToolResult(result, destinationName);
       if (outage) throw outage;
 
-      const resultStr = JSON.stringify(result).slice(0, 1000);
       log.info('MCP tool call', {
         destination: destinationName,
         tool: name,
         argsKeys: Object.keys(args || {}),
-        args: JSON.stringify(args).slice(0, 300),
-        resultLength: resultStr.length,
-        resultPreview: resultStr.slice(0, 500),
+        isError: result.isError === true,
         connectionOverride: !!requestScope,
       });
       return result;
     } catch (err) {
       log.error('MCP tool call failed', {
         tool: name,
-        args: JSON.stringify(args).slice(0, 500),
-        error: err instanceof Error ? err.message : String(err),
+        argsKeys: Object.keys(args || {}),
       });
       // The connector has already decided what happened and written its verdict
       // into the message; this re-raises it in a form that survives the

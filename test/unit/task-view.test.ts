@@ -12,7 +12,7 @@ test('absent optional task fields stay absent', () => {
   expect(Object.keys(taskView(task))).not.toContain('finishedAt');
   expect(Object.keys(taskView(task))).not.toContain('error');
 });
-test('task view carries finish time and error, truncates errors and omits output', () => {
+test('task view carries finish time and the full error and omits output', () => {
   const record = {
     ...task,
     startedAt: 200,
@@ -24,7 +24,7 @@ test('task view carries finish time and error, truncates errors and omits output
     ...task,
     startedAt: 200,
     finishedAt: 900,
-    error: 'x'.repeat(300),
+    error: record.error,
   });
   expect(taskView({ ...task, error: 'short' }).error).toBe('short');
   expect(taskView({ ...task, error: '', finishedAt: 0 })).toMatchObject({

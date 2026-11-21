@@ -1016,7 +1016,7 @@ it('a new request supersedes an open follow before reading pending', async () =>
   handle.subscribe = () => () => {};
   const first = directChat();
   await chunksOf(first.agent);
-  const follow = first.agent.follow(new AbortController().signal, 10000);
+  const follow = first.agent.follow(new AbortController().signal);
   expect(follow).toBeDefined();
   if (!follow) throw new Error('expected a follow');
   const iterator = follow[Symbol.asyncIterator]();
@@ -1047,7 +1047,7 @@ it('follow is absent for a plain reply and for a non-streaming turn', async () =
   directAnswer();
   const { agent } = directChat();
   await chunksOf(agent);
-  expect(agent.follow(new AbortController().signal, 100)).toBeUndefined();
+  expect(agent.follow(new AbortController().signal)).toBeUndefined();
   const handle = await dialogueFor('alice', session.key, 'SAP');
   handle.state = () => ({
     settledSeq: 0,
@@ -1065,9 +1065,7 @@ it('follow is absent for a plain reply and for a non-streaming turn', async () =
     caller: taskCaller,
     sessionId: taskCaller.sessionId,
   });
-  expect(
-    nonStreaming.follow(new AbortController().signal, 100),
-  ).toBeUndefined();
+  expect(nonStreaming.follow(new AbortController().signal)).toBeUndefined();
 });
 
 function streamingRequest(content = 'hi') {
@@ -1744,7 +1742,7 @@ it.each([undefined, 'explicit'])(
     await chunksOf(first.agent);
     const id = outbox.pending()[0].id;
     const iterator = first.agent
-      .follow(new AbortController().signal, 10000)
+      .follow(new AbortController().signal)
       ?.[Symbol.asyncIterator]();
     if (!iterator) throw new Error('expected a follow');
     const end = iterator.next();
@@ -1790,7 +1788,7 @@ it('superseded response closed abnormally redelivers its message', async () => {
   await chunksOf(first.agent);
   const id = outbox.pending()[0].id;
   const iterator = first.agent
-    .follow(new AbortController().signal, 10000)
+    .follow(new AbortController().signal)
     ?.[Symbol.asyncIterator]();
   if (!iterator) throw new Error('expected a follow');
   const end = iterator.next();

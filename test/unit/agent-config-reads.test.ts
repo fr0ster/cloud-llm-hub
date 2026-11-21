@@ -232,13 +232,9 @@ describe('dialogue configuration', () => {
       },
     });
   });
-  it('reads the follow limit and rejects malformed values', () => {
-    process.env.LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS = '60000';
-    expect(loadAgentConfig().agent.dialogue.followMaxMs).toBe(60000);
-    process.env.LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS = '0';
-    expect(() => loadAgentConfig()).toThrow('LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS');
-    delete process.env.LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS;
-    expect(loadAgentConfig().agent.dialogue.followMaxMs).toBe(1_800_000);
+  it('ignores the retired follow deadline setting', () => {
+    process.env.LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS = 'invalid';
+    expect(loadAgentConfig().agent.dialogue).not.toHaveProperty('followMaxMs');
   });
   it('reads limits and rejects malformed values', () => {
     for (const name of [
@@ -253,7 +249,6 @@ describe('dialogue configuration', () => {
       executorPool: 8,
       maxTasks: 8,
       maxCorrections: 2,
-      followMaxMs: 1_800_000,
       waitTickMs: undefined,
       longTaskMs: undefined,
       taskOutputChars: 8,

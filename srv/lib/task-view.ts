@@ -40,7 +40,7 @@ export function taskView(task: TaskView): TaskView {
     state: task.state,
     createdAt: task.createdAt,
     ...(task.finishedAt === undefined ? {} : { finishedAt: task.finishedAt }),
-    ...(task.error === undefined ? {} : { error: task.error.slice(0, 300) }),
+    ...(task.error === undefined ? {} : { error: task.error }),
     ...(task.startedAt === undefined ? {} : { startedAt: task.startedAt }),
   };
 }

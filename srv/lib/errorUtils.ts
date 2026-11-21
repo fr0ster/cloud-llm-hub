@@ -9,6 +9,17 @@
 
 import { STATUS_CODES } from 'node:http';
 import type { ILogger } from '@mcp-abap-adt/connection';
+import { redactContext } from './context-store';
+
+export function responseBodyText<T>(data: T): string | undefined {
+  if (typeof data === 'string') return data;
+  if (!data || typeof data !== 'object') return undefined;
+  try {
+    return JSON.stringify(data);
+  } catch {
+    return String(data);
+  }
+}
 
 /**
  * Safely extracts error information without circular references
@@ -19,7 +30,6 @@ export interface SafeErrorDetails {
   status?: number;
   statusText?: string;
   responseData?: string;
-  responseHeaders?: Record<string, unknown>;
   stack?: string;
   code?: string;
   name?: string;
@@ -46,34 +56,8 @@ export function extractErrorDetails(error: any): SafeErrorDetails {
     details.status = status;
     details.statusText = statusText;
     details.message = error.message || statusText || 'HTTP request failed';
-    details.responseHeaders = error.response?.headers || error.headers;
-
-    // Safely extract response data
-    if (error.response?.data) {
-      if (typeof error.response.data === 'string') {
-        details.responseData = error.response.data.substring(0, 500);
-      } else {
-        try {
-          details.responseData = JSON.stringify(error.response.data).substring(
-            0,
-            500,
-          );
-        } catch (_e) {
-          details.responseData = String(error.response.data).substring(0, 500);
-        }
-      }
-    } else if (error.data) {
-      // Cloud SDK might have data directly
-      if (typeof error.data === 'string') {
-        details.responseData = error.data.substring(0, 500);
-      } else {
-        try {
-          details.responseData = JSON.stringify(error.data).substring(0, 500);
-        } catch (_e) {
-          details.responseData = String(error.data).substring(0, 500);
-        }
-      }
-    }
+    const body = error.response?.data ?? error.data;
+    details.responseData = responseBodyText(body);
   } else if (error instanceof Error) {
     // Standard Error object
     details.message = error.message;
@@ -109,6 +93,7 @@ export function logErrorSafely(
   // biome-ignore lint/suspicious/noExplicitAny: Error handling needs to accept any error type
   error: any,
   context?: Record<string, unknown>,
+  redact: (text: string) => string = redactContext,
 ): void {
   if (!logger?.error) {
     return;
@@ -136,12 +121,15 @@ export function logErrorSafely(
 
   // Remove undefined values
   Object.keys(errorDetails).forEach((key) => {
-    if (errorDetails[key] === undefined) {
+    const value = errorDetails[key];
+    if (value === undefined) {
       delete errorDetails[key];
+    } else if (typeof value === 'string') {
+      errorDetails[key] = redact(value);
     }
   });
 
-  logger.error(errorMessage, errorDetails);
+  logger.error(redact(errorMessage), errorDetails);
 }
 
 /**

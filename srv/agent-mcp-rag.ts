@@ -29,7 +29,6 @@ import { withCollectionToolScope } from './lib/collection-write-scope';
 import { longSessions, longSessionsIfReady } from './lib/long-session';
 import { bindCaller } from './lib/rag-caller';
 import { readRagDocuments } from './lib/rag-read';
-import { compactRagSearch } from './lib/rag-search-context';
 import {
   addRagRecord,
   createAgentKnowledgeCollection,
@@ -1224,58 +1223,16 @@ async function runRagTool(
         }
         hits.push(...collectionHits);
       } catch (error) {
-        const note = {
+        unavailable.push({
           collection: role ? await label(id) : id,
-          error: (error instanceof Error ? error.message : String(error)).slice(
-            0,
-            500,
-          ),
-        };
-        // Reserve half the response for healthy results, including JSON escaping.
-        if (JSON.stringify([...unavailable, note]).length <= 12000)
-          unavailable.push(note);
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
-    if (compactRagSearch())
-      return respond({
-        hits: hits
-          .sort((a, b) => b.score - a.score)
-          .slice(0, args.k ?? 8)
-          .map(({ text, ...hit }) => ({
-            ...hit,
-            snippet: text.slice(0, 400),
-            textLength: text.length,
-          })),
-        ...(unavailable.length ? { unavailable } : {}),
-      });
-    const bounded: typeof hits = [];
-    const payload = (results: typeof hits) => ({
-      hits: results,
+    return respond({
+      hits: hits.sort((a, b) => b.score - a.score).slice(0, args.k ?? 8),
       ...(unavailable.length ? { unavailable } : {}),
     });
-    for (const hit of hits
-      .sort((a, b) => b.score - a.score)
-      .slice(0, args.k ?? 8)) {
-      const candidate = { ...hit };
-      if (JSON.stringify(payload([...bounded, candidate])).length > 24000) {
-        candidate.text = ' [truncated]';
-        if (JSON.stringify(payload([...bounded, candidate])).length > 24000)
-          break;
-        // Count serialized characters too: quotes and control characters expand.
-        let low = 0;
-        let high = Math.min(hit.text.length, 24000);
-        while (low < high) {
-          const middle = Math.ceil((low + high) / 2);
-          candidate.text = `${hit.text.slice(0, middle)} [truncated]`;
-          if (JSON.stringify(payload([...bounded, candidate])).length <= 24000)
-            low = middle;
-          else high = middle - 1;
-        }
-        candidate.text = `${hit.text.slice(0, low)} [truncated]`;
-      }
-      bounded.push(candidate);
-    }
-    return respond(payload(bounded));
   }
   const id =
     name === 'record_set_enabled'

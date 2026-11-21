@@ -286,7 +286,6 @@ when running `npx tsx tools/measure-tool-rag.ts` to measure production tool-quer
 | `LLM_AGENT_DIALOGUE_MAX_CORRECTIONS` | `2` | Maximum end-of-turn corrective turns (nonnegative integer); `0` disables corrections. |
 | `LLM_AGENT_DIALOGUE_TASK_OUTPUT_CHARS` | unset (unlimited) | Optional maximum retained characters per task output. Set a positive safe integer to enable it. |
 | `LLM_AGENT_DIALOGUE_MAX_TASKS` | `50` | Task board capacity per dialogue session (positive integer). |
-| `LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS` | Ignored (legacy parser default `1800000`) | No duration cutoff; follow ends on completion, supersession or caller disconnect. |
 | `LLM_AGENT_DIALOGUE_WAIT_TICK_MS` | `30000` (library default) | Non-negative safe integer; 0 disables live wait ticks. Unset or blank uses the library default; invalid values reject startup. |
 | `LLM_AGENT_DIALOGUE_LONG_TASK_MS` | `300000` (library default) | Non-negative safe integer; 0 disables long-running task wakes. Unset or blank uses the library default; invalid values reject startup. |
 | `LLM_AGENT_PLAN_MAX_STEPS` | Unlimited | Optional positive integer step limit. |
@@ -533,9 +532,11 @@ tools. A later agent preparation retries after a 30-second cooldown.
 
 
 Timeout policy (2026-11-02): work waits until caller cancellation or an external limit.
-`LLM_AGENT_TOOL_GATE_TIMEOUT_MS`, `LLM_AGENT_STEP_REVIEW_TIMEOUT_MS`,
-`LLM_AGENT_DESTINATION_INIT_WAIT_MS`, and `LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS`
-are legacy parsed settings and no longer bound work or response following.
+`LLM_AGENT_TOOL_GATE_TIMEOUT_MS`, `LLM_AGENT_STEP_REVIEW_TIMEOUT_MS`, and
+`LLM_AGENT_DESTINATION_INIT_WAIT_MS` are legacy parsed settings that no longer
+bound work. `LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS` has been removed. Remove it from
+deployment environment overrides. Streaming dialogue delivery has no duration
+deadline.
 `SAP_TIMEOUT_CSRF` is retired; SAP HTTP requests use no hub deadline.
 External docs discovery runs in the background, never blocks profiles, and has a
 logged ten-minute safety net. Its MCP client no longer overrides tool-call timeouts.

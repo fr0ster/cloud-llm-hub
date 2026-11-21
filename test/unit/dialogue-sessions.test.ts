@@ -2537,7 +2537,6 @@ test.each(
             channel: 'openai',
             onToolResult: originalSink,
           }),
-        maxMs: 10000,
         onError: (error) => ({ error: String(error) }),
       });
       await continuation();
@@ -2684,19 +2683,18 @@ test.each([false, true])(
     const { h } = await ready();
     const detach = h.subscribe(() => {});
     const controller = new AbortController();
-    const follow = (maxMs: number, signal = new AbortController().signal) =>
+    const follow = (signal: AbortSignal) =>
       followDialogue(h, {
         delivery: h.outbox.beginDelivery(),
         since: 0,
         signal,
-        maxMs,
       });
     try {
       await h.session.send('go');
       await until(() => report !== undefined);
       if (disconnect) {
         const items = [];
-        const iterator = follow(1, controller.signal)[Symbol.asyncIterator]();
+        const iterator = follow(controller.signal)[Symbol.asyncIterator]();
         let settled = false;
         const next = iterator.next().then((item) => {
           settled = true;
@@ -2722,7 +2720,7 @@ test.each([false, true])(
       report?.(record);
       const resultController = new AbortController();
       const items = [];
-      for await (const item of follow(1, resultController.signal)) {
+      for await (const item of follow(resultController.signal)) {
         items.push(item);
         if (item.kind === 'tool-result') {
           item.written?.();
@@ -2733,7 +2731,7 @@ test.each([false, true])(
         { kind: 'tool-result', record, written: expect.any(Function) },
       ]);
       const replayController = new AbortController();
-      const replayIterator = follow(1, replayController.signal)[
+      const replayIterator = follow(replayController.signal)[
         Symbol.asyncIterator
       ]();
       const replayNext = replayIterator.next();
@@ -3714,7 +3712,7 @@ test('worker scope emits content-free activity and background turns identify com
   });
 });
 
-test('turn requests are truncated and retain their source', async () => {
+test('turn events carry the full request and its source', async () => {
   const { h } = await ready();
   const events: DialogueEvent[] = [];
   h.subscribe((event) => events.push(event));
@@ -3724,7 +3722,7 @@ test('turn requests are truncated and retain their source', async () => {
   expect(events).toContainEqual({
     kind: 'turn',
     source: 'webui',
-    text: 'x'.repeat(300),
+    text: 'x'.repeat(350),
     clientTurnId: 'request-123',
   });
 });

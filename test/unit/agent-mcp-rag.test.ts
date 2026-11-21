@@ -15,7 +15,6 @@ import {
   LocalRagMcpClient,
   localRagTools,
 } from '../../srv/lib/dialogue-rag-tools';
-import { withCompactRagSearch } from '../../srv/lib/rag-search-context';
 import {
   buildRagToolSchemas,
   ragToolEffect,
@@ -212,6 +211,9 @@ const responseSchema = z.object({
     )
     .default([]),
   records: z.array(z.object({ id: z.string() })).default([]),
+  unavailable: z
+    .array(z.object({ collection: z.string(), error: z.string() }))
+    .optional(),
   offset: z.number().optional(),
   total: z.number().optional(),
   next: z.number().optional(),
@@ -676,7 +678,7 @@ test('read pages use character offsets and stop at the end', async () => {
   ).toMatchObject({ total: 2, records: [{ id: 'hidden' }] });
 });
 test.each([
-  ['rag_search', { k: 21 }],
+  ['rag_search', { k: 0 }],
   ['rag_search', { k: 0 }],
   ['rag_search', { query: '' }],
   ['rag_read', { limit: 32001 }],
@@ -771,15 +773,21 @@ test('character paging applies its default and maximum accepted limit', async ()
   ).toBeUndefined();
   expect((await call('rag_search', { k: 20 })).isError).toBeUndefined();
 });
-test('search bounds the serialized response and marks cuts', async () => {
-  await registry.addDocument(cid, {
-    id: 'large',
-    text: 'needle "\\\n'.repeat(10000),
-    metadata: {},
-  });
-  const result = await call('rag_search', { collections: ['notes'] });
-  expect(result.content[0].text.length).toBeLessThanOrEqual(24000);
-  expect(result.content[0].text).toContain('[truncated]');
+test('search returns the full record for each requested hit', async () => {
+  await registry.deleteDocument(cid, 'visible');
+  const text = `needle ${JSON.stringify('quoted\n'.repeat(5000))}`;
+  for (let index = 0; index < 22; index++) {
+    await registry.addDocument(cid, {
+      id: `large-${index}`,
+      text,
+      metadata: {},
+    });
+  }
+  const result = await body(
+    call('rag_search', { query: 'needle', collections: ['notes'], k: 21 }),
+  );
+  expect(result.hits).toHaveLength(21);
+  expect(result.hits.every((hit) => hit.text === text)).toBe(true);
 });
 
 test('read and lists use normalized safe attributes for visible and invisible records', async () => {
@@ -831,7 +839,7 @@ test('read and lists use normalized safe attributes for visible and invisible re
 });
 
 test.each(['store', 'query-result', 'query-throw', 'missing-store'])(
-  'search skips a failing collection (%s) and bounds errors with healthy hits',
+  'search skips a failing collection (%s) and returns the complete failure note with healthy hits',
   async (failure) => {
     const message = 'unavailable "\\\n'.repeat(10000);
     const getStore = registry.getRagStore.bind(registry);
@@ -860,9 +868,16 @@ test.each(['store', 'query-result', 'query-throw', 'missing-store'])(
     });
     const result = await call('rag_search');
     expect(result.isError).toBeUndefined();
-    expect(result.content[0].text.length).toBeLessThanOrEqual(24000);
     expect(JSON.parse(result.content[0].text)).toMatchObject({
-      unavailable: [{ collection: cid, error: expect.any(String) }],
+      unavailable: [
+        {
+          collection: cid,
+          error:
+            failure === 'missing-store'
+              ? 'Collection store unavailable'
+              : message,
+        },
+      ],
     });
     expect(
       (await body(Promise.resolve(result))).hits.every(
@@ -874,6 +889,31 @@ test.each(['store', 'query-result', 'query-throw', 'missing-store'])(
     );
   },
 );
+
+test('search includes full notes for every unavailable collection', async () => {
+  const errors = new Map(
+    [cid, second].map((collection) => [collection, collection.repeat(1000)]),
+  );
+  const getStore = registry.getRagStore.bind(registry);
+  jest.spyOn(registry, 'getRagStore').mockImplementation(async (id) => {
+    const error = errors.get(id);
+    if (error) throw new Error(error);
+    return getStore(id);
+  });
+  const result = await body(
+    call('rag_search', { collections: ['notes', 'second'] }),
+  );
+  expect(result.hits).toEqual([]);
+  expect(result.unavailable?.map((note) => note.collection)).toEqual([
+    cid,
+    second,
+  ]);
+  expect(
+    result.unavailable?.every(
+      (note) => note.error === errors.get(note.collection),
+    ),
+  ).toBe(true);
+});
 
 test('search supplies embedding usage with retrieval context and caller attribution', async () => {
   const sink = memorySink({ limit: 20 });
@@ -2121,37 +2161,3 @@ test.each([false, true])(
     );
   },
 );
-
-test('plan author search is compact, preserves canonical ids and leaves full reads and worker searches intact', async () => {
-  const full = `needle title\n${'needle body '.repeat(100)}`;
-  await registry.addDocument(cid, { id: 'compact', text: full, metadata: {} });
-  const compact = await withCompactRagSearch(() =>
-    call('rag_search', { collections: ['notes'] }),
-  );
-  expect(compact.content[0].text).not.toContain('"text":');
-  expect(compact.content[0].text).toContain('"snippet":');
-  expect(compact.content[0].text).toContain('"textLength":');
-  const parsed: {
-    hits: Array<{
-      collection: string;
-      id: string;
-      title: string;
-      snippet: string;
-      textLength: number;
-    }>;
-  } = JSON.parse(compact.content[0].text);
-  const hit = parsed.hits.find((entry) => entry.id === 'compact');
-  expect(hit).toMatchObject({
-    collection: cid,
-    id: 'compact',
-    title: 'needle title',
-    snippet: full.slice(0, 400),
-    textLength: full.length,
-  });
-  expect(hit?.snippet.length).toBeLessThanOrEqual(400);
-  const worker = await call('rag_search', { collections: ['notes'] });
-  expect(worker.content[0].text).toContain(JSON.stringify(full));
-  expect(
-    await body(call('rag_read', { collection: cid, id: 'compact' })),
-  ).toMatchObject({ text: full });
-});

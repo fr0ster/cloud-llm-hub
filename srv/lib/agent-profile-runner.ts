@@ -21,7 +21,6 @@ import {
 } from './agent-profile-tools';
 import { runWithVerdictTools } from './checker-verdict-tool';
 import { parseModelAllowlist, resolveAgentModel } from './model-policy';
-import { withCompactRagSearch } from './rag-search-context';
 import { recordReviewProfile } from './review-scope';
 import {
   currentRoleModel,
@@ -205,7 +204,7 @@ export class AgentProfileRunner implements IAgentProfileRunner {
       if (!this.host.buildPlanAuthor)
         throw new Error('Plan author unavailable');
       await this.host.prepareTools?.('planner', options);
-      const bind = this.bind({
+      const scope = this.bind({
         name: 'planner-author',
         trust: input.trust,
         description: '',
@@ -221,8 +220,6 @@ export class AgentProfileRunner implements IAgentProfileRunner {
           ],
         },
       });
-      const scope = <T>(run: () => T): T =>
-        withCompactRagSearch(() => bind(run));
       const build = this.host.buildPlanAuthor;
       const agent = await scope(() => build(input, options));
       options?.signal?.throwIfAborted();

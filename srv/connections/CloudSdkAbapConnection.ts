@@ -11,37 +11,14 @@ import type {
 import { CSRF_CONFIG, CSRF_ERROR_MESSAGES } from '@mcp-abap-adt/connection';
 import type { IAdtWireResponse } from '@mcp-abap-adt/interfaces-adt-connection';
 import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
-import { logErrorSafely } from '../lib/errorUtils';
+import { redactContext } from '../lib/context-store';
+import { logErrorSafely, responseBodyText } from '../lib/errorUtils';
 import { logger } from '../lib/logger';
 import { classifyProbe } from '../lib/probe-classifier';
 
 /**
- * Mirror the `[status]` outage tag onto a response body the same way it is
- * already appended to `error.message` — because `@mcp-abap-adt/lib`'s
- * `return_error` (the function ~274 of 326 ABAP tool handlers route their
- * errors through) renders `response.data` INSTEAD OF `message` whenever the
- * message doesn't itself contain ENOTFOUND/ECONNREFUSED/ETIMEDOUT and
- * `response.data` is set — verbatim for a string body, `JSON.stringify`'d for
- * an object body, both truncated to `response.data`'s first 2000 characters.
- * A tag written only to `error.message` is invisible on that path, and with
- * it the whole point of tagging — `outageFromToolResult` reading it back out
- * of the returned tool result — silently fails for exactly the statuses that
- * matter most (`tunnel_timeout`, `no_scc_registration`, `wrong_location_id`),
- * since those are reached via the httpCode>=500 / tunnel-regex branch, not
- * the ENOTFOUND/ECONNREFUSED/ETIMEDOUT one.
- *
- * Exported (pure, no mutation) so a test can call this exact logic instead of
- * reproducing it by hand and risking silent drift between the two.
- *
- * - String body: PREPEND the tag. `return_error` truncates to the first 2000
- *   characters, so appending at the end would not survive a long body.
- * - Object body: `return_error` reads no specific field for an object — it
- *   `JSON.stringify`s the whole thing — so there is no existing field to
- *   extend. Add a dedicated top-level key instead, placed FIRST (`{ tag,
- *   ...body }`) for the same truncation reason.
- * - Anything else (`undefined`, a number, an array, ...) is left alone: those
- *   are not shapes `return_error`'s AxiosError branch renders as text an
- *   operator (or `outageFromToolResult`) would read a tag out of.
+ * Carry the outage label in the error message and SAP's response body.
+ * Put the tag first so it survives the ADT tool renderer's body limit.
  */
 export function withOutageTagInResponseData(
   data: unknown,
@@ -51,14 +28,14 @@ export function withOutageTagInResponseData(
     return data.includes(tag) ? data : `${tag} ${data}`;
   }
   if (data && typeof data === 'object' && !Array.isArray(data)) {
-    const body = data as Record<string, unknown> & { _sapOutageTag?: unknown };
-    if (
-      typeof body._sapOutageTag === 'string' &&
-      body._sapOutageTag.includes(tag)
-    ) {
-      return body;
-    }
-    return { _sapOutageTag: tag, ...body };
+    const { _sapOutageTag, ...body } = data as { _sapOutageTag?: string };
+    return {
+      _sapOutageTag:
+        typeof _sapOutageTag === 'string' && _sapOutageTag.includes(tag)
+          ? _sapOutageTag
+          : tag,
+      ...body,
+    };
   }
   return data;
 }
@@ -228,7 +205,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
     } catch (err) {
       // Never let session cleanup break the request flow.
       logger.warn('closeSession (ADT session release) failed', {
-        error: String(err),
+        error: this.redactLogText(String(err)),
       });
     } finally {
       // Drop our session identity so a second call cannot re-present it, and so
@@ -285,7 +262,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
       return true;
     } catch (err) {
       logger.warn('ADT stateful session release failed', {
-        error: String(err),
+        error: this.redactLogText(String(err)),
       });
       return false;
     }
@@ -380,11 +357,13 @@ export class CloudSdkAbapConnection implements AbapConnection {
       if (/socket hang up|ECONNRESET|EPIPE/i.test(text)) {
         logger.debug('Session release closed the connection, as expected', {
           sessionId: this.sessionId?.substring(0, 8),
-          detail: text,
+          detail: this.redactLogText(text),
         });
         return;
       }
-      logger.warn('ICF logoff (session release) failed', { error: text });
+      logger.warn('ICF logoff (session release) failed', {
+        error: this.redactLogText(text),
+      });
     }
   }
 
@@ -476,28 +455,17 @@ export class CloudSdkAbapConnection implements AbapConnection {
    * "exactly one attempt" rule (retrying a 401/403 risks locking the ABAP
    * user). It seeds the `sap-usercontext` cookie up front so the request hits
    * the configured client (the `X-SAP-Client` header alone is ignored by ABAP),
-   * makes ONE executeHttpRequest GET with a server-side timeout, and never
+   * makes ONE executeHttpRequest GET, and never
    * retries on any status.
    *
    * @param path - ADT path to GET, e.g. `/sap/bc/adt/discovery`
-   * @returns httpCode and a trimmed backend body/error snippet (rawMessage)
+   * @returns httpCode and the full backend body or error message (rawMessage)
    */
   async probe(path: string): Promise<{ httpCode: number; rawMessage: string }> {
     this.refuseIfClosed();
     const baseUrl = await this.getBaseUrl();
     this.enforceClientCookie();
     const cookie = this.getCookieHeader();
-    const trim = (v: unknown): string => {
-      if (typeof v === 'string') return v.slice(0, 500);
-      if (v && typeof v === 'object') {
-        try {
-          return JSON.stringify(v).slice(0, 500);
-        } catch {
-          return String(v).slice(0, 500);
-        }
-      }
-      return '';
-    };
     try {
       const response = await executeHttpRequest(await this.sdkDestination(), {
         method: 'GET',
@@ -520,7 +488,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
       );
       return {
         httpCode: response.status || 200,
-        rawMessage: trim(response.data),
+        rawMessage: responseBodyText(response.data) ?? '',
       };
     } catch (error: unknown) {
       const errObj = error as {
@@ -530,7 +498,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
       };
       const httpCode = errObj?.response?.status ?? errObj?.statusCode ?? 0;
       const body = errObj?.response?.data;
-      const rawMessage = body ? trim(body) : trim(errObj?.message);
+      const rawMessage = responseBodyText(body) ?? errObj?.message ?? '';
       return { httpCode, rawMessage };
     }
   }
@@ -728,8 +696,9 @@ export class CloudSdkAbapConnection implements AbapConnection {
   private async fetchCsrfToken(url: string): Promise<string> {
     const baseUrl = await this.getBaseUrl();
     const discoveryUrl = baseUrl + CSRF_CONFIG.ENDPOINT;
-    logger.csrfToken('fetch', `Fetching CSRF token from: ${discoveryUrl}`, {
-      originalRequestUrl: url,
+    logger.csrfToken('fetch', 'Fetching CSRF token', {
+      discoveryUrl: this.redactLogText(discoveryUrl),
+      originalRequestUrl: this.redactLogText(url),
     });
 
     let response: Awaited<ReturnType<typeof this.requestCsrfToken>>;
@@ -813,6 +782,25 @@ export class CloudSdkAbapConnection implements AbapConnection {
       destinationName: this.destinationName,
       ...(this.config.jwtToken ? { jwt: this.config.jwtToken } : {}),
     };
+  }
+
+  private redactLogText(text: string): string {
+    let safe = redactContext(text);
+    for (const credential of [
+      this.config.password,
+      this.config.jwtToken,
+      this.config.refreshToken,
+      this.config.uaaClientSecret,
+      this.config.certPassphrase,
+      this.csrfToken,
+      ...this.cookieJar.values(),
+    ]) {
+      if (credential)
+        safe = safe
+          .replaceAll(JSON.stringify(credential).slice(1, -1), '[redacted]')
+          .replaceAll(credential, '[redacted]');
+    }
+    return safe;
   }
 
   /**
@@ -990,9 +978,9 @@ export class CloudSdkAbapConnection implements AbapConnection {
       }
     }
 
-    logger.debug(`Executing ${normalizedMethod} request to: ${requestUrl}`, {
+    logger.debug(`Executing ${normalizedMethod} request`, {
       type: 'REQUEST_INFO',
-      url: requestUrl,
+      url: this.redactLogText(requestUrl),
       method: normalizedMethod,
       destinationName: this.destinationName,
     });
@@ -1043,28 +1031,32 @@ export class CloudSdkAbapConnection implements AbapConnection {
           typeof body === 'string' &&
           /session/i.test(body)
         ) {
-          const sidKey = [...this.cookieJar.keys()].find((k) =>
+          const hasSapSessionCookie = [...this.cookieJar.keys()].some((k) =>
             /^SAP_SESSIONID_/.test(k),
           );
           logger.warn('ADT stateful session lost mid-chain', {
             type: 'SESSION_LOST',
             method: normalizedMethod,
-            url: requestUrl,
+            url: this.redactLogText(requestUrl),
             destinationName: this.destinationName,
             sessionType: this.sessionType,
             connId: this.sessionId?.slice(0, 8),
-            sapSessionId: sidKey
-              ? `${sidKey}=${(this.cookieJar.get(sidKey) ?? '').slice(0, 8)}…`
-              : 'NONE',
+            hasSapSessionCookie,
           });
         }
       }
       // Use synchronized error handling from errorUtils
-      logErrorSafely(logger, 'ADT request', error, {
-        url: requestUrl,
-        method: normalizedMethod,
-        destinationName: this.destinationName,
-      });
+      logErrorSafely(
+        logger,
+        'ADT request',
+        error,
+        {
+          url: requestUrl,
+          method: normalizedMethod,
+          destinationName: this.destinationName,
+        },
+        (text) => this.redactLogText(text),
+      );
 
       const errorObj = error as {
         response?: { status?: number };
@@ -1077,7 +1069,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
       ) {
         logger.info(
           'CSRF token validation failed, refreshing token and retrying',
-          { url: requestUrl },
+          { url: this.redactLogText(requestUrl) },
         );
         // Shared refresh — if another parallel call is already refreshing, wait
         // for it. A failure here, or of the retry below, is the connect phase
@@ -1126,11 +1118,17 @@ export class CloudSdkAbapConnection implements AbapConnection {
 
           return this.convertToAdtResponse<T, D>(retryResponse, requestUrl);
         } catch (retryError: unknown) {
-          logErrorSafely(logger, 'ADT request retry', retryError, {
-            url: requestUrl,
-            method: normalizedMethod,
-            destinationName: this.destinationName,
-          });
+          logErrorSafely(
+            logger,
+            'ADT request retry',
+            retryError,
+            {
+              url: requestUrl,
+              method: normalizedMethod,
+              destinationName: this.destinationName,
+            },
+            (text) => this.redactLogText(text),
+          );
           await this.tagOutage(retryError);
           throw retryError;
         }

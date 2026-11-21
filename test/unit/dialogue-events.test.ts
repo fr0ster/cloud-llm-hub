@@ -140,7 +140,7 @@ test('unacknowledged replay across reconnect, live messages/tasks, heartbeat and
     },
   });
   expect(res.write).toHaveBeenLastCalledWith(
-    `event: task\ndata: ${JSON.stringify({ id: 't', worker: 'executor', goal: 'read', state: 'done', createdAt: 100, finishedAt: 900, error: 'x'.repeat(300) })}\n\n`,
+    `event: task\ndata: ${JSON.stringify({ id: 't', worker: 'executor', goal: 'read', state: 'done', createdAt: 100, finishedAt: 900, error: 'x'.repeat(350) })}\n\n`,
   );
   listener({
     kind: 'usage',
@@ -240,8 +240,7 @@ test.each(['running', 'done'])(
       '"createdAt":100,"finishedAt":900',
     );
     expect(res.write.mock.calls[0][0]).not.toContain('secret output');
-    expect(res.write.mock.calls[0][0]).toContain('x'.repeat(300));
-    expect(res.write.mock.calls[0][0]).not.toContain('x'.repeat(301));
+    expect(res.write.mock.calls[0][0]).toContain('x'.repeat(350));
     expect(res.write.mock.calls[1][0]).toContain('id: m1');
     res.emit('close');
   },

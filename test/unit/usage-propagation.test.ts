@@ -188,7 +188,6 @@ jest.mock('../../srv/agent-config', (): object => ({
         executorPool?: number;
         maxTasks: number;
         maxCorrections: number;
-        followMaxMs: number;
       };
       planBudget?: {
         maxSteps?: number;
