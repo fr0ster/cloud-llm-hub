@@ -1,10 +1,13 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { transportDocuments } from '@mcp-abap-adt/adt-clients';
+import type { StepError } from '@mcp-abap-adt/lib/dist/lib/strategies/stepResponse';
 import type {
   ILlm,
   McpToolResult,
   Message,
   ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
+import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { z } from 'zod';
 import {
   type CollectionAddress,
@@ -36,6 +39,12 @@ const resultWrapper = z.object({
   structuredContent: jsonSchema.optional(),
   isError: z.boolean().optional(),
 });
+const completedOperation = z.object({
+  operation: z.literal('succeeded') satisfies z.ZodType<StepError['operation']>,
+  cleanup: jsonSchema.optional(),
+  message: z.string().optional(),
+  error: jsonSchema.optional(),
+});
 
 export function journalPayload(
   content: McpToolResult['content'] | Json,
@@ -62,13 +71,22 @@ export function journalPayload(
   }
   const wrapper = resultWrapper.safeParse(content).data;
   const value = jsonSchema.safeParse(content).data;
-  if (wrapper?.isError) return value;
+  if (wrapper?.isError) {
+    const inner = wrapper.structuredContent ?? wrapper.content;
+    const payload = inner === undefined ? undefined : journalPayload(inner);
+    if (payload && typeof payload === 'object' && !Array.isArray(payload))
+      return { ...payload, isError: true };
+    return value;
+  }
   if (wrapper?.structuredContent !== undefined)
     return journalPayload(wrapper.structuredContent);
   if (
     value &&
     typeof value === 'object' &&
-    ('success' in value || 'status' in value || 'error' in value)
+    ('success' in value ||
+      'status' in value ||
+      'error' in value ||
+      'operation' in value)
   )
     return value;
   return wrapper?.content === undefined
@@ -108,28 +126,194 @@ export type JournalSnapshot = {
   entries: JournalEntry[];
 };
 
-const failure = z.object({
+const resultFields = z.object({
   success: z.boolean().optional(),
   error: jsonSchema.optional(),
   isError: z.boolean().optional(),
   status: z.union([z.string(), z.number()]).optional(),
+  cleanup: jsonSchema.optional(),
 });
+
+const published = z.object({
+  result: z.literal('SUCCESS'),
+  completion: z.literal('done'),
+});
+const activated = z.object({
+  activated: z.boolean(),
+  nothing_to_activate: z.boolean().optional(),
+});
+const deleted = z.object({ deleted: z.boolean() });
+const wireBoolean = z.enum(['true', 'false']);
+const activationDocument = z.object({
+  'chkl:messages': z.object({
+    'chkl:properties': z.object({
+      '@': z.object({ activationExecuted: wireBoolean }),
+    }),
+  }),
+});
+const deletionItem = z.object({
+  '@': z.object({ 'del:isDeleted': wireBoolean }),
+});
+const deletionDocument = z.object({
+  'del:deletionResult': z.object({
+    'del:object': z.union([deletionItem, z.array(deletionItem).min(1)]),
+  }),
+});
+const wrappedResult = z.object({ result: jsonSchema });
+const xml = new XMLParser({
+  ignoreAttributes: false,
+  attributesGroupName: '@',
+  attributeNamePrefix: '',
+  processEntities: false,
+});
+
+function resultDocument(data: Json | undefined): Json | undefined {
+  const body = wrappedResult.safeParse(data).data?.result ?? data;
+  if (typeof body !== 'string' || !body.startsWith('<')) return body;
+  if (XMLValidator.validate(body) !== true) return undefined;
+  return parseSapDocument(body);
+}
+
+function parseSapDocument(
+  body: ReturnType<typeof transportDocuments.createdTask>,
+): Json | undefined {
+  try {
+    return jsonSchema.safeParse(xml.parse(body)).data;
+  } catch {
+    return undefined;
+  }
+}
+
+function booleanOutcome(value: boolean | undefined): JournalOutcome {
+  return value === undefined ? 'unconfirmed' : value ? 'succeeded' : 'failed';
+}
+
+// These handlers publish their own boolean success projection. Most CRUD
+// handlers instead use the ADT library's terseWrite or terseDeletion output.
+const sapBooleanSuccessTools = new Set([
+  'UpdateDomainLow',
+  'UpdateDataElementLow',
+  'UpdatePackageLow',
+  'CreateMessageClassMessage',
+  'UpdateMessageClassMessage',
+  'DeleteMessageClassMessage',
+  'RuntimeCreateProfilerTraceParameters',
+]);
+
+function sapOutcome(tool: string, data: Json | undefined): JournalOutcome {
+  switch (tool) {
+    case 'CreateTransport':
+    case 'CreateTransportTask':
+      return generatedTransportNumber(tool, data) ? 'succeeded' : 'unconfirmed';
+    case 'AddTransportObject':
+    case 'RemoveTransportObject':
+    case 'MoveTransportObjects':
+    case 'SortAndCompressTransportTask':
+      // The CTS responses acknowledge the request without confirming a change.
+      return 'unconfirmed';
+    case 'UpdateServiceBinding':
+      return published.safeParse(data).success ? 'succeeded' : 'unconfirmed';
+  }
+  if (sapBooleanSuccessTools.has(tool))
+    return booleanOutcome(resultFields.safeParse(data).data?.success);
+  if (!Object.hasOwn(toolObjects, tool)) return 'unconfirmed';
+  if (tool.startsWith('Activate')) {
+    const result = activated.safeParse(data).data;
+    if (result)
+      return booleanOutcome(
+        result.nothing_to_activate ? undefined : result.activated,
+      );
+    const properties = activationDocument.safeParse(resultDocument(data))
+      .data?.['chkl:messages']['chkl:properties']['@'];
+    return booleanOutcome(
+      properties && properties.activationExecuted === 'true',
+    );
+  }
+  const body = wrappedResult.safeParse(data).data?.result ?? data;
+  if (body === 'SUCCESS' && /^(?:Create|Update|Delete)/.test(tool))
+    return 'succeeded';
+  if (tool.startsWith('Delete')) {
+    const result = deleted.safeParse(data).data;
+    if (result) return booleanOutcome(result.deleted);
+    const objects = deletionDocument.safeParse(resultDocument(data)).data?.[
+      'del:deletionResult'
+    ]['del:object'];
+    if (objects)
+      return booleanOutcome(
+        [objects]
+          .flat()
+          .every((object) => object['@']['del:isDeleted'] === 'true'),
+      );
+  }
+  return 'unconfirmed';
+}
+
+const ragWriteConfirmations: Readonly<Record<string, z.ZodType>> = {
+  collection_create: z.object({ created: z.literal(true) }),
+  collection_delete: deleted.extend({ deleted: z.literal(true) }),
+  collection_set_enabled: z.object({ id: z.string(), enabled: z.boolean() }),
+  collection_set_trust: z.object({ updated: z.literal(true) }),
+  record_add: z.object({ record: z.string(), created: z.literal(true) }),
+  record_delete: z.object({ record: z.string(), deleted: z.literal(true) }),
+  record_set_enabled: z
+    .object({ collection: z.string(), enabled: z.boolean() })
+    .and(
+      z.union([
+        z.object({ id: z.string() }),
+        z.object({ updated: z.number().positive() }),
+      ]),
+    ),
+  record_set_trust: z.object({ updated: z.literal(true) }),
+  record_update: z.object({ record: z.string(), updated: z.literal(true) }),
+  rag_persist: z.object({
+    collection: z.string(),
+    records: z.array(z.string()).min(1),
+  }),
+};
 
 export function journalOutcome(entry: JournalEntry): JournalOutcome {
   if (!entry.answered) return 'unconfirmed';
+  const data = journalPayload(entry.result.content);
+  const result = resultFields.safeParse(data).data;
+  if (entry.system === 'sap' && completedOperation.safeParse(data).success)
+    return 'succeeded';
   if (entry.system === 'user-mcp')
-    return entry.result.isError ? 'failed' : 'succeeded';
-  const result = failure.safeParse(journalPayload(entry.result.content)).data;
+    return entry.result.isError || result?.isError ? 'failed' : 'unconfirmed';
   const status = result?.status;
-  return entry.result.isError ||
+  if (
+    entry.result.isError ||
     result?.isError ||
     result?.success === false ||
     result?.error ||
     status === 'error' ||
     status === 'failed' ||
     (typeof status === 'number' && status >= 400)
-    ? 'failed'
-    : 'succeeded';
+  )
+    return 'failed';
+  if (entry.system === 'sap') return sapOutcome(entry.call.name, data);
+  if (
+    entry.system === 'rag' &&
+    Object.hasOwn(ragWriteConfirmations, entry.call.name) &&
+    ragWriteConfirmations[entry.call.name].safeParse(data).success
+  )
+    return 'succeeded';
+  return 'unconfirmed';
+}
+
+function journalNote(
+  entry: JournalEntry,
+  outcome: JournalOutcome,
+): Json | undefined {
+  if (entry.system !== 'sap' || outcome !== 'succeeded') return undefined;
+  const data = journalPayload(entry.result.content);
+  const result = resultFields.safeParse(data).data;
+  const completion = completedOperation.safeParse(data).data;
+  return (
+    result?.cleanup ??
+    completion?.cleanup ??
+    completion?.message ??
+    completion?.error
+  );
 }
 
 // For handlers that act on a named object and can return a terse SUCCESS,
@@ -169,9 +353,31 @@ const namedObject = z.object({
   name,
 });
 const batchActivation = z.object({ objects: z.array(namedObject) });
-const names = z.record(z.string(), z.json());
-const stringField = (data: Json | undefined, key: string) =>
-  name.safeParse(names.safeParse(data).data?.[key]).data;
+function stringField(data: Json | undefined, key: string) {
+  if (data && typeof data === 'object' && !Array.isArray(data))
+    return name.safeParse(data[key]).data;
+}
+
+const transportAttributes = z.object({ '@': z.object({ 'tm:number': name }) });
+const taskDocument = z.object({ 'tm:root': transportAttributes });
+const requestDocument = z.object({
+  'tm:root': z.object({ 'tm:request': transportAttributes }),
+});
+
+function generatedTransportNumber(
+  tool: string,
+  data: Json | undefined,
+): string | undefined {
+  const task = tool === 'CreateTransportTask';
+  const terse = stringField(data, task ? 'task_number' : 'transport_number');
+  if (terse) return terse;
+  const document = resultDocument(data);
+  const attributes = task
+    ? (taskDocument.safeParse(document).data?.['tm:root'] ??
+      transportAttributes.safeParse(document).data)
+    : requestDocument.safeParse(document).data?.['tm:root']['tm:request'];
+  return attributes?.['@']['tm:number'];
+}
 
 function sapTargets(entry: JournalEntry, data: Json | undefined): SapTarget[] {
   const { name: tool, arguments: args } = entry.call;
@@ -184,14 +390,8 @@ function sapTargets(entry: JournalEntry, data: Json | undefined): SapTarget[] {
   }
   const type = toolObjects[tool];
   if (!type) return [];
-  const generatedKey =
-    tool === 'CreateTransportTask'
-      ? 'task_number'
-      : tool === 'CreateTransport'
-        ? 'transport_number'
-        : undefined;
-  if (generatedKey) {
-    const generated = stringField(data, generatedKey);
+  if (tool === 'CreateTransportTask' || tool === 'CreateTransport') {
+    const generated = generatedTransportNumber(tool, data);
     return generated ? [{ type, name: generated }] : [];
   }
   const fields = sapTargetFields[type] ?? [];
@@ -297,13 +497,15 @@ export function writeActions(
   const lines: string[] = [];
   for (const entry of journal) {
     if (!entry.write || !entry.system) continue;
+    const outcome = journalOutcome(entry);
     lines.push(
       JSON.stringify({
         callId: entry.call.id,
         system: entry.system,
         operation: entry.call.name,
         targets: journalTargets(entry),
-        outcome: journalOutcome(entry),
+        outcome,
+        note: journalNote(entry, outcome),
       }),
     );
   }

@@ -1411,6 +1411,8 @@ or a failed check.
 
 The coordinator selects the check worker. For a verdict profile, provide a JSON list in `delegate_task.context`, the adaptive step's `context.note`, or `execute_step.task` for a direct call. Each entry contains the exact quoted `claim`, `system`, `target` and `evidence`.
 
+`execute_step` appends `[actions]` for writes recorded during the call. Use the same live session and destination when citing those calls in a later `execute_step` verdict. Direct verdicts can also cite the current dialogue plan's journal in that session.
+
 | System | Target | Citation |
 |---|---|---|
 | `sap` | `{ type, name }` | `{ callId }` from `[actions]` |

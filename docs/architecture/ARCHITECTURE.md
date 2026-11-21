@@ -1508,7 +1508,7 @@ the second; `srv/lib/gatekeeper.ts` joins them to the real stores.
 
 ### Coordinator verification and the tool journal
 
-`RecordingMcpClient` captures each dispatch and its result under the request trace. The registered tool determines the system and operation. The structured result identifies the target when the tool returns it, such as `task_number` for `CreateTransportTask`. Pending dispatches have outcome `unconfirmed`. The coordinator receives these facts in `[actions]` without a separate model call. Dialogue saves the current request journal with its plan. Transport errors still report writes that were sent without a reply.
+`RecordingMcpClient` captures each dispatch and its result under the request trace. The registered tool determines the system and operation. `CreateTransportTask` identifies the new task from its number in the terse result, the parsed full result, or the raw XML. The journal uses each tool's result contract to determine the outcome. Pending and acknowledged writes without a confirmed change are `unconfirmed`. A secondary cleanup error is a note on a completed write. The coordinator receives these facts in `[actions]` without a separate model call. Dialogue saves the current request journal with its plan. Transport errors still report writes that were sent without a reply.
 
 The initial coordinator policy is to verify before delivery when a write or sourced statement matters to the user. Corrections can change that policy. The checker verifies each quoted claim against the exact journal call or source record in its citation and reports `confirmed`, `refuted` or `unsupported` with a reason. A malformed submission produces an unusable verdict. The coordinator communicates findings in its response.
 

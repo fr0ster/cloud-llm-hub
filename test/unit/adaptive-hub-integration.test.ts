@@ -100,6 +100,7 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     | 'invalid'
     | 'check-write'
     | 'explicit-check'
+    | 'fix-after-check'
     | 'revise'
     | 'user-mcp'
     | 'user-mcp-write';
@@ -109,6 +110,8 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
   const revisionCount = 21;
   const calls: string[] = [];
   const controllerPrompts: string[] = [];
+  const fixPrompts: string[] = [];
+  let rejectedWriteId: string | undefined;
   const answer = 'I created and activated class ZTEST.';
   function respond(messages: Message[]): string {
     const system = messages
@@ -155,6 +158,43 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
             : { id: 'answer', kind: 'answer', text: 'Plan complete' };
         return JSON.stringify({ steps: [step] });
       }
+      if (scenario === 'fix-after-check')
+        return JSON.stringify({
+          steps: [
+            {
+              id: 'verify',
+              kind: 'check',
+              worker: 'checker',
+              goal: 'verify',
+              targets: [],
+              onPass: 'done',
+              onFail: 'fix',
+              context: {
+                note: JSON.stringify([
+                  {
+                    claim: 'Created class ZTEST.',
+                    system: 'sap',
+                    target: { type: 'class', name: 'ZTEST' },
+                    evidence: { callId: rejectedWriteId },
+                  },
+                  {
+                    claim: 'Created class ZOTHER.',
+                    system: 'sap',
+                    target: { type: 'class', name: 'ZOTHER' },
+                    evidence: {},
+                  },
+                ]),
+              },
+            },
+            {
+              id: 'fix',
+              kind: 'work',
+              worker: 'executor',
+              goal: 'Correct the result',
+            },
+            { id: 'done', kind: 'answer', from: 'fix' },
+          ],
+        });
       if (scenario === 'check-write' || scenario === 'explicit-check')
         return JSON.stringify({
           steps: [
@@ -185,6 +225,8 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       });
     }
     calls.push('executor');
+    if (scenario === 'fix-after-check')
+      fixPrompts.push(messages.map((message) => message.content).join('\n'));
     return answer;
   }
   const llm: ILlm = {
@@ -206,8 +248,21 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
                 arguments: {
                   verdict: 'fail',
                   findings: [
+                    ...(scenario === 'fix-after-check'
+                      ? [
+                          {
+                            claim: 'Created class ZTEST.',
+                            status: 'refuted',
+                            evidence: { callId: rejectedWriteId },
+                            reason: 'SAP rejected the class definition.',
+                          },
+                        ]
+                      : []),
                     {
-                      claim: 'Created class ZTEST.',
+                      claim:
+                        scenario === 'fix-after-check'
+                          ? 'Created class ZOTHER.'
+                          : 'Created class ZTEST.',
                       status: 'unsupported',
                       evidence: {},
                       reason: 'Citation missing.',
@@ -292,6 +347,7 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
   beforeEach(() => {
     calls.length = 0;
     controllerPrompts.length = 0;
+    fixPrompts.length = 0;
   });
 
   async function run(
@@ -322,6 +378,18 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       ),
       runConfig,
     );
+    if (scenario === 'fix-after-check') {
+      callTool.mockResolvedValueOnce({
+        ok: true,
+        value: { isError: true, content: 'Class definition rejected' },
+      });
+      await handle.recMcp.callTool(
+        'CreateClass',
+        { class_name: 'ZTEST' },
+        { trace: { traceId: sessionId } },
+      );
+      rejectedWriteId = handle.recMcp.getToolJournal(sessionId)[0].call.id;
+    }
     const { SessionRetention, isRefusal } = await import(
       '../../srv/lib/session-retention'
     );
@@ -500,7 +568,7 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       expect(controllerPrompts).toHaveLength(2);
       expect(controllerPrompts[1]).toContain('[actions] Tool writes');
       expect(controllerPrompts[1]).toContain(
-        '"system":"user-mcp","operation":"user__documents__save","targets":[],"outcome":"succeeded"',
+        '"system":"user-mcp","operation":"user__documents__save","targets":[],"outcome":"unconfirmed"',
       );
       expect(send).toHaveBeenCalledTimes(1);
     } finally {
@@ -601,6 +669,21 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     expect(result.usage.reduce((total, tokens) => total + tokens, 0)).toBe(10);
     expect(result.record?.steps[0].verdict?.verdict).toBe('fail');
     expect(result.callTool).not.toHaveBeenCalled();
+  });
+
+  it('passes refuted and unsupported findings to the adaptive fix worker', async () => {
+    scenario = 'fix-after-check';
+    const result = await run(
+      'adaptive-fix-after-check',
+      'Verify and correct the write',
+    );
+    expect(calls).toEqual(['controller', 'checker', 'executor']);
+    expect(result.record?.steps[0].verdict?.reason).toContain(
+      'SAP rejected the class definition.',
+    );
+    expect(fixPrompts.join('\n')).toContain(
+      `Previous check verify said:\n"Created class ZTEST." refuted (${rejectedWriteId}). SAP rejected the class definition.\n"Created class ZOTHER." unsupported (citation missing). The write citation is missing a journal call id`,
+    );
   });
 
   it('returns fixed answers unchanged even when the text claims a write', async () => {

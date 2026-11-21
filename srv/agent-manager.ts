@@ -1,6 +1,13 @@
 import type { ToolTrust } from '@mcp-abap-adt/llm-agent';
-import { readCheckerSource } from './lib/checker-source';
-import { createCheckerWorker, withCheckerBrief } from './lib/checker-verdict';
+import {
+  checkerRagResultProvenance,
+  readCheckerSource,
+} from './lib/checker-source';
+import {
+  adaptiveCheckerOutput,
+  createCheckerWorker,
+  withCheckerBrief,
+} from './lib/checker-verdict';
 import { submitVerdictTool } from './lib/checker-verdict-tool';
 import {
   clientHistoryWindow,
@@ -3367,6 +3374,14 @@ function destinationProfileRunner(
               target,
               recordId,
             ),
+          (caller, entry, target) =>
+            'scope' in target
+              ? checkerRagResultProvenance(
+                  getCollectionRegistry(),
+                  caller,
+                  target,
+                )
+              : getSystemToolTrust()(entry.call.name),
         );
       }
       const builder = await configureDestinationAgentBuilder(
@@ -3674,7 +3689,10 @@ export async function buildAgentForDestination(
                         ),
                         { usage: result.usage },
                       );
-                    return result;
+                    return {
+                      ...result,
+                      output: adaptiveCheckerOutput(result.output),
+                    };
                   },
                 },
           ]),

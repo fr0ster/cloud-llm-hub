@@ -6,6 +6,8 @@ import {
 import { lifecycleHooks } from '../../srv/lib/session-lifecycle';
 
 const mockCreateWorker = jest.fn();
+const mockGetToolJournal = jest.fn<JournalEntry[], [string?]>(() => []);
+const mockGetProfile = jest.fn();
 jest.mock(
   '@sap/cds',
   () => ({
@@ -22,14 +24,21 @@ jest.mock(
 jest.mock('../../srv/env-setup', () => ({}));
 jest.mock('../../srv/agent-manager', () => ({
   ...require('./helpers/channel-harness').agentManagerMock(),
-  getSmartAgent: async (...args: unknown[]) => ({
-    ...(await require('./helpers/channel-harness')
+  getSmartAgent: async (
+    ...args: Parameters<typeof import('../../srv/agent-manager').getSmartAgent>
+  ) => {
+    const handle = await require('./helpers/channel-harness')
       .agentManagerMock()
-      .getSmartAgent(...args)),
-    profileRunner: { createWorker: mockCreateWorker },
-  }),
+      .getSmartAgent(...args);
+    return {
+      ...handle,
+      profileRunner: { createWorker: mockCreateWorker },
+      recMcp: { ...handle.recMcp, getToolJournal: mockGetToolJournal },
+    };
+  },
   createAgentProfileSource: () => ({
     list: async () => ({ ok: true, value: [] }),
+    get: mockGetProfile,
     getPrompts: async () => ({ ok: true, value: {} }),
   }),
 }));
@@ -92,12 +101,16 @@ jest.mock('@modelcontextprotocol/sdk/server/streamableHttp.js', () => ({
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { ILlm } from '@mcp-abap-adt/llm-agent';
 import type { Request } from 'express';
 import {
   createAgentMcpServerForRequest,
   executeStep,
 } from '../../srv/agent-mcp';
 import { trackCall } from '../../srv/lib/admission-scope';
+import { createCheckerWorker } from '../../srv/lib/checker-verdict';
+import type { CheckerClaim } from '../../srv/lib/checker-verdict-schema';
+import { getDialogueStoreBackend } from '../../srv/lib/dialogue-store';
 import * as gatekeeper from '../../srv/lib/gatekeeper';
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
 import {
@@ -109,6 +122,7 @@ import {
   destinationClosedText,
   executeStepDoorRefusal,
 } from '../../srv/lib/throttle-surfacing';
+import type { JournalEntry } from '../../srv/lib/tool-journal';
 import { deferred, harness, tick } from './helpers/channel-harness';
 
 function configure(live?: number, queue?: number) {
@@ -133,6 +147,9 @@ const step = () =>
 
 beforeEach(() => {
   harness.reset();
+  mockCreateWorker.mockReset();
+  mockGetToolJournal.mockReset().mockReturnValue([]);
+  mockGetProfile.mockReset();
   setLongSessionsForTest(
     new LongSessionRegistry(
       { ttlMs: 3600000, maxSessions: 10, maxPerUser: 10, queueLength: 3 },
@@ -169,6 +186,154 @@ test.each([undefined, 'executor'])(
     expect(mockCreateWorker).not.toHaveBeenCalled();
   },
 );
+
+test('a direct verdict can cite SAP and RAG writes from prior calls in the same session', async () => {
+  const session = opened();
+  const entries: JournalEntry[] = [
+    {
+      call: {
+        id: 'sap-write',
+        name: 'CreateClass',
+        arguments: { class_name: 'ZCLASS' },
+      },
+      result: { content: 'SUCCESS' },
+      answered: true,
+      write: true,
+      system: 'sap',
+    },
+    {
+      call: {
+        id: 'rag-write',
+        name: 'record_add',
+        arguments: { record: 'note' },
+      },
+      result: {
+        content: { collection: 'session/notes', record: 'note', created: true },
+      },
+      answered: true,
+      write: true,
+      system: 'rag',
+    },
+  ];
+  const traces = new Map<string, JournalEntry[]>();
+  mockGetToolJournal.mockImplementation((traceId) =>
+    traceId ? (traces.get(traceId) ?? []) : [],
+  );
+  harness.process = async (_messages, options) => {
+    const trace = options.trace?.traceId;
+    const entry = entries.shift();
+    if (!trace || !entry) throw new Error('Expected a traced write');
+    traces.set(trace, [entry]);
+    return { ok: true, value: { content: 'Write attempted' } };
+  };
+  const first = await executeStep(req, caller, {
+    session,
+    task: 'Create a class',
+  });
+  expect(first.content[0].text).toContain('"callId":"sap-write"');
+  const second = await executeStep(req, caller, {
+    session,
+    task: 'Add a record',
+  });
+  expect(second.content[0].text).toContain('"callId":"rag-write"');
+  const recorded = [...traces.values()].flat();
+  traces.clear();
+  const claims = [
+    {
+      claim: 'Created the class.',
+      system: 'sap',
+      target: { type: 'class', name: 'ZCLASS' },
+      evidence: { callId: 'sap-write' },
+    },
+    {
+      claim: 'Added the record.',
+      system: 'rag',
+      target: { scope: 'session', collection: 'notes', record: 'note' },
+      evidence: { callId: 'rag-write' },
+    },
+  ] satisfies CheckerClaim[];
+  const chat = jest.fn<ReturnType<ILlm['chat']>, Parameters<ILlm['chat']>>(
+    async (messages) => {
+      const missing = messages[1].content?.includes(
+        'absent from the current journal',
+      );
+      return {
+        ok: true,
+        value: {
+          content: '',
+          finishReason: 'tool_calls',
+          toolCalls: [
+            {
+              id: 'verdict',
+              name: 'submit_verdict',
+              arguments: {
+                verdict: missing ? 'fail' : 'pass',
+                findings: claims.map(({ claim, evidence }) => ({
+                  claim,
+                  evidence,
+                  status: missing ? 'unsupported' : 'confirmed',
+                  reason: 'Checked the cited call.',
+                })),
+              },
+            },
+          ],
+        },
+      };
+    },
+  );
+  mockGetProfile.mockResolvedValue({
+    ok: true,
+    value: { name: 'checker', result: 'verdict' },
+  });
+  mockCreateWorker.mockResolvedValue({
+    ok: true,
+    value: createCheckerWorker(
+      'checker',
+      '',
+      '',
+      {
+        chat,
+        async *streamChat() {},
+      },
+      async () => undefined,
+      () => undefined,
+    ),
+  });
+  const check = { worker: 'checker', task: JSON.stringify(claims) };
+  const verified = await executeStep(req, caller, { ...check, session });
+  expect(JSON.parse(verified.content[0].text)).toMatchObject({
+    verdict: 'pass',
+  });
+  const dialogueSession = opened();
+  const isolated = await executeStep(req, caller, {
+    ...check,
+    session: dialogueSession,
+  });
+  expect(JSON.parse(isolated.content[0].text)).toMatchObject({
+    verdict: 'fail',
+    findings: [{ status: 'unsupported' }, { status: 'unsupported' }],
+  });
+  const request = {
+    id: 'dialogue-request',
+    openedAt: Date.now(),
+    text: 'Make the writes',
+  };
+  await getDialogueStoreBackend().save(caller.userId, dialogueSession, {
+    conversation: [],
+    tasks: [],
+    pending: [],
+    savedAt: Date.now(),
+    requests: [request],
+    toolJournal: { requestId: request.id, entries: recorded },
+  });
+  const restored = await executeStep(req, caller, {
+    ...check,
+    session: dialogueSession,
+  });
+  expect(JSON.parse(restored.content[0].text)).toMatchObject({
+    verdict: 'pass',
+  });
+});
 
 describe('execute_step at the door', () => {
   it('refuses with the prefixed line, after resolving the agent', async () => {

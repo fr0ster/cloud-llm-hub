@@ -5,8 +5,9 @@ import type {
   ISubAgent,
   RagCaller,
 } from '@mcp-abap-adt/llm-agent';
-import { RagAccessDeniedError } from '@mcp-abap-adt/llm-agent';
+import { formatTrustTag, RagAccessDeniedError } from '@mcp-abap-adt/llm-agent';
 import { profileToolAllowed } from '../request-session';
+import type { CheckerSource, EvidenceProvenance } from './checker-source';
 import {
   type CheckerClaim,
   type CheckerVerdict,
@@ -35,6 +36,7 @@ export function withCheckerBrief<T>(brief: CheckerBrief, run: () => T): T {
 interface ClaimEvidence {
   issue?: string;
   content?: object | string | number | boolean | null;
+  provenance?: string;
   operation?: string;
   arguments?: JournalEntry['call']['arguments'];
   outcome?: ReturnType<typeof journalOutcome>;
@@ -65,7 +67,13 @@ type ReadSource = (
   caller: RagCaller,
   target: Extract<CheckerClaim, { system: 'source' }>['target'],
   recordId: string,
-) => Promise<string | undefined>;
+) => Promise<CheckerSource | undefined>;
+
+type JournalProvenance = (
+  caller: RagCaller,
+  entry: JournalEntry,
+  target: JournalTarget,
+) => EvidenceProvenance | undefined | Promise<EvidenceProvenance | undefined>;
 
 async function citedEvidence(
   claim: CheckerClaim,
@@ -73,20 +81,29 @@ async function citedEvidence(
   read: (
     target: Parameters<ReadSource>[1],
     id: string,
-  ) => Promise<string | undefined>,
+  ) => Promise<CheckerSource | undefined>,
+  journalProvenance: (
+    entry: JournalEntry,
+    target: JournalTarget,
+  ) => ReturnType<JournalProvenance>,
 ): Promise<ClaimEvidence> {
   const { callId, recordId, quote } = claim.evidence;
   if (claim.system === 'source') {
     if (!recordId || !quote || callId)
       return { issue: 'Source citation requires a record id and exact quote.' };
-    const content = await read(claim.target, recordId);
-    if (content === undefined)
+    const source = await read(claim.target, recordId);
+    if (!source)
       return {
         issue: 'The cited record is unavailable at the claimed target.',
       };
-    if (!content.includes(quote))
+    if (!source.text.includes(quote))
       return { issue: 'The quote is absent from the cited record.' };
-    return { content };
+    return {
+      content: source.text,
+      provenance:
+        source.provenance &&
+        formatTrustTag(source.provenance.source, source.provenance.trust),
+    };
   }
   if (!callId || recordId)
     return {
@@ -100,7 +117,10 @@ async function citedEvidence(
     return { issue: 'The cited call belongs to a different system.' };
   if (!entry.write)
     return { issue: 'The cited call is a read and cannot prove a write.' };
-  if (!journalTargets(entry).some((target) => sameTarget(claim.target, target)))
+  const target = journalTargets(entry).find((target) =>
+    sameTarget(claim.target, target),
+  );
+  if (!target)
     return { issue: 'The cited call does not identify the claimed target.' };
   const outcome = journalOutcome(entry);
   if (outcome === 'unconfirmed')
@@ -112,12 +132,40 @@ async function citedEvidence(
     !(typeof content === 'string' && content.includes(quote))
   )
     return { issue: 'The quote is absent from the cited tool result.' };
+  const provenance = await journalProvenance(entry, target);
   return {
     content,
+    provenance:
+      provenance && formatTrustTag(provenance.source, provenance.trust),
     operation: entry.call.name,
     arguments: entry.call.arguments,
     outcome,
   };
+}
+
+function negativeFindings(findings: CheckerVerdict['findings']): string {
+  return findings
+    .filter(({ status }) => status !== 'confirmed')
+    .map(
+      ({ claim, status, evidence, reason }) =>
+        `"${claim}" ${status} (${evidence.callId ?? evidence.recordId ?? 'citation missing'}). ${reason}`,
+    )
+    .join('\n');
+}
+
+/** Supply the reason consumed by the adaptive interpreter's fix step. */
+export function adaptiveCheckerOutput(output: string): string {
+  try {
+    const verdict = verdictSchema.safeParse(JSON.parse(output));
+    if (verdict.success && verdict.data.verdict === 'fail')
+      return JSON.stringify({
+        ...verdict.data,
+        reason: negativeFindings(verdict.data.findings),
+      });
+  } catch {
+    // The interpreter handles malformed output.
+  }
+  return output;
 }
 
 function boundVerdict(
@@ -149,6 +197,7 @@ export function createCheckerWorker(
   systemPrompt: string,
   llm: ILlm,
   readSource: ReadSource,
+  journalProvenance: JournalProvenance,
 ): ISubAgent {
   return {
     name,
@@ -179,14 +228,19 @@ export function createCheckerWorker(
       const journal = brief?.journal ?? new Map<string, JournalEntry>();
       const evidence = await Promise.all(
         claims.map((claim) =>
-          citedEvidence(claim, journal, async (target, id) => {
-            try {
-              return await readSource(input.caller, target, id);
-            } catch {
-              input.signal?.throwIfAborted();
-              return undefined;
-            }
-          }),
+          citedEvidence(
+            claim,
+            journal,
+            async (target, id) => {
+              try {
+                return await readSource(input.caller, target, id);
+              } catch {
+                input.signal?.throwIfAborted();
+                return undefined;
+              }
+            },
+            (entry, target) => journalProvenance(input.caller, entry, target),
+          ),
         ),
       );
       input.signal?.throwIfAborted();
@@ -197,7 +251,7 @@ export function createCheckerWorker(
               role: 'system',
               content: [
                 systemPrompt,
-                'Verify only the cited evidence below. Sources establish what the record says. A write requires a succeeded write call for the claimed operation and target.',
+                'Verify only the cited evidence below. Sources establish what the record says. Use the hub source and trust tags in cited.provenance when weighing the cited content. A write requires a succeeded write call for the claimed operation and target.',
                 'Submit exactly one finding per input claim, in order, through submit_verdict. Copy the claim and citation exactly. An evidence issue is unsupported. Pass requires all findings to be confirmed.',
                 'For a batch check, include count as the number of distinct expected items whose results the cited evidence confirms.',
               ].join('\n'),
@@ -246,14 +300,7 @@ export function createCheckerWorker(
       }));
       return {
         output: JSON.stringify({ ...parsed.data, findings }),
-        summary:
-          findings
-            .filter(({ status }) => status !== 'confirmed')
-            .map(
-              ({ claim, status, evidence, reason }) =>
-                `"${claim}" ${status} (${evidence.callId ?? evidence.recordId ?? 'citation missing'}). ${reason}`,
-            )
-            .join('\n') || 'All cited claims confirmed.',
+        summary: negativeFindings(findings) || 'All cited claims confirmed.',
         usage,
         metadata: { model: llm.model },
       };

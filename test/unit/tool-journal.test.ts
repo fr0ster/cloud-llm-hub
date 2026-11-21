@@ -1,7 +1,89 @@
 import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import { runWithDialogueRagTools } from '../../srv/lib/dialogue-rag-scope';
 import { RecordingMcpClient } from '../../srv/lib/recording-mcp-client';
-import { writeActions } from '../../srv/lib/tool-journal';
+import {
+  type JournalEntry,
+  journalOutcome,
+  journalTargets,
+  writeActions,
+} from '../../srv/lib/tool-journal';
+
+const taskXml =
+  '<?xml version="1.0"?><tm:root xmlns:tm="http://www.sap.com/cts/adt/tm" tm:number="DEVK900007"/>';
+
+function sapWrite(
+  name: string,
+  content: JournalEntry['result']['content'],
+  isError = false,
+): JournalEntry {
+  return {
+    call: { id: 'write', name, arguments: { transport_number: 'DEVK900001' } },
+    result: { content, isError },
+    answered: true,
+    write: true,
+    system: 'sap',
+  };
+}
+
+test.each([
+  ['terse', { success: true, task_number: 'DEVK900007' }],
+  ['full', { 'tm:root': { '@': { 'tm:number': 'DEVK900007' } } }],
+  ['raw', taskXml],
+  [
+    'raw with cleanup',
+    { result: taskXml, cleanup: { message: 'Task typing refused' } },
+  ],
+] satisfies [string, JournalEntry['result']['content']][])(
+  'identifies a created task from the %s response',
+  (_detail, content) => {
+    const entry = sapWrite('CreateTransportTask', content);
+    expect(journalTargets(entry)).toEqual([
+      { type: 'transport', name: 'DEVK900007' },
+    ]);
+    expect(journalOutcome(entry)).toBe('succeeded');
+  },
+);
+
+test.each([
+  ['AddTransportObject', { accepted: true, added: 'unknown' }],
+  [
+    'MoveTransportObjects',
+    { accepted: true, objects: [{ object: 'R3TR DOMA ZSTATUS' }] },
+  ],
+  ['UpdateDomain', { data: 'unrecognized projection' }],
+  ['CreateTransportTask', { success: true, task_number: null }],
+  ['CreateTransportTask', '<tm:root tm:number="DEVK900007">'],
+] satisfies [string, JournalEntry['result']['content']][])(
+  '%s records an unconfirmed write when its response does not confirm the change',
+  (name, content) => {
+    expect(journalOutcome(sapWrite(name, content))).toBe('unconfirmed');
+  },
+);
+
+test('keeps a completed operation succeeded and records its secondary cleanup error', () => {
+  const cleanup = {
+    error: 'client_threw',
+    message: 'Unlock failed',
+    left_locked: true,
+  };
+  const entry = sapWrite(
+    'UpdateDomain',
+    [
+      {
+        type: 'text',
+        text: JSON.stringify({
+          operation: 'succeeded',
+          error: 'cleanup_failed',
+          status: 500,
+          cleanup,
+        }),
+      },
+    ],
+    true,
+  );
+  expect(journalOutcome(entry)).toBe('succeeded');
+  expect(writeActions([entry])).toContain(JSON.stringify(cleanup));
+});
 
 test('lists SAP and RAG writes with typed targets, call ids and outcomes', async () => {
   const inner: IMcpClient = {

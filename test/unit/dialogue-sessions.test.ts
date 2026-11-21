@@ -886,6 +886,7 @@ test('dialogue gives the coordinator failed write facts and leaves both answers 
       .join(' '),
   ).not.toContain('UNVERIFIED_WRITE');
   const saved = await getDialogueStoreBackend().load('alice', 'key');
+  expect([...h.toolJournal().keys()]).toEqual(['failed-write']);
   expect(saved?.toolJournal?.entries.map(({ call }) => call.id)).toEqual([
     'failed-write',
   ]);

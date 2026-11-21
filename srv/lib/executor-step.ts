@@ -6,9 +6,11 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import type { getSmartAgent } from '../agent-manager';
 import { runWithToolGateBypass } from '../request-session';
+import { withCheckerBrief } from './checker-verdict';
 import { callOptionsFor } from './rag-caller';
 import { currentRoleModel, roleOfProfile } from './role-models-scope';
 import { waitForSessionTurns } from './session-turns';
+import type { JournalEntry } from './tool-journal';
 import { assertToolSearchHealthy } from './tool-search-health';
 
 const executorModel = new AsyncLocalStorage<string | undefined>();
@@ -25,6 +27,7 @@ export type ExecutorStepArgs = [
   opts: CallOptions,
   history?: Message[],
   model?: string,
+  priorJournal?: () => Promise<ReadonlyMap<string, JournalEntry>>,
 ];
 
 /** Executes within the caller's existing request, admission and connection scope. */
@@ -38,6 +41,7 @@ export async function runExecutorStep(
     opts,
     history = [],
     model,
+    priorJournal,
   ]: ExecutorStepArgs
 ) {
   await assertToolSearchHealthy();
@@ -72,16 +76,28 @@ export async function runExecutorStep(
       );
       if (!prepared.ok)
         throw new Error(`${prepared.error.code}: ${prepared.error.message}`);
-      const result = await prepared.value.run({
-        task,
-        ...opts,
-        ...callOptionsFor(caller),
-        ...(history.length
-          ? {
-              context: `Previous session conversation:\n${JSON.stringify(history)}`,
-            }
-          : {}),
-      });
+      const run = () =>
+        prepared.value.run({
+          task,
+          ...opts,
+          ...callOptionsFor(caller),
+          ...(history.length
+            ? {
+                context: `Previous session conversation:\n${JSON.stringify(history)}`,
+              }
+            : {}),
+        });
+      let result: Awaited<ReturnType<typeof run>>;
+      if (profile.value.result === 'verdict') {
+        const journal = new Map(await priorJournal?.());
+        for (const entry of agentHandle.recMcp?.getToolJournal(
+          opts.trace?.traceId,
+        ) ?? [])
+          journal.set(entry.call.id, entry);
+        result = await withCheckerBrief({ claims: task, journal }, run);
+      } else {
+        result = await run();
+      }
       if (
         result.errorClass ||
         result.stopped ||

@@ -15,7 +15,7 @@ const notice = 'returned 6 characters, exceeding the limit of 5.';
 
 test.each([
   { success: false, status: 'inactive', error: 'Create rejected' },
-  { success: true, status: 'active', error: undefined },
+  { result: 'SUCCESS', status: 'active' },
 ])(
   'records the same size-limit error for every oversized envelope: %j',
   async (facts) => {
@@ -48,7 +48,7 @@ test.each([
       maxChars: 50,
     });
     expect(journalOutcome(worker.getToolJournal('create')[0])).toBe(
-      facts.success ? 'succeeded' : 'failed',
+      facts.result === 'SUCCESS' ? 'succeeded' : 'failed',
     );
     expect(records[0].result.isError).toBe(true);
     expect(records[0].result.content).not.toContain('x'.repeat(10));

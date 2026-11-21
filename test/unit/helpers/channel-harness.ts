@@ -121,6 +121,7 @@ const handle = {
     },
   },
   recMcp: {
+    getToolJournal: () => [],
     dropRequest: () => {
       harness.events.push('dropRequest');
       if (harness.dropRequestThrows) throw new Error('dropRequest failed');
@@ -128,7 +129,7 @@ const handle = {
     unanswered: (_traceId: string) => harness.unanswered,
   } satisfies Pick<
     import('../../../srv/lib/recording-mcp-client').RecordingMcpClient,
-    'dropRequest'
+    'dropRequest' | 'getToolJournal'
   > &
     Pick<
       NonNullable<

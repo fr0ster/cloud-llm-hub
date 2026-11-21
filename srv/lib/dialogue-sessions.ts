@@ -216,6 +216,7 @@ export interface DialogueHandle {
   usage?: IUsageRecorder;
   failedUsage?(): PlannerMessageUsage;
   coordinatorResolver(): Promise<TrustResolver>;
+  toolJournal(): ReadonlyMap<string, JournalEntry>;
   attachments: WeakMap<object, string>;
   replies: WeakMap<object, { id: string; createdAt: number }>;
   outbox: DialogueOutbox;
@@ -1890,6 +1891,7 @@ async function open(
     },
     destination,
     caller: boundCaller.value,
+    toolJournal: journalForTurn,
     session,
     ...(usage ? { usage } : {}),
     attachments,
