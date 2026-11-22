@@ -656,9 +656,11 @@ async function executeStepRun(
       if (isOutageError(r.error)) {
         closeDestination(targetDestination, describeCause(r.error));
       }
+      const tokens = spend.usage();
       log.info('execute_step done', {
         ok: false,
         destination: targetDestination,
+        models: tokens?.models,
       });
       const limit = throttleOf(r.error);
       const unverified = unverifiedWriteFor(handle, traceId, r.error);
@@ -671,12 +673,13 @@ async function executeStepRun(
         [`ERROR on destination "${targetDestination}": ${message}`, actions]
           .filter(Boolean)
           .join('\n'),
-        timedUsageToWire(spend.usage(), Date.now() - stepStartedAt),
+        timedUsageToWire(tokens, Date.now() - stepStartedAt),
         true,
       );
     }
 
     const rawContent = r.value.content ?? '';
+    const tokens = spend.usage(r.value.usage);
     if (measurement && /\S/.test(rawContent) && !callerSignal?.aborted)
       measurement?.deliverOnResponseEnd();
     log.info('execute_step done', {
@@ -684,7 +687,7 @@ async function executeStepRun(
       destination: targetDestination,
       iterations: r.value.iterations,
       toolCallCount: r.value.toolCallCount,
-      totalTokens: r.value.usage?.totalTokens,
+      models: tokens?.models,
       stopReason: r.value.stopReason,
     });
     if (longSession && !admitted.signal?.aborted) {
@@ -697,10 +700,7 @@ async function executeStepRun(
     }
     if (longSession && takeRevivalNotice(longSession)) notice = 'revived';
     const durationMs = Date.now() - stepStartedAt;
-    const wireUsage = timedUsageToWire(
-      spend.usage(r.value.usage, model),
-      durationMs,
-    );
+    const wireUsage = timedUsageToWire(tokens, durationMs);
     const emptyResult = !/\S/.test(rawContent);
     const reply = emptyResult
       ? `EMPTY_RESULT on destination "${targetDestination}": The executor finished without a reply.${r.value.iterations !== undefined ? ` iterations=${r.value.iterations}` : ''}${r.value.toolCallCount !== undefined ? ` toolCallCount=${r.value.toolCallCount}` : ''}${r.value.stopReason !== undefined ? ` stopReason=${r.value.stopReason}` : ''}`
@@ -715,10 +715,15 @@ async function executeStepRun(
     const message =
       unverified ?? (err instanceof Error ? err.message : String(err));
     measurement?.end('error');
-    log.warn('execute_step failed', { destination, error: message });
+    const tokens = spend.usage();
+    log.warn('execute_step failed', {
+      destination,
+      error: message,
+      models: tokens?.models,
+    });
     return mcpUsageResult(
       [`ERROR: ${message}`, collectActions()].filter(Boolean).join('\n'),
-      timedUsageToWire(spend.usage(), Date.now() - stepStartedAt),
+      timedUsageToWire(tokens, Date.now() - stepStartedAt),
       true,
     );
   } finally {

@@ -96,8 +96,7 @@ import {
   captureTokenUsage,
   isLlmFailure,
   llmFailure,
-  observeLlmSpend,
-  reconcileTokenUsage,
+  runWithoutLlmSpend,
 } from './llm-failure';
 import { longSessionsIfReady } from './long-session';
 import { withModelCatalog } from './model-catalog';
@@ -453,7 +452,7 @@ async function open(
   let failureCause: string | undefined;
   let turnFailureCause: string | undefined;
   // Every planner call of the turn, background corrections included.
-  let turnPlannerSpend: TokenUsage | undefined;
+  let turnPlannerUsage: TokenUsage | undefined;
   let turnRetrieval: ReturnType<typeof captureTokenUsage> | undefined;
   const replyRetrieval = new Map<string, TokenUsage>();
   let lastFailureUsage: PlannerMessageUsage | undefined;
@@ -1057,10 +1056,7 @@ async function open(
         ),
     );
     return {
-      planner: addRetrieval(
-        reconcileTokenUsage(turnReplyUsage, turnPlannerSpend, selectedModel),
-        turnRetrieval?.usage(),
-      ),
+      planner: addRetrieval(turnPlannerUsage, turnRetrieval?.usage()),
       tasks: (session?.snapshot().tasks ?? []).flatMap((task) => {
         const usage = task.usage;
         return usage && !accountedTasks.has(task.id)
@@ -1194,7 +1190,7 @@ async function open(
         if (retrieval) replyRetrieval.set(messageId, retrieval);
       }
       turnFailureCause = undefined;
-      turnPlannerSpend = undefined;
+      turnPlannerUsage = undefined;
       turnRetrieval = undefined;
       turnReply = undefined;
       turnReplyUsage = undefined;
@@ -1257,53 +1253,45 @@ async function open(
         turnReplyUsage = options.trace
           ? replyUsage.get(options.trace)
           : undefined;
-        let spent: TokenUsage | undefined;
+        const spend = captureTokenUsage();
+        let reported: TokenUsage | undefined;
         const turn = { traceId: options.trace?.traceId, active: true };
         try {
-          const recordSpend = (usage: TokenUsage) => {
-            spent = addTokenUsage(spent, usage);
-            turnPlannerSpend = addTokenUsage(turnPlannerSpend, usage);
-          };
-          const result = await observeLlmSpend(
-            () =>
-              runWithContextCapture(
-                { component: 'planner', sessionKey: key },
-                () =>
-                  runWithSessionId(
-                    key,
-                    () =>
-                      trustedCaller.run(
-                        caller.ragCaller ?? options.caller ?? boundCaller.value,
-                        () =>
-                          plannerTrace.run(turn, () =>
-                            withWriteActions(
-                              () => journalForTurn(turn.traceId).values(),
-                              () =>
-                                decoratePlanner(planner).process(input, {
-                                  ...options,
-                                  ...callOptionsFor(
-                                    caller.ragCaller ??
-                                      options.caller ??
-                                      boundCaller.value,
-                                  ),
-                                }),
-                            ),
+          const result = await spend.run(() =>
+            runWithContextCapture(
+              { component: 'planner', sessionKey: key },
+              () =>
+                runWithSessionId(
+                  key,
+                  () =>
+                    trustedCaller.run(
+                      caller.ragCaller ?? options.caller ?? boundCaller.value,
+                      () =>
+                        plannerTrace.run(turn, () =>
+                          withWriteActions(
+                            () => journalForTurn(turn.traceId).values(),
+                            () =>
+                              decoratePlanner(planner).process(input, {
+                                ...options,
+                                ...callOptionsFor(
+                                  caller.ragCaller ??
+                                    options.caller ??
+                                    boundCaller.value,
+                                ),
+                              }),
                           ),
-                      ),
-                    undefined,
-                    caller.userId,
-                    caller.identity,
-                  ),
-              ),
-            recordSpend,
+                        ),
+                    ),
+                  undefined,
+                  caller.userId,
+                  caller.identity,
+                ),
+            ),
           );
           // The library appends this successful result before its final save.
           if (result.ok) {
-            result.value.usage = reconcileTokenUsage(
-              result.value.usage,
-              spent,
-              selectedModel,
-            );
+            reported = spend.usage(result.value.usage);
+            result.value.usage = reported;
             turnReply = reply;
             const trace = options.trace;
             const usage =
@@ -1314,7 +1302,7 @@ async function open(
             turnReplyUsage = usage;
           }
           if (!result.ok) {
-            turnReplyUsage = addTokenUsage(turnReplyUsage, spent);
+            turnReplyUsage = addTokenUsage(turnReplyUsage, spend.usage());
             // Only a model failure is replaced by its content-free cause.
             turnFailureCause = isLlmFailure(result.error)
               ? llmFailure(result.error)
@@ -1322,7 +1310,7 @@ async function open(
           }
           return result;
         } catch (error) {
-          turnReplyUsage = addTokenUsage(turnReplyUsage, spent);
+          turnReplyUsage = addTokenUsage(turnReplyUsage, spend.usage());
           if (!isLlmFailure(error)) {
             turnFailureCause = undefined;
             throw error;
@@ -1330,6 +1318,10 @@ async function open(
           turnFailureCause = llmFailure(error);
           throw new Error(turnFailureCause);
         } finally {
+          turnPlannerUsage = addTokenUsage(
+            turnPlannerUsage,
+            spend.usage(reported),
+          );
           turn.active = false;
           if (addJournal(currentJournal(), turn.traceId))
             recMcp.dropRequest(turn.traceId);
@@ -1490,8 +1482,10 @@ async function open(
                   withCoordinatorModel(
                     currentRoleModel('coordinator') ?? selectedModel,
                     () =>
-                      observeProfilePreparation(options?.signal, () =>
-                        profileRunner.preparePlanner(input, options),
+                      observeRetrieval(() =>
+                        observeProfilePreparation(options?.signal, () =>
+                          profileRunner.preparePlanner(input, options),
+                        ),
                       ),
                   ),
               );
@@ -1668,7 +1662,7 @@ async function open(
             goalChars: task.goal.length,
           });
           let state: TaskRecord['state'] = 'failed';
-          let spent: TokenUsage | undefined;
+          const spend = captureTokenUsage();
           const traceId = randomUUID();
           const traces = activeWorkerTraces.get(journal) ?? new Set<string>();
           activeWorkerTraces.set(journal, traces);
@@ -1694,22 +1688,18 @@ async function open(
                     { component: 'other', taskId: task.id, sessionKey: key },
                     // Workers report spend on TaskRecord, outside the planner bucket.
                     () =>
-                      observeLlmSpend(
-                        () =>
-                          withWorkerActivity(
-                            taskActivity(
-                              task.id,
-                              task.worker,
-                              (action) => {
-                                session?.noteActivity(task.id, action);
-                              },
-                              emit,
-                            ),
-                            run,
+                      spend.run(() =>
+                        withWorkerActivity(
+                          taskActivity(
+                            task.id,
+                            task.worker,
+                            (action) => {
+                              session?.noteActivity(task.id, action);
+                            },
+                            emit,
                           ),
-                        (usage) => {
-                          spent = addTokenUsage(spent, usage);
-                        },
+                          run,
+                        ),
                       ),
                   ),
               ),
@@ -1720,12 +1710,12 @@ async function open(
               !result.stopped &&
               result.status !== 'awaiting-external';
             state = healthy ? 'done' : result.stopped ? 'stopped' : 'failed';
-            const usage = reconcileTokenUsage(result.usage, spent, task.model);
+            const usage = spend.usage(result.usage);
             if (!usage) tasksWithoutRecordedWorkerUsage.add(task.id);
             return usage ? { ...result, usage } : result;
           } catch (error) {
             tasksWithoutRecordedWorkerUsage.add(task.id);
-            addTaskSpend(task.id, spent);
+            addTaskSpend(task.id, spend.usage());
             throw error;
           } finally {
             if (!stopped) addJournal(journal, traceId);
@@ -1866,8 +1856,10 @@ async function open(
       ragCaller: options.caller ?? boundCaller.value,
       identity: dialogueIdentity(),
     });
+    // The library can drain several users and task events in one async chain.
+    // The turn and TaskBoard callbacks own their spend independently.
     return llms.run(() =>
-      send(text, { ...options, trace })
+      runWithoutLlmSpend(() => send(text, { ...options, trace }))
         .then((reply) => {
           const retrieval = replyRetrieval.get(reply.id);
           replyRetrieval.delete(reply.id);

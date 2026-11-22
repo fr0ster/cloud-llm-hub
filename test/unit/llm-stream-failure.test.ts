@@ -1,3 +1,4 @@
+import { AsyncResource } from 'node:async_hooks';
 import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
 import {
   addTokenUsage,
@@ -20,6 +21,78 @@ import {
   reliableLlm,
   reportLlmSpend,
 } from '../../srv/lib/llm-failure';
+
+test('a successful chat without provider usage counts one request', async () => {
+  const llm = reliableLlm({
+    model: 'chat-model',
+    chat: async () => ({
+      ok: true,
+      value: { content: 'answer', finishReason: 'stop' },
+    }),
+    async *streamChat() {},
+  });
+  const spend = captureTokenUsage();
+  const result = await spend.run(() => llm.chat([]));
+
+  expect(result).toEqual({
+    ok: true,
+    value: { content: 'answer', finishReason: 'stop' },
+  });
+  expect(spend.usage()).toEqual({
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    models: {
+      'chat-model': {
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        requests: 1,
+      },
+    },
+  });
+});
+
+test('a usage-free stream keeps its owner when consumed from another async resource', async () => {
+  const llm = reliableLlm({
+    model: 'stream-model',
+    chat: async () => ({
+      ok: true,
+      value: { content: 'answer', finishReason: 'stop' },
+    }),
+    async *streamChat() {
+      yield { ok: true, value: { content: 'answer' } };
+    },
+  });
+  const owner = captureTokenUsage();
+  const reader = captureTokenUsage();
+  const resource = reader.run(() => new AsyncResource('StreamReader'));
+  const stream = owner.run(() => llm.streamChat([]));
+  try {
+    await resource.runInAsyncScope(async () => {
+      const chunks = [];
+      for await (const chunk of stream) chunks.push(chunk);
+      expect(chunks).toEqual([{ ok: true, value: { content: 'answer' } }]);
+    });
+
+    expect(owner.usage()).toEqual({
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      models: {
+        'stream-model': {
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          requests: 1,
+        },
+      },
+    });
+    expect(reader.usage()).toBeUndefined();
+  } finally {
+    resource.emitDestroy();
+  }
+});
 
 test('provider stream start exposes cache counts and finalizes a single request', async () => {
   const initial: TokenUsage = {
@@ -49,21 +122,27 @@ test('provider stream start exposes cache counts and finalizes a single request'
   };
   const llm = reliableLlm(provider);
   const spend = captureTokenUsage();
+  const pipelineUsage: TokenUsage = {
+    ...initial,
+    models: { unknown: { ...initial, requests: 1 } },
+  };
+  expect(spend.usage(pipelineUsage)).toBe(pipelineUsage);
   await spend.run(async () => {
     for await (const chunk of llm.streamChat([])) {
       if (!chunk.ok) throw chunk.error;
       if (chunk.value.content)
-        expect(spend.streamUsage(undefined, 'claude')?.models?.claude).toEqual({
-          ...initial,
-          requests: 1,
+        expect(spend.streamUsage(pipelineUsage)?.models).toEqual({
+          claude: { ...initial, requests: 1 },
         });
     }
   });
-  expect(spend.usage()?.models?.claude).toEqual({
-    ...initial,
-    completionTokens: 177,
-    totalTokens: 1708,
-    requests: 1,
+  expect(spend.usage(pipelineUsage)?.models).toEqual({
+    claude: {
+      ...initial,
+      completionTokens: 177,
+      totalTokens: 1708,
+      requests: 1,
+    },
   });
 });
 

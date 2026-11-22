@@ -1,5 +1,6 @@
 import type { ToolCallRecord } from '@mcp-abap-adt/llm-agent';
 import { unwrapBuilderResult } from '@mcp-abap-adt/llm-agent-libs';
+import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import { bindCaller } from '../../srv/lib/rag-caller';
 import * as sessionTurns from '../../srv/lib/session-turns';
 import { testAccess } from './helpers/test-rag-access';
@@ -469,23 +470,41 @@ it('execute_step returns executor usage and ends with the footer with recording 
   }
 });
 
-it('execute_step reports only execution usage and makes no critic call', async () => {
+it('execute_step reports observed usage and makes no critic call', async () => {
   const { handle, criticLlm } = await directHandle();
-  harness.process = async () => ({
-    ok: true,
-    value: {
-      content: 'done',
-      usage: { promptTokens: 7, completionTokens: 4, totalTokens: 11 },
-    },
-  });
+  const usage = { promptTokens: 7, completionTokens: 4, totalTokens: 11 };
+  harness.process = async () => {
+    reportLlmSpend(usage, 'executor-model');
+    return {
+      ok: true,
+      value: {
+        content: 'done',
+        usage: { ...usage, models: { unknown: { ...usage, requests: 1 } } },
+      },
+    };
+  };
   try {
     const result = await executeStep(req, caller, {
       session: await opened(),
       task: 'work',
     });
     expect(result).toMatchObject({
-      structuredContent: { result: 'done', usage: { total_tokens: 11 } },
+      structuredContent: {
+        result: 'done',
+        usage: {
+          total_tokens: 11,
+          models: {
+            'executor-model': {
+              prompt_tokens: 7,
+              completion_tokens: 4,
+              total_tokens: 11,
+              requests: 1,
+            },
+          },
+        },
+      },
     });
+    expect(result).not.toHaveProperty('structuredContent.usage.models.unknown');
     expect(result).not.toHaveProperty('structuredContent.usage_reviewer');
     expect(criticLlm.chat).not.toHaveBeenCalled();
   } finally {

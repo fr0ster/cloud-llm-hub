@@ -187,6 +187,7 @@ import {
 } from './lib/dialogue-rag-tools';
 import { type ExpositionLevel, resolveExposition } from './lib/exposition';
 import { FixedExecutorPlanner } from './lib/fixed-executor-planner';
+import { runWithoutLlmSpend } from './lib/llm-failure';
 import {
   asOutage,
   outageClassifier,
@@ -482,16 +483,20 @@ export class ExpositionFilteringRag implements IRag, IRagEditor {
     // else passes straight through.
     return {
       upsertRaw: async (id, text, metadata, options) => {
-        if (id.startsWith('skill:') && seen.has(id)) {
+        const skill = id.startsWith('skill:');
+        if (skill && seen.has(id)) {
           return { ok: true as const, value: undefined };
         }
-        const res = await pick(id, metadata).upsertRaw(
-          id,
-          text,
-          stampRagOwner(metadata ?? {}, { scope: 'global' }),
-          options,
-        );
-        if (res.ok && id.startsWith('skill:')) seen.add(id);
+        const write = () =>
+          pick(id, metadata).upsertRaw(
+            id,
+            text,
+            stampRagOwner(metadata ?? {}, { scope: 'global' }),
+            options,
+          );
+        // Profile builds may populate the shared skill index on first use.
+        const res = await (skill ? runWithoutLlmSpend(write) : write());
+        if (res.ok && skill) seen.add(id);
         return res;
       },
       deleteByIdRaw: async (id, options) => {
@@ -2339,7 +2344,9 @@ function ensureDestinationInit(name: string): Promise<DestinationState> {
   if (existing) return existing;
   // Process-owned: the caller that happens to trigger a destination's first
   // init must not be charged for it — the init is shared via single-flight.
-  const p = runOutsideAdmission(() => initDestination(name)).finally(() => {
+  const p = runOutsideAdmission(() =>
+    runWithoutLlmSpend(() => initDestination(name)),
+  ).finally(() => {
     destinationInits.delete(name);
   });
   destinationInits.set(name, p);

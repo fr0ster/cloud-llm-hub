@@ -20,6 +20,7 @@ import { z } from 'zod';
 import type { RagBackendKind, RagConfig } from '../agent-config';
 import { readHanaBinding } from './hana-binding';
 import { apiKeyCredential } from './llm-factory';
+import { runWithoutLlmSpend } from './llm-failure';
 import { type Embedding, embedderFingerprint } from './providers';
 import { fingerprintHash } from './tool-corpus';
 
@@ -294,8 +295,9 @@ export function createCollectionProvider(
         if (found !== undefined) return found;
         let probe = embedderProbes.get(embedder);
         if (!probe) {
-          probe = embedder
-            .embedDocument('dimension probe', options)
+          probe = runWithoutLlmSpend(() =>
+            embedder.embedDocument('dimension probe', options),
+          )
             .then((result) => positiveDimension.parse(result.vector.length))
             .catch((error: unknown) => {
               embedderProbes.delete(embedder);

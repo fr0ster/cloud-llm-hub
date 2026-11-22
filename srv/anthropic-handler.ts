@@ -65,6 +65,7 @@ import { randomUUID } from 'node:crypto';
 import {
   AdapterValidationError,
   AnthropicApiAdapter,
+  type ApiSseEvent,
   type NormalizedRequest,
   type TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
@@ -783,6 +784,7 @@ async function serveMessages(
   const collections = useDialogue
     ? undefined
     : collectionRetrieval(handle.agent);
+  const spend = captureTokenUsage();
   try {
     const historySignal = pipeline.signal
       ? AbortSignal.any([pipeline.signal, callerLeft.signal])
@@ -805,14 +807,16 @@ async function serveMessages(
       throw error;
     }
     if (collections) {
-      const retrieval = await collections.retrieve(
-        req,
-        messages,
-        userId,
-        sessionId,
-        log,
-        res.headersSent,
-        agentOpts.usage,
+      const retrieval = await spend.run(() =>
+        collections.retrieve(
+          req,
+          messages,
+          userId,
+          sessionId,
+          log,
+          res.headersSent,
+          agentOpts.usage,
+        ),
       );
       if (retrieval.refusal) {
         if (early?.opened) {
@@ -890,12 +894,28 @@ async function serveMessages(
       let pendingClientTools = false;
       let deliveredContent = false;
       let explicitMessages = false;
-      let heldStop = undefined as { event?: string; data: string } | undefined;
+      let heldStop: ApiSseEvent | undefined;
+      let heldDelta: ApiSseEvent | undefined;
       let spentUsage: TokenUsage | undefined;
-      const spend = captureTokenUsage();
+      const writeTerminalUsage = () => {
+        const tokens = spend.usage(spentUsage);
+        if (tokens?.models) log.info('Token usage by model', tokens.models);
+        if (heldDelta) {
+          const encoded = anthropicEventWithUsage(
+            heldDelta,
+            tokens,
+            responseModel,
+          );
+          out.write(`event: ${encoded.event}\ndata: ${encoded.data}\n\n`);
+        } else if (tokens) {
+          out.write(
+            `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: {}, usage: anthropicUsageToWire(tokens, responseModel) })}\n\n`,
+          );
+        }
+      };
       try {
-        // The adapter consumes failed chunks as a normal close. Keep its usage
-        // event, hold message_stop, and insert an explicit safe error before it.
+        // The adapter consumes failed chunks as a normal close. Hold its final
+        // events until the model stream has closed and usage is complete.
         let streamError: unknown;
         await runAgent(() =>
           spend.run(async () => {
@@ -959,6 +979,10 @@ async function serveMessages(
             })();
             const sseStream = adapter.transformStream(observed, context);
             for await (const event of sseStream) {
+              if (event.event === 'message_delta') {
+                heldDelta = event;
+                continue;
+              }
               // Hold the terminal event until completed history writes are registered.
               if (event.event === 'message_stop') {
                 heldStop = event;
@@ -967,11 +991,10 @@ async function serveMessages(
                 continue;
               }
               const encoded =
-                event.event === 'message_start' ||
-                event.event === 'message_delta'
+                event.event === 'message_start'
                   ? anthropicEventWithUsage(
                       event,
-                      spend.streamUsage(spentUsage, responseModel),
+                      spend.streamUsage(spentUsage),
                       responseModel,
                     )
                   : event;
@@ -980,6 +1003,7 @@ async function serveMessages(
           }),
         );
 
+        writeTerminalUsage();
         if (streamError !== undefined) streamSucceeded = false;
 
         // Destination state and unanswered-write notices remain independent of
@@ -1014,11 +1038,7 @@ async function serveMessages(
         }
       } catch (err) {
         streamSucceeded = false;
-        const usage = spend.usage(spentUsage, responseModel);
-        if (usage)
-          out.write(
-            `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: {}, usage: anthropicUsageToWire(usage, responseModel) })}\n\n`,
-          );
+        writeTerminalUsage();
         requestMeasurement(req)?.end('error');
         if (isOutageError(err))
           closeDestination(destination, describeCause(err));
@@ -1069,7 +1089,6 @@ async function serveMessages(
     }
 
     // --- Non-streaming ---
-    const spend = captureTokenUsage();
     const result = await spend.run(() =>
       runAgent(() => chatAgent.process(messages, agentOpts)),
     );
@@ -1084,7 +1103,8 @@ async function serveMessages(
     const resultUsage = result.ok
       ? result.value.usage
       : failedDialogueUsage(result.error);
-    const tokens = useDialogue ? resultUsage : spend.usage(resultUsage, model);
+    const tokens = useDialogue ? resultUsage : spend.usage(resultUsage);
+    if (tokens?.models) log.info('Token usage by model', tokens.models);
     const wireUsage = tokens ? anthropicUsageToWire(tokens, model) : undefined;
     const withUsage = <T>(payload: T) =>
       wireUsage && typeof payload === 'object' && payload !== null

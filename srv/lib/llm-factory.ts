@@ -47,6 +47,7 @@ import {
   mergeStreamUsage,
   reliableLlm,
   reportLlmSpend,
+  reportUsageFreeLlmAttempt,
   StreamContentError,
 } from './llm-failure';
 import { sessionLlms } from './session-llms';
@@ -87,17 +88,14 @@ export class HubAnthropicProvider extends AnthropicProvider {
       async () => {
         const held: LLMResponse[] = [];
         let sawUsage = false;
-        // Provider records exist only for requests that reached the transport.
-        // Count usage-free attempts too, without counting quota/auth refusals.
+        // The provider records each attempt that reached the transport, even
+        // when the stream fails before emitting any usage to the caller.
         const observeRequests = (
           recorder?: IUsageRecorder,
         ): IUsageRecorder => ({
           record: (record) => {
             if (record.kind === 'llm.call' && !sawUsage)
-              reportLlmSpend(
-                { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-                record.model,
-              );
+              reportUsageFreeLlmAttempt(record.model, record.outcome === 'ok');
             recorder?.record(record);
           },
           with: (context) => observeRequests(recorder?.with(context)),
