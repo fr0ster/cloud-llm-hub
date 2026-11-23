@@ -1,4 +1,8 @@
-import type { ToolCallRecord } from '@mcp-abap-adt/llm-agent';
+import {
+  LlmError,
+  MODEL_CONTEXT_EXCEEDED,
+  type ToolCallRecord,
+} from '@mcp-abap-adt/llm-agent';
 import { unwrapBuilderResult } from '@mcp-abap-adt/llm-agent-libs';
 import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import { bindCaller } from '../../srv/lib/rag-caller';
@@ -330,6 +334,40 @@ async function directHandle(
   Object.assign(handle, extras);
   return { handle, ...extras };
 }
+
+it.each([false, true])(
+  'execute_step reports terminal model context overflow (rejected=%s)',
+  async (rejected) => {
+    const error = new Error('private wrapper', {
+      cause: new LlmError(
+        'private prompt and credential',
+        MODEL_CONTEXT_EXCEEDED,
+      ),
+    });
+    harness.process = async () => {
+      if (rejected) throw error;
+      return { ok: false, error };
+    };
+    const result = await executeStep(req, caller, {
+      session: await opened(),
+      task: 'hello',
+    });
+    expect(result).toMatchObject({
+      isError: true,
+      content: [{ type: 'text', text: 'Запит перевищує контекст моделі' }],
+      structuredContent: {
+        error: {
+          code: MODEL_CONTEXT_EXCEEDED,
+          message: 'Запит перевищує контекст моделі',
+        },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain('private');
+    expect(harness.events.filter((event) => event === 'pipeline')).toHaveLength(
+      1,
+    );
+  },
+);
 
 it('runs only the executor and passes its output through verbatim', async () => {
   const { handle, executor } = await directHandle();

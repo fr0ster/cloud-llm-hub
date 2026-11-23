@@ -1,4 +1,10 @@
-import { QueryEmbedding, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+import {
+  type ILlm,
+  LlmError,
+  MODEL_CONTEXT_EXCEEDED,
+  QueryEmbedding,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import { ExpositionFilteringRag } from '../../srv/agent-manager';
 import {
   createCallRegister,
@@ -12,6 +18,42 @@ const translated = 'Create a domain for the table';
 const llmWith = (chat: jest.Mock) => ({ chat }) as any;
 
 describe('ToolQueryAnalyzer', () => {
+  it('shares a terminal context failure and clears the settled lookup', async () => {
+    const chat = jest.fn<ReturnType<ILlm['chat']>, Parameters<ILlm['chat']>>();
+    chat
+      .mockResolvedValueOnce({
+        ok: false,
+        error: new LlmError('private context', MODEL_CONTEXT_EXCEEDED),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          content: JSON.stringify({
+            translation: translated,
+            needsAbapSystem: true,
+            writes: true,
+          }),
+          finishReason: 'stop',
+        },
+      });
+    const analyzer = new ToolQueryAnalyzer({ chat, async *streamChat() {} });
+    const first = analyzer.analyze(original);
+    const second = analyzer.analyze(original);
+    const failure = {
+      code: MODEL_CONTEXT_EXCEEDED,
+      message: 'Запит перевищує контекст моделі',
+    };
+    await Promise.all([
+      expect(first).rejects.toMatchObject(failure),
+      expect(second).rejects.toMatchObject(failure),
+    ]);
+    expect(chat).toHaveBeenCalledTimes(1);
+    await expect(analyzer.analyze(original)).resolves.toMatchObject({
+      text: translated,
+    });
+    expect(chat).toHaveBeenCalledTimes(2);
+  });
+
   it('constructs the classifier LLM only when needed and reuses it', async () => {
     const chat = jest.fn().mockResolvedValue({
       ok: true,

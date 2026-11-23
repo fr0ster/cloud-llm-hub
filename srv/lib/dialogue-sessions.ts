@@ -97,6 +97,7 @@ import {
   isLlmFailure,
   llmFailure,
   runWithoutLlmSpend,
+  safeContextExceeded,
 } from './llm-failure';
 import { longSessionsIfReady } from './long-session';
 import { withModelCatalog } from './model-catalog';
@@ -230,6 +231,7 @@ export interface DialogueHandle {
     settledSeq: number;
     lastFailedSeq: number;
     failureCause?: string;
+    failureCode?: string;
   };
   runStep<T extends { ok: boolean }>(
     run: (signal: AbortSignal | undefined) => Promise<T>,
@@ -450,7 +452,8 @@ async function open(
   // Cause of the last failed settlement; the turn's own cause is collected
   // separately and becomes it only when that turn settles as failed.
   let failureCause: string | undefined;
-  let turnFailureCause: string | undefined;
+  let failureCode: string | undefined;
+  let turnFailureCause: string | ReturnType<typeof safeContextExceeded>;
   // Every planner call of the turn, background corrections included.
   let turnPlannerUsage: TokenUsage | undefined;
   let turnRetrieval: ReturnType<typeof captureTokenUsage> | undefined;
@@ -1184,7 +1187,13 @@ async function open(
       if (outcome === 'failed') {
         lastFailedSeq = settledSeq;
         lastFailureUsage = failedTurnUsage();
-        failureCause = turnFailureCause;
+        const overflow =
+          safeContextExceeded(request?.terminalError) ??
+          safeContextExceeded(turnFailureCause);
+        failureCause =
+          overflow?.message ??
+          (typeof turnFailureCause === 'string' ? turnFailureCause : undefined);
+        failureCode = overflow?.code;
       } else if (trigger === 'user' && messageId) {
         const retrieval = turnRetrieval?.usage();
         if (retrieval) replyRetrieval.set(messageId, retrieval);
@@ -1303,6 +1312,11 @@ async function open(
           }
           if (!result.ok) {
             turnReplyUsage = addTokenUsage(turnReplyUsage, spend.usage());
+            const overflow = safeContextExceeded(result.error);
+            if (overflow) {
+              turnFailureCause = overflow;
+              return { ok: false as const, error: overflow };
+            }
             // Only a model failure is replaced by its content-free cause.
             turnFailureCause = isLlmFailure(result.error)
               ? llmFailure(result.error)
@@ -1311,6 +1325,11 @@ async function open(
           return result;
         } catch (error) {
           turnReplyUsage = addTokenUsage(turnReplyUsage, spend.usage());
+          const overflow = safeContextExceeded(error);
+          if (overflow) {
+            turnFailureCause = overflow;
+            throw overflow;
+          }
           if (!isLlmFailure(error)) {
             turnFailureCause = undefined;
             throw error;
@@ -1662,6 +1681,7 @@ async function open(
             goalChars: task.goal.length,
           });
           let state: TaskRecord['state'] = 'failed';
+          let overflow: ReturnType<typeof safeContextExceeded>;
           const spend = captureTokenUsage();
           const traceId = randomUUID();
           const traces = activeWorkerTraces.get(journal) ?? new Set<string>();
@@ -1716,7 +1736,8 @@ async function open(
           } catch (error) {
             tasksWithoutRecordedWorkerUsage.add(task.id);
             addTaskSpend(task.id, spend.usage());
-            throw error;
+            overflow = safeContextExceeded(error);
+            throw overflow ?? error;
           } finally {
             if (!stopped) addJournal(journal, traceId);
             traces.delete(traceId);
@@ -1728,7 +1749,14 @@ async function open(
                 errorType: error instanceof Error ? error.name : typeof error,
               });
             }
-            emitTask({ ...task, state });
+            emitTask({
+              ...task,
+              state,
+              ...(overflow && {
+                error: overflow.message,
+                terminalErrorCode: overflow.code,
+              }),
+            });
             log().info('task finished', {
               id: task.id,
               state,
@@ -1904,6 +1932,7 @@ async function open(
         settledSeq,
         lastFailedSeq,
         failureCause,
+        ...(failureCode && { failureCode }),
         turnActive: activity?.turnActive ?? false,
         queuedInputs: activity?.queuedInputs,
         running: activity?.running ?? 0,

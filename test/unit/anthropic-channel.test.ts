@@ -1,6 +1,7 @@
 import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
 import {
   LlmError,
+  MODEL_CONTEXT_EXCEEDED,
   staticApiKey,
   type TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
@@ -118,6 +119,46 @@ function call(
 
 beforeEach(() => harness.reset());
 afterEach(() => configure());
+
+it.each(['chat', 'stream', 'started stream'])(
+  'maps model context overflow to an Anthropic request error (%s)',
+  async (mode) => {
+    const error = new Error('private wrapper', {
+      cause: new LlmError(
+        'private prompt and credential',
+        MODEL_CONTEXT_EXCEEDED,
+      ),
+    });
+    harness.process = async () => ({ ok: false, error });
+    harness.stream = async function* () {
+      if (mode === 'started stream') {
+        yield { ok: true, value: { content: 'partial' } };
+        throw error;
+      }
+      yield { ok: false, error };
+    };
+    const { res, done } = call(body(mode !== 'chat'));
+    await done;
+    const payload = {
+      type: 'error',
+      error: {
+        type: 'invalid_request_error',
+        message: 'Запит перевищує контекст моделі',
+      },
+    };
+    expect(res.statusCode).toBe(mode === 'started stream' ? 200 : 400);
+    expect(res.headers['x-clh-models-effective']).toBeDefined();
+    expect(res.headers['x-clh-params-ignored']).toBe('max_tokens');
+    if (mode === 'started stream') {
+      expect(res.body).toContain(
+        `event: error\ndata: ${JSON.stringify(payload)}\n\n`,
+      );
+      expect(res.body.match(/event: error/g)).toHaveLength(1);
+    } else expect(JSON.parse(res.body)).toEqual(payload);
+    expect(res.body).not.toContain('private');
+    expect(res.body).not.toContain('event: message_stop');
+  },
+);
 
 clientToolHistoryTests('anthropic', body, (request, sessionId, session) =>
   call(request, fakeRes(), session, sessionId),

@@ -58,3 +58,17 @@ export function detachedSink(res: Response): OutputSink {
       }),
   };
 }
+
+/** Send stream headers with the first event or heartbeat. */
+export function streamWriter(out: OutputSink, headers: Record<string, string>) {
+  const streamHeaders = {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    ...headers,
+  };
+  return (chunk: string) => {
+    out.writeHead(200, streamHeaders);
+    out.write(chunk);
+  };
+}

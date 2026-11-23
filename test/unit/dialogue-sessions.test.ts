@@ -92,7 +92,7 @@ import type {
   TokenUsage,
   ToolTrace,
 } from '@mcp-abap-adt/llm-agent';
-import { LlmError } from '@mcp-abap-adt/llm-agent';
+import { LlmError, MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
 import {
   DialogueSession,
   PlannerToolsClient,
@@ -3001,6 +3001,45 @@ test.each([429, 503, 0])(
     expect(h.failedUsage?.().tasks).toHaveLength(1);
   },
 );
+
+test('a background worker overflow retains its code in the task and follow outcome', async () => {
+  const { h } = await ready();
+  const since = h.state().settledSeq;
+  const error = new LlmError(
+    'private prompt and credential',
+    MODEL_CONTEXT_EXCEEDED,
+  );
+  mockRun.mockImplementationOnce(async () => {
+    throw new Error('private wrapper', { cause: error });
+  });
+  await h.session.send('go').catch(() => undefined);
+  await until(() => h.state().lastFailedSeq > since);
+  expect(h.session.snapshot().tasks).toContainEqual(
+    expect.objectContaining({
+      state: 'failed',
+      terminalErrorCode: MODEL_CONTEXT_EXCEEDED,
+      error: 'Запит перевищує контекст моделі',
+    }),
+  );
+  const controller = new AbortController();
+  const followed = followDialogue(h, {
+    delivery: h.outbox.beginDelivery(),
+    since,
+    signal: controller.signal,
+  });
+  try {
+    for await (const item of followed) {
+      if (item.kind !== 'end') continue;
+      expect(item).toMatchObject({
+        reason: 'error',
+        cause: 'Запит перевищує контекст моделі',
+        code: MODEL_CONTEXT_EXCEEDED,
+      });
+    }
+  } finally {
+    controller.abort();
+  }
+});
 
 test('a failed turn keeps planner spend observed before the failure', async () => {
   const { h } = await ready();

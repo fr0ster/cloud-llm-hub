@@ -20,6 +20,7 @@ import {
   type RegisteredProfileTool,
 } from './agent-profile-tools';
 import { runWithVerdictTools } from './checker-verdict-tool';
+import { safeContextExceeded } from './llm-failure';
 import { parseModelAllowlist, resolveAgentModel } from './model-policy';
 import {
   currentRoleModel,
@@ -180,6 +181,8 @@ export class AgentProfileRunner implements IAgentProfileRunner {
         },
       };
     } catch (error) {
+      const overflow = safeContextExceeded(error);
+      if (overflow) throw overflow;
       return {
         ok: false,
         error:
@@ -245,6 +248,8 @@ export class AgentProfileRunner implements IAgentProfileRunner {
         },
       };
     } catch (error) {
+      const overflow = safeContextExceeded(error);
+      if (overflow) throw overflow;
       return {
         ok: false,
         error:
@@ -273,6 +278,8 @@ export class AgentProfileRunner implements IAgentProfileRunner {
       options?.signal?.throwIfAborted();
       return { ok: true, value: planner };
     } catch (error) {
+      const overflow = safeContextExceeded(error);
+      if (overflow) throw overflow;
       return {
         ok: false,
         error:

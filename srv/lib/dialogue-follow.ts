@@ -21,6 +21,7 @@ export type FollowItem =
         | 'error';
       note?: string;
       cause?: string;
+      code?: string;
       usage?: PlannerMessageUsage;
     };
 type End = Extract<FollowItem, { kind: 'end' }>;
@@ -132,6 +133,7 @@ export function followDialogue(
             kind: 'end',
             reason: 'error',
             cause: state.failureCause,
+            ...(state.failureCode && { code: state.failureCode }),
             usage: handle.failedUsage?.(),
           };
         // Supersession must finish before another request reads the outbox.

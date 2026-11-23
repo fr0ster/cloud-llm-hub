@@ -1,4 +1,8 @@
-import type { TaskRecord } from '@mcp-abap-adt/llm-agent';
+import {
+  MODEL_CONTEXT_EXCEEDED,
+  type TaskRecord,
+} from '@mcp-abap-adt/llm-agent';
+import { modelContextMessage } from './llm-failure';
 
 /** Task fields the WebUI shows; timestamps drive the elapsed time. */
 export type TaskView = Pick<
@@ -11,6 +15,7 @@ export type TaskView = Pick<
   | 'startedAt'
   | 'finishedAt'
   | 'error'
+  | 'terminalErrorCode'
   | 'toolsSelected'
   | 'toolsAvailable'
   | 'toolCalls'
@@ -40,7 +45,14 @@ export function taskView(task: TaskView): TaskView {
     state: task.state,
     createdAt: task.createdAt,
     ...(task.finishedAt === undefined ? {} : { finishedAt: task.finishedAt }),
-    ...(task.error === undefined ? {} : { error: task.error }),
+    ...(task.terminalErrorCode === MODEL_CONTEXT_EXCEEDED
+      ? {
+          terminalErrorCode: MODEL_CONTEXT_EXCEEDED,
+          error: modelContextMessage,
+        }
+      : task.error === undefined
+        ? {}
+        : { error: task.error }),
     ...(task.startedAt === undefined ? {} : { startedAt: task.startedAt }),
   };
 }

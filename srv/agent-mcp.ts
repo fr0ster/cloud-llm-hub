@@ -76,7 +76,7 @@ import './env-setup';
 
 import { randomUUID } from 'node:crypto';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
-import type { Message } from '@mcp-abap-adt/llm-agent';
+import { contextExceededError, type Message } from '@mcp-abap-adt/llm-agent';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import cds from '@sap/cds';
@@ -91,6 +91,7 @@ import {
   runWithRequestConnection,
 } from './agent-manager';
 import {
+  mcpContextExceeded,
   mcpUsageResult,
   type RagMcpTool,
   registerRagMcpTools,
@@ -653,6 +654,10 @@ async function executeStepRun(
     const actions = collectActions();
 
     if (!r.ok) {
+      if (contextExceededError(r.error))
+        return mcpContextExceeded(
+          timedUsageToWire(spend.usage(), Date.now() - stepStartedAt),
+        );
       if (isOutageError(r.error)) {
         closeDestination(targetDestination, describeCause(r.error));
       }
@@ -708,6 +713,12 @@ async function executeStepRun(
     const content = [notice, reply, actions].filter(Boolean).join('\n');
     return mcpUsageResult(content, wireUsage, emptyResult);
   } catch (err) {
+    if (contextExceededError(err)) {
+      measurement?.end('error');
+      return mcpContextExceeded(
+        timedUsageToWire(spend.usage(), Date.now() - stepStartedAt),
+      );
+    }
     if (targetDestination && isOutageError(err)) {
       closeDestination(targetDestination, describeCause(err));
     }

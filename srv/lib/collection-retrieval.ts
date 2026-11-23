@@ -13,6 +13,7 @@ import { type CollectionMeta, CollectionSearchRag } from '../rag-collections';
 import { checkAccess } from './collection-access';
 import { CollectionBackendError, catalogOwner } from './collection-persistence';
 import { collectionEnabled } from './collection-toggle';
+import { safeContextExceeded } from './llm-failure';
 import { bindCaller } from './rag-caller';
 import { withRagContext } from './rag-context-marker';
 import { resolverFor } from './trust-resolver';
@@ -295,19 +296,21 @@ export function collectionRetrieval(agent: object) {
               () => resolverFor(registry),
               meta,
             ).query(embedding, 3);
-            if (result.ok) {
-              for (const r of result.value) {
-                log.info('RAG search result', {
-                  collection: colId,
-                  score: r.score.toFixed(4),
-                });
-                const threshold =
-                  Number(process.env.RAG_SCORE_THRESHOLD) || 0.15;
-                if (r.score >= threshold) {
-                  relevantTexts.push(
-                    `${formatTrustTag(String(r.metadata.source), Number(r.metadata.trust))}\n${r.text}`,
-                  );
-                }
+            if (!result.ok) {
+              const overflow = safeContextExceeded(result.error);
+              if (overflow) throw overflow;
+              continue;
+            }
+            for (const r of result.value) {
+              log.info('RAG search result', {
+                collection: colId,
+                score: r.score.toFixed(4),
+              });
+              const threshold = Number(process.env.RAG_SCORE_THRESHOLD) || 0.15;
+              if (r.score >= threshold) {
+                relevantTexts.push(
+                  `${formatTrustTag(String(r.metadata.source), Number(r.metadata.trust))}\n${r.text}`,
+                );
               }
             }
           }

@@ -11,6 +11,7 @@ import {
   type CollectionRegistry,
   sessionCollectionTtlMs,
 } from '../rag-collections';
+import { safeContextExceeded } from './llm-failure';
 import { RagWriteError } from './rag-write-error';
 
 // Only the store can mint capabilities; guards must match the entire operation.
@@ -121,6 +122,8 @@ export function createTaskResultStore(
       );
       return { ok: true, value };
     } catch (error) {
+      const overflow = safeContextExceeded(error);
+      if (overflow) throw overflow;
       return {
         ok: false,
         error: {
