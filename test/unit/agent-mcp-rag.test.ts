@@ -84,7 +84,7 @@ import {
   sessionCollectionOverrides,
 } from '../../srv/lib/collection-toggle';
 import { theRetention } from '../../srv/lib/gatekeeper';
-import { reportLlmSpend } from '../../srv/lib/llm-failure';
+import * as llmFailure from '../../srv/lib/llm-failure';
 import {
   LongSessionRegistry,
   longSessions,
@@ -99,6 +99,7 @@ import {
 import {
   nestedContextOverflow,
   overflowMessage,
+  overflowWithSapWarning,
 } from './helpers/context-overflow';
 
 const mockForSession = jest.fn<
@@ -925,7 +926,7 @@ test('RAG preserves the terminal context payload when attaching usage', async ()
   jest
     .spyOn(CollectionSearchRag.prototype, 'query')
     .mockImplementation(async () => {
-      reportLlmSpend(
+      llmFailure.reportLlmSpend(
         { promptTokens: 7, completionTokens: 0, totalTokens: 7 },
         'embedder',
       );
@@ -951,6 +952,40 @@ test('RAG preserves the terminal context payload when attaching usage', async ()
     },
   });
   expect(JSON.stringify(result)).not.toContain('private');
+});
+
+test('RAG preserves the SAP write warning in the terminal context payload when attaching usage', async () => {
+  jest
+    .spyOn(llmFailure, 'contextExceededMessage')
+    .mockReturnValueOnce(overflowWithSapWarning);
+  jest
+    .spyOn(CollectionSearchRag.prototype, 'query')
+    .mockImplementation(async () => {
+      llmFailure.reportLlmSpend(
+        { promptTokens: 7, completionTokens: 0, totalTokens: 7 },
+        'embedder',
+      );
+      throw nestedContextOverflow();
+    });
+  const result = await executeRagMcpTool(
+    { headers: {} },
+    'alice',
+    'rag_search',
+    { session: sid, query: 'needle', collections: ['notes'] },
+  );
+  expect(result).toMatchObject({
+    isError: true,
+    content: [{ type: 'text', text: overflowWithSapWarning }],
+    structuredContent: {
+      result: overflowWithSapWarning,
+      error: {
+        code: MODEL_CONTEXT_EXCEEDED,
+        message: overflowWithSapWarning,
+        status: 400,
+      },
+      usage: expect.objectContaining({ total_tokens: 7 }),
+    },
+  });
 });
 
 test('search supplies embedding usage with retrieval context and caller attribution', async () => {
