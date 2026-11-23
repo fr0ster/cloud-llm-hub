@@ -1,5 +1,8 @@
 import { isDeepStrictEqual } from 'node:util';
-import { normalizeAndValidateExternalTools } from '@mcp-abap-adt/llm-agent';
+import {
+  contextExceededError,
+  normalizeAndValidateExternalTools,
+} from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import {
   anthropicEventWithUsage,
@@ -21,6 +24,8 @@ import {
   captureTokenUsage,
   failureMessage,
   mergeStreamUsage,
+  modelContextMessage,
+  safeContextExceeded,
 } from './lib/llm-failure';
 import { awaitModelCatalog } from './lib/model-catalog';
 import { ignoredModelHeader } from './lib/model-policy';
@@ -83,7 +88,7 @@ import {
   retryAfterForDestination,
   runWithRequestConnection,
 } from './agent-manager';
-import { detachedSink } from './lib/detached-sink';
+import { detachedSink, streamWriter } from './lib/detached-sink';
 import { dialogueChat, failedDialogueUsage } from './lib/dialogue-chat';
 import { describeCaller } from './lib/exposition';
 import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
@@ -126,6 +131,10 @@ import { sessionIdOf, type WithSession } from './session-id';
 
 /** Singleton adapter instance (stateless — safe to share) */
 const adapter = new AnthropicApiAdapter();
+const anthropicContextError = anthropicUnverifiedWrite(
+  modelContextMessage,
+  'invalid_request_error',
+);
 
 /**
  * POST /v1/messages
@@ -428,6 +437,15 @@ async function handleAnthropicMessagesScoped(
     }
   } catch (error) {
     measurement?.end('error');
+    if (contextExceededError(error)) {
+      if (early?.opened) early.error(anthropicContextError);
+      else if (res.headersSent)
+        res.end(
+          `event: error\ndata: ${JSON.stringify(anthropicContextError)}\n\n`,
+        );
+      else res.status(400).json(anthropicContextError);
+      return;
+    }
     if (!early?.opened) throw error;
     early.error({
       type: 'error',
@@ -643,6 +661,7 @@ async function serveMessages(
     );
   } catch (err) {
     await releaseRequestConnection(requestConnection, s);
+    if (contextExceededError(err)) throw err;
     const message = err instanceof Error ? err.message : String(err);
     if (early?.opened) {
       early.error({
@@ -852,6 +871,7 @@ async function serveMessages(
         source: chatAgent.streamProcess(messages, agentOpts),
         run: runAgent,
         onError: (error) => {
+          if (contextExceededError(error)) return anthropicContextError;
           if (isOutageError(error))
             closeDestination(destination, describeCause(error));
           return {
@@ -867,11 +887,7 @@ async function serveMessages(
 
     // --- Streaming ---
     if (stream) {
-      out.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache, no-transform',
-        Connection: 'keep-alive',
-      });
+      const writeStream = streamWriter(out, {});
 
       // Independent SSE keep-alive — see openai-handler for the rationale: the
       // DAG coordinator routes the executor's heartbeats to the session log
@@ -880,7 +896,7 @@ async function serveMessages(
       // comment lines are ignored by clients, harmless during active streaming.
       const KEEPALIVE_MS = 10_000;
       const keepAlive = setInterval(() => {
-        out.write(': keep-alive\n\n');
+        writeStream(': keep-alive\n\n');
       }, KEEPALIVE_MS);
       if (typeof keepAlive.unref === 'function') keepAlive.unref();
       res.on('close', () => clearInterval(keepAlive));
@@ -906,9 +922,9 @@ async function serveMessages(
             tokens,
             responseModel,
           );
-          out.write(`event: ${encoded.event}\ndata: ${encoded.data}\n\n`);
+          writeStream(`event: ${encoded.event}\ndata: ${encoded.data}\n\n`);
         } else if (tokens) {
-          out.write(
+          writeStream(
             `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: {}, usage: anthropicUsageToWire(tokens, responseModel) })}\n\n`,
           );
         }
@@ -928,6 +944,8 @@ async function serveMessages(
                 }
                 if (!chunk.ok && streamError === undefined) {
                   requestMeasurement(req)?.end('error');
+                  const overflow = safeContextExceeded(chunk.error);
+                  if (overflow) throw overflow;
                   streamError = chunk.error;
                 }
                 if (chunk.ok && !chunk.value.status && chunk.value.content)
@@ -944,7 +962,7 @@ async function serveMessages(
                   }
                 }
                 if (chunk.ok && chunk.value.status) {
-                  out.write(
+                  writeStream(
                     `: status ${JSON.stringify(chunk.value.status)}\n\n`,
                   );
                   continue;
@@ -998,7 +1016,7 @@ async function serveMessages(
                       responseModel,
                     )
                   : event;
-              out.write(`event: ${encoded.event}\ndata: ${encoded.data}\n\n`);
+              writeStream(`event: ${encoded.event}\ndata: ${encoded.data}\n\n`);
             }
           }),
         );
@@ -1022,7 +1040,7 @@ async function serveMessages(
             const text = limit
               ? `${unverified} ${throttleMessage(limit)}`
               : unverified;
-            out.write(
+            writeStream(
               `event: error\ndata: ${JSON.stringify(
                 anthropicUnverifiedWrite(
                   text,
@@ -1031,13 +1049,24 @@ async function serveMessages(
               )}\n\n`,
             );
           } else {
-            out.write(
+            writeStream(
               `event: error\ndata: ${JSON.stringify(anthropicUnverifiedWrite(failureMessage(streamError)))}\n\n`,
             );
           }
         }
       } catch (err) {
         streamSucceeded = false;
+        if (contextExceededError(err)) {
+          requestMeasurement(req)?.end('error');
+          clearInterval(keepAlive);
+          if (res.headersSent) {
+            writeStream(
+              `event: error\ndata: ${JSON.stringify(anthropicContextError)}\n\n`,
+            );
+            out.end();
+          } else out.json(400, anthropicContextError);
+          return;
+        }
         writeTerminalUsage();
         requestMeasurement(req)?.end('error');
         if (isOutageError(err))
@@ -1056,7 +1085,7 @@ async function serveMessages(
               limit ? 'overloaded_error' : 'api_error',
             )
           : anthropicUnverifiedWrite(failureMessage(err));
-        out.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
+        writeStream(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
       }
 
       const lastUser = messages
@@ -1081,7 +1110,7 @@ async function serveMessages(
       if (measurement && !explicitMessages && deliveredContent && !out.detached)
         requestMeasurement(req)?.messageDelivered();
       if (heldStop) {
-        out.write(`event: ${heldStop.event}\ndata: ${heldStop.data}\n\n`);
+        writeStream(`event: ${heldStop.event}\ndata: ${heldStop.data}\n\n`);
       }
       clearInterval(keepAlive);
       out.end();
@@ -1142,6 +1171,10 @@ async function serveMessages(
         requestMeasurement(req)?.deliverOnResponseEnd();
       out.json(200, withUsage(adapter.formatResult(result.value, context)));
     } else {
+      if (contextExceededError(result.error)) {
+        out.json(400, withUsage(anthropicContextError));
+        return;
+      }
       if (isOutageError(result.error)) {
         closeDestination(destination, describeCause(result.error));
       }

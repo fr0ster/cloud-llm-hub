@@ -2,8 +2,10 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { ILlm, IUsageRecorder, TokenUsage } from '@mcp-abap-adt/llm-agent';
 import {
   addTokenUsage,
+  contextExceededError,
   findThrottled,
   LlmError,
+  MODEL_CONTEXT_EXCEEDED,
   preserveThrottled,
 } from '@mcp-abap-adt/llm-agent';
 import { throttleCallScope, withThrottleCall } from './throttle-strategy';
@@ -136,6 +138,16 @@ const anthropicErrorCodes = new Set([
   'request_too_large',
 ]);
 
+export const modelContextMessage = 'Запит перевищує контекст моделі';
+
+export function safeContextExceeded<T>(error: T) {
+  if (contextExceededError(error))
+    return Object.assign(
+      new LlmError(modelContextMessage, MODEL_CONTEXT_EXCEEDED),
+      { status: 400 },
+    );
+}
+
 export function anthropicStreamCode(
   error: Parameters<typeof llmFailure>[0],
 ): string | undefined {
@@ -163,6 +175,7 @@ export function anthropicStreamCode(
 
 /** Keep only status facts: provider messages may contain prompts or credentials. */
 export function llmFailure(error: unknown): string {
+  if (contextExceededError(error)) return modelContextMessage;
   const streamCode = anthropicStreamCode(error);
   if (streamCode) return `LLM unavailable (${streamCode})`;
   if (findThrottled(error)) return 'LLM unavailable (HTTP 429)';
@@ -211,11 +224,13 @@ export function llmFailure(error: unknown): string {
 /** A stream that has emitted content must never be restarted by an outer retry. */
 export class StreamContentError extends LlmError {
   constructor(error: Error) {
-    super(llmFailure(error));
+    super(llmFailure(error), contextExceededError(error)?.code);
   }
 }
 
 function safeLlmError(error: unknown): LlmError {
+  const overflow = safeContextExceeded(error);
+  if (overflow) return overflow;
   const safe = new LlmError(
     llmFailure(error),
     error instanceof LlmError ? error.code : undefined,
@@ -345,7 +360,7 @@ export function reliableLlm(inner: ILlm): ILlm {
 
 /** Is this failure the model's (an LLM error or a throttle anywhere in the cause chain)? */
 export function isLlmFailure(error: unknown): boolean {
-  if (findThrottled(error)) return true;
+  if (contextExceededError(error) || findThrottled(error)) return true;
   let current = error;
   for (let depth = 0; depth < 6 && current; depth++) {
     if (current instanceof LlmError) return true;

@@ -19,6 +19,7 @@ import {
   type dialogueChat,
   failDialogueResponse,
 } from './dialogue-chat';
+import { safeContextExceeded } from './llm-failure';
 import { type LongSession, longSessions } from './long-session';
 import { summarizeToolResult } from './tool-result-summary';
 import { responseMeasurement } from './usage/request-records';
@@ -325,10 +326,13 @@ export async function streamDialogue(opts: {
             stream.measurement?.end(item.reason);
             if (item.reason === 'error') {
               addDeliveredUsage(item.usage);
-              throw new Error(
-                item.cause
-                  ? `Background planner turn failed: ${item.cause}`
-                  : 'Background planner turn failed',
+              throw (
+                safeContextExceeded(item) ??
+                new Error(
+                  item.cause
+                    ? `Background planner turn failed: ${item.cause}`
+                    : 'Background planner turn failed',
+                )
               );
             } else if (item.note)
               await content(`${text ? '\n\n' : ''}${item.note}`);

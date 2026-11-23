@@ -135,6 +135,7 @@ import {
   type IRagEditor,
   type IRagProvider,
   type ISubAgent,
+  type LlmError,
   type Message,
   OrchestratorError,
   QueryEmbedding,
@@ -187,7 +188,7 @@ import {
 } from './lib/dialogue-rag-tools';
 import { type ExpositionLevel, resolveExposition } from './lib/exposition';
 import { FixedExecutorPlanner } from './lib/fixed-executor-planner';
-import { runWithoutLlmSpend } from './lib/llm-failure';
+import { runWithoutLlmSpend, safeContextExceeded } from './lib/llm-failure';
 import {
   asOutage,
   outageClassifier,
@@ -1082,7 +1083,7 @@ export interface DestinationState {
   toolsRag: ExpositionFilteringRag;
   toolCount: number;
   status: 'pending' | 'ready' | 'vectorizing' | 'error' | 'unreachable';
-  error?: string;
+  error?: string | LlmError;
   /** BTP destination ProxyType ('OnPremise' | 'Internet'), when known. */
   proxyType?: string;
   /**
@@ -1158,9 +1159,11 @@ export function resolveSystemDestination(systemCode: string): {
   // are all resolvable. Fail only on a terminal state (unreachable / error).
   const state = destinationStates.get(dest);
   if (state?.status === 'unreachable' || state?.status === 'error') {
+    const error =
+      state.error instanceof Error ? state.error.message : state.error;
     return {
       ok: false,
-      error: `Destination "${dest}" (mapped from "${systemCode}") is ${state.status}: ${state.error || 'unavailable'}`,
+      error: `Destination "${dest}" (mapped from "${systemCode}") is ${state.status}: ${error || 'unavailable'}`,
     };
   }
 
@@ -1246,7 +1249,7 @@ export function getDestinationStates(): Array<{
     name,
     status: state.status,
     toolCount: state.toolCount,
-    error: state.error,
+    error: state.error instanceof Error ? state.error.message : state.error,
     proxyType: state.proxyType,
     requiresCredentials: state.requiresCredentials,
     authentication: state.authentication,
@@ -2311,8 +2314,10 @@ async function initDestination(
       toolCount: state.toolCount,
     });
   } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    state.error = errorMsg;
+    const overflow = safeContextExceeded(err);
+    const errorMsg =
+      overflow?.message ?? (err instanceof Error ? err.message : String(err));
+    state.error = overflow ?? errorMsg;
     // Distinguish unreachable (probe failed) from other init errors
     if (errorMsg.includes('unreachable')) {
       state.status = 'unreachable';
@@ -4275,7 +4280,10 @@ export async function getSmartAgent(
   // WAIT for this destination's vectorization instead of erroring. All callers
   // share one init via ensureDestinationInit; no hub deadline cuts preparation.
   if (!isTerminal(destinationStates.get(destName)?.status)) {
-    await ensureDestinationInit(destName).catch(() => undefined);
+    await ensureDestinationInit(destName).catch((err) => {
+      const overflow = safeContextExceeded(err);
+      if (overflow) throw overflow;
+    });
     handle = agentHandles.get(destName);
     if (handle) {
       return forCall(handle);
@@ -4290,6 +4298,8 @@ export async function getSmartAgent(
   // otherwise they also throw a retryable 503 (the init keeps running, so a
   // retry shortly after usually succeeds).
   const destState = destinationStates.get(destName);
+  const initError = destState?.error;
+  if (initError instanceof Error) throw initError;
   const status = destState?.status ?? 'unknown';
 
   if (isExplicit || !allowFallback) {
@@ -4299,7 +4309,7 @@ export async function getSmartAgent(
     const detail = sharedToolsLoadError
       ? sharedToolsLoadError.message
       : isTerminal(status)
-        ? destState?.error || status
+        ? initError || status
         : `still initializing after ${Math.round(getDestinationInitWaitMs() / 1000)}s — retry shortly`;
     const destError = new Error(
       `Destination "${destName}" is ${status}: ${detail}`,

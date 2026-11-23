@@ -13,7 +13,7 @@ jest.mock('../../srv/lib/llm-factory', () => ({
   makeHubCatalogProvider: () => ({ getModelCatalog: mockCatalog }),
 }));
 
-import { LlmError } from '@mcp-abap-adt/llm-agent';
+import { LlmError, MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
 import { reliableLlm, reportLlmSpend } from '../../srv/lib/llm-failure';
 import { chatSessionBodyTests } from './helpers/chat-session-body';
 import { clientToolHistoryTests } from './helpers/client-tool-history';
@@ -139,6 +139,50 @@ function call(
 
 beforeEach(() => harness.reset());
 afterEach(() => configure());
+
+it.each(['chat', 'chat exception', 'stream', 'started stream'])(
+  'maps model context overflow to an OpenAI request error (%s)',
+  async (mode) => {
+    const error = new Error('private wrapper', {
+      cause: new LlmError(
+        'private prompt and credential',
+        MODEL_CONTEXT_EXCEEDED,
+      ),
+    });
+    harness.process = async () => {
+      if (mode === 'chat exception') throw error;
+      return { ok: false, error };
+    };
+    harness.stream = async function* () {
+      if (mode === 'started stream') {
+        yield { ok: true, value: { content: 'partial' } };
+        throw error;
+      }
+      yield { ok: false, error };
+    };
+    const streaming = mode === 'stream' || mode === 'started stream';
+    const { res, done } = call({
+      ...body(streaming),
+      tools: [{ type: 'function', function: { name: '' } }],
+    });
+    await done;
+    const payload = {
+      error: {
+        message: 'Запит перевищує контекст моделі',
+        type: 'invalid_request_error',
+        code: 'context_length_exceeded',
+      },
+    };
+    expect(res.statusCode).toBe(mode === 'started stream' ? 200 : 400);
+    expect(res.headers['x-smartagent-invalid-tools']).toBe('1');
+    if (streaming) expect(res.headers['X-SAP-Active-Destination']).toBe('DEST');
+    if (mode === 'started stream')
+      expect(res.body).toContain(`data: ${JSON.stringify(payload)}\n\n`);
+    else expect(JSON.parse(res.body)).toEqual(payload);
+    expect(res.body).not.toContain('private');
+    expect(res.body).not.toContain('"finish_reason":"stop"');
+  },
+);
 
 clientToolHistoryTests('openai', body, (request, sessionId, session) =>
   call(request, fakeRes(), sessionId, undefined, session),
@@ -1047,6 +1091,7 @@ describe('host RAG tool contract', () => {
         Parameters<IUsageRecorder['record']>
       >();
       const usage: IUsageRecorder = { record, with: () => usage };
+      const response = fakeRes();
       const execute = async () => {
         expect(getRequestSessionId()).toBe(key);
         expect(getRequestUserId()).toBe('alice');
@@ -1057,6 +1102,8 @@ describe('host RAG tool contract', () => {
           { trace: harness.seenOptions.at(-1)?.trace, usage },
         );
         expect(result.ok && result.value.isError).not.toBe(true);
+        if (stream && toolResults?.toLowerCase() === 'summary')
+          expect(response.headers['Content-Type']).toBe('text/event-stream');
       };
       harness.process = async () => {
         await execute();
@@ -1067,7 +1114,7 @@ describe('host RAG tool contract', () => {
         yield { ok: true, value: { content: 'done' } };
         yield { ok: true, value: { finishReason: 'stop' } };
       };
-      const { res, done } = call(body(stream), fakeRes(), key, toolResults);
+      const { res, done } = call(body(stream), response, key, toolResults);
       await done;
       expect(res.statusCode).toBe(200);
       if (stream && toolResults?.toLowerCase() === 'summary') {

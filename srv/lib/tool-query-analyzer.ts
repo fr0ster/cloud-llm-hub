@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { CallOptions, ILlm, Message } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import { trackCall } from './admission-scope';
+import { safeContextExceeded } from './llm-failure';
 import { sessionLlms } from './session-llms';
 
 const ANALYZE_SYSTEM_PROMPT = `Return strict JSON {"translation": string, "needsAbapSystem": boolean, "writes": boolean}.
@@ -70,17 +71,20 @@ export class ToolQueryAnalyzer {
       work,
       { value: fallback, valid: false },
       owner.controller.signal,
-    ).then(({ value, valid }) => {
-      if (this.pending.get(key) === request) this.pending.delete(key);
-      if (valid) {
-        this.cache.set(key, value);
-        if (this.cache.size > 500) {
-          const oldest = this.cache.keys().next().value;
-          if (oldest !== undefined) this.cache.delete(oldest);
-        }
-      } else this.llmPromise = undefined;
-      return value;
-    });
+    )
+      .then(({ value, valid }) => {
+        if (valid) {
+          this.cache.set(key, value);
+          if (this.cache.size > 500) {
+            const oldest = this.cache.keys().next().value;
+            if (oldest !== undefined) this.cache.delete(oldest);
+          }
+        } else this.llmPromise = undefined;
+        return value;
+      })
+      .finally(() => {
+        if (this.pending.get(key) === request) this.pending.delete(key);
+      });
     this.pending.set(key, request);
     return this.waitShared(key, request, fallback, options?.signal);
   }
@@ -180,7 +184,11 @@ export class ToolQueryAnalyzer {
         [],
         callOptions,
       );
-      if (!result.ok) return { value, valid: false };
+      if (!result.ok) {
+        const overflow = safeContextExceeded(result.error);
+        if (overflow) throw overflow;
+        return { value, valid: false };
+      }
       const content = result.value.content.trim();
       if (translationOnly)
         return { value: { ...value, text: content || text }, valid: !!content };
@@ -202,7 +210,9 @@ export class ToolQueryAnalyzer {
         },
         valid: true,
       };
-    } catch {
+    } catch (error) {
+      const overflow = safeContextExceeded(error);
+      if (overflow) throw overflow;
       return { value, valid: false };
     }
   }

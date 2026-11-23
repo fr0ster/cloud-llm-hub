@@ -1,6 +1,8 @@
 import {
+  contextExceededError,
   InMemoryRag,
   type IUsageRecorder,
+  MODEL_CONTEXT_EXCEEDED,
   QueryEmbedding,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
@@ -104,7 +106,11 @@ type Args = {
 };
 type ValidatedArgs = Args & { scope?: 'user' | 'session' };
 
-import { captureTokenUsage } from './lib/llm-failure';
+import {
+  captureTokenUsage,
+  modelContextMessage,
+  safeContextExceeded,
+} from './lib/llm-failure';
 import { timedUsageToWire, type WireAgentUsage } from './lib/usage-wire';
 
 export function ragTextResult(text: string, isError = false) {
@@ -123,6 +129,21 @@ export function mcpUsageResult(
   return {
     ...ragTextResult(`${text}\n[usage] ${JSON.stringify(usage)}`, isError),
     structuredContent: { result: text, usage },
+  };
+}
+
+export function mcpContextExceeded(usage?: WireAgentUsage) {
+  const failure: RagWriteErrorResult = {
+    result: modelContextMessage,
+    error: {
+      code: MODEL_CONTEXT_EXCEEDED,
+      message: modelContextMessage,
+      status: 400,
+    },
+  };
+  return {
+    ...ragTextResult(modelContextMessage, true),
+    structuredContent: usage ? Object.assign({}, failure, { usage }) : failure,
   };
 }
 interface WriteFields {
@@ -792,6 +813,7 @@ async function executeRagMcpToolImpl(
         )
       : result;
   } catch (error) {
+    if (contextExceededError(error)) return mcpContextExceeded();
     if (
       error instanceof Error &&
       'refused' in error &&
@@ -1223,6 +1245,8 @@ async function runRagTool(
         }
         hits.push(...collectionHits);
       } catch (error) {
+        const overflow = safeContextExceeded(error);
+        if (overflow) throw overflow;
         unavailable.push({
           collection: role ? await label(id) : id,
           error: error instanceof Error ? error.message : String(error),
@@ -1420,6 +1444,8 @@ export async function executeRagMcpTool(
     ),
   );
   const usage = timedUsageToWire(spend.usage(), Date.now() - started);
+  if (contextExceededError(result.structuredContent?.error))
+    return mcpContextExceeded(usage);
   if (!usage) return result;
   return {
     ...result,

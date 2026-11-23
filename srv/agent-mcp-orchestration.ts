@@ -16,7 +16,11 @@ export {
 } from './lib/orchestration-tool-definitions';
 
 import { randomUUID } from 'node:crypto';
-import type { McpToolResult, TaskRecord } from '@mcp-abap-adt/llm-agent';
+import {
+  contextExceededError,
+  type McpToolResult,
+  type TaskRecord,
+} from '@mcp-abap-adt/llm-agent';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import cds from '@sap/cds';
 import type { Request } from 'express';
@@ -26,7 +30,11 @@ import {
   runWithCallerExposition,
 } from './agent-manager';
 import type { StepCaller } from './agent-mcp';
-import { mcpUsageResult, ragTextResult } from './agent-mcp-rag';
+import {
+  mcpContextExceeded,
+  mcpUsageResult,
+  ragTextResult,
+} from './agent-mcp-rag';
 import { headlessDialogueFor } from './lib/dialogue-sessions';
 import { revisionPlanSchema } from './lib/dialogue-store';
 import { leaseSession } from './lib/gatekeeper';
@@ -187,8 +195,11 @@ export async function executeOrchestrationTool(
               ),
             );
             const usage = timedUsageToWire(spend.usage(), Date.now() - started);
-            if (!result.ok)
+            if (!result.ok) {
+              if (contextExceededError(result.error))
+                return mcpContextExceeded(usage);
               return mcpUsageResult(result.error.message, usage, true);
+            }
             const content = toolText(result.value);
             if (result.value.isError)
               return mcpUsageResult(content, usage, true);
@@ -264,6 +275,7 @@ export async function executeOrchestrationTool(
       releaseHold();
     }
   } catch (error) {
+    if (contextExceededError(error)) return mcpContextExceeded();
     if (
       error instanceof Error &&
       'refused' in error &&

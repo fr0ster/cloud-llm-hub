@@ -27,6 +27,7 @@ import {
 } from './checker-verdict-tool';
 import { currentContextTaskId } from './context-capture';
 import { isDialogueRagWorker } from './dialogue-rag-scope';
+import { safeContextExceeded } from './llm-failure';
 import {
   buildRagToolSchemas,
   isRagTool,
@@ -210,6 +211,8 @@ export class LocalRagMcpClient implements IMcpClient {
       name,
       args,
     );
+    const overflow = safeContextExceeded(value.structuredContent?.error);
+    if (overflow) return { ok: false, error: overflow };
     return {
       ok: true,
       value: {

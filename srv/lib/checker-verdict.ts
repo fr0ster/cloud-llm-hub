@@ -15,6 +15,7 @@ import {
   verdictSchema,
 } from './checker-verdict-schema';
 import { submitVerdictTool } from './checker-verdict-tool';
+import { safeContextExceeded } from './llm-failure';
 import {
   type JournalEntry,
   type JournalTarget,
@@ -274,7 +275,13 @@ export function createCheckerWorker(
             usage: input.usage?.with({ role: 'checker' }),
           },
         )
-        .catch(() => undefined);
+        .catch((error) => {
+          const overflow = safeContextExceeded(error);
+          if (overflow) throw overflow;
+          return undefined;
+        });
+      const overflow = !response?.ok && safeContextExceeded(response?.error);
+      if (overflow) throw overflow;
       if (input.stopSignal?.aborted) return { output: '', stopped: true };
       if (!response?.ok) {
         input.signal?.throwIfAborted();

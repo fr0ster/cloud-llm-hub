@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { contextExceededError } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import {
@@ -12,7 +13,11 @@ import {
 import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
 import { getExecutionLimits } from './lib/execution-limits';
-import { captureTokenUsage, failureMessage } from './lib/llm-failure';
+import {
+  captureTokenUsage,
+  failureMessage,
+  modelContextMessage,
+} from './lib/llm-failure';
 import { capabilitiesFor } from './lib/model-capabilities';
 import { awaitModelCatalog, ensureModelCatalog } from './lib/model-catalog';
 import {
@@ -83,7 +88,7 @@ import {
   setSessionDestination,
 } from './agent-manager';
 import { getAvailableModels } from './lib/ai-core-models';
-import { detachedSink } from './lib/detached-sink';
+import { detachedSink, streamWriter } from './lib/detached-sink';
 import { dialogueChat, failedDialogueUsage } from './lib/dialogue-chat';
 import { describeCaller, type ExpositionLevel } from './lib/exposition';
 import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
@@ -148,6 +153,14 @@ function mapStopReason(r: string): string {
 function jsonError(message: string, type: string): string {
   return JSON.stringify({ error: { message, type } });
 }
+
+const openAiContextError = {
+  error: {
+    message: modelContextMessage,
+    type: 'invalid_request_error',
+    code: 'context_length_exceeded',
+  },
+};
 
 /**
  * Run `fn` with the per-request SAP connection bound for its whole async subtree
@@ -512,6 +525,13 @@ async function handleChatCompletionsScoped(
     }
   } catch (error) {
     measurement?.end('error');
+    if (contextExceededError(error)) {
+      if (early?.opened) early.error(openAiContextError);
+      else if (res.headersSent)
+        res.end(`data: ${JSON.stringify(openAiContextError)}\n\n`);
+      else res.status(400).json(openAiContextError);
+      return;
+    }
     if (!early?.opened) throw error;
     early.error({
       error: {
@@ -547,6 +567,10 @@ async function serveChatCompletions(
     externalToolsValidation.errors.length +
     externalToolsValidation.tools.length -
     externalTools.length;
+  const invalidToolsHeader: Record<string, string> =
+    externalToolErrors > 0
+      ? { 'x-smartagent-invalid-tools': String(externalToolErrors) }
+      : {};
   registerClientTools(externalTools);
   if (externalToolErrors > 0) {
     log.debug('Invalid external tools detected', {
@@ -675,6 +699,7 @@ async function serveChatCompletions(
   // The caller's permissions, resolved ONCE and used for two different jobs:
   // the RAG filter (which tools are offered) and the ALS binding (which tools
   // may actually run). They must agree, so they come from the same value.
+  let writeToolResult: ((chunk: string) => void) | undefined;
   const ragIdentity = {
     admin: authenticatedCaller.admin,
     channel: 'openai' as const,
@@ -687,7 +712,7 @@ async function serveChatCompletions(
             req.headers['x-clh-tool-results']?.toString().toLowerCase() ===
               'summary'
           )
-            (early?.out ?? out).write(
+            writeToolResult?.(
               `: tool-result ${JSON.stringify(summarizeToolResult(record))}\n\n`,
             );
         },
@@ -791,14 +816,11 @@ async function serveChatCompletions(
     return;
   }
 
-  early?.ensureStream({
+  const streamHeaders = {
     'X-SAP-Active-Destination': destAfter,
-    ...(externalToolErrors
-      ? {
-          'x-smartagent-invalid-tools': String(externalToolErrors),
-        }
-      : {}),
-  });
+    ...invalidToolsHeader,
+  };
+  early?.ensureStream(streamHeaders);
 
   if (destAfter && !useDialogue) {
     const established = s
@@ -822,6 +844,11 @@ async function serveChatCompletions(
   // detached — nothing written afterwards reaches the socket or fails the run —
   // and a caller still queued is removed from the queue.
   const out = detachedSink(res);
+  const setOverflowHeaders = () => {
+    const headers = body.stream ? streamHeaders : invalidToolsHeader;
+    for (const [name, value] of Object.entries(headers))
+      out.setHeader(name, value);
+  };
   const callerLeft = new AbortController();
   res.on('close', () => {
     if (res.writableEnded) return;
@@ -844,6 +871,10 @@ async function serveChatCompletions(
     );
   } catch (err) {
     await releaseRequestConnection(requestConnection, s);
+    if (contextExceededError(err)) {
+      setOverflowHeaders();
+      throw err;
+    }
     const message = err instanceof Error ? err.message : String(err);
     if (early?.opened) {
       early.error({
@@ -1109,13 +1140,6 @@ async function serveChatCompletions(
       },
     };
 
-    const invalidToolsHeader: Record<string, string> =
-      externalToolErrors > 0
-        ? {
-            'x-smartagent-invalid-tools': String(externalToolErrors),
-          }
-        : {};
-
     if (body.stream && useDialogue && early) {
       let assistant: Message | undefined;
       const lastUser = normalizedMessages
@@ -1137,6 +1161,7 @@ async function serveChatCompletions(
             runWithSessionId(sessionId, fn, priorTurns, userId, ragIdentity),
           ),
         onError: (error) => {
+          if (contextExceededError(error)) return openAiContextError;
           if (isOutageError(error))
             closeDestination(destAfter, describeCause(error));
           return {
@@ -1175,13 +1200,8 @@ async function serveChatCompletions(
 
     // --- Streaming ---
     if (body.stream) {
-      out.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache, no-transform',
-        Connection: 'keep-alive',
-        'X-SAP-Active-Destination': destAfter,
-        ...invalidToolsHeader,
-      });
+      const writeStream = streamWriter(out, streamHeaders);
+      writeToolResult = writeStream;
 
       // Independent SSE keep-alive. Under the DAG coordinator the executor's
       // heartbeats are routed to the session log only (llm-agent #166), so
@@ -1193,7 +1213,7 @@ async function serveChatCompletions(
       // streaming too.
       const KEEPALIVE_MS = 10_000;
       const keepAlive = setInterval(() => {
-        out.write(': keep-alive\n\n');
+        writeStream(': keep-alive\n\n');
       }, KEEPALIVE_MS);
       if (typeof keepAlive.unref === 'function') keepAlive.unref();
       res.on('close', () => clearInterval(keepAlive));
@@ -1209,6 +1229,7 @@ async function serveChatCompletions(
       let pendingClientTools = false;
       let lastUsage: TokenUsage | undefined;
       let streamErrorMessage: string | undefined;
+      let streamOverflow = false;
 
       log.info('Starting streamProcess', { sessionId });
 
@@ -1241,6 +1262,10 @@ async function serveChatCompletions(
                           streamFailed = true;
                           requestMeasurement(req)?.end('error');
                           const err = chunk.error;
+                          if (contextExceededError(err)) {
+                            streamOverflow = true;
+                            break;
+                          }
                           if (isOutageError(chunk.error)) {
                             closeDestination(
                               destAfter,
@@ -1296,13 +1321,15 @@ async function serveChatCompletions(
                         // connections before the tool loop finishes, causing the browser's
                         // reader.read() to hang forever (onDone never fires).
                         if (v.heartbeat) {
-                          out.write(
+                          writeStream(
                             `: heartbeat ${JSON.stringify(v.heartbeat)}\n\n`,
                           );
                           continue;
                         }
                         if (v.status) {
-                          out.write(`: status ${JSON.stringify(v.status)}\n\n`);
+                          writeStream(
+                            `: status ${JSON.stringify(v.status)}\n\n`,
+                          );
                           continue;
                         }
                         if (v.timing) {
@@ -1326,7 +1353,7 @@ async function serveChatCompletions(
                           const initialContent = v.content || '';
                           if (initialContent)
                             accumulatedContent += initialContent;
-                          out.write(
+                          writeStream(
                             `data: ${JSON.stringify({
                               ...baseResponse,
                               choices: [
@@ -1375,7 +1402,7 @@ async function serveChatCompletions(
                               },
                             );
                           }
-                          out.write(
+                          writeStream(
                             `data: ${JSON.stringify({
                               ...baseResponse,
                               choices: [
@@ -1390,7 +1417,7 @@ async function serveChatCompletions(
                         }
 
                         if (v.finishReason) {
-                          out.write(
+                          writeStream(
                             `data: ${JSON.stringify({
                               ...baseResponse,
                               choices: [
@@ -1408,6 +1435,10 @@ async function serveChatCompletions(
                       streamSucceeded = !streamFailed;
                     } catch (err) {
                       requestMeasurement(req)?.end('error');
+                      if (contextExceededError(err)) {
+                        streamOverflow = true;
+                        return;
+                      }
                       if (isOutageError(err)) {
                         closeDestination(destAfter, describeCause(err));
                       }
@@ -1443,21 +1474,34 @@ async function serveChatCompletions(
 
       const tokens = spend.usage(lastUsage);
       if (tokens?.models) log.info('Token usage by model', tokens.models);
+      if (streamOverflow) {
+        clearInterval(keepAlive);
+        if (res.headersSent) {
+          writeStream(`data: ${JSON.stringify(openAiContextError)}\n\n`);
+          out.end();
+        } else {
+          setOverflowHeaders();
+          out.json(400, openAiContextError);
+        }
+        return;
+      }
       const usage = openAiUsageToWire(tokens, responseModel);
       const writeUsage = () => {
         if (usage)
-          out.write(
+          writeStream(
             `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: responseModel, choices: [], usage })}\n\n`,
           );
       };
       if (streamErrorMessage !== undefined) {
         writeUsage();
-        out.write(`data: ${jsonError(streamErrorMessage, 'server_error')}\n\n`);
+        writeStream(
+          `data: ${jsonError(streamErrorMessage, 'server_error')}\n\n`,
+        );
       }
 
       // Ensure finish_reason is always sent — clients require it to detect stream end
       if (!finishReasonSent) {
-        out.write(
+        writeStream(
           `data: ${JSON.stringify({
             id,
             object: 'chat.completion.chunk',
@@ -1514,7 +1558,7 @@ async function serveChatCompletions(
           });
         }
       }
-      out.write('data: [DONE]\n\n');
+      writeStream('data: [DONE]\n\n');
 
       if (chunkCount === 0) {
         log.warn(
@@ -1567,6 +1611,11 @@ async function serveChatCompletions(
     });
 
     if (!result.ok) requestMeasurement(req)?.end('error');
+    if (!result.ok && contextExceededError(result.error)) {
+      setOverflowHeaders();
+      out.json(400, openAiContextError);
+      return;
+    }
     if (!result.ok && isOutageError(result.error)) {
       closeDestination(destAfter, describeCause(result.error));
     }
@@ -1681,6 +1730,9 @@ async function serveChatCompletions(
         usage: finalUsage ?? emptyOpenAiUsage,
       }),
     );
+  } catch (error) {
+    if (contextExceededError(error)) setOverflowHeaders();
+    throw error;
   } finally {
     collections?.restore();
     // The pipeline has returned, so it starts no more calls. Wait for the ones it

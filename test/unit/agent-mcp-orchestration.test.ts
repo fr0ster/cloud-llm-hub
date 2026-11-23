@@ -25,6 +25,7 @@ import type {
   ISubAgentInput,
   TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
+import { LlmError, MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
 import {
   DialogueSession,
   InMemoryDialogueStateStore,
@@ -338,6 +339,26 @@ test('session revise ignores the supplied plan and uses the session plan', async
     expect.objectContaining({ plan: sessionPlan }),
     expect.anything(),
   );
+});
+
+test('session plan_create carries model context overflow as a tool error', async () => {
+  jest
+    .mocked(mockCreate)
+    .mockRejectedValueOnce(
+      new LlmError('private prompt and credential', MODEL_CONTEXT_EXCEEDED),
+    );
+  const result = await call('plan_create', { session: 'owned', goal: 'Read' });
+  expect(result).toMatchObject({
+    isError: true,
+    content: [{ type: 'text', text: 'Запит перевищує контекст моделі' }],
+    structuredContent: {
+      error: {
+        code: MODEL_CONTEXT_EXCEEDED,
+        message: 'Запит перевищує контекст моделі',
+      },
+    },
+  });
+  expect(JSON.stringify(result)).not.toContain('private');
 });
 
 test('session plan_create delegates and reads a completed task with MCP identity', async () => {

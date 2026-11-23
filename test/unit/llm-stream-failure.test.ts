@@ -2,8 +2,11 @@ import { AsyncResource } from 'node:async_hooks';
 import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
 import {
   addTokenUsage,
+  FallbackLlmCallStrategy,
   findThrottled,
   type ILlm,
+  LlmError,
+  MODEL_CONTEXT_EXCEEDED,
   staticApiKey,
   type ThrottleContext,
   type TokenUsage,
@@ -13,14 +16,114 @@ import {
   LlmProviderBridge,
   RetryLlm,
 } from '@mcp-abap-adt/llm-agent-libs';
+import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { HubAnthropicProvider, makeHubLlm } from '../../srv/lib/llm-factory';
 import {
   captureTokenUsage,
+  failureMessage,
+  isLlmFailure,
   llmFailure,
   observeLlmSpend,
   reliableLlm,
   reportLlmSpend,
 } from '../../srv/lib/llm-failure';
+
+test.each(['chat', 'stream HTTP error', 'stream SSE error after content'])(
+  'model context overflow needs one provider attempt (%s)',
+  async (mode) => {
+    const rejected = {
+      type: 'error',
+      error: {
+        type: 'invalid_request_error',
+        message: 'prompt is too long: private prompt and credential',
+      },
+    };
+    const fetch = jest
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () =>
+        mode === 'stream SSE error after content'
+          ? new Response(
+              'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"partial"}}\n\n' +
+                `event: error\ndata: ${JSON.stringify(rejected)}\n\n`,
+              { headers: { 'Content-Type': 'text/event-stream' } },
+            )
+          : new Response(JSON.stringify(rejected), { status: 400 }),
+      );
+    const post = jest.fn(async (config: InternalAxiosRequestConfig) => {
+      throw new AxiosError(
+        'provider rejected input',
+        'ERR_BAD_REQUEST',
+        config,
+        undefined,
+        {
+          config,
+          data: rejected,
+          headers: {},
+          status: 400,
+          statusText: 'Bad Request',
+        },
+      );
+    });
+    const http = axios.create({ adapter: post });
+    const create = jest.spyOn(axios, 'create').mockReturnValue(http);
+    try {
+      const provider = new HubAnthropicProvider({
+        model: 'claude-test',
+        credential: staticApiKey('test'),
+        maxTokens: 1024,
+      });
+      const llm = new RetryLlm(
+        reliableLlm(new LlmAdapter(new LlmProviderBridge(provider))),
+        { maxAttempts: 2, backoffMs: 0 },
+      );
+      const failures: Error[] = [];
+      if (mode === 'chat') {
+        const result = await llm.chat([]);
+        if (!result.ok) failures.push(result.error);
+      } else {
+        const strategy = new FallbackLlmCallStrategy();
+        for await (const chunk of strategy.call(llm, [], [])) {
+          if (!chunk.ok) failures.push(chunk.error);
+        }
+      }
+      expect(fetch).toHaveBeenCalledTimes(mode === 'chat' ? 0 : 1);
+      expect(post).toHaveBeenCalledTimes(mode === 'chat' ? 1 : 0);
+      expect(failures).toHaveLength(1);
+      const [error] = failures;
+      expect(error).toBeInstanceOf(LlmError);
+      expect(error).toMatchObject({
+        code: MODEL_CONTEXT_EXCEEDED,
+        message: 'Запит перевищує контекст моделі',
+        status: 400,
+      });
+      expect(error.cause).toBeUndefined();
+      expect(JSON.stringify(error)).not.toContain('private');
+      const wrapped = new Error('private wrapper', { cause: error });
+      expect(isLlmFailure(wrapped)).toBe(true);
+      expect(llmFailure(wrapped)).toBe('Запит перевищує контекст моделі');
+      expect(failureMessage(wrapped)).toBe('Запит перевищує контекст моделі');
+    } finally {
+      fetch.mockRestore();
+      create.mockRestore();
+    }
+  },
+);
+
+test.each([400, 429, 503])(
+  'ordinary provider HTTP %s keeps its safe text',
+  async (status) => {
+    const llm = reliableLlm({
+      async chat() {
+        throw Object.assign(new Error('private provider details'), { status });
+      },
+      async *streamChat() {},
+    });
+    const result = await llm.chat([]);
+    if (result.ok) throw new Error('Expected failure');
+    expect(result.error.code).not.toBe(MODEL_CONTEXT_EXCEEDED);
+    expect(result.error.message).toBe(`LLM unavailable (HTTP ${status})`);
+  },
+);
 
 test('a successful chat without provider usage counts one request', async () => {
   const llm = reliableLlm({

@@ -5,7 +5,7 @@ const taskCaller = {
 };
 
 import { Stream as AnthropicStream } from '@anthropic-ai/sdk/core/streaming';
-import { LlmError } from '@mcp-abap-adt/llm-agent';
+import { LlmError, MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
 import express from 'express';
 import { Stream as OpenAIStream } from 'openai/core/streaming';
 import {
@@ -1166,6 +1166,37 @@ for (const anthropic of [false, true]) {
   const handler = anthropic ? handleAnthropicMessages : handleChatCompletions;
   const label = anthropic ? 'anthropic' : 'openai';
   for (const stream of [false, true]) {
+    it(`${label}: reports planner context overflow (stream=${stream})`, async () => {
+      emptyPending = true;
+      send.mockRejectedValue(
+        new Error('private wrapper', {
+          cause: new LlmError('private prompt', MODEL_CONTEXT_EXCEEDED),
+        }),
+      );
+      const req = streamingRequest();
+      req.body.stream = stream;
+      const res = fakeRes();
+      await handler(req, typedResponse(res));
+      const payload = {
+        ...(anthropic && { type: 'error' }),
+        error: {
+          message: 'Запит перевищує контекст моделі',
+          type: 'invalid_request_error',
+          ...(!anthropic && { code: 'context_length_exceeded' }),
+        },
+      };
+      expect(res.statusCode).toBe(stream ? 200 : 400);
+      const response = stream
+        ? res.body
+            .split('\n')
+            .find((line) => line.startsWith('data: '))
+            ?.slice('data: '.length)
+        : res.body;
+      expect(JSON.parse(response ?? '')).toMatchObject(payload);
+      expect(res.body).not.toContain('private');
+      expect(ended).not.toHaveBeenCalled();
+    });
+
     it(`${label}: resolves the saved coordinator after dialogue restore (stream=${stream})`, async () => {
       const savedModels = process.env.LLM_AGENT_MODELS;
       process.env.LLM_AGENT_MODELS = 'm,saved-model';

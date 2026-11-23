@@ -1,4 +1,9 @@
-import type { ILlm, ISubAgentInput } from '@mcp-abap-adt/llm-agent';
+import {
+  type ILlm,
+  type ISubAgentInput,
+  LlmError,
+  MODEL_CONTEXT_EXCEEDED,
+} from '@mcp-abap-adt/llm-agent';
 import { sessionCollectionId } from '../../srv/collection-ids';
 import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
 import {
@@ -58,6 +63,41 @@ const input: ISubAgentInput = {
 };
 
 beforeAll(() => bindTestCaller(input.caller));
+
+test.each([false, true])(
+  'checker propagates context overflow as a terminal failure (rejected=%s)',
+  async (rejected) => {
+    const providerError = new LlmError(
+      'private prompt and credential',
+      MODEL_CONTEXT_EXCEEDED,
+    );
+    const error = Object.assign(new LlmError('private wrapper'), {
+      cause: providerError,
+    });
+    const chat = jest.fn<ReturnType<ILlm['chat']>, Parameters<ILlm['chat']>>(
+      async () => {
+        if (rejected) throw error;
+        return { ok: false, error };
+      },
+    );
+    const worker = createCheckerWorker(
+      'checker',
+      '',
+      'Check only cited evidence.',
+      { chat, async *streamChat() {} },
+      async () => undefined,
+      () => undefined,
+    );
+    await expect(
+      worker.run({ ...input, task: JSON.stringify([write]) }),
+    ).rejects.toMatchObject({
+      code: MODEL_CONTEXT_EXCEEDED,
+      status: 400,
+      message: 'Запит перевищує контекст моделі',
+    });
+    expect(chat).toHaveBeenCalledTimes(1);
+  },
+);
 
 function finding(
   claim: CheckerClaim,

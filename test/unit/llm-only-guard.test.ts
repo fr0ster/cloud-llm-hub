@@ -6,6 +6,7 @@ import type {
   ISmartAgent,
   Message,
 } from '@mcp-abap-adt/llm-agent';
+import { LlmError, MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import { guardLlmOnlyAgent } from '../../srv/lib/llm-only-guard';
 import {
@@ -63,6 +64,28 @@ async function collect(source: ReturnType<ISmartAgent['streamProcess']>) {
 }
 
 describe('LLM-only guard', () => {
+  it.each([false, true])(
+    'keeps classifier context overflow terminal (stream=%s)',
+    async (stream) => {
+      const { chat, agent, guarded } = setup();
+      chat.mockResolvedValueOnce({
+        ok: false,
+        error: new LlmError('private model prompt', MODEL_CONTEXT_EXCEEDED),
+      } satisfies Awaited<ReturnType<ILlm['chat']>>);
+      await expect(
+        stream
+          ? collect(guarded.streamProcess(messages, opts))
+          : guarded.process(messages, opts),
+      ).rejects.toMatchObject({
+        code: MODEL_CONTEXT_EXCEEDED,
+        message: 'Запит перевищує контекст моделі',
+      });
+      expect(chat).toHaveBeenCalledTimes(1);
+      expect(agent.process).not.toHaveBeenCalled();
+      expect(agent.streamProcess).not.toHaveBeenCalled();
+    },
+  );
+
   it('passes process messages, options and result through unchanged', async () => {
     const { agent, guarded, chat } = setup('{"action":false}');
     expect(await guarded.process(messages, opts)).toBe(answer);

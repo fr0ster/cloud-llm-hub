@@ -7,6 +7,7 @@ import type {
 import type { getSmartAgent } from '../agent-manager';
 import { runWithToolGateBypass } from '../request-session';
 import { withCheckerBrief } from './checker-verdict';
+import { safeContextExceeded } from './llm-failure';
 import { callOptionsFor } from './rag-caller';
 import { currentRoleModel, roleOfProfile } from './role-models-scope';
 import { waitForSessionTurns } from './session-turns';
@@ -75,7 +76,10 @@ export async function runExecutorStep(
         opts,
       );
       if (!prepared.ok)
-        throw new Error(`${prepared.error.code}: ${prepared.error.message}`);
+        throw (
+          safeContextExceeded(prepared.error) ??
+          new Error(`${prepared.error.code}: ${prepared.error.message}`)
+        );
       const run = () =>
         prepared.value.run({
           task,
