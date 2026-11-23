@@ -826,13 +826,15 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     },
   );
 
-  it.each([
-    ['unusable-findings', 'CREDENTIALS_REJECTED', 'VERDICT_RETRIEVAL_FAILED'],
-    ['unusable-findings', 'ABORTED', 'VERDICT_RETRIEVAL_FAILED'],
-    ['unusable-findings', 'CONFIG_ERROR', 'VERDICT_RETRIEVAL_FAILED'],
+  it.each<['unusable-findings' | 'work-checker', string, string]>([
+    ['unusable-findings', 'CREDENTIALS_REJECTED', 'CREDENTIALS_REJECTED'],
+    ['unusable-findings', 'ABORTED', 'ABORTED'],
+    ['unusable-findings', 'CONFIG_ERROR', 'CONFIG_ERROR'],
+    ['unusable-findings', 'LLM_HTTP_ERROR', 'LLM_HTTP_ERROR'],
+    ['unusable-findings', 'LLM_ERROR', 'VERDICT_RETRIEVAL_FAILED'],
     ['unusable-findings', MODEL_CONTEXT_EXCEEDED, MODEL_CONTEXT_EXCEEDED],
-    ['work-checker', 'CREDENTIALS_REJECTED', 'VERDICT_RETRIEVAL_FAILED'],
-  ] as const)(
+    ['work-checker', 'CREDENTIALS_REJECTED', 'CREDENTIALS_REJECTED'],
+  ])(
     'keeps a checker model failure terminal in %s (%s)',
     async (mode, code, expectedCode) => {
       scenario = mode;

@@ -3,13 +3,17 @@ import type {
   DialogueState,
   ILlm,
   ISubAgent,
+  ISubAgentInput,
   ISubAgentResult,
   RagCaller,
 } from '@mcp-abap-adt/llm-agent';
 import {
   formatTrustTag,
+  httpStatusOf,
+  isAuthenticationFailure,
   OrchestratorError,
   RagAccessDeniedError,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { profileToolAllowed } from '../request-session';
 import type { CheckerSource, EvidenceProvenance } from './checker-source';
@@ -56,6 +60,31 @@ interface CheckerResult extends ISubAgentResult {
     model?: string;
     verdictError?: 'UNPARSABLE_VERDICT' | 'VERDICT_RETRIEVAL_FAILED';
   };
+}
+
+function checkerModelFailure<T>(
+  error: T,
+  input: ISubAgentInput,
+): CheckerResult {
+  const overflow = safeContextExceeded(error);
+  if (overflow) throw overflow;
+  if (input.stopSignal?.aborted) return { output: '', stopped: true };
+  input.signal?.throwIfAborted();
+
+  const output = unusableVerdict('checker model could not submit findings');
+  const terminal = terminalRunError(error);
+  if (terminal) {
+    const details =
+      typeof error === 'object' && error !== null ? error : undefined;
+    // Preserve the status or error name used to classify a terminal code.
+    throw Object.assign(new OrchestratorError(output, terminal.code), {
+      status: httpStatusOf(details),
+      name: isAuthenticationFailure(details)
+        ? 'AuthenticationError'
+        : terminal.name,
+    });
+  }
+  return { output, metadata: { verdictError: 'VERDICT_RETRIEVAL_FAILED' } };
 }
 
 function sameTarget(
@@ -267,8 +296,9 @@ export function createCheckerWorker(
         ),
       );
       input.signal?.throwIfAborted();
-      const response = await llm
-        .chat(
+      let response: Awaited<ReturnType<ILlm['chat']>>;
+      try {
+        response = await llm.chat(
           [
             {
               role: 'system',
@@ -296,22 +326,12 @@ export function createCheckerWorker(
             signal: input.signal,
             usage: input.usage?.with({ role: 'checker' }),
           },
-        )
-        .catch((error) => {
-          const overflow = safeContextExceeded(error);
-          if (overflow) throw overflow;
-          return undefined;
-        });
-      const overflow = !response?.ok && safeContextExceeded(response?.error);
-      if (overflow) throw overflow;
-      if (input.stopSignal?.aborted) return { output: '', stopped: true };
-      if (!response?.ok) {
-        input.signal?.throwIfAborted();
-        return {
-          output: unusableVerdict('checker model could not submit findings'),
-          metadata: { verdictError: 'VERDICT_RETRIEVAL_FAILED' },
-        };
+        );
+      } catch (error) {
+        return checkerModelFailure(error, input);
       }
+      if (!response.ok) return checkerModelFailure(response.error, input);
+      if (input.stopSignal?.aborted) return { output: '', stopped: true };
       const { toolCalls, usage } = response.value;
       const call = toolCalls?.length === 1 ? toolCalls[0] : undefined;
       const parsed =
