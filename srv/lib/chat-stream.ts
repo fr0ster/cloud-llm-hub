@@ -107,7 +107,7 @@ export async function streamDialogue(opts: {
   protocol: 'openai' | 'anthropic';
   model: string | (() => string);
   context?: ApiRequestContext;
-  agent: ReturnType<typeof dialogueChat>;
+  agent: Pick<ReturnType<typeof dialogueChat>, 'follow' | 'hasFollow'>;
   source: AsyncIterable<Result<DialogueStreamChunk, OrchestratorError>>;
   run: (fn: () => Promise<void>) => Promise<void>;
   onError: (error: unknown) => unknown;

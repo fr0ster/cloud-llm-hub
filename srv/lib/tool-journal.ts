@@ -15,6 +15,7 @@ import {
 } from './collection-address';
 import { toolObjects } from './tool-objects';
 import type { ToolResultRejection } from './tool-result-cap';
+import { isWriteTool } from './write-guardrail';
 
 const journalSystem = z.enum(['sap', 'rag', 'user-mcp']);
 export type JournalSystem = z.infer<typeof journalSystem>;
@@ -26,6 +27,20 @@ export interface JournalEntry extends ToolCallRecord {
   write: boolean;
   rejection?: ToolResultRejection;
 }
+
+export function isUnansweredWrite(entry: JournalEntry): boolean {
+  return !entry.answered && (entry.write || isWriteTool(entry.call.name));
+}
+
+export function hasUnansweredSapWrite(
+  entries: Iterable<JournalEntry>,
+): boolean {
+  for (const entry of entries) {
+    if (entry.system === 'sap' && isUnansweredWrite(entry)) return true;
+  }
+  return false;
+}
+
 export type SapTarget = { type: string; name: string };
 export type RagTarget = CollectionAddress & { record?: string };
 export type JournalTarget = SapTarget | RagTarget;

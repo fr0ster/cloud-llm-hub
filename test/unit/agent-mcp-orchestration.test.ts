@@ -5,10 +5,16 @@ import {
 } from '../../srv/lib/brief-plan-author';
 import { revisionPlanSchema } from '../../srv/lib/dialogue-store';
 import { bindCaller, callOptionsFor } from '../../srv/lib/rag-caller';
+import type { JournalEntry } from '../../srv/lib/tool-journal';
 import {
   runWithSessionId,
   runWithStatelessKnowledge,
 } from '../../srv/request-session';
+import {
+  journalWithUnansweredSapWrite,
+  nestedContextOverflow,
+  overflowWithSapWarning,
+} from './helpers/context-overflow';
 
 const taskCaller = {
   sessionId: 'test-session',
@@ -96,6 +102,7 @@ let mockSession: DialogueSession;
 const mockHeadless = jest.fn(async () => ({
   session: mockSession,
   caller: sessionCaller1,
+  toolJournal: () => new Map<string, JournalEntry>(),
 }));
 const mockRelease = jest.fn();
 const mockLongSession = { userId: 'alice', key: 'owned', destination: 'TEST' };
@@ -360,6 +367,44 @@ test('session plan_create carries model context overflow as a tool error', async
   });
   expect(JSON.stringify(result)).not.toContain('private');
 });
+
+test.each([false, true])(
+  'orchestration reports an unanswered SAP write on context overflow (rejected=%s)',
+  async (rejected) => {
+    const journal = await journalWithUnansweredSapWrite();
+    mockHeadless.mockResolvedValueOnce({
+      session: mockSession,
+      caller: sessionCaller1,
+      toolJournal: () => journal,
+    });
+    const error = Object.assign(nestedContextOverflow(), { code: 'WRAPPED' });
+    const callTool = jest.spyOn(mockSession, 'callTool');
+    if (rejected) callTool.mockRejectedValueOnce(error);
+    else callTool.mockResolvedValueOnce({ ok: false, error });
+    try {
+      const result = await call('plan_create', {
+        session: 'owned',
+        goal: 'Read',
+      });
+      expect(result).toMatchObject({
+        isError: true,
+        content: [{ type: 'text', text: overflowWithSapWarning }],
+        structuredContent: {
+          result: overflowWithSapWarning,
+          error: {
+            code: MODEL_CONTEXT_EXCEEDED,
+            message: overflowWithSapWarning,
+            status: 400,
+          },
+        },
+      });
+      expect(JSON.stringify(result)).not.toContain('private');
+      expect(callTool).toHaveBeenCalledTimes(1);
+    } finally {
+      callTool.mockRestore();
+    }
+  },
+);
 
 test('session plan_create delegates and reads a completed task with MCP identity', async () => {
   expect(

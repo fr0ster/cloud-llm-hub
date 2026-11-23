@@ -140,6 +140,12 @@ const anthropicErrorCodes = new Set([
 
 export const modelContextMessage = 'Запит перевищує контекст моделі';
 
+export function contextExceededMessage(unansweredSapWrite: boolean): string {
+  return unansweredSapWrite
+    ? `${modelContextMessage}. Результат запису невідомий. Перевір стан у SAP перед повтором.`
+    : modelContextMessage;
+}
+
 export function safeContextExceeded<T>(error: T) {
   if (contextExceededError(error))
     return Object.assign(

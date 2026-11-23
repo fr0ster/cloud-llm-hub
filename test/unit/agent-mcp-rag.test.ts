@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
+import { MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -83,6 +84,7 @@ import {
   sessionCollectionOverrides,
 } from '../../srv/lib/collection-toggle';
 import { theRetention } from '../../srv/lib/gatekeeper';
+import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import {
   LongSessionRegistry,
   longSessions,
@@ -94,6 +96,10 @@ import {
   CollectionRegistry,
   CollectionSearchRag,
 } from '../../srv/rag-collections';
+import {
+  nestedContextOverflow,
+  overflowMessage,
+} from './helpers/context-overflow';
 
 const mockForSession = jest.fn<
   IUsageRecorder,
@@ -913,6 +919,38 @@ test('search includes full notes for every unavailable collection', async () => 
       (note) => note.error === errors.get(note.collection),
     ),
   ).toBe(true);
+});
+
+test('RAG preserves the terminal context payload when attaching usage', async () => {
+  jest
+    .spyOn(CollectionSearchRag.prototype, 'query')
+    .mockImplementation(async () => {
+      reportLlmSpend(
+        { promptTokens: 7, completionTokens: 0, totalTokens: 7 },
+        'embedder',
+      );
+      throw nestedContextOverflow();
+    });
+  const result = await executeRagMcpTool(
+    { headers: {} },
+    'alice',
+    'rag_search',
+    { session: sid, query: 'needle', collections: ['notes'] },
+  );
+  expect(result).toMatchObject({
+    isError: true,
+    content: [{ type: 'text', text: overflowMessage }],
+    structuredContent: {
+      result: overflowMessage,
+      error: {
+        code: MODEL_CONTEXT_EXCEEDED,
+        message: overflowMessage,
+        status: 400,
+      },
+      usage: expect.objectContaining({ total_tokens: 7 }),
+    },
+  });
+  expect(JSON.stringify(result)).not.toContain('private');
 });
 
 test('search supplies embedding usage with retrieval context and caller attribution', async () => {

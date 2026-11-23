@@ -108,7 +108,7 @@ type ValidatedArgs = Args & { scope?: 'user' | 'session' };
 
 import {
   captureTokenUsage,
-  modelContextMessage,
+  contextExceededMessage,
   safeContextExceeded,
 } from './lib/llm-failure';
 import { timedUsageToWire, type WireAgentUsage } from './lib/usage-wire';
@@ -132,17 +132,21 @@ export function mcpUsageResult(
   };
 }
 
-export function mcpContextExceeded(usage?: WireAgentUsage) {
+export function mcpContextExceeded(
+  usage?: WireAgentUsage,
+  unansweredSapWrite = false,
+) {
+  const message = contextExceededMessage(unansweredSapWrite);
   const failure: RagWriteErrorResult = {
-    result: modelContextMessage,
+    result: message,
     error: {
       code: MODEL_CONTEXT_EXCEEDED,
-      message: modelContextMessage,
+      message,
       status: 400,
     },
   };
   return {
-    ...ragTextResult(modelContextMessage, true),
+    ...ragTextResult(message, true),
     structuredContent: usage ? Object.assign({}, failure, { usage }) : failure,
   };
 }
@@ -1444,9 +1448,15 @@ export async function executeRagMcpTool(
     ),
   );
   const usage = timedUsageToWire(spend.usage(), Date.now() - started);
-  if (contextExceededError(result.structuredContent?.error))
-    return mcpContextExceeded(usage);
   if (!usage) return result;
+  if (
+    result.structuredContent &&
+    contextExceededError(result.structuredContent.error)
+  )
+    return {
+      ...result,
+      structuredContent: Object.assign({}, result.structuredContent, { usage }),
+    };
   return {
     ...result,
     content: result.content.map((block) => ({

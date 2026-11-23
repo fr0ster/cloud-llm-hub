@@ -2,6 +2,7 @@ import { IncomingMessage } from 'node:http';
 import { Socket } from 'node:net';
 import type { CallOptions, Message } from '@mcp-abap-adt/llm-agent';
 import type { Request, Response } from 'express';
+import type { RecordingMcpClient } from '../../../srv/lib/recording-mcp-client';
 
 /**
  * Drive a chat channel in-process: a fake request and response, and the agent,
@@ -18,6 +19,8 @@ import type { Request, Response } from 'express';
 type Chunk =
   | { ok: true; value: Record<string, unknown> }
   | { ok: false; error: Error };
+
+let recorder: RecordingMcpClient | undefined;
 
 export const harness = {
   user: { id: 'alice', is: () => true, roles: ['MCP_Developer'] } as {
@@ -37,6 +40,9 @@ export const harness = {
   queryEmbedder: undefined as unknown,
   /** What `recMcp.unanswered(traceId)` reports for the current test. */
   unanswered: [] as Array<{ call: { name: string } }>,
+  useRecorder(client: RecordingMcpClient) {
+    recorder = client;
+  },
   /** Every `closeDestination(name, reason)` call a test observed. */
   closeDestinationCalls: [] as Array<{ destination: string; reason: string }>,
   /** Every destination `establishRequestConnection` was asked to connect to. */
@@ -77,6 +83,7 @@ export const harness = {
     yield { ok: true, value: { finishReason: 'stop' } };
   },
   reset() {
+    recorder = undefined;
     harness.events = [];
     harness.seenOptions = [];
     harness.agentGate = Promise.resolve();
@@ -121,15 +128,17 @@ const handle = {
     },
   },
   recMcp: {
-    getToolJournal: () => [],
-    dropRequest: () => {
+    getToolRecords: (traceId) => recorder?.getToolRecords(traceId) ?? [],
+    getToolJournal: (traceId) => recorder?.getToolJournal(traceId) ?? [],
+    dropRequest: (traceId) => {
       harness.events.push('dropRequest');
+      recorder?.dropRequest(traceId);
       if (harness.dropRequestThrows) throw new Error('dropRequest failed');
     },
     unanswered: (_traceId: string) => harness.unanswered,
   } satisfies Pick<
-    import('../../../srv/lib/recording-mcp-client').RecordingMcpClient,
-    'dropRequest' | 'getToolJournal'
+    RecordingMcpClient,
+    'dropRequest' | 'getToolJournal' | 'getToolRecords'
   > &
     Pick<
       NonNullable<
@@ -214,6 +223,7 @@ export function agentManagerMock() {
 export function agentConfigMock() {
   return {
     isAiCoreConfigured: () => true,
+    parseToolResultMaxChars: () => 0,
     getAgentConfig: () => ({
       llm: { model: 'm' },
       mcp: { destination: 'DEST' },

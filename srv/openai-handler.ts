@@ -15,8 +15,8 @@ import { lookupDialogue } from './lib/dialogue-sessions';
 import { getExecutionLimits } from './lib/execution-limits';
 import {
   captureTokenUsage,
+  contextExceededMessage,
   failureMessage,
-  modelContextMessage,
 } from './lib/llm-failure';
 import { capabilitiesFor } from './lib/model-capabilities';
 import { awaitModelCatalog, ensureModelCatalog } from './lib/model-catalog';
@@ -118,11 +118,11 @@ import {
   openAiDoorRefusal,
   openAiSessionClosed,
   openAiSessionRunRefusal,
-  type RecMcpHandle,
   throttleMessage,
   throttleOf,
   unverifiedWriteFor,
 } from './lib/throttle-surfacing';
+import { hasUnansweredSapWrite } from './lib/tool-journal';
 import { usageRuntime } from './lib/usage/runtime';
 import { isUserMcpName } from './lib/user-mcp-names';
 import { runWithSessionId } from './request-session';
@@ -154,13 +154,15 @@ function jsonError(message: string, type: string): string {
   return JSON.stringify({ error: { message, type } });
 }
 
-const openAiContextError = {
-  error: {
-    message: modelContextMessage,
-    type: 'invalid_request_error',
-    code: 'context_length_exceeded',
-  },
-};
+function openAiContextError(unansweredSapWrite = false) {
+  return {
+    error: {
+      message: contextExceededMessage(unansweredSapWrite),
+      type: 'invalid_request_error',
+      code: 'context_length_exceeded',
+    },
+  };
+}
 
 /**
  * Run `fn` with the per-request SAP connection bound for its whole async subtree
@@ -498,12 +500,24 @@ async function handleChatCompletionsScoped(
     getAgentConfig().agent.chatCoordinator === 'dialogue'
       ? chatStream(res, 'openai', s)
       : undefined;
+  let unansweredSapWrite = false;
+  const captureUnansweredSapWrite = (pending: boolean) => {
+    unansweredSapWrite = pending;
+  };
   try {
     const continuation = s
       ? await longSessions().run(
           s,
           () =>
-            serveChatCompletions(req, res, body, authenticatedCaller, s, early),
+            serveChatCompletions(
+              req,
+              res,
+              body,
+              authenticatedCaller,
+              captureUnansweredSapWrite,
+              s,
+              early,
+            ),
           () => early?.ensureStream(),
         )
       : await serveChatCompletions(
@@ -511,6 +525,7 @@ async function handleChatCompletionsScoped(
           res,
           body,
           authenticatedCaller,
+          captureUnansweredSapWrite,
           undefined,
           early,
         );
@@ -526,10 +541,10 @@ async function handleChatCompletionsScoped(
   } catch (error) {
     measurement?.end('error');
     if (contextExceededError(error)) {
-      if (early?.opened) early.error(openAiContextError);
-      else if (res.headersSent)
-        res.end(`data: ${JSON.stringify(openAiContextError)}\n\n`);
-      else res.status(400).json(openAiContextError);
+      const payload = openAiContextError(unansweredSapWrite);
+      if (early?.opened) early.error(payload);
+      else if (res.headersSent) res.end(`data: ${JSON.stringify(payload)}\n\n`);
+      else res.status(400).json(payload);
       return;
     }
     if (!early?.opened) throw error;
@@ -552,6 +567,7 @@ async function serveChatCompletions(
     admin: boolean;
     caller: ReturnType<typeof describeCaller>;
   },
+  captureUnansweredSapWrite: (pending: boolean) => void,
   s?: LongSession,
   early?: ChatStream,
 ): Promise<(() => Promise<void>) | void> {
@@ -947,7 +963,7 @@ async function serveChatCompletions(
     return;
   }
 
-  const chatAgent =
+  const dialogue =
     useDialogue && s
       ? dialogueChat(
           req,
@@ -961,7 +977,12 @@ async function serveChatCompletions(
           },
           requestedModel,
         )
-      : handle.agent;
+      : undefined;
+  const chatAgent = dialogue ?? handle.agent;
+  const unansweredSapWrite = () =>
+    dialogue?.hasUnansweredSapWrite() ??
+    hasUnansweredSapWrite(handle.recMcp?.getToolRecords(traceId) ?? []);
+  const contextError = () => openAiContextError(unansweredSapWrite());
 
   // Admitted after the agent is resolved: a caller waiting for a destination to
   // warm waits outside the door, holding a request and no session.
@@ -1140,7 +1161,7 @@ async function serveChatCompletions(
       },
     };
 
-    if (body.stream && useDialogue && early) {
+    if (body.stream && dialogue && early) {
       let assistant: Message | undefined;
       const lastUser = normalizedMessages
         .filter((m) => m.role === 'user')
@@ -1154,14 +1175,14 @@ async function serveChatCompletions(
             responseModel,
             s ? { userId, key: s.key } : undefined,
           ),
-        agent: chatAgent as ReturnType<typeof dialogueChat>,
-        source: chatAgent.streamProcess(normalizedMessages, opts),
+        agent: dialogue,
+        source: dialogue.streamProcess(normalizedMessages, opts),
         run: (fn) =>
           pipeline.run(() =>
             runWithSessionId(sessionId, fn, priorTurns, userId, ragIdentity),
           ),
         onError: (error) => {
-          if (contextExceededError(error)) return openAiContextError;
+          if (contextExceededError(error)) return contextError();
           if (isOutageError(error))
             closeDestination(destAfter, describeCause(error));
           return {
@@ -1229,7 +1250,7 @@ async function serveChatCompletions(
       let pendingClientTools = false;
       let lastUsage: TokenUsage | undefined;
       let streamErrorMessage: string | undefined;
-      let streamOverflow = false;
+      let streamOverflow: ReturnType<typeof openAiContextError> | undefined;
 
       log.info('Starting streamProcess', { sessionId });
 
@@ -1263,7 +1284,7 @@ async function serveChatCompletions(
                           requestMeasurement(req)?.end('error');
                           const err = chunk.error;
                           if (contextExceededError(err)) {
-                            streamOverflow = true;
+                            streamOverflow = contextError();
                             break;
                           }
                           if (isOutageError(chunk.error)) {
@@ -1436,7 +1457,7 @@ async function serveChatCompletions(
                     } catch (err) {
                       requestMeasurement(req)?.end('error');
                       if (contextExceededError(err)) {
-                        streamOverflow = true;
+                        streamOverflow = contextError();
                         return;
                       }
                       if (isOutageError(err)) {
@@ -1477,11 +1498,11 @@ async function serveChatCompletions(
       if (streamOverflow) {
         clearInterval(keepAlive);
         if (res.headersSent) {
-          writeStream(`data: ${JSON.stringify(openAiContextError)}\n\n`);
+          writeStream(`data: ${JSON.stringify(streamOverflow)}\n\n`);
           out.end();
         } else {
           setOverflowHeaders();
-          out.json(400, openAiContextError);
+          out.json(400, streamOverflow);
         }
         return;
       }
@@ -1613,7 +1634,7 @@ async function serveChatCompletions(
     if (!result.ok) requestMeasurement(req)?.end('error');
     if (!result.ok && contextExceededError(result.error)) {
       setOverflowHeaders();
-      out.json(400, openAiContextError);
+      out.json(400, contextError());
       return;
     }
     if (!result.ok && isOutageError(result.error)) {
@@ -1731,7 +1752,10 @@ async function serveChatCompletions(
       }),
     );
   } catch (error) {
-    if (contextExceededError(error)) setOverflowHeaders();
+    if (contextExceededError(error)) {
+      captureUnansweredSapWrite(unansweredSapWrite());
+      setOverflowHeaders();
+    }
     throw error;
   } finally {
     collections?.restore();
@@ -1744,7 +1768,7 @@ async function serveChatCompletions(
     // throw here must not skip the release below, which would hold the slot
     // until restart.
     try {
-      (handle as unknown as RecMcpHandle)?.recMcp?.dropRequest(traceId);
+      handle.recMcp?.dropRequest(traceId);
     } catch (err) {
       log.warn('dropRequest failed', {
         error: err instanceof Error ? err.message : String(err),

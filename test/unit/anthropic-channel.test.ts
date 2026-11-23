@@ -78,6 +78,11 @@ import {
   harness,
   tick,
 } from './helpers/channel-harness';
+import {
+  arrangeChannelOverflow,
+  overflowModes,
+  overflowWithSapWarning,
+} from './helpers/context-overflow';
 
 function configure(live?: number, queue?: number) {
   if (live === undefined) delete process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS;
@@ -157,6 +162,44 @@ it.each(['chat', 'stream', 'started stream'])(
     } else expect(JSON.parse(res.body)).toEqual(payload);
     expect(res.body).not.toContain('private');
     expect(res.body).not.toContain('event: message_stop');
+  },
+);
+
+describe.each([false, true])(
+  'Anthropic overflow after a SAP write (rejected=%s)',
+  (rejected) => {
+    it.each(overflowModes)(
+      'reports the unknown outcome ($mode)',
+      async ({ stream, partial }) => {
+        const { recorder, callTool } = arrangeChannelOverflow(
+          partial,
+          rejected,
+        );
+        const { res, done } = call(body(stream));
+        await done;
+        const payload = {
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            message: overflowWithSapWarning,
+          },
+        };
+        expect(res.statusCode).toBe(partial ? 200 : 400);
+        if (partial) {
+          expect(res.body).toContain('partial');
+          expect(res.body).toContain(
+            `event: error\ndata: ${JSON.stringify(payload)}\n\n`,
+          );
+          expect(res.body.match(/event: error/g)).toHaveLength(1);
+        } else expect(JSON.parse(res.body)).toEqual(payload);
+        expect(res.body).not.toMatch(/private|event: message_stop/);
+        expect(callTool).toHaveBeenCalledTimes(1);
+        expect(harness.events).toContain('dropRequest');
+        expect(
+          recorder.getToolRecords(harness.seenOptions[0]?.trace?.traceId),
+        ).toEqual([]);
+      },
+    );
   },
 );
 

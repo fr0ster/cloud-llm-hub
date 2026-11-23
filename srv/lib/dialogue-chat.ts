@@ -39,6 +39,7 @@ import { callOptionsFor } from './rag-caller';
 import { userTextOf } from './rag-context-marker';
 import { requestStart } from './request-start';
 import { extractText } from './session-turns';
+import { hasUnansweredSapWrite } from './tool-journal';
 import { responseMeasurement } from './usage/request-records';
 import { type DialogueUsage, sumPlannerUsage } from './usage-wire';
 
@@ -107,9 +108,11 @@ export function dialogueChat(
   ): AsyncIterable<Result<DialogueStreamChunk, OrchestratorError>>;
   follow(signal: AbortSignal): AsyncIterable<FollowItem> | undefined;
   hasFollow(): boolean;
+  hasUnansweredSapWrite(): boolean;
 } {
   const requestStartedAt = requestStart(req);
   let followHandle: Awaited<ReturnType<typeof dialogueFor>> | undefined;
+  let dialogueHandle: DialogueHandle | undefined;
   let delivery: Delivery;
   let since: number;
   let resolveResponseEnded!: () => void;
@@ -131,6 +134,7 @@ export function dialogueChat(
       model,
       caller,
     );
+    dialogueHandle = handle;
     await supersedeFollow(handle);
     const ack = req.headers['x-clh-ack'];
     if (typeof ack === 'string') {
@@ -182,6 +186,8 @@ export function dialogueChat(
 
   return {
     hasFollow: () => followHandle !== undefined,
+    hasUnansweredSapWrite: () =>
+      hasUnansweredSapWrite(dialogueHandle?.toolJournal().values() ?? []),
     follow(signal) {
       return followHandle
         ? followDialogue(followHandle, {

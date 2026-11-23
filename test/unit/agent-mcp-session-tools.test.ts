@@ -118,6 +118,11 @@ import {
 } from '../../srv/lib/long-session';
 import { lifecycleHooks } from '../../srv/lib/session-lifecycle';
 import { deferred, harness, tick } from './helpers/channel-harness';
+import {
+  overflowMessage,
+  overflowWithSapWarning,
+  recorderForOverflow,
+} from './helpers/context-overflow';
 
 const caller = { userId: 'alice', exposition: undefined };
 const req = { headers: { 'x-sap-destination': 'DEST' } } as unknown as Request;
@@ -335,16 +340,24 @@ async function directHandle(
   return { handle, ...extras };
 }
 
-it.each([false, true])(
-  'execute_step reports terminal model context overflow (rejected=%s)',
-  async (rejected) => {
+it.each([
+  { rejected: false, write: false },
+  { rejected: true, write: false },
+  { rejected: false, write: true },
+  { rejected: true, write: true },
+])(
+  'execute_step reports terminal model context overflow (rejected=$rejected, write=$write)',
+  async ({ rejected, write }) => {
     const error = new Error('private wrapper', {
       cause: new LlmError(
         'private prompt and credential',
         MODEL_CONTEXT_EXCEEDED,
       ),
     });
-    harness.process = async () => {
+    const { recorder, callTool } = recorderForOverflow();
+    harness.useRecorder(recorder);
+    harness.process = async (_messages, options) => {
+      if (write) await recorder.callTool('CreateClass', {}, options);
       if (rejected) throw error;
       return { ok: false, error };
     };
@@ -352,17 +365,24 @@ it.each([false, true])(
       session: await opened(),
       task: 'hello',
     });
+    const message = write ? overflowWithSapWarning : overflowMessage;
     expect(result).toMatchObject({
       isError: true,
-      content: [{ type: 'text', text: 'Запит перевищує контекст моделі' }],
+      content: [{ type: 'text', text: message }],
       structuredContent: {
+        result: message,
         error: {
           code: MODEL_CONTEXT_EXCEEDED,
-          message: 'Запит перевищує контекст моделі',
+          message,
+          status: 400,
         },
       },
     });
     expect(JSON.stringify(result)).not.toContain('private');
+    expect(callTool).toHaveBeenCalledTimes(write ? 1 : 0);
+    expect(
+      recorder.getToolRecords(harness.seenOptions[0]?.trace?.traceId),
+    ).toEqual([]);
     expect(harness.events.filter((event) => event === 'pipeline')).toHaveLength(
       1,
     );
