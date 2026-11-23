@@ -6,8 +6,15 @@ const taskCaller = {
   isAdmin: false,
 };
 
-import type { ILlm, Message } from '@mcp-abap-adt/llm-agent';
-import { InMemoryRag, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+import {
+  type ILlm,
+  InMemoryRag,
+  LlmError,
+  type Message,
+  MODEL_CONTEXT_EXCEEDED,
+  type SmartAgentError,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import type { AgentConfig } from '../../srv/agent-config';
 import {
   buildAgentForDestination,
@@ -102,6 +109,8 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     | 'explicit-check'
     | 'unusable-brief'
     | 'unusable-findings'
+    | 'work-checker'
+    | 'revised-work-checker'
     | 'fix-after-check'
     | 'revise'
     | 'user-mcp'
@@ -114,6 +123,7 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
   const controllerPrompts: string[] = [];
   const fixPrompts: string[] = [];
   let rejectedWriteId: string | undefined;
+  let checkerModelFailure: LlmError | undefined;
   const answer = 'I created and activated class ZTEST.';
   function respond(messages: Message[]): string {
     const system = messages
@@ -134,7 +144,12 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       controllerPrompts.push(messages.map((m) => m.content).join('\n'));
       if (scenario === 'throw') throw new Error('planning unavailable');
       if (scenario === 'invalid') return 'not JSON';
-      if (scenario === 'unusable-brief' || scenario === 'unusable-findings') {
+      if (
+        scenario === 'unusable-brief' ||
+        scenario === 'unusable-findings' ||
+        scenario === 'work-checker' ||
+        scenario === 'revised-work-checker'
+      ) {
         const claims = JSON.stringify([
           {
             claim: 'The business requirements were saved.',
@@ -147,14 +162,44 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
             evidence: {},
           },
         ]);
+        const stage = {
+          id: 'stage',
+          kind: 'work',
+          worker: 'executor',
+          goal: 'Stage the business requirements',
+        };
+        if (
+          scenario === 'work-checker' ||
+          scenario === 'revised-work-checker'
+        ) {
+          const verify = {
+            id: 'verify',
+            kind: 'work',
+            worker: 'checker',
+            goal: 'Verify the saved record',
+            context: { note: claims },
+          };
+          const deliver = { id: 'done', kind: 'answer', from: 'stage' };
+          return JSON.stringify({
+            steps:
+              scenario === 'work-checker'
+                ? [stage, verify, deliver]
+                : controllerPrompts.length === 1
+                  ? [
+                      stage,
+                      {
+                        id: 'revise',
+                        kind: 'revise',
+                        reason: 'Plan verification',
+                      },
+                      deliver,
+                    ]
+                  : [verify, deliver],
+          });
+        }
         return JSON.stringify({
           steps: [
-            {
-              id: 'stage',
-              kind: 'work',
-              worker: 'executor',
-              goal: 'Stage the business requirements',
-            },
+            stage,
             {
               id: 'verify',
               kind: 'check',
@@ -291,11 +336,17 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
   }
   const llm: ILlm = {
     model: 'test',
-    chat: jest.fn(async (messages, tools) => {
+    chat: jest.fn(async (messages, tools): ReturnType<ILlm['chat']> => {
       if (tools?.some(({ name }) => name === 'submit_verdict')) {
         calls.push('checker');
         expect(tools.map(({ name }) => name)).toEqual(['submit_verdict']);
-        if (scenario === 'unusable-findings')
+        if (checkerModelFailure)
+          return { ok: false, error: checkerModelFailure };
+        if (
+          scenario === 'unusable-findings' ||
+          scenario === 'work-checker' ||
+          scenario === 'revised-work-checker'
+        )
           return {
             ok: true as const,
             value: {
@@ -417,6 +468,7 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     calls.length = 0;
     controllerPrompts.length = 0;
     fixPrompts.length = 0;
+    checkerModelFailure = undefined;
   });
 
   async function run(
@@ -483,6 +535,7 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       ).toBe(true);
     const chunks: string[] = [];
     const usage: number[] = [];
+    const errors: SmartAgentError[] = [];
     await runWithSessionId(
       sessionId,
       async () => {
@@ -491,11 +544,10 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
           sessionId,
           trace: { traceId: sessionId },
         })) {
-          expect(chunk.ok).toBe(true);
           if (chunk.ok) {
             chunks.push(chunk.value.content);
             if (chunk.value.usage) usage.push(chunk.value.usage.totalTokens);
-          }
+          } else errors.push(chunk.error);
         }
       },
       [],
@@ -503,12 +555,14 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       identity,
     );
     lease.release();
+    if (!checkerModelFailure) expect(errors).toEqual([]);
     if (runConfig.agent.chatCoordinator === 'adaptive')
       expect(retention.isKnown(userId, sessionId)).toBe(true);
     return {
       executor: handle.executor,
       text: chunks.join(''),
       usage,
+      errors,
       callTool,
       record: await runWithSessionId(
         sessionId,
@@ -769,6 +823,68 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
         },
       ]);
       expect(result.callTool).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['unusable-findings', 'CREDENTIALS_REJECTED', 'VERDICT_RETRIEVAL_FAILED'],
+    ['unusable-findings', 'ABORTED', 'VERDICT_RETRIEVAL_FAILED'],
+    ['unusable-findings', 'CONFIG_ERROR', 'VERDICT_RETRIEVAL_FAILED'],
+    ['unusable-findings', MODEL_CONTEXT_EXCEEDED, MODEL_CONTEXT_EXCEEDED],
+    ['work-checker', 'CREDENTIALS_REJECTED', 'VERDICT_RETRIEVAL_FAILED'],
+  ] as const)(
+    'keeps a checker model failure terminal in %s (%s)',
+    async (mode, code, expectedCode) => {
+      scenario = mode;
+      checkerModelFailure = new LlmError('Private provider message', code);
+      const result = await run(
+        `adaptive-${mode}-${code}`,
+        'Verify the saved record',
+      );
+      expect(result.errors).toEqual([
+        expect.objectContaining({ code: expectedCode }),
+      ]);
+      expect(calls).toEqual(['controller', 'executor', 'checker']);
+      expect(result.text).toBe('');
+      expect(result.record?.outcome).toBe('stopped');
+      expect(result.record?.steps).toMatchObject([
+        { stepId: 'stage', status: 'done' },
+        { stepId: 'verify', status: 'failed' },
+      ]);
+      expect(result.record?.steps[1].verdict).toBeUndefined();
+      expect(result.errors[0].message).not.toContain(
+        'Private provider message',
+      );
+    },
+  );
+
+  it.each(['work-checker', 'revised-work-checker'] as const)(
+    'reports an unusable verdict in %s without delivering the executor answer',
+    async (mode) => {
+      scenario = mode;
+      const revised = mode === 'revised-work-checker';
+      const result = await run(`adaptive-${mode}`, 'Verify the saved record');
+      expect(calls).toEqual([
+        'controller',
+        'executor',
+        ...(revised ? ['controller'] : []),
+        'checker',
+        'report',
+      ]);
+      expect(result.text).toBe('Verification is undecided.');
+      expect(result.record?.outcome).toBe('stopped');
+      expect(result.record?.steps).toMatchObject([
+        { stepId: 'stage', status: 'done', output: answer },
+        ...(revised ? [{ stepId: 'revise', status: 'done' }] : []),
+        {
+          stepId: 'verify',
+          status: 'done',
+          verdict: {
+            verdict: 'partial',
+            reason: 'unusable verdict: missing or invalid findings',
+          },
+        },
+      ]);
     },
   );
 

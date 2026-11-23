@@ -3,9 +3,14 @@ import type {
   DialogueState,
   ILlm,
   ISubAgent,
+  ISubAgentResult,
   RagCaller,
 } from '@mcp-abap-adt/llm-agent';
-import { formatTrustTag, RagAccessDeniedError } from '@mcp-abap-adt/llm-agent';
+import {
+  formatTrustTag,
+  OrchestratorError,
+  RagAccessDeniedError,
+} from '@mcp-abap-adt/llm-agent';
 import { profileToolAllowed } from '../request-session';
 import type { CheckerSource, EvidenceProvenance } from './checker-source';
 import {
@@ -44,8 +49,14 @@ interface ClaimEvidence {
 }
 
 const unusableVerdictPrefix = 'unusable verdict: ';
-export const unusableVerdict = (reason: string) =>
-  unusableVerdictPrefix + reason;
+const unusableVerdict = (reason: string) => unusableVerdictPrefix + reason;
+
+interface CheckerResult extends ISubAgentResult {
+  metadata?: {
+    model?: string;
+    verdictError?: 'UNPARSABLE_VERDICT' | 'VERDICT_RETRIEVAL_FAILED';
+  };
+}
 
 function sameTarget(
   target: CheckerClaim['target'],
@@ -156,8 +167,12 @@ function negativeFindings(findings: CheckerVerdict['findings']): string {
 }
 
 /** Adapt checker results to the adaptive interpreter's branch reasons. */
-export function adaptiveCheckerOutput(output: string): string {
-  if (output.startsWith(unusableVerdictPrefix))
+export function adaptiveCheckerOutput(result: ISubAgentResult): string {
+  const { output, metadata, usage } = result;
+  const code = metadata?.verdictError;
+  if (code === 'VERDICT_RETRIEVAL_FAILED')
+    throw Object.assign(new OrchestratorError(output, code), { usage });
+  if (code === 'UNPARSABLE_VERDICT')
     return JSON.stringify({ verdict: 'partial', reason: output });
   try {
     const verdict = verdictSchema.safeParse(JSON.parse(output));
@@ -207,7 +222,7 @@ export function createCheckerWorker(
     name,
     description,
     capabilities: { contextPolicy: 'optional' },
-    async run(input) {
+    async run(input): Promise<CheckerResult> {
       if (
         input.sessionId !== undefined &&
         input.sessionId !== input.caller.sessionId
@@ -217,7 +232,10 @@ export function createCheckerWorker(
         );
       if (input.stopSignal?.aborted) return { output: '', stopped: true };
       if (!profileToolAllowed(submitVerdictTool.name))
-        return { output: unusableVerdict('profile cannot submit findings') };
+        return {
+          output: unusableVerdict('profile cannot submit findings'),
+          metadata: { verdictError: 'VERDICT_RETRIEVAL_FAILED' },
+        };
       const brief = briefScope.getStore();
       let claims: CheckerClaim[];
       try {
@@ -227,6 +245,7 @@ export function createCheckerWorker(
       } catch {
         return {
           output: unusableVerdict('expected a JSON list of cited claims'),
+          metadata: { verdictError: 'UNPARSABLE_VERDICT' },
         };
       }
       const journal = brief?.journal ?? new Map<string, JournalEntry>();
@@ -290,6 +309,7 @@ export function createCheckerWorker(
         input.signal?.throwIfAborted();
         return {
           output: unusableVerdict('checker model could not submit findings'),
+          metadata: { verdictError: 'VERDICT_RETRIEVAL_FAILED' },
         };
       }
       const { toolCalls, usage } = response.value;
@@ -302,7 +322,7 @@ export function createCheckerWorker(
         return {
           output: unusableVerdict('missing or invalid findings'),
           usage,
-          metadata: { model: llm.model },
+          metadata: { model: llm.model, verdictError: 'UNPARSABLE_VERDICT' },
         };
       const findings = parsed.data.findings.map((finding, index) => ({
         ...finding,
