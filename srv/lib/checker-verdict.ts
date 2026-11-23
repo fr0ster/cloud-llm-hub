@@ -43,8 +43,9 @@ interface ClaimEvidence {
   outcome?: ReturnType<typeof journalOutcome>;
 }
 
+const unusableVerdictPrefix = 'unusable verdict: ';
 export const unusableVerdict = (reason: string) =>
-  `unusable verdict: ${reason}`;
+  unusableVerdictPrefix + reason;
 
 function sameTarget(
   target: CheckerClaim['target'],
@@ -154,8 +155,10 @@ function negativeFindings(findings: CheckerVerdict['findings']): string {
     .join('\n');
 }
 
-/** Supply the reason consumed by the adaptive interpreter's fix step. */
+/** Adapt checker results to the adaptive interpreter's branch reasons. */
 export function adaptiveCheckerOutput(output: string): string {
+  if (output.startsWith(unusableVerdictPrefix))
+    return JSON.stringify({ verdict: 'partial', reason: output });
   try {
     const verdict = verdictSchema.safeParse(JSON.parse(output));
     if (verdict.success && verdict.data.verdict === 'fail')
@@ -325,7 +328,7 @@ export function clearUnusableCheckerFailures(state: DialogueState): void {
       step.state === 'skipped' ||
       step.verdict !== 'fail' ||
       task?.result !== 'verdict' ||
-      !task.output?.startsWith('unusable verdict: ')
+      !task.output?.startsWith(unusableVerdictPrefix)
     )
       continue;
     cleared = true;
@@ -350,7 +353,7 @@ export function unusableCheckerPlanSteps(state: DialogueState) {
       (step) =>
         step.state === 'pending' &&
         step.workTaskId &&
-        step.note?.startsWith('unusable verdict: '),
+        step.note?.startsWith(unusableVerdictPrefix),
     )
   )
     return undefined;

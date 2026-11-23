@@ -100,6 +100,8 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     | 'invalid'
     | 'check-write'
     | 'explicit-check'
+    | 'unusable-brief'
+    | 'unusable-findings'
     | 'fix-after-check'
     | 'revise'
     | 'user-mcp'
@@ -118,11 +120,67 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       .filter((m) => m.role === 'system')
       .map((m) => m.content)
       .join('\n');
+    if (system.includes('why the run stopped')) {
+      calls.push('report');
+      expect(messages.map(({ content }) => content).join('\n')).toContain(
+        scenario === 'unusable-brief'
+          ? 'unusable verdict: expected a JSON list of cited claims'
+          : 'unusable verdict: missing or invalid findings',
+      );
+      return 'Verification is undecided.';
+    }
     if (system.includes('sequential adaptive plan')) {
       calls.push('controller');
       controllerPrompts.push(messages.map((m) => m.content).join('\n'));
       if (scenario === 'throw') throw new Error('planning unavailable');
       if (scenario === 'invalid') return 'not JSON';
+      if (scenario === 'unusable-brief' || scenario === 'unusable-findings') {
+        const claims = JSON.stringify([
+          {
+            claim: 'The business requirements were saved.',
+            system: 'rag',
+            target: {
+              scope: 'user',
+              collection: 'book-catalog',
+              record: 'business-requirements',
+            },
+            evidence: {},
+          },
+        ]);
+        return JSON.stringify({
+          steps: [
+            {
+              id: 'stage',
+              kind: 'work',
+              worker: 'executor',
+              goal: 'Stage the business requirements',
+            },
+            {
+              id: 'verify',
+              kind: 'check',
+              worker: 'checker',
+              goal: 'Verify the saved record',
+              targets: ['stage'],
+              onPass: 'done',
+              onFail: 'fix',
+              onPartial: 'fix',
+              context: {
+                note:
+                  scenario === 'unusable-brief'
+                    ? `${claims} (Replace evidence with the callId from [actions].)`
+                    : claims,
+              },
+            },
+            {
+              id: 'fix',
+              kind: 'work',
+              worker: 'executor',
+              goal: 'Write the record again',
+            },
+            { id: 'done', kind: 'answer', text: 'Verified' },
+          ],
+        });
+      }
       if (scenario === 'user-mcp')
         return JSON.stringify({
           steps: [
@@ -225,6 +283,8 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       });
     }
     calls.push('executor');
+    if (scenario === 'unusable-brief' || scenario === 'unusable-findings')
+      return 'Staged the requirements in the session collection.';
     if (scenario === 'fix-after-check')
       fixPrompts.push(messages.map((message) => message.content).join('\n'));
     return answer;
@@ -235,6 +295,15 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       if (tools?.some(({ name }) => name === 'submit_verdict')) {
         calls.push('checker');
         expect(tools.map(({ name }) => name)).toEqual(['submit_verdict']);
+        if (scenario === 'unusable-findings')
+          return {
+            ok: true as const,
+            value: {
+              content: 'The record looks correct.',
+              finishReason: 'stop' as const,
+              usage: { promptTokens: 7, completionTokens: 3, totalTokens: 10 },
+            },
+          };
         return {
           ok: true as const,
           value: {
@@ -670,6 +739,38 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     expect(result.record?.steps[0].verdict?.verdict).toBe('fail');
     expect(result.callTool).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['unusable-brief', 'expected a JSON list of cited claims', 0],
+    ['unusable-findings', 'missing or invalid findings', 10],
+  ] as const)(
+    'reports %s as undecided without aborting the stream or running the fix step',
+    async (mode, reason, tokens) => {
+      scenario = mode;
+      const result = await run(`adaptive-${mode}`, 'Verify the saved record');
+      expect(calls).toEqual([
+        'controller',
+        'executor',
+        ...(tokens ? ['checker'] : []),
+        'report',
+      ]);
+      expect(result.text).toBe('Verification is undecided.');
+      expect(result.usage.reduce((total, tokens) => total + tokens, 0)).toBe(
+        tokens,
+      );
+      expect(result.record?.steps).toMatchObject([
+        { stepId: 'stage', status: 'done' },
+        {
+          stepId: 'verify',
+          verdict: {
+            verdict: 'partial',
+            reason: `unusable verdict: ${reason}`,
+          },
+        },
+      ]);
+      expect(result.callTool).not.toHaveBeenCalled();
+    },
+  );
 
   it('passes refuted and unsupported findings to the adaptive fix worker', async () => {
     scenario = 'fix-after-check';

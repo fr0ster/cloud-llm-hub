@@ -137,7 +137,6 @@ import {
   type ISubAgent,
   type LlmError,
   type Message,
-  OrchestratorError,
   QueryEmbedding,
   type RagMetadata,
   type RagResult,
@@ -3126,7 +3125,7 @@ export const HUB_ADAPTIVE_CONTROLLER_SYSTEM =
   ADAPTIVE_CONTROLLER_SYSTEM +
   '\nWrite every step goal, question, note and check goal in the language of the request. The workers answer in that language.' +
   '\nStart by verifying before delivery when a write or sourced statement matters. The coordinator profile can adjust this policy.' +
-  '\nFor a verdict profile, put the JSON list of cited claims in context.note. Use a planned revise step when you want to decide from [actions] after work or from checker findings.';
+  '\nFor a verdict profile, set context.note to a string containing only the JSON array of cited claims. When evidence depends on a future tool call, schedule a revise step first, then use the actual callId from [actions] to build the check. Use a revise step to decide what to do with checker findings.';
 
 export async function buildPlannerAgent(
   config: AgentConfig,
@@ -3667,12 +3666,16 @@ export async function buildAgentForDestination(
         const traceId = options?.trace?.traceId;
         const journal = () => recMcp.getToolJournal(traceId);
         const briefs = new Map<string, string>();
-        const rememberBriefs = (steps: AdaptiveStep[]) => {
-          for (const step of steps) {
+        const prepareSteps = (steps: AdaptiveStep[]) =>
+          steps.map((step) => {
             if (step.kind === 'work' || step.kind === 'check')
               briefs.set(step.id, step.context?.note ?? '');
-          }
-        };
+            // Verdict profiles use partial for an undecided attempt. Report
+            // completed work without taking the plan's pass or fix branch.
+            return step.kind === 'check' && verdictWorkers.has(step.worker)
+              ? { ...step, onPartial: 'end' }
+              : step;
+          });
         let currentStep: string | undefined;
         const dispatchWorkers = new Map(
           [...byName].map(([name, worker]) => [
@@ -3693,14 +3696,6 @@ export async function buildAgentForDestination(
                       },
                       () => worker.run(input),
                     );
-                    if (result.output.startsWith('unusable verdict: '))
-                      throw Object.assign(
-                        new OrchestratorError(
-                          result.output,
-                          'VERDICT_RETRIEVAL_FAILED',
-                        ),
-                        { usage: result.usage },
-                      );
                     return {
                       ...result,
                       output: adaptiveCheckerOutput(result.output),
@@ -3730,13 +3725,14 @@ export async function buildAgentForDestination(
               ...input,
               previousRun: undefined,
             });
-            rememberBriefs(result.plan.steps);
-            return result;
+            return {
+              ...result,
+              plan: { ...result.plan, steps: prepareSteps(result.plan.steps) },
+            };
           },
           async revise(input) {
             const result = await base.revise(input);
-            rememberBriefs(result.steps);
-            return result;
+            return { ...result, steps: prepareSteps(result.steps) };
           },
           check: (input) => base.check(input),
           report: (input) => base.report(input),
