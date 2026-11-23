@@ -83,7 +83,15 @@ export const ragMcpSchemas = {
     collection,
     id: z.string().min(1),
     offset,
-    limit: z.number().int().min(1).max(32000).default(32000),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(32000)
+      .default(32000)
+      .describe(
+        'Number of text characters to return from offset (a page size, not a line or record count). Omit it to get the default page; continue from next.',
+      ),
   }),
   collections_list: z.object({ session }),
   collection_set_enabled: z.object({ session, collection, enabled }),
@@ -257,9 +265,9 @@ export const ragDescriptions: Record<RagMcpTool, string> = {
   rag_search:
     'Search enabled RAG collections, optionally narrowed by collections. Return up to k hits with full record text and a note for every unavailable collection.',
   rag_read:
-    'Read a RAG record, paged by characters. Disabled content exposes attributes and a reason only.',
+    'Read one RAG record by exact id, paged by characters: omit limit for a full page and follow next until it is absent. Disabled content exposes attributes and a reason only.',
   collections_list:
-    'List readable collections and their effective session enablement.',
+    'List readable collections and their effective session enablement. Supply {} when using the current session.',
   collection_set_enabled:
     'Enable or disable a collection for this session only.',
   collection_records:

@@ -143,6 +143,7 @@ import {
   type RagResult,
   stampRagOwner,
   TextOnlyEmbedding,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import {
   ADAPTIVE_CONTROLLER_SYSTEM,
@@ -156,6 +157,7 @@ import {
   type SmartAgentHandle,
   SmartAgentSubAgent,
   unwrapBuilderResult,
+  validateSteps,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
   MCPClientWrapper,
@@ -3126,7 +3128,7 @@ export const HUB_ADAPTIVE_CONTROLLER_SYSTEM =
   ADAPTIVE_CONTROLLER_SYSTEM +
   '\nWrite every step goal, question, note and check goal in the language of the request. The workers answer in that language.' +
   '\nStart by verifying before delivery when a write or sourced statement matters. The coordinator profile can adjust this policy.' +
-  '\nFor a verdict profile, put the JSON list of cited claims in context.note. Use a planned revise step when you want to decide from [actions] after work or from checker findings.';
+  '\nFor a verdict profile, set context.note to a string containing only the JSON array of cited claims. When evidence depends on a future tool call, schedule a revise step first, then use the actual callId from [actions] to build the check. Use a revise step to decide what to do with checker findings.';
 
 export async function buildPlannerAgent(
   config: AgentConfig,
@@ -3666,49 +3668,96 @@ export async function buildAgentForDestination(
         }
         const traceId = options?.trace?.traceId;
         const journal = () => recMcp.getToolJournal(traceId);
-        const briefs = new Map<string, string>();
-        const rememberBriefs = (steps: AdaptiveStep[]) => {
-          for (const step of steps) {
-            if (step.kind === 'work' || step.kind === 'check')
-              briefs.set(step.id, step.context?.note ?? '');
-          }
+        const briefs = new Map<string, { claims: string; fromWork: boolean }>();
+        const selfWorkerAlias = '$self';
+        let deferAnswer = false;
+        const prepareSteps = (steps: AdaptiveStep[]): AdaptiveStep[] => {
+          const prepared = steps.map((step): AdaptiveStep => {
+            if (
+              (step.kind !== 'work' && step.kind !== 'check') ||
+              !verdictWorkers.has(step.worker) ||
+              (step.kind === 'check' && step.worker === 'self')
+            )
+              return step;
+            briefs.set(step.id, {
+              claims: step.context?.note ?? '',
+              fromWork: step.kind === 'work',
+            });
+            // The interpreter only branches on check results. Keep the
+            // sequential path for determinate verdicts from a work step.
+            return step.kind === 'check'
+              ? { ...step, onPartial: 'end' }
+              : {
+                  ...step,
+                  kind: 'check',
+                  worker:
+                    step.worker === 'self' ? selfWorkerAlias : step.worker,
+                  targets: [],
+                  onPass: 'next',
+                  onFail: 'next',
+                  onPartial: 'end',
+                };
+          });
+          deferAnswer ||=
+            briefs.size > 0 || steps.some((step) => step.kind === 'revise');
+          return prepared;
         };
         let currentStep: string | undefined;
         const dispatchWorkers = new Map(
           [...byName].map(([name, worker]) => [
             name,
-            !verdictWorkers.has(name)
-              ? worker
-              : {
-                  ...worker,
-                  async run(input: Parameters<ISubAgent['run']>[0]) {
-                    const result = await withCheckerBrief(
-                      {
-                        claims: currentStep
-                          ? (briefs.get(currentStep) ?? '')
-                          : '',
-                        journal: new Map(
-                          journal().map((entry) => [entry.call.id, entry]),
-                        ),
-                      },
-                      () => worker.run(input),
-                    );
-                    if (result.output.startsWith('unusable verdict: '))
-                      throw Object.assign(
-                        new OrchestratorError(
-                          result.output,
-                          'VERDICT_RETRIEVAL_FAILED',
-                        ),
-                        { usage: result.usage },
-                      );
-                    return {
-                      ...result,
-                      output: adaptiveCheckerOutput(result.output),
-                    };
-                  },
-                },
+            {
+              ...worker,
+              async run(input: Parameters<ISubAgent['run']>[0]) {
+                // An answer sourced from this step can still be blocked by
+                // verification. Let the interpreter emit it after the branch.
+                const emit = input.onPartial;
+                if (deferAnswer && emit)
+                  input = {
+                    ...input,
+                    onPartial: (chunk) => {
+                      if (chunk.kind === 'content' && chunk.ephemeral)
+                        emit(chunk);
+                    },
+                  };
+                if (!verdictWorkers.has(name)) return worker.run(input);
+                const brief = briefs.get(currentStep ?? '');
+                let result: Awaited<ReturnType<typeof worker.run>>;
+                try {
+                  result = await withCheckerBrief(
+                    {
+                      claims: brief?.claims ?? '',
+                      journal: new Map(
+                        journal().map((entry) => [entry.call.id, entry]),
+                      ),
+                    },
+                    () => worker.run(input),
+                  );
+                } catch (error) {
+                  // Only a returned fail verdict should take the sequential branch.
+                  if (!brief?.fromWork || terminalRunError(error)) throw error;
+                  throw new OrchestratorError(
+                    'Checker could not retrieve a verdict.',
+                    'VERDICT_RETRIEVAL_FAILED',
+                  );
+                }
+                return {
+                  ...result,
+                  output: adaptiveCheckerOutput(result),
+                };
+              },
+            },
           ]),
         );
+        const selfWorker = dispatchWorkers.get('self');
+        if (selfWorker && verdictWorkers.has('self')) {
+          // The interpreter reserves "self" in check steps for the controller.
+          dispatchWorkers.set(selfWorkerAlias, {
+            ...selfWorker,
+            name: selfWorkerAlias,
+          });
+          verdictWorkers.add(selfWorkerAlias);
+        }
         const prompt = prompts.ok ? prompts.value.coordinator : undefined;
         const base = new LlmAdaptiveController(
           withWriteActionsLlm(requestLlm),
@@ -3728,15 +3777,39 @@ export async function buildAgentForDestination(
           async plan(input) {
             const result = await base.plan({
               ...input,
+              workers: input.workers.filter(
+                ({ name }) => name !== selfWorkerAlias,
+              ),
               previousRun: undefined,
             });
-            rememberBriefs(result.plan.steps);
-            return result;
+            return {
+              ...result,
+              plan: {
+                ...result.plan,
+                steps: prepareSteps(result.plan.steps),
+              },
+            };
           },
           async revise(input) {
             const result = await base.revise(input);
-            rememberBriefs(result.steps);
-            return result;
+            const cursor = input.plan.steps.findIndex(
+              ({ id }) => id === currentStep,
+            );
+            const takenIds = new Set(
+              input.plan.steps.slice(0, cursor + 1).map(({ id }) => id),
+            );
+            const validated = validateSteps(result.steps, {
+              workers: [...byName.keys()],
+              takenIds,
+              knownIds: takenIds,
+            });
+            if (!validated.ok)
+              throw Object.assign(new Error(validated.error), {
+                usage: result.usage,
+                model: result.model,
+                usageCalls: result.usageCalls,
+              });
+            return { ...result, steps: prepareSteps(validated.value) };
           },
           check: (input) => base.check(input),
           report: (input) => base.report(input),

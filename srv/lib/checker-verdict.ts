@@ -3,9 +3,18 @@ import type {
   DialogueState,
   ILlm,
   ISubAgent,
+  ISubAgentInput,
+  ISubAgentResult,
   RagCaller,
 } from '@mcp-abap-adt/llm-agent';
-import { formatTrustTag, RagAccessDeniedError } from '@mcp-abap-adt/llm-agent';
+import {
+  formatTrustTag,
+  httpStatusOf,
+  isAuthenticationFailure,
+  OrchestratorError,
+  RagAccessDeniedError,
+  terminalRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { profileToolAllowed } from '../request-session';
 import type { CheckerSource, EvidenceProvenance } from './checker-source';
 import {
@@ -43,8 +52,40 @@ interface ClaimEvidence {
   outcome?: ReturnType<typeof journalOutcome>;
 }
 
-export const unusableVerdict = (reason: string) =>
-  `unusable verdict: ${reason}`;
+const unusableVerdictPrefix = 'unusable verdict: ';
+const unusableVerdict = (reason: string) => unusableVerdictPrefix + reason;
+
+interface CheckerResult extends ISubAgentResult {
+  metadata?: {
+    model?: string;
+    verdictError?: 'UNPARSABLE_VERDICT' | 'VERDICT_RETRIEVAL_FAILED';
+  };
+}
+
+function checkerModelFailure<T>(
+  error: T,
+  input: ISubAgentInput,
+): CheckerResult {
+  const overflow = safeContextExceeded(error);
+  if (overflow) throw overflow;
+  if (input.stopSignal?.aborted) return { output: '', stopped: true };
+  input.signal?.throwIfAborted();
+
+  const output = unusableVerdict('checker model could not submit findings');
+  const terminal = terminalRunError(error);
+  if (terminal) {
+    const details =
+      typeof error === 'object' && error !== null ? error : undefined;
+    // Preserve the status or error name used to classify a terminal code.
+    throw Object.assign(new OrchestratorError(output, terminal.code), {
+      status: httpStatusOf(details),
+      name: isAuthenticationFailure(details)
+        ? 'AuthenticationError'
+        : terminal.name,
+    });
+  }
+  return { output, metadata: { verdictError: 'VERDICT_RETRIEVAL_FAILED' } };
+}
 
 function sameTarget(
   target: CheckerClaim['target'],
@@ -154,8 +195,14 @@ function negativeFindings(findings: CheckerVerdict['findings']): string {
     .join('\n');
 }
 
-/** Supply the reason consumed by the adaptive interpreter's fix step. */
-export function adaptiveCheckerOutput(output: string): string {
+/** Adapt checker results to the adaptive interpreter's branch reasons. */
+export function adaptiveCheckerOutput(result: ISubAgentResult): string {
+  const { output, metadata, usage } = result;
+  const code = metadata?.verdictError;
+  if (code === 'VERDICT_RETRIEVAL_FAILED')
+    throw Object.assign(new OrchestratorError(output, code), { usage });
+  if (code === 'UNPARSABLE_VERDICT')
+    return JSON.stringify({ verdict: 'partial', reason: output });
   try {
     const verdict = verdictSchema.safeParse(JSON.parse(output));
     if (verdict.success && verdict.data.verdict === 'fail')
@@ -204,7 +251,7 @@ export function createCheckerWorker(
     name,
     description,
     capabilities: { contextPolicy: 'optional' },
-    async run(input) {
+    async run(input): Promise<CheckerResult> {
       if (
         input.sessionId !== undefined &&
         input.sessionId !== input.caller.sessionId
@@ -214,7 +261,10 @@ export function createCheckerWorker(
         );
       if (input.stopSignal?.aborted) return { output: '', stopped: true };
       if (!profileToolAllowed(submitVerdictTool.name))
-        return { output: unusableVerdict('profile cannot submit findings') };
+        return {
+          output: unusableVerdict('profile cannot submit findings'),
+          metadata: { verdictError: 'VERDICT_RETRIEVAL_FAILED' },
+        };
       const brief = briefScope.getStore();
       let claims: CheckerClaim[];
       try {
@@ -224,6 +274,7 @@ export function createCheckerWorker(
       } catch {
         return {
           output: unusableVerdict('expected a JSON list of cited claims'),
+          metadata: { verdictError: 'UNPARSABLE_VERDICT' },
         };
       }
       const journal = brief?.journal ?? new Map<string, JournalEntry>();
@@ -245,8 +296,9 @@ export function createCheckerWorker(
         ),
       );
       input.signal?.throwIfAborted();
-      const response = await llm
-        .chat(
+      let response: Awaited<ReturnType<ILlm['chat']>>;
+      try {
+        response = await llm.chat(
           [
             {
               role: 'system',
@@ -274,21 +326,12 @@ export function createCheckerWorker(
             signal: input.signal,
             usage: input.usage?.with({ role: 'checker' }),
           },
-        )
-        .catch((error) => {
-          const overflow = safeContextExceeded(error);
-          if (overflow) throw overflow;
-          return undefined;
-        });
-      const overflow = !response?.ok && safeContextExceeded(response?.error);
-      if (overflow) throw overflow;
-      if (input.stopSignal?.aborted) return { output: '', stopped: true };
-      if (!response?.ok) {
-        input.signal?.throwIfAborted();
-        return {
-          output: unusableVerdict('checker model could not submit findings'),
-        };
+        );
+      } catch (error) {
+        return checkerModelFailure(error, input);
       }
+      if (!response.ok) return checkerModelFailure(response.error, input);
+      if (input.stopSignal?.aborted) return { output: '', stopped: true };
       const { toolCalls, usage } = response.value;
       const call = toolCalls?.length === 1 ? toolCalls[0] : undefined;
       const parsed =
@@ -299,7 +342,7 @@ export function createCheckerWorker(
         return {
           output: unusableVerdict('missing or invalid findings'),
           usage,
-          metadata: { model: llm.model },
+          metadata: { model: llm.model, verdictError: 'UNPARSABLE_VERDICT' },
         };
       const findings = parsed.data.findings.map((finding, index) => ({
         ...finding,
@@ -325,7 +368,7 @@ export function clearUnusableCheckerFailures(state: DialogueState): void {
       step.state === 'skipped' ||
       step.verdict !== 'fail' ||
       task?.result !== 'verdict' ||
-      !task.output?.startsWith('unusable verdict: ')
+      !task.output?.startsWith(unusableVerdictPrefix)
     )
       continue;
     cleared = true;
@@ -350,7 +393,7 @@ export function unusableCheckerPlanSteps(state: DialogueState) {
       (step) =>
         step.state === 'pending' &&
         step.workTaskId &&
-        step.note?.startsWith('unusable verdict: '),
+        step.note?.startsWith(unusableVerdictPrefix),
     )
   )
     return undefined;

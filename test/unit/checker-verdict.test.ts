@@ -11,6 +11,7 @@ import {
   readCheckerSource,
 } from '../../srv/lib/checker-source';
 import {
+  adaptiveCheckerOutput,
   createCheckerWorker,
   withCheckerBrief,
 } from '../../srv/lib/checker-verdict';
@@ -98,6 +99,40 @@ test.each([false, true])(
     expect(chat).toHaveBeenCalledTimes(1);
   },
 );
+
+describe.each(['returned', 'thrown'])('checker model failure (%s)', (path) => {
+  test.each([
+    ['CREDENTIALS_REJECTED', 'CREDENTIALS_REJECTED'],
+    ['ABORTED', 'ABORTED'],
+    ['LLM_HTTP_ERROR', 'LLM_HTTP_ERROR'],
+    ['LLM_ERROR', 'VERDICT_RETRIEVAL_FAILED'],
+  ])('maps %s to %s', async (code, expectedCode) => {
+    const error = new LlmError('Private provider message', code);
+    const llm: ILlm = {
+      async chat() {
+        if (path === 'thrown') throw error;
+        return { ok: false, error };
+      },
+      async *streamChat() {},
+    };
+    const worker = createCheckerWorker(
+      'checker',
+      '',
+      'Check only cited evidence.',
+      llm,
+      async () => undefined,
+      () => undefined,
+    );
+    await expect(
+      worker
+        .run({ ...input, task: JSON.stringify([write]) })
+        .then(adaptiveCheckerOutput),
+    ).rejects.toMatchObject({
+      code: expectedCode,
+      message: 'unusable verdict: checker model could not submit findings',
+    });
+  });
+});
 
 function finding(
   claim: CheckerClaim,
