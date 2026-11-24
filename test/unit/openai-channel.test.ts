@@ -155,26 +155,37 @@ function call(
 beforeEach(() => harness.reset());
 afterEach(() => configure());
 
-it.each([false, true])(
-  'logs returned typed failures safely and preserves tool headers (stream=%s)',
-  async (stream) => {
+it.each([
+  { stream: false, throws: false },
+  { stream: false, throws: true },
+  { stream: true, throws: false },
+  { stream: true, throws: true },
+])(
+  'logs typed failures safely and preserves tool headers (stream=$stream, throws=$throws)',
+  async ({ stream, throws }) => {
     mockCatalogError.mockClear();
     const error = Object.assign(
       new OrchestratorError('Private component failure', 'CONFIG_ERROR'),
       { component: 'executor', cause: { stepId: 'first' } },
     );
-    harness.process = async () => ({ ok: false, error });
+    harness.process = async () => {
+      if (throws) throw error;
+      return { ok: false, error };
+    };
     harness.stream = async function* () {
+      if (throws) throw error;
       yield { ok: false, error };
     };
     const { res, done } = call({
       ...body(stream),
+      model: 'outside-allowlist',
       tools: [{ type: 'function', function: { name: '' } }],
     });
     await done;
 
     expect(res.statusCode).toBe(stream ? 200 : 500);
     expect(res.headers['x-smartagent-invalid-tools']).toBe('1');
+    expect(res.headers['x-clh-model-ignored']).toBe('outside-allowlist');
     expect(res.headers['Content-Type']).toBe(
       stream ? 'text/event-stream' : 'application/json',
     );
@@ -197,9 +208,14 @@ it.each([false, true])(
   },
 );
 
-it.each([false, true])(
-  'keeps the typed throttle text (stream=%s)',
-  async (stream) => {
+it.each([
+  { stream: false, started: false, throws: false },
+  { stream: false, started: false, throws: true },
+  { stream: true, started: false, throws: false },
+  { stream: true, started: true, throws: false },
+])(
+  'keeps typed throttle details (stream=$stream, started=$started, throws=$throws)',
+  async ({ stream, started, throws }) => {
     const error = Object.assign(
       new LlmError('Private provider failure', 'LLM_ERROR'),
       {
@@ -207,8 +223,12 @@ it.each([false, true])(
         retryAfterSeconds: 41.5,
       },
     );
-    harness.process = async () => ({ ok: false, error });
+    harness.process = async () => {
+      if (throws) throw error;
+      return { ok: false, error };
+    };
     harness.stream = async function* () {
+      if (started) yield { ok: true, value: { content: 'partial' } };
       yield { ok: false, error };
     };
     const { res, done } = call(body(stream));
@@ -224,12 +244,14 @@ it.each([false, true])(
       },
     };
     expect(res.statusCode).toBe(stream ? 200 : 500);
-    expect(res.headers['Retry-After']).toBeUndefined();
+    expect(res.headers['Retry-After']).toBe(started ? undefined : '42');
     const event = res.body
-      .split('\n')
-      .find((line) => line.startsWith('data: '));
+      .split('\n\n')
+      .find((chunk) => chunk.startsWith('event: error\n'));
     expect(
-      JSON.parse(stream ? (event?.slice('data: '.length) ?? '') : res.body),
+      JSON.parse(
+        stream ? (event?.slice('event: error\ndata: '.length) ?? '') : res.body,
+      ),
     ).toEqual(payload);
   },
 );

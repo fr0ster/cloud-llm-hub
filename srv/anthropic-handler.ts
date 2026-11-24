@@ -22,7 +22,6 @@ import { lookupDialogue } from './lib/dialogue-sessions';
 import { getExecutionLimits } from './lib/execution-limits';
 import {
   captureTokenUsage,
-  clientRunFailure,
   failureMessage,
   llmFailure,
   mergeStreamUsage,
@@ -123,6 +122,8 @@ import {
   anthropicSessionClosed,
   anthropicSessionRunRefusal,
   anthropicUnverifiedWrite,
+  type ChatRunFailure,
+  chatRunFailure,
   destinationClosedText,
   retryAfterHeader,
   statusForError,
@@ -137,10 +138,12 @@ import { sessionIdOf, type WithSession } from './session-id';
 
 /** Singleton adapter instance (stateless — safe to share) */
 const adapter = new AnthropicApiAdapter();
-function anthropicRunError(
-  failure: NonNullable<ReturnType<typeof clientRunFailure>>,
-  type = failure.status === 400 ? 'invalid_request_error' : 'api_error',
-) {
+function anthropicRunError(failure: ChatRunFailure) {
+  const type = failure.throttled
+    ? 'overloaded_error'
+    : failure.status === 400
+      ? 'invalid_request_error'
+      : 'api_error';
   return {
     type: 'error' as const,
     error: { type, message: failure.message, code: failure.code },
@@ -422,10 +425,7 @@ async function handleAnthropicMessagesScoped(
     getAgentConfig().agent.chatCoordinator === 'dialogue'
       ? chatStream(res, 'anthropic', s)
       : undefined;
-  let unansweredSapWrite = false;
-  const captureUnansweredSapWrite = (pending: boolean) => {
-    unansweredSapWrite = pending;
-  };
+  const capturedFailures = new WeakMap<object, ChatRunFailure>();
   try {
     const continuation = s
       ? await longSessions().run(
@@ -436,7 +436,7 @@ async function handleAnthropicMessagesScoped(
               res,
               normalized,
               authenticatedCaller,
-              captureUnansweredSapWrite,
+              capturedFailures,
               s,
               early,
             ),
@@ -447,7 +447,7 @@ async function handleAnthropicMessagesScoped(
           res,
           normalized,
           authenticatedCaller,
-          captureUnansweredSapWrite,
+          capturedFailures,
           undefined,
           early,
         );
@@ -461,14 +461,25 @@ async function handleAnthropicMessagesScoped(
     }
   } catch (error) {
     measurement?.end('error');
-    const failure = clientRunFailure(error, unansweredSapWrite);
+    const capturedFailure =
+      typeof error === 'object' && error !== null
+        ? capturedFailures.get(error)
+        : undefined;
+    const failure =
+      capturedFailure ??
+      chatRunFailure(error, {
+        protocol: 'anthropic',
+        stream: normalized.stream,
+        setHeader: detachedSink(res).setHeader,
+      });
     if (failure) {
-      logRunFailure(
-        cds.log('anthropic-handler'),
-        error,
-        failure,
-        measurement?.traceId,
-      );
+      if (!capturedFailure)
+        logRunFailure(
+          cds.log('anthropic-handler'),
+          error,
+          failure,
+          measurement?.traceId,
+        );
       const payload = anthropicRunError(failure);
       if (early?.opened) early.error(payload);
       else if (res.headersSent)
@@ -497,7 +508,7 @@ async function serveMessages(
     admin: boolean;
     caller: ReturnType<typeof describeCaller>;
   },
-  captureUnansweredSapWrite: (pending: boolean) => void,
+  capturedFailures: WeakMap<object, ChatRunFailure>,
   s?: LongSession,
   early?: ChatStream,
 ): Promise<(() => Promise<void>) | void> {
@@ -773,8 +784,17 @@ async function serveMessages(
     dialogue?.hasUnansweredSapWrite() ??
     hasUnansweredSapWrite(handle.recMcp?.getToolRecords(traceId) ?? []);
   const pipelineFailures = pipelineFailureLogger(traceId);
-  const typedFailure = <T>(error: T) =>
-    clientRunFailure(error, unansweredSapWrite());
+  const typedFailure = <T>(error: T) => {
+    const failure = chatRunFailure(error, {
+      protocol: 'anthropic',
+      stream,
+      unansweredSapWrite: unansweredSapWrite(),
+      writeNotice: () => unverifiedWriteFor(handle, traceId, llmFailure(error)),
+      setHeader: out.setHeader,
+    });
+    if (failure) logRunFailure(log, error, failure, traceId);
+    return failure;
+  };
 
   const usage = usageRuntime()
     ?.forSession({
@@ -911,7 +931,6 @@ async function serveMessages(
         run: runAgent,
         onError: (error) => {
           const failure = typedFailure(error);
-          if (failure) logRunFailure(log, error, failure, traceId);
           if (failure?.status === 400) return anthropicRunError(failure);
           if (isOutageError(error))
             closeDestination(destination, describeCause(error));
@@ -1098,7 +1117,6 @@ async function serveMessages(
       } catch (err) {
         streamSucceeded = false;
         const failure = typedFailure(err);
-        if (failure) logRunFailure(log, err, failure, traceId);
         if (failure?.status === 400) {
           requestMeasurement(req)?.end('error');
           clearInterval(keepAlive);
@@ -1114,18 +1132,7 @@ async function serveMessages(
         if (isOutageError(err))
           closeDestination(destination, describeCause(err));
         if (failure) {
-          const limit = throttleOf(err);
-          const writeNotice = limit
-            ? unverifiedWriteFor(handle, traceId, llmFailure(err))
-            : undefined;
-          const message =
-            limit && (writeNotice || unansweredSapWrite())
-              ? throttleMessage(limit, writeNotice ?? failure.message)
-              : failure.message;
-          const payload = anthropicRunError(
-            { ...failure, message },
-            limit ? 'overloaded_error' : 'api_error',
-          );
+          const payload = anthropicRunError(failure);
           writeStream(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
           clearInterval(keepAlive);
           out.end();
@@ -1233,37 +1240,17 @@ async function serveMessages(
     } else {
       const failure = typedFailure(result.error);
       if (failure?.status === 400) {
-        logRunFailure(log, result.error, failure, traceId);
         out.json(failure.status, withUsage(anthropicRunError(failure)));
         return;
       }
       if (isOutageError(result.error)) {
         closeDestination(destination, describeCause(result.error));
       }
-      const limit = throttleOf(result.error);
       if (failure) {
-        const status = limit ? statusForError(result.error) : failure.status;
-        logRunFailure(log, result.error, { ...failure, status }, traceId);
-        const retryAfter = retryAfterHeader(result.error);
-        if (retryAfter) out.setHeader('Retry-After', retryAfter);
-        const writeNotice = limit
-          ? (unverifiedWriteFor(handle, traceId, llmFailure(result.error)) ??
-            (unansweredSapWrite() ? failure.message : undefined))
-          : undefined;
-        const message = limit
-          ? throttleMessage(limit, writeNotice)
-          : failure.message;
-        out.json(
-          status,
-          withUsage(
-            anthropicRunError(
-              { ...failure, message },
-              limit ? 'overloaded_error' : 'api_error',
-            ),
-          ),
-        );
+        out.json(failure.status, withUsage(anthropicRunError(failure)));
         return;
       }
+      const limit = throttleOf(result.error);
       log.error('Agent processing failed', {
         error: result.error.message,
         throttled: limit?.reason,
@@ -1299,8 +1286,9 @@ async function serveMessages(
       }
     }
   } catch (error) {
-    if (runContextOverflow(error))
-      captureUnansweredSapWrite(unansweredSapWrite());
+    const failure = typedFailure(error);
+    if (failure && typeof error === 'object' && error !== null)
+      capturedFailures.set(error, failure);
     throw error;
   } finally {
     collections?.restore();

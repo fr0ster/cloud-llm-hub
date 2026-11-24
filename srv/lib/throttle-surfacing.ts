@@ -12,6 +12,8 @@
  */
 
 import { findThrottled } from '@mcp-abap-adt/llm-agent';
+import type { OutputSink } from './detached-sink';
+import { clientRunFailure } from './llm-failure';
 import type { RunRefusal } from './long-session';
 import { describeCause } from './mcp-outage';
 
@@ -134,10 +136,48 @@ export function statusForError(error: unknown): number {
  * remaining pause is rounded up — early is worse than late here.
  */
 export function retryAfterHeader(error: unknown): string | undefined {
-  const seconds = throttleOf(error)?.retryAfterSeconds;
+  return retryAfterSecondsHeader(throttleOf(error)?.retryAfterSeconds);
+}
+
+function retryAfterSecondsHeader(
+  seconds: number | undefined,
+): string | undefined {
   if (seconds === undefined || !Number.isFinite(seconds)) return undefined;
   return String(Math.max(0, Math.ceil(seconds)));
 }
+
+/** Add throttle details to a typed chat failure before encoding its response. */
+export function chatRunFailure<T>(
+  error: T,
+  options: {
+    protocol: 'openai' | 'anthropic';
+    stream?: boolean;
+    unansweredSapWrite?: boolean;
+    writeNotice?: () => string | undefined;
+    setHeader: OutputSink['setHeader'];
+  },
+) {
+  const failure = clientRunFailure(error, options.unansweredSapWrite);
+  if (!failure) return undefined;
+  const limit = failure.status === 400 ? undefined : throttleOf(error);
+  if (!limit) return { ...failure, throttled: false };
+
+  const retryAfter = retryAfterSecondsHeader(limit.retryAfterSeconds);
+  if (retryAfter !== undefined) options.setHeader('Retry-After', retryAfter);
+  const prefix =
+    options.writeNotice?.() ??
+    (options.unansweredSapWrite || options.stream
+      ? failure.message
+      : undefined);
+  return {
+    ...failure,
+    status: options.protocol === 'anthropic' ? 529 : failure.status,
+    message: throttleMessage(limit, prefix),
+    throttled: true,
+  };
+}
+
+export type ChatRunFailure = NonNullable<ReturnType<typeof chatRunFailure>>;
 
 /**
  * One line of failure text for a plain-text channel, such as the MCP

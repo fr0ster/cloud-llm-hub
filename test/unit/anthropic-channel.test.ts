@@ -198,13 +198,14 @@ it('logs a returned typed streaming failure before writing the error event', asy
 });
 
 it.each([
-  { stream: false, write: false },
-  { stream: false, write: true },
-  { stream: true, write: false },
-  { stream: true, write: true },
+  { stream: false, started: false, write: false, throws: false },
+  { stream: false, started: false, write: true, throws: false },
+  { stream: false, started: false, write: true, throws: true },
+  { stream: true, started: false, write: false, throws: false },
+  { stream: true, started: true, write: true, throws: false },
 ])(
-  'keeps typed throttle details (stream=$stream, write=$write)',
-  async ({ stream, write }) => {
+  'keeps typed throttle details (stream=$stream, started=$started, write=$write, throws=$throws)',
+  async ({ stream, started, write, throws }) => {
     const error = Object.assign(
       new LlmError('LLM unavailable (HTTP 429)', 'LLM_ERROR'),
       {
@@ -212,12 +213,16 @@ it.each([
         retryAfterSeconds: 41.5,
       },
     );
-    harness.process = async () => ({ ok: false, error });
+    harness.process = async () => {
+      if (throws) throw error;
+      return { ok: false, error };
+    };
     harness.stream = async function* () {
+      if (started) yield { ok: true, value: { content: 'partial' } };
       yield { ok: false, error };
     };
     if (write) harness.unanswered = [{ call: { name: 'CreateClass' } }];
-    const { res, done } = call(body(stream));
+    const { res, done } = call({ ...body(stream), model: 'outside-allowlist' });
     await done;
 
     const retry =
@@ -225,10 +230,12 @@ it.each([
     const message = write
       ? `CreateClass was sent and no answer came back (LLM unavailable (HTTP 429)). It was NOT retried. ${retry}`
       : stream
-        ? 'LLM unavailable (HTTP 429)'
+        ? `LLM unavailable (HTTP 429). ${retry}`
         : retry;
     expect(res.statusCode).toBe(stream ? 200 : 529);
-    expect(res.headers['Retry-After']).toBe(stream ? undefined : '42');
+    expect(res.headers['x-clh-model-ignored']).toBe('outside-allowlist');
+    expect(res.headers['x-clh-params-ignored']).toBe('max_tokens');
+    expect(res.headers['Retry-After']).toBe(started ? undefined : '42');
     const event = res.body
       .split('\n\n')
       .find((chunk) => chunk.startsWith('event: error\n'));

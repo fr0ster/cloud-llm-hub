@@ -1176,6 +1176,47 @@ it('characterizes OpenAI replay after a failed follow has already streamed repli
 for (const anthropic of [false, true]) {
   const handler = anthropic ? handleAnthropicMessages : handleChatCompletions;
   const label = anthropic ? 'anthropic' : 'openai';
+  it.each([false, true])(
+    `${label}: reports throttle retry after opening the dialogue stream (write=%s)`,
+    async (write) => {
+      emptyPending = true;
+      if (write) {
+        const handle = await dialogueFor('alice', session.key, 'DEST');
+        const journal = await journalWithUnansweredSapWrite();
+        handle.toolJournal = () => journal;
+      }
+      send.mockRejectedValue(
+        Object.assign(new LlmError('Private provider failure', 'LLM_ERROR'), {
+          throttled: true,
+          retryAfterSeconds: 41.5,
+        }),
+      );
+      const res = fakeRes();
+      await handler(streamingRequest(), typedResponse(res));
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toMatch(/^: keep-alive\n\n/);
+      expect(res.headers['Retry-After']).toBeUndefined();
+      const event = res.body
+        .split('\n\n')
+        .find((chunk) => chunk.startsWith('event: error\n'));
+      const prefix = write
+        ? 'LLM unavailable (HTTP 429) The outcome of the SAP write is unknown. Check SAP before retrying. '
+        : 'LLM unavailable (HTTP 429). ';
+      expect(
+        JSON.parse(event?.slice('event: error\ndata: '.length) ?? ''),
+      ).toEqual({
+        ...(anthropic && { type: 'error' }),
+        error: {
+          type: anthropic ? 'overloaded_error' : 'server_error',
+          code: 'LLM_ERROR',
+          message: `${prefix}The AI service is rate-limited right now. Please try again in about 42 seconds.`,
+        },
+      });
+      expect(ended).not.toHaveBeenCalled();
+    },
+  );
+
   it(`${label}: reports an unanswered worker write when a follow ends in context overflow`, async () => {
     emptyPending = true;
     const handle = await dialogueFor('alice', session.key, 'DEST');

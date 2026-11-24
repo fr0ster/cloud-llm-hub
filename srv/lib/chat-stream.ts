@@ -232,6 +232,7 @@ export async function streamDialogue(opts: {
       }
     } catch (error) {
       terminalSucceeded = false;
+      const payload = opts.onError(error);
       // Spend survives a failed turn. Emit it before the error closes the socket.
       const spent = terminalUsage();
       if (spent) {
@@ -244,7 +245,7 @@ export async function streamDialogue(opts: {
             `data: ${JSON.stringify({ ...base, choices: [], usage: openAiUsageToWire(spent, responseModel()) })}\n\n`,
           );
       }
-      stream.error(opts.onError(error), runErrorCode(error) !== undefined);
+      stream.error(payload, runErrorCode(error) !== undefined);
     }
   })();
   const content = async (value: string) => {
