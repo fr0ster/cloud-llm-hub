@@ -13,7 +13,12 @@ jest.mock('../../srv/lib/llm-factory', () => ({
   makeHubCatalogProvider: () => ({ getModelCatalog: mockCatalog }),
 }));
 
-import { LlmError, MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
+import {
+  type IMcpClient,
+  LlmError,
+  McpError,
+  MODEL_CONTEXT_EXCEEDED,
+} from '@mcp-abap-adt/llm-agent';
 import { reliableLlm, reportLlmSpend } from '../../srv/lib/llm-failure';
 import { chatSessionBodyTests } from './helpers/chat-session-body';
 import { clientToolHistoryTests } from './helpers/client-tool-history';
@@ -85,6 +90,7 @@ import {
   destinationClosedText,
   openAiDoorRefusal,
 } from '../../srv/lib/throttle-surfacing';
+import { userMcpToolName } from '../../srv/lib/user-mcp-names';
 import { handleChatCompletions } from '../../srv/openai-handler';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import {
@@ -101,6 +107,14 @@ import {
   harness,
   tick,
 } from './helpers/channel-harness';
+import {
+  arrangeChannelOverflow,
+  nestedContextOverflow,
+  overflowMessage,
+  overflowModes,
+  overflowWithSapWarning,
+  recorderForOverflow,
+} from './helpers/context-overflow';
 
 function configure(live?: number, queue?: number) {
   if (live === undefined) delete process.env.LLM_GATEKEEPER_MAX_LIVE_SESSIONS;
@@ -183,6 +197,163 @@ it.each(['chat', 'chat exception', 'stream', 'started stream'])(
     expect(res.body).not.toContain('"finish_reason":"stop"');
   },
 );
+
+describe.each([false, true])(
+  'OpenAI overflow after a SAP write (rejected=%s)',
+  (rejected) => {
+    it.each(overflowModes)(
+      'reports the unknown outcome ($mode)',
+      async ({ stream, partial }) => {
+        const { recorder, callTool } = arrangeChannelOverflow(
+          partial,
+          rejected,
+        );
+        const { res, done } = call(body(stream));
+        await done;
+        const payload = {
+          error: {
+            message: overflowWithSapWarning,
+            type: 'invalid_request_error',
+            code: 'context_length_exceeded',
+          },
+        };
+        expect(res.statusCode).toBe(partial ? 200 : 400);
+        if (partial) {
+          expect(res.body).toContain('partial');
+          expect(res.body).toContain(`data: ${JSON.stringify(payload)}\n\n`);
+          expect(res.body.match(/"context_length_exceeded"/g)).toHaveLength(1);
+        } else expect(JSON.parse(res.body)).toEqual(payload);
+        expect(res.body).not.toMatch(/private|"finish_reason":"stop"|\[DONE\]/);
+        expect(callTool).toHaveBeenCalledTimes(1);
+        expect(harness.events).toContain('dropRequest');
+        expect(
+          recorder.getToolRecords(harness.seenOptions[0]?.trace?.traceId),
+        ).toEqual([]);
+      },
+    );
+  },
+);
+
+it.each([false, true])(
+  'captures a pending SAP write before draining the pipeline (rejected=%s)',
+  async (rejected) => {
+    configure(1);
+    const toolReply = deferred<Awaited<ReturnType<IMcpClient['callTool']>>>();
+    const { recorder, callTool } = recorderForOverflow(() => toolReply.promise);
+    harness.useRecorder(recorder);
+    const error = nestedContextOverflow();
+    harness.process = async (_messages, options) => {
+      void trackCall(recorder.callTool('CreateClass', {}, options));
+      if (rejected) throw error;
+      return { ok: false, error };
+    };
+    const { res, done } = call(body());
+    try {
+      await tick();
+      expect(callTool).toHaveBeenCalledTimes(1);
+      expect(res.writableEnded).toBe(!rejected);
+      expect(harness.events).not.toContain('dropRequest');
+    } finally {
+      toolReply.resolve({ ok: true, value: { content: 'late answer' } });
+      await done;
+    }
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toMatchObject({
+      error: { message: overflowWithSapWarning },
+    });
+    expect(harness.events).toContain('dropRequest');
+  },
+);
+
+it.each([
+  ['GetClass', 'MCP_NO_RESPONSE'],
+  ['CreateClass', ''],
+  ['CreateClass', 'MCP_HTTP_403'],
+  ['CreateClass', 'MCP_HTTP_404'],
+  ['record_add', 'MCP_NO_RESPONSE'],
+])('keeps bare overflow after %s with reply code %j', async (name, code) => {
+  const { recorder, callTool } = recorderForOverflow(async () =>
+    code
+      ? { ok: false, error: new McpError('private transport failure', code) }
+      : { ok: true, value: { content: 'answered' } },
+  );
+  harness.useRecorder(recorder);
+  harness.process = async (_messages, options) => {
+    await recorder.callTool(name, {}, options);
+    return { ok: false, error: nestedContextOverflow() };
+  };
+  const { res, done } = call(body());
+  await done;
+  expect(callTool).toHaveBeenCalledTimes(1);
+  expect(res.statusCode).toBe(400);
+  expect(JSON.parse(res.body)).toMatchObject({
+    error: { message: overflowMessage },
+  });
+});
+
+it('keeps bare overflow when an unanswered SAP write belongs to another trace', async () => {
+  const { recorder } = recorderForOverflow();
+  harness.useRecorder(recorder);
+  const trace = { traceId: 'another-request' };
+  await recorder.callTool('CreateClass', {}, { trace });
+  harness.process = async () => ({ ok: false, error: nestedContextOverflow() });
+  const { res, done } = call(body());
+  await done;
+  expect(res.statusCode).toBe(400);
+  expect(JSON.parse(res.body)).toMatchObject({
+    error: { message: overflowMessage },
+  });
+  expect(recorder.unanswered(trace.traceId)).toHaveLength(1);
+});
+
+it('keeps bare overflow after an unanswered user-MCP write', async () => {
+  const name = userMcpToolName('external', 'update_record');
+  const { recorder } = recorderForOverflow();
+  const callTool = jest.fn(
+    async (): ReturnType<IMcpClient['callTool']> => ({
+      ok: false,
+      error: new McpError(
+        'private transport failure',
+        'USER_MCP_OUTCOME_UNKNOWN',
+      ),
+    }),
+  );
+  const userRecorder = recorder.includeClients([], {
+    callTool,
+    listTools: async () => ({ ok: true, value: [] }),
+    resolveTool: () => ({
+      name,
+      effect: 'write',
+      definition: {
+        name: 'update_record',
+        description: '',
+        inputSchema: { type: 'object' },
+      },
+      server: {
+        name: 'external',
+        transport: 'companion',
+        roles: ['executor'],
+        writes: true,
+        tools: [],
+      },
+    }),
+  });
+  harness.useRecorder(userRecorder);
+  harness.process = async (_messages, options) => {
+    await userRecorder.callTool(name, {}, options);
+    expect(userRecorder.getToolRecords(options.trace?.traceId)).toMatchObject([
+      { system: 'user-mcp', write: true, answered: false },
+    ]);
+    return { ok: false, error: nestedContextOverflow() };
+  };
+  const { res, done } = call(body());
+  await done;
+  expect(callTool).toHaveBeenCalledTimes(1);
+  expect(res.statusCode).toBe(400);
+  expect(JSON.parse(res.body)).toMatchObject({
+    error: { message: overflowMessage },
+  });
+});
 
 clientToolHistoryTests('openai', body, (request, sessionId, session) =>
   call(request, fakeRes(), sessionId, undefined, session),

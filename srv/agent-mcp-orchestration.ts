@@ -35,7 +35,10 @@ import {
   mcpUsageResult,
   ragTextResult,
 } from './agent-mcp-rag';
-import { headlessDialogueFor } from './lib/dialogue-sessions';
+import {
+  type DialogueHandle,
+  headlessDialogueFor,
+} from './lib/dialogue-sessions';
 import { revisionPlanSchema } from './lib/dialogue-store';
 import { leaseSession } from './lib/gatekeeper';
 import { captureTokenUsage } from './lib/llm-failure';
@@ -43,6 +46,7 @@ import { longSessions } from './lib/long-session';
 import type { LongSessionRequest } from './lib/session-connection';
 import { resolveSession } from './lib/session-lifecycle';
 import { isRefusal } from './lib/session-retention';
+import { hasUnansweredSapWrite } from './lib/tool-journal';
 import { requestMeasurement } from './lib/usage/request-records';
 import { usageRuntime } from './lib/usage/runtime';
 import { timedUsageToWire, type WireAgentUsage } from './lib/usage-wire';
@@ -130,6 +134,7 @@ export async function executeOrchestrationTool(
       'SESSION_REQUIRED: supply the x-clh-session header',
       true,
     );
+  let dialogue: DialogueHandle | undefined;
   try {
     const s = await resolveSession(caller.userId, key);
     if (!s) return ragTextResult('SESSION_NOT_FOUND', true);
@@ -175,6 +180,7 @@ export async function executeOrchestrationTool(
               destination,
               boundCaller.value,
             );
+            dialogue = handle;
             const options = {
               signal,
               usage: recorder,
@@ -197,7 +203,10 @@ export async function executeOrchestrationTool(
             const usage = timedUsageToWire(spend.usage(), Date.now() - started);
             if (!result.ok) {
               if (contextExceededError(result.error))
-                return mcpContextExceeded(usage);
+                return mcpContextExceeded(
+                  usage,
+                  hasUnansweredSapWrite(handle.toolJournal().values()),
+                );
               return mcpUsageResult(result.error.message, usage, true);
             }
             const content = toolText(result.value);
@@ -275,7 +284,11 @@ export async function executeOrchestrationTool(
       releaseHold();
     }
   } catch (error) {
-    if (contextExceededError(error)) return mcpContextExceeded();
+    if (contextExceededError(error))
+      return mcpContextExceeded(
+        undefined,
+        hasUnansweredSapWrite(dialogue?.toolJournal().values() ?? []),
+      );
     if (
       error instanceof Error &&
       'refused' in error &&

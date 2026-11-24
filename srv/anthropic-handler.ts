@@ -22,9 +22,9 @@ import { lookupDialogue } from './lib/dialogue-sessions';
 import { getExecutionLimits } from './lib/execution-limits';
 import {
   captureTokenUsage,
+  contextExceededMessage,
   failureMessage,
   mergeStreamUsage,
-  modelContextMessage,
   safeContextExceeded,
 } from './lib/llm-failure';
 import { awaitModelCatalog } from './lib/model-catalog';
@@ -118,23 +118,25 @@ import {
   anthropicSessionRunRefusal,
   anthropicUnverifiedWrite,
   destinationClosedText,
-  type RecMcpHandle,
   retryAfterHeader,
   statusForError,
   throttleMessage,
   throttleOf,
   unverifiedWriteFor,
 } from './lib/throttle-surfacing';
+import { hasUnansweredSapWrite } from './lib/tool-journal';
 import { isUserMcpName } from './lib/user-mcp-names';
 import { runWithSessionId } from './request-session';
 import { sessionIdOf, type WithSession } from './session-id';
 
 /** Singleton adapter instance (stateless — safe to share) */
 const adapter = new AnthropicApiAdapter();
-const anthropicContextError = anthropicUnverifiedWrite(
-  modelContextMessage,
-  'invalid_request_error',
-);
+function anthropicContextError(unansweredSapWrite = false) {
+  return anthropicUnverifiedWrite(
+    contextExceededMessage(unansweredSapWrite),
+    'invalid_request_error',
+  );
+}
 
 /**
  * POST /v1/messages
@@ -411,12 +413,24 @@ async function handleAnthropicMessagesScoped(
     getAgentConfig().agent.chatCoordinator === 'dialogue'
       ? chatStream(res, 'anthropic', s)
       : undefined;
+  let unansweredSapWrite = false;
+  const captureUnansweredSapWrite = (pending: boolean) => {
+    unansweredSapWrite = pending;
+  };
   try {
     const continuation = s
       ? await longSessions().run(
           s,
           () =>
-            serveMessages(req, res, normalized, authenticatedCaller, s, early),
+            serveMessages(
+              req,
+              res,
+              normalized,
+              authenticatedCaller,
+              captureUnansweredSapWrite,
+              s,
+              early,
+            ),
           () => early?.ensureStream(),
         )
       : await serveMessages(
@@ -424,6 +438,7 @@ async function handleAnthropicMessagesScoped(
           res,
           normalized,
           authenticatedCaller,
+          captureUnansweredSapWrite,
           undefined,
           early,
         );
@@ -438,12 +453,11 @@ async function handleAnthropicMessagesScoped(
   } catch (error) {
     measurement?.end('error');
     if (contextExceededError(error)) {
-      if (early?.opened) early.error(anthropicContextError);
+      const payload = anthropicContextError(unansweredSapWrite);
+      if (early?.opened) early.error(payload);
       else if (res.headersSent)
-        res.end(
-          `event: error\ndata: ${JSON.stringify(anthropicContextError)}\n\n`,
-        );
-      else res.status(400).json(anthropicContextError);
+        res.end(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
+      else res.status(400).json(payload);
       return;
     }
     if (!early?.opened) throw error;
@@ -467,6 +481,7 @@ async function serveMessages(
     admin: boolean;
     caller: ReturnType<typeof describeCaller>;
   },
+  captureUnansweredSapWrite: (pending: boolean) => void,
   s?: LongSession,
   early?: ChatStream,
 ): Promise<(() => Promise<void>) | void> {
@@ -733,10 +748,15 @@ async function serveMessages(
     return;
   }
 
-  const chatAgent =
+  const dialogue =
     useDialogue && s
       ? dialogueChat(req, userId, s, destination, res, req, resolvedModel.model)
-      : handle.agent;
+      : undefined;
+  const chatAgent = dialogue ?? handle.agent;
+  const unansweredSapWrite = () =>
+    dialogue?.hasUnansweredSapWrite() ??
+    hasUnansweredSapWrite(handle.recMcp?.getToolRecords(traceId) ?? []);
+  const contextError = () => anthropicContextError(unansweredSapWrite());
 
   const usage = usageRuntime()
     ?.forSession({
@@ -856,7 +876,7 @@ async function serveMessages(
       }
       messages = retrieval.messages;
     }
-    if (stream && useDialogue && early) {
+    if (stream && dialogue && early) {
       return await streamDialogue({
         stream: early,
         protocol: 'anthropic',
@@ -867,11 +887,11 @@ async function serveMessages(
             s ? { userId, key: s.key } : undefined,
           ),
         context,
-        agent: chatAgent as ReturnType<typeof dialogueChat>,
-        source: chatAgent.streamProcess(messages, agentOpts),
+        agent: dialogue,
+        source: dialogue.streamProcess(messages, agentOpts),
         run: runAgent,
         onError: (error) => {
-          if (contextExceededError(error)) return anthropicContextError;
+          if (contextExceededError(error)) return contextError();
           if (isOutageError(error))
             closeDestination(destination, describeCause(error));
           return {
@@ -1059,12 +1079,11 @@ async function serveMessages(
         if (contextExceededError(err)) {
           requestMeasurement(req)?.end('error');
           clearInterval(keepAlive);
+          const payload = contextError();
           if (res.headersSent) {
-            writeStream(
-              `event: error\ndata: ${JSON.stringify(anthropicContextError)}\n\n`,
-            );
+            writeStream(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
             out.end();
-          } else out.json(400, anthropicContextError);
+          } else out.json(400, payload);
           return;
         }
         writeTerminalUsage();
@@ -1172,7 +1191,7 @@ async function serveMessages(
       out.json(200, withUsage(adapter.formatResult(result.value, context)));
     } else {
       if (contextExceededError(result.error)) {
-        out.json(400, withUsage(anthropicContextError));
+        out.json(400, withUsage(contextError()));
         return;
       }
       if (isOutageError(result.error)) {
@@ -1213,6 +1232,10 @@ async function serveMessages(
         out.json(500, withUsage(adapter.formatError(result.error, context)));
       }
     }
+  } catch (error) {
+    if (contextExceededError(error))
+      captureUnansweredSapWrite(unansweredSapWrite());
+    throw error;
   } finally {
     collections?.restore();
     await pipeline.drain();
@@ -1222,7 +1245,7 @@ async function serveMessages(
     // throw here must not skip the release below, which would hold the slot
     // until restart.
     try {
-      (handle as unknown as RecMcpHandle)?.recMcp?.dropRequest(traceId);
+      handle.recMcp?.dropRequest(traceId);
     } catch (err) {
       log.warn('dropRequest failed', {
         error: err instanceof Error ? err.message : String(err),

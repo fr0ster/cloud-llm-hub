@@ -26,7 +26,11 @@ import {
   isReadOnlyTool,
   type ToolEffectAnnotations,
 } from './tool-authorization';
-import type { JournalEntry, JournalSystem } from './tool-journal';
+import {
+  isUnansweredWrite,
+  type JournalEntry,
+  type JournalSystem,
+} from './tool-journal';
 import { toolObjects } from './tool-objects';
 import { capToolResult, withinToolResultBudget } from './tool-result-cap';
 import { isUserMcpName } from './user-mcp-names';
@@ -276,9 +280,7 @@ export class RecordingMcpClient implements IMcpClient {
    * fallback for transport failures before tool discovery.
    */
   unanswered(traceId: string): ToolCallRecord[] {
-    return (this.deltas.get(traceId) ?? []).filter(
-      (r) => !r.answered && (r.write || isWriteTool(r.call.name)),
-    );
+    return (this.deltas.get(traceId) ?? []).filter(isUnansweredWrite);
   }
 
   /** Tool-call records for `requestId`'s delta. No id (or an unknown id)

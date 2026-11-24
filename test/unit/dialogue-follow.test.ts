@@ -97,8 +97,6 @@ test.each(['openai', 'anthropic'] as const)(
       model: 'test',
       context: { adapterName: protocol, protocol: {} },
       agent: {
-        process: jest.fn(),
-        streamProcess: jest.fn(),
         hasFollow: () => true,
         follow: (signal) => ({
           [Symbol.asyncIterator]: () => f.start(signal),

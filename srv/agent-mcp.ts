@@ -144,7 +144,11 @@ import {
   unverifiedWriteFor,
 } from './lib/throttle-surfacing';
 import { logToolCallDiagnostics } from './lib/tool-call-diagnostics';
-import { type JournalEntry, writeActions } from './lib/tool-journal';
+import {
+  hasUnansweredSapWrite,
+  type JournalEntry,
+  writeActions,
+} from './lib/tool-journal';
 import { usageRuntime } from './lib/usage/runtime';
 import { runWithSessionId } from './request-session';
 import { appendToSession } from './session-store';
@@ -657,6 +661,7 @@ async function executeStepRun(
       if (contextExceededError(r.error))
         return mcpContextExceeded(
           timedUsageToWire(spend.usage(), Date.now() - stepStartedAt),
+          hasUnansweredSapWrite(handle.recMcp?.getToolRecords(traceId) ?? []),
         );
       if (isOutageError(r.error)) {
         closeDestination(targetDestination, describeCause(r.error));
@@ -717,6 +722,7 @@ async function executeStepRun(
       measurement?.end('error');
       return mcpContextExceeded(
         timedUsageToWire(spend.usage(), Date.now() - stepStartedAt),
+        hasUnansweredSapWrite(handle?.recMcp?.getToolRecords(traceId) ?? []),
       );
     }
     if (targetDestination && isOutageError(err)) {

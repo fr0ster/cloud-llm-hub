@@ -92,6 +92,11 @@ import {
   harness,
   tick,
 } from './helpers/channel-harness';
+import {
+  journalWithUnansweredSapWrite,
+  overflowMessage,
+  overflowWithSapWarning,
+} from './helpers/context-overflow';
 
 let session: LongSession;
 const refresh = jest.fn();
@@ -147,6 +152,7 @@ beforeEach(() => {
     drainPending: async () => {},
     hasSubscribers: () => true,
     state: () => ({ settledSeq: 0, lastFailedSeq: 0 }),
+    toolJournal: () => new Map(),
     outbox,
     session: { takePending: () => [{ text: 'one' }, { text: 'two' }], send },
   } as never);
@@ -1165,37 +1171,82 @@ it('characterizes OpenAI replay after a failed follow has already streamed repli
 for (const anthropic of [false, true]) {
   const handler = anthropic ? handleAnthropicMessages : handleChatCompletions;
   const label = anthropic ? 'anthropic' : 'openai';
-  for (const stream of [false, true]) {
-    it(`${label}: reports planner context overflow (stream=${stream})`, async () => {
-      emptyPending = true;
-      send.mockRejectedValue(
-        new Error('private wrapper', {
-          cause: new LlmError('private prompt', MODEL_CONTEXT_EXCEEDED),
-        }),
-      );
-      const req = streamingRequest();
-      req.body.stream = stream;
-      const res = fakeRes();
-      await handler(req, typedResponse(res));
-      const payload = {
-        ...(anthropic && { type: 'error' }),
-        error: {
-          message: 'Запит перевищує контекст моделі',
-          type: 'invalid_request_error',
-          ...(!anthropic && { code: 'context_length_exceeded' }),
-        },
-      };
-      expect(res.statusCode).toBe(stream ? 200 : 400);
-      const response = stream
-        ? res.body
-            .split('\n')
-            .find((line) => line.startsWith('data: '))
-            ?.slice('data: '.length)
-        : res.body;
-      expect(JSON.parse(response ?? '')).toMatchObject(payload);
-      expect(res.body).not.toContain('private');
-      expect(ended).not.toHaveBeenCalled();
+  it(`${label}: reports an unanswered worker write when a follow ends in context overflow`, async () => {
+    emptyPending = true;
+    const handle = await dialogueFor('alice', session.key, 'DEST');
+    const journal = await journalWithUnansweredSapWrite();
+    let failed = false;
+    handle.toolJournal = () => journal;
+    handle.state = () => ({
+      settledSeq: failed ? 2 : 0,
+      lastFailedSeq: failed ? 2 : 0,
+      ...(failed && {
+        failureCode: MODEL_CONTEXT_EXCEEDED,
+        failureCause: 'private provider error',
+      }),
+      status: 'active',
+      turnActive: false,
+      queuedInputs: 0,
+      running: 0,
+      total: 1,
+      done: 1,
+      idle: false,
     });
+    send.mockImplementationOnce(async () => {
+      failed = true;
+      return { text: 'Started work' };
+    });
+    const res = fakeRes();
+    await handler(streamingRequest(), typedResponse(res));
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('Started work');
+    expect(res.body.match(/Результат запису невідомий/g)).toHaveLength(1);
+    expect(res.body).toContain(overflowWithSapWarning);
+    expect(res.body).toContain('invalid_request_error');
+    if (!anthropic) expect(res.body).toContain('context_length_exceeded');
+    expect(res.body).not.toMatch(/private|event: message_stop|\[DONE\]/);
+    expect(ended).not.toHaveBeenCalled();
+  });
+
+  for (const stream of [false, true]) {
+    it.each([false, true])(
+      `${label}: reports planner context overflow (stream=${stream}, write=%s)`,
+      async (write) => {
+        emptyPending = true;
+        if (write) {
+          const handle = await dialogueFor('alice', session.key, 'DEST');
+          const journal = await journalWithUnansweredSapWrite();
+          handle.toolJournal = () => journal;
+        }
+        send.mockRejectedValue(
+          new Error('private wrapper', {
+            cause: new LlmError('private prompt', MODEL_CONTEXT_EXCEEDED),
+          }),
+        );
+        const req = streamingRequest();
+        req.body.stream = stream;
+        const res = fakeRes();
+        await handler(req, typedResponse(res));
+        const payload = {
+          ...(anthropic && { type: 'error' }),
+          error: {
+            message: write ? overflowWithSapWarning : overflowMessage,
+            type: 'invalid_request_error',
+            ...(!anthropic && { code: 'context_length_exceeded' }),
+          },
+        };
+        expect(res.statusCode).toBe(stream ? 200 : 400);
+        const response = stream
+          ? res.body
+              .split('\n')
+              .find((line) => line.startsWith('data: '))
+              ?.slice('data: '.length)
+          : res.body;
+        expect(JSON.parse(response ?? '')).toMatchObject(payload);
+        expect(res.body).not.toContain('private');
+        expect(ended).not.toHaveBeenCalled();
+      },
+    );
 
     it(`${label}: resolves the saved coordinator after dialogue restore (stream=${stream})`, async () => {
       const savedModels = process.env.LLM_AGENT_MODELS;
