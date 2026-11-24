@@ -32,7 +32,7 @@ import {
   turnSource,
   validatedClientTurnId,
 } from './dialogue-turn-source';
-import { failureMessage, safeContextExceeded } from './llm-failure';
+import { runErrorCode, safeContextExceeded } from './llm-failure';
 import type { LongSession } from './long-session';
 import { NoMessageFilter, stripNoMessage } from './no-message';
 import { callOptionsFor } from './rag-caller';
@@ -428,10 +428,7 @@ export function dialogueChat(
           ok: true,
           value: { content: '', clhUsage: handle.failedUsage?.() },
         };
-        throw (
-          safeContextExceeded(failure) ??
-          new Error(`Planner turn failed: ${failureMessage(failure)}`)
-        );
+        throw failure;
       }
       if (text.trim()) {
         await handle.outbox.upsert([
@@ -459,7 +456,7 @@ function plannerError(error: unknown): OrchestratorError {
   if (overflow) return overflow;
   const cause = error instanceof Error ? error : new Error(String(error));
   return Object.assign(cause, {
-    code: (cause as { code?: string }).code ?? 'PLANNER_ERROR',
+    code: runErrorCode(error) ?? 'PLANNER_ERROR',
   });
 }
 

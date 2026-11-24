@@ -955,9 +955,11 @@ test('RAG preserves the terminal context payload when attaching usage', async ()
 });
 
 test('RAG preserves the SAP write warning in the terminal context payload when attaching usage', async () => {
-  jest
-    .spyOn(llmFailure, 'contextExceededMessage')
-    .mockReturnValueOnce(overflowWithSapWarning);
+  jest.spyOn(llmFailure, 'clientRunFailure').mockReturnValueOnce({
+    code: MODEL_CONTEXT_EXCEEDED,
+    message: overflowWithSapWarning,
+    status: 400,
+  });
   jest
     .spyOn(CollectionSearchRag.prototype, 'query')
     .mockImplementation(async () => {

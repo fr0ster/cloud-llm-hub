@@ -106,7 +106,7 @@ test.each(['openai', 'anthropic'] as const)(
         yield { ok: true as const, value: { content: 'Initial reply' } };
       })(),
       run: (fn) => fn(),
-      onError: String,
+      onError: (error) => ({ error: String(error) }),
     });
     const finished = continueStream();
     await jest.advanceTimersByTimeAsync(1_800_001);

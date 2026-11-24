@@ -3834,9 +3834,15 @@ export async function buildAgentForDestination(
             return emit;
           },
         });
-        return withWriteActions(journal, () =>
+        const ok = await withWriteActions(journal, () =>
           stage.execute(scopedContext, stageConfig, span),
         );
+        if (!ok && context.error)
+          options?.sessionLogger?.logStep('adaptive_run_stopped', {
+            code: context.error.code,
+            stepId: currentStep,
+          });
+        return ok;
       },
     };
     builder.withStepperCoordinator(withCoordinatorContext(coordinator));

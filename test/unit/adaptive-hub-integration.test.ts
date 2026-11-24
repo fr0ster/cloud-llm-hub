@@ -7,15 +7,21 @@ const taskCaller = {
 };
 
 import {
+  EMBEDDING_CONTEXT_EXCEEDED,
   type ILlm,
   InMemoryRag,
   LlmError,
+  McpError,
   type Message,
   MODEL_CONTEXT_EXCEEDED,
+  RagError,
   type SmartAgentError,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import cds from '@sap/cds';
 import type { AgentConfig } from '../../srv/agent-config';
+import * as agentManager from '../../srv/agent-manager';
 import {
   buildAgentForDestination,
   ExpositionFilteringRag,
@@ -24,6 +30,8 @@ import {
   HUB_ADAPTIVE_CONTROLLER_SYSTEM,
   initProviders,
 } from '../../srv/agent-manager';
+import { executeStep } from '../../srv/agent-mcp';
+import { handleAnthropicMessages } from '../../srv/anthropic-handler';
 import { clientHistoryMessages } from '../../srv/lib/client-history';
 import { makeHubLlm } from '../../srv/lib/llm-factory';
 import { LongSessionRegistry } from '../../srv/lib/long-session';
@@ -38,15 +46,22 @@ import {
   userMcpRegistration,
 } from '../../srv/lib/user-mcp-bridge';
 import { isWriteTool } from '../../srv/lib/write-guardrail';
+import { handleChatCompletions } from '../../srv/openai-handler';
 import {
   type RagCallerIdentity,
   runWithSessionId,
 } from '../../srv/request-session';
+import { liveSession } from './helpers/canonical-rag';
+import { fakeReq, fakeRes } from './helpers/channel-harness';
+import { typedRequest, typedResponse } from './helpers/response-model';
 
 jest.mock('../../srv/lib/llm-factory', () => ({
   ...jest.requireActual('../../srv/lib/llm-factory'),
   makeHubLlm: jest.fn(),
 }));
+jest.mock('../../srv/lib/request-connection', () =>
+  require('./helpers/channel-harness').requestConnectionMock(),
+);
 
 const config: AgentConfig = {
   limits: {},
@@ -107,6 +122,7 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     | 'invalid'
     | 'check-write'
     | 'explicit-check'
+    | 'embedding-overflow'
     | 'unusable-brief'
     | 'unusable-findings'
     | 'work-checker'
@@ -144,6 +160,33 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       controllerPrompts.push(messages.map((m) => m.content).join('\n'));
       if (scenario === 'throw') throw new Error('planning unavailable');
       if (scenario === 'invalid') return 'not JSON';
+      if (scenario === 'embedding-overflow')
+        return JSON.stringify({
+          steps: [
+            {
+              id: 'first',
+              kind: 'work',
+              worker: 'executor',
+              goal: 'Do the work',
+            },
+            {
+              id: 'verify',
+              kind: 'check',
+              worker: 'self',
+              goal: 'Verify the work',
+              targets: [],
+              onPass: 'done',
+              onFail: 'fix',
+            },
+            {
+              id: 'fix',
+              kind: 'work',
+              worker: 'executor',
+              goal: 'Fix the work',
+            },
+            { id: 'done', kind: 'answer', text: 'Completed' },
+          ],
+        });
       if (
         scenario === 'unusable-brief' ||
         scenario === 'unusable-findings' ||
@@ -572,6 +615,161 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       ),
     };
   }
+
+  it.each([
+    'OpenAI JSON',
+    'OpenAI SSE',
+    'Anthropic JSON',
+    'Anthropic SSE',
+    'agent MCP',
+    'OpenAI SSE with an unanswered write',
+  ])('stops at the first history embedding overflow on %s', async (channel) => {
+    scenario = 'embedding-overflow';
+    const userId = 'alice';
+    const sessionId = `embedding-overflow-${channel.replaceAll(' ', '-').toLowerCase()}`;
+    const write = channel.includes('unanswered write');
+    const returnsFailure = channel === 'OpenAI JSON';
+    const callTool = jest.fn(async () => ({
+      ok: false as const,
+      error: new McpError('Private SAP transport failure', 'MCP_NO_RESPONSE'),
+    }));
+    const handle = await buildAgentForDestination(
+      {
+        listTools: async () => ({ ok: true, value: [] }),
+        callTool,
+      },
+      new ExpositionFilteringRag(
+        new InMemoryRag(),
+        undefined,
+        undefined,
+        0,
+        undefined,
+        undefined,
+        'off',
+      ),
+      config,
+    );
+    const agent = jest
+      .spyOn(agentManager, 'getSmartAgent')
+      .mockResolvedValue(handle);
+    const ready = jest
+      .spyOn(agentManager, 'isAgentReady')
+      .mockReturnValue(true);
+    const buildWorker = jest.spyOn(SmartAgentBuilder.prototype, 'build');
+    const privateText = 'Private text from the embedding provider';
+    const overflow = new RagError(privateText, EMBEDDING_CONTEXT_EXCEEDED);
+    const history = getSharedHistoryRag();
+    const query = history.query.bind(history);
+    const failWorkerQuery = jest.fn(
+      async (...args: Parameters<typeof query>) => {
+        if (write) await handle.recMcp.callTool('CreateClass', {}, args[2]);
+        if (returnsFailure) return { ok: false as const, error: overflow };
+        throw overflow;
+      },
+    );
+    const historyQuery = jest
+      .spyOn(history, 'query')
+      .mockImplementation((...args) =>
+        buildWorker.mock.calls.length
+          ? failWorkerQuery(...args)
+          : query(...args),
+      );
+    const log = jest
+      .spyOn(cds.log('smart-pipeline'), 'error')
+      .mockImplementation(() => {});
+    const context = new cds.EventContext({ event: 'test' });
+    context.user = new cds.User({
+      id: userId,
+      attr: {},
+      roles: ['MCP_Developer'],
+    });
+    const priorContext = cds.context;
+    cds.context = context;
+    try {
+      const anthropic = channel.startsWith('Anthropic');
+      const stream = channel.includes('SSE');
+      const req = typedRequest(
+        fakeReq(
+          {
+            model: 'test',
+            messages: [{ role: 'user', content: 'Do the work' }],
+            stream,
+            ...(anthropic && { max_tokens: 100 }),
+          },
+          sessionId,
+        ),
+      );
+      const message = 'Вхідні дані перевищують контекст моделі ембедингів';
+      const error = {
+        code: EMBEDDING_CONTEXT_EXCEEDED,
+        message: write
+          ? `${message}. Результат запису невідомий. Перевір стан у SAP перед повтором.`
+          : message,
+      };
+      if (channel === 'agent MCP') {
+        liveSession(userId, sessionId);
+        const result = await executeStep(
+          req,
+          { userId, exposition: [] },
+          {
+            session: sessionId,
+            destination: 'DEST',
+            task: 'Do the work',
+          },
+        );
+        expect(result).toMatchObject({
+          isError: true,
+          content: [{ type: 'text', text: error.message }],
+          structuredContent: { error: { ...error, status: 400 } },
+        });
+        expect(JSON.stringify(result)).not.toContain(privateText);
+        expect(calls).toEqual([]);
+      } else {
+        const res = fakeRes();
+        const handler = anthropic
+          ? handleAnthropicMessages
+          : handleChatCompletions;
+        await handler(req, typedResponse(res));
+        expect(res.writableEnded).toBe(true);
+        expect({ status: res.statusCode, body: res.body }).toMatchObject({
+          status: stream ? 200 : 400,
+        });
+        if (stream) {
+          const errors = res.body
+            .split('\n\n')
+            .filter((event) => event.startsWith('event: error\n'));
+          expect(errors).toHaveLength(1);
+          expect(
+            JSON.parse(errors[0].slice('event: error\ndata: '.length)),
+          ).toMatchObject({ error });
+          expect(res.body).not.toMatch(/\[DONE\]|event: message_stop/);
+        } else expect(JSON.parse(res.body)).toMatchObject({ error });
+        expect(res.body).not.toContain(privateText);
+        expect(calls).toEqual(['controller']);
+        expect(log).toHaveBeenCalledWith('adaptive_run_stopped', {
+          traceId: expect.stringMatching(/./),
+          code: EMBEDDING_CONTEXT_EXCEEDED,
+          stepId: 'first',
+        });
+      }
+      expect(buildWorker).toHaveBeenCalledTimes(1);
+      expect(failWorkerQuery).toHaveBeenCalledTimes(1);
+      expect(callTool).toHaveBeenCalledTimes(write ? 1 : 0);
+      if (!returnsFailure)
+        expect(log.mock.calls).toContainEqual([
+          'stage_error_rag-history',
+          { traceId: expect.stringMatching(/./) },
+        ]);
+      expect(JSON.stringify(log.mock.calls)).not.toContain(privateText);
+    } finally {
+      cds.context = priorContext;
+      log.mockRestore();
+      historyQuery.mockRestore();
+      buildWorker.mockRestore();
+      ready.mockRestore();
+      agent.mockRestore();
+    }
+  });
 
   it('executes registered MCP through the adaptive worker and the direct proxy, with no agent MCP access', async () => {
     scenario = 'user-mcp';

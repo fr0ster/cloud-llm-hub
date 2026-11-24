@@ -431,7 +431,7 @@ it('disconnect mid-answer completes without recording history', async () => {
 
 for (const anthropic of [false, true])
   for (const stream of [false, true]) {
-    it(`planner failure uses existing error response (anthropic=${anthropic}, stream=${stream})`, async () => {
+    it(`planner failure returns one typed error (anthropic=${anthropic}, stream=${stream})`, async () => {
       send.mockRejectedValue(new Error('planner failed'));
       const req = fakeReq(
         {
@@ -449,16 +449,21 @@ for (const anthropic of [false, true])
         res as unknown as Response,
       );
       expect(confirmUpTo).not.toHaveBeenCalled();
-      expect(res.body).toContain('planner failed');
-      if (stream)
-        expect(res.body).toContain(anthropic ? 'event: error' : 'server_error');
-      else if (anthropic) {
-        expect(res.statusCode).toBe(500);
-        expect(JSON.parse(res.body).error.type).toBe('api_error');
-      } else
-        expect(JSON.parse(res.body).choices[0].message.content).toBe(
-          'Error: planner failed',
-        );
+      const error = {
+        code: 'PLANNER_ERROR',
+        message: 'Planner turn failed.',
+        type: anthropic ? 'api_error' : 'server_error',
+      };
+      expect(res.statusCode).toBe(stream ? 200 : 500);
+      if (stream) {
+        const events = res.body
+          .split('\n\n')
+          .filter((event) => event.startsWith('event: error\n'));
+        expect(events).toHaveLength(1);
+        expect(
+          JSON.parse(events[0].slice('event: error\ndata: '.length)),
+        ).toMatchObject({ error });
+      } else expect(JSON.parse(res.body)).toMatchObject({ error });
     });
   }
 

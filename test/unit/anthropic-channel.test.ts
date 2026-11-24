@@ -2,6 +2,7 @@ import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
 import {
   LlmError,
   MODEL_CONTEXT_EXCEEDED,
+  OrchestratorError,
   staticApiKey,
   type TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
@@ -125,6 +126,25 @@ function call(
 beforeEach(() => harness.reset());
 afterEach(() => configure());
 
+it.each([
+  ['COORDINATOR_STEP_FAILED', 'A coordinator work step failed.'],
+  ['COORDINATOR_CHECK_FAILED', 'A coordinator check could not be completed.'],
+  ['CONFIG_ERROR', 'Agent run failed.'],
+])('passes through %s with a safe error message', async (code, message) => {
+  harness.process = async () => ({
+    ok: false,
+    error: new OrchestratorError('Private component failure', code),
+  });
+  const { res, done } = call(body(false));
+  await done;
+  expect(res.statusCode).toBe(500);
+  expect(JSON.parse(res.body)).toMatchObject({
+    type: 'error',
+    error: { type: 'api_error', code, message },
+  });
+  expect(res.body).not.toContain('Private component failure');
+});
+
 it.each(['chat', 'stream', 'started stream'])(
   'maps model context overflow to an Anthropic request error (%s)',
   async (mode) => {
@@ -149,6 +169,7 @@ it.each(['chat', 'stream', 'started stream'])(
       error: {
         type: 'invalid_request_error',
         message: 'Запит перевищує контекст моделі',
+        code: MODEL_CONTEXT_EXCEEDED,
       },
     };
     expect(res.statusCode).toBe(mode === 'started stream' ? 200 : 400);
@@ -182,6 +203,7 @@ describe.each([false, true])(
           error: {
             type: 'invalid_request_error',
             message: overflowWithSapWarning,
+            code: MODEL_CONTEXT_EXCEEDED,
           },
         };
         expect(res.statusCode).toBe(partial ? 200 : 400);

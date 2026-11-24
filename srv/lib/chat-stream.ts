@@ -19,7 +19,7 @@ import {
   type dialogueChat,
   failDialogueResponse,
 } from './dialogue-chat';
-import { safeContextExceeded } from './llm-failure';
+import { runErrorCode, safeContextExceeded } from './llm-failure';
 import { type LongSession, longSessions } from './long-session';
 import { summarizeToolResult } from './tool-result-summary';
 import { responseMeasurement } from './usage/request-records';
@@ -76,7 +76,7 @@ export function chatStream(
       timer = setInterval(beat, 10_000);
       timer.unref?.();
     },
-    error(body: unknown) {
+    error<T>(body: T, coded = false) {
       if (ended) return;
       ended = true;
       stop();
@@ -84,7 +84,7 @@ export function chatStream(
       // A failed response must never count as an ended outbox delivery.
       failDialogueResponse(res);
       out.write(
-        `${protocol === 'anthropic' ? 'event: error\n' : ''}data: ${JSON.stringify(body)}\n\n`,
+        `${protocol === 'anthropic' || coded ? 'event: error\n' : ''}data: ${JSON.stringify(body)}\n\n`,
       );
       out.end();
     },
@@ -110,7 +110,7 @@ export async function streamDialogue(opts: {
   agent: Pick<ReturnType<typeof dialogueChat>, 'follow' | 'hasFollow'>;
   source: AsyncIterable<Result<DialogueStreamChunk, OrchestratorError>>;
   run: (fn: () => Promise<void>) => Promise<void>;
-  onError: (error: unknown) => unknown;
+  onError: <T>(error: T) => object;
   onTurnEnd?: (text: string, following: boolean) => void;
   onEnd?: (text: string) => void;
 }): Promise<() => Promise<void>> {
@@ -244,7 +244,7 @@ export async function streamDialogue(opts: {
             `data: ${JSON.stringify({ ...base, choices: [], usage: openAiUsageToWire(spent, responseModel()) })}\n\n`,
           );
       }
-      stream.error(opts.onError(error));
+      stream.error(opts.onError(error), runErrorCode(error) !== undefined);
     }
   })();
   const content = async (value: string) => {
@@ -328,10 +328,13 @@ export async function streamDialogue(opts: {
               addDeliveredUsage(item.usage);
               throw (
                 safeContextExceeded(item) ??
-                new Error(
-                  item.cause
-                    ? `Background planner turn failed: ${item.cause}`
-                    : 'Background planner turn failed',
+                Object.assign(
+                  new Error(
+                    item.cause
+                      ? `Background planner turn failed: ${item.cause}`
+                      : 'Background planner turn failed',
+                  ),
+                  { code: item.code },
                 )
               );
             } else if (item.note)

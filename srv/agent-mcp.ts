@@ -41,7 +41,7 @@ import {
   listDestinationsDefinition,
 } from './lib/coordinator-tool-definitions';
 import { runExecutorStep } from './lib/executor-step';
-import { captureTokenUsage } from './lib/llm-failure';
+import { captureTokenUsage, clientRunFailure } from './lib/llm-failure';
 import { requestStart } from './lib/request-start';
 import type { LongSessionRequest } from './lib/session-connection';
 import {
@@ -76,7 +76,7 @@ import './env-setup';
 
 import { randomUUID } from 'node:crypto';
 import type { IAbapConnection } from '@mcp-abap-adt/interfaces-adt-connection';
-import { contextExceededError, type Message } from '@mcp-abap-adt/llm-agent';
+import type { Message } from '@mcp-abap-adt/llm-agent';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import cds from '@sap/cds';
@@ -91,7 +91,7 @@ import {
   runWithRequestConnection,
 } from './agent-manager';
 import {
-  mcpContextExceeded,
+  mcpRunError,
   mcpUsageResult,
   type RagMcpTool,
   registerRagMcpTools,
@@ -114,6 +114,7 @@ import {
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
 import { type LongSession, longSessions } from './lib/long-session';
 import { describeCause, isOutageError } from './lib/mcp-outage';
+import { pipelineFailureLogger } from './lib/pipeline-failure-logging';
 import type { DumpScope } from './lib/principal';
 
 import {
@@ -580,6 +581,7 @@ async function executeStepRun(
       destination: targetDestination,
     });
     measurement?.admitted();
+    const pipelineFailures = pipelineFailureLogger(traceId);
     const opts = {
       requestStartedAt: requestStart(req),
       stream: false,
@@ -594,7 +596,11 @@ async function executeStepRun(
       // Surface skill selection on the planner path (chat has its own
       // sessionLogger; execute_step had none, so skill matching was invisible).
       sessionLogger: {
-        logStep(name: string, data: unknown) {
+        logStep(
+          name: Parameters<typeof pipelineFailures.logStep>[0],
+          data: Parameters<typeof pipelineFailures.logStep>[1],
+        ) {
+          if (pipelineFailures.logStep(name, data)) return;
           logToolCallDiagnostics(name, data, {
             channel: 'execute_step',
             destination: targetDestination,
@@ -658,15 +664,19 @@ async function executeStepRun(
     const actions = collectActions();
 
     if (!r.ok) {
-      if (contextExceededError(r.error))
-        return mcpContextExceeded(
-          timedUsageToWire(spend.usage(), Date.now() - stepStartedAt),
-          hasUnansweredSapWrite(handle.recMcp?.getToolRecords(traceId) ?? []),
-        );
-      if (isOutageError(r.error)) {
+      const failure = clientRunFailure(
+        r.error,
+        hasUnansweredSapWrite(handle.recMcp?.getToolRecords(traceId) ?? []),
+      );
+      if (failure?.status !== 400 && isOutageError(r.error)) {
         closeDestination(targetDestination, describeCause(r.error));
       }
       const tokens = spend.usage();
+      if (failure)
+        return mcpRunError(
+          failure,
+          timedUsageToWire(tokens, Date.now() - stepStartedAt),
+        );
       log.info('execute_step done', {
         ok: false,
         destination: targetDestination,
@@ -718,15 +728,19 @@ async function executeStepRun(
     const content = [notice, reply, actions].filter(Boolean).join('\n');
     return mcpUsageResult(content, wireUsage, emptyResult);
   } catch (err) {
-    if (contextExceededError(err)) {
-      measurement?.end('error');
-      return mcpContextExceeded(
-        timedUsageToWire(spend.usage(), Date.now() - stepStartedAt),
-        hasUnansweredSapWrite(handle?.recMcp?.getToolRecords(traceId) ?? []),
-      );
-    }
-    if (targetDestination && isOutageError(err)) {
+    const failure = clientRunFailure(
+      err,
+      hasUnansweredSapWrite(handle?.recMcp?.getToolRecords(traceId) ?? []),
+    );
+    if (failure?.status !== 400 && targetDestination && isOutageError(err)) {
       closeDestination(targetDestination, describeCause(err));
+    }
+    if (failure) {
+      measurement?.end('error');
+      return mcpRunError(
+        failure,
+        timedUsageToWire(spend.usage(), Date.now() - stepStartedAt),
+      );
     }
     const unverified = unverifiedWriteFor(handle, traceId, err);
     const message =

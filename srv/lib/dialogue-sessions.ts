@@ -96,6 +96,7 @@ import {
   captureTokenUsage,
   isLlmFailure,
   llmFailure,
+  runErrorCode,
   runWithoutLlmSpend,
   safeContextExceeded,
 } from './llm-failure';
@@ -1193,7 +1194,7 @@ async function open(
         failureCause =
           overflow?.message ??
           (typeof turnFailureCause === 'string' ? turnFailureCause : undefined);
-        failureCode = overflow?.code;
+        failureCode = overflow?.code ?? runErrorCode(request?.terminalError);
       } else if (trigger === 'user' && messageId) {
         const retrieval = turnRetrieval?.usage();
         if (retrieval) replyRetrieval.set(messageId, retrieval);

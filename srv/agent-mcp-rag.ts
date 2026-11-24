@@ -1,8 +1,6 @@
 import {
-  contextExceededError,
   InMemoryRag,
   type IUsageRecorder,
-  MODEL_CONTEXT_EXCEEDED,
   QueryEmbedding,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
@@ -108,7 +106,8 @@ type ValidatedArgs = Args & { scope?: 'user' | 'session' };
 
 import {
   captureTokenUsage,
-  contextExceededMessage,
+  clientRunFailure,
+  runContextOverflow,
   safeContextExceeded,
 } from './lib/llm-failure';
 import { timedUsageToWire, type WireAgentUsage } from './lib/usage-wire';
@@ -132,18 +131,14 @@ export function mcpUsageResult(
   };
 }
 
-export function mcpContextExceeded(
+export function mcpRunError(
+  error: NonNullable<ReturnType<typeof clientRunFailure>>,
   usage?: WireAgentUsage,
-  unansweredSapWrite = false,
 ) {
-  const message = contextExceededMessage(unansweredSapWrite);
+  const { message } = error;
   const failure: RagWriteErrorResult = {
     result: message,
-    error: {
-      code: MODEL_CONTEXT_EXCEEDED,
-      message,
-      status: 400,
-    },
+    error,
   };
   return {
     ...ragTextResult(message, true),
@@ -817,7 +812,10 @@ async function executeRagMcpToolImpl(
         )
       : result;
   } catch (error) {
-    if (contextExceededError(error)) return mcpContextExceeded();
+    if (runContextOverflow(error)) {
+      const failure = clientRunFailure(error);
+      if (failure) return mcpRunError(failure);
+    }
     if (
       error instanceof Error &&
       'refused' in error &&
@@ -1451,7 +1449,7 @@ export async function executeRagMcpTool(
   if (!usage) return result;
   if (
     result.structuredContent &&
-    contextExceededError(result.structuredContent.error)
+    runContextOverflow(result.structuredContent.error)
   )
     return {
       ...result,

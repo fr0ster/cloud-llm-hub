@@ -89,6 +89,7 @@ it.each([false, true])(
     expect(JSON.parse(anthropic.body)).toEqual({
       type: 'error',
       error: {
+        code: MODEL_CONTEXT_EXCEEDED,
         message: 'Запит перевищує контекст моделі',
         type: 'invalid_request_error',
       },
