@@ -21,8 +21,12 @@ import type {
 import {
   addTokenUsage,
   type CallOptions,
+  LlmError,
   RagAccessDeniedError,
   type RagCaller,
+  retryAfterSecondsOf,
+  SmartAgentError,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import {
   DefaultPlannerContextBuilder,
@@ -201,15 +205,28 @@ export interface DialoguePlan {
 
 type DialogueFailure = ChatRunFailureFacts & { cause?: string };
 
-function plannerFailure<T>(
-  error: T,
-  overflow: ReturnType<typeof safeContextExceeded>,
-): DialogueFailure | undefined {
-  const facts = chatRunFailureFacts(overflow ?? error);
+function sanitizePlannerFailure<T>(error: T) {
+  const overflow = safeContextExceeded(error);
+  const { code, ...facts } = chatRunFailureFacts(overflow ?? error);
+  const details =
+    typeof error === 'object' && error !== null ? error : undefined;
+  facts.retryAfterSeconds ??= retryAfterSecondsOf(details);
+  const errorCode = code ?? terminalRunError(error)?.code;
   const cause =
     overflow?.message ?? (isLlmFailure(error) ? llmFailure(error) : undefined);
-  if (cause || facts.code || facts.status !== undefined)
-    return { ...facts, cause };
+  const failure: DialogueFailure | undefined =
+    cause || errorCode || facts.status !== undefined
+      ? { ...facts, code: errorCode, cause }
+      : undefined;
+  // The library can persist the error's message in the request record.
+  const message = 'Planner turn failed.';
+  const safeCode = errorCode ?? 'PLANNER_ERROR';
+  const safeError =
+    overflow ??
+    (cause
+      ? new LlmError(message, safeCode)
+      : new SmartAgentError(message, safeCode));
+  return { error: Object.assign(safeError, facts), failure };
 }
 
 /** Absent plans emit nothing; session reset clears the WebUI locally. */
@@ -1326,18 +1343,16 @@ async function open(
           }
           if (!result.ok) {
             turnReplyUsage = addTokenUsage(turnReplyUsage, spend.usage());
-            const overflow = safeContextExceeded(result.error);
-            turnFailure = plannerFailure(result.error, overflow);
-            if (overflow) return { ok: false as const, error: overflow };
+            const { error, failure } = sanitizePlannerFailure(result.error);
+            turnFailure = failure;
+            return { ok: false as const, error };
           }
           return result;
         } catch (error) {
           turnReplyUsage = addTokenUsage(turnReplyUsage, spend.usage());
-          const overflow = safeContextExceeded(error);
-          turnFailure = plannerFailure(error, overflow);
-          if (overflow) throw overflow;
-          if (turnFailure?.cause) throw new Error(turnFailure.cause);
-          throw error;
+          const safe = sanitizePlannerFailure(error);
+          turnFailure = safe.failure;
+          throw safe.error;
         } finally {
           turnPlannerUsage = addTokenUsage(
             turnPlannerUsage,

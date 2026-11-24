@@ -2982,6 +2982,137 @@ test('revival drops a saved coordinator model removed from the allowlist', async
   }
 });
 
+test.each(['returned', 'thrown'] as const)(
+  'a %s planner error is sanitized in the snapshot and persisted state',
+  async (mode) => {
+    const { h } = await ready();
+    const privateMessage = 'PRIVATE_PROVIDER_SECRET';
+    const error = Object.assign(new LlmError(privateMessage), { status: 401 });
+    mockPlannerHook = async () => {
+      if (mode === 'thrown') throw error;
+      return error;
+    };
+
+    const terminalError = {
+      code: 'LLM_ERROR',
+      message: 'Planner turn failed.',
+    };
+    const sending = h.session.send('go');
+    await expect(sending).rejects.toBeInstanceOf(Error);
+    await h.outbox.flushed();
+
+    const snapshot = h.session.snapshot();
+    const saved = await getDialogueStoreBackend().load('alice', 'key');
+    expect(JSON.stringify(snapshot)).not.toContain(privateMessage);
+    expect(JSON.stringify(saved)).not.toContain(privateMessage);
+    expect(snapshot.requests?.[0].terminalError).toEqual(terminalError);
+    expect(saved?.requests?.[0].terminalError).toEqual(terminalError);
+    await expect(sending).rejects.toMatchObject({
+      ...terminalError,
+      status: 401,
+    });
+  },
+);
+
+describe.each(['returned', 'thrown'] as const)(
+  '%s planner throttle',
+  (mode) => {
+    test.each([
+      ['openai', 'JSON', handleChatCompletions, 'server_error', 500],
+      ['openai', 'SSE', handleChatCompletions, 'server_error', 200],
+      ['anthropic', 'JSON', handleAnthropicMessages, 'overloaded_error', 529],
+      ['anthropic', 'SSE', handleAnthropicMessages, 'overloaded_error', 200],
+    ] as const)(
+      '%s surfaces planner throttling over %s',
+      async (protocol, format, handler, errorType, status) => {
+        mockChatCoordinator = 'dialogue';
+        const privateMessage = 'PRIVATE_PROVIDER_SECRET';
+        const error = Object.assign(new LlmError(privateMessage), {
+          status: 503,
+          throttled: true,
+          retryAfterSeconds: 41.5,
+        });
+        mockPlannerHook = async () => {
+          if (mode === 'thrown') throw error;
+          return error;
+        };
+
+        const context = new cds.EventContext({ event: 'test' });
+        context.user = new cds.User({
+          id: 'alice',
+          attr: {},
+          roles: ['MCP_Developer'],
+        });
+        const priorContext = cds.context;
+        const log = jest
+          .spyOn(cds.log(`${protocol}-handler`), 'error')
+          .mockImplementation(() => {});
+        cds.context = context;
+        try {
+          const { h } = await ready();
+          liveSession('alice', 'key');
+          const stream = format === 'SSE';
+          const req = typedRequest(
+            fakeReq(
+              {
+                model: 'm',
+                max_tokens: 100,
+                stream,
+                messages: [{ role: 'user', content: 'go' }],
+              },
+              'key',
+              false,
+            ),
+          );
+          req.headers['x-sap-destination'] = 'TEST';
+          req.headers.authorization = 'Bearer test';
+          Object.assign(req, {
+            longSession: longSessions().get('alice', 'key'),
+          });
+
+          const response = fakeRes();
+          await handler(req, typedResponse(response));
+          expect(response.statusCode).toBe(status);
+          expect(h.state().failure).toMatchObject({
+            code: 'LLM_ERROR',
+            status: 503,
+            throttled: true,
+            retryAfterSeconds: 41.5,
+          });
+          let body = response.body;
+          if (stream) {
+            const prefix = 'event: error\ndata: ';
+            const errors = body
+              .split('\n\n')
+              .filter((event) => event.startsWith(prefix));
+            expect(errors).toHaveLength(1);
+            body = errors[0].slice(prefix.length);
+          } else {
+            expect(response.headers['Retry-After']).toBe('42');
+          }
+          const retryMessage =
+            'The AI service is rate-limited right now. Please try again in about 42 seconds.';
+          expect(JSON.parse(body)).toEqual({
+            ...(protocol === 'anthropic' && { type: 'error' }),
+            error: {
+              code: 'LLM_ERROR',
+              type: errorType,
+              message: stream
+                ? `LLM unavailable (HTTP 429). ${retryMessage}`
+                : retryMessage,
+            },
+          });
+          expect(response.body).not.toContain(privateMessage);
+          expect(JSON.stringify(log.mock.calls)).not.toContain(privateMessage);
+        } finally {
+          cds.context = priorContext;
+          log.mockRestore();
+        }
+      },
+    );
+  },
+);
+
 test.each([
   ['openai', handleChatCompletions, 'server_error', 500],
   ['anthropic', handleAnthropicMessages, 'overloaded_error', 529],
@@ -4578,7 +4709,10 @@ test.each(
       const sendB = () =>
         clientTurnId.run('correction-B', () => h.session.send('CLIENT_B'));
       if (correctionFails) {
-        await expect(sendB()).rejects.toThrow('B correction failed');
+        await expect(sendB()).rejects.toMatchObject({
+          code: 'LLM_ERROR',
+          message: 'Planner turn failed.',
+        });
         expect(record).toHaveBeenCalledTimes(1);
         expect(record.mock.calls[0][0].userText).toBe('CLIENT_A');
       }
