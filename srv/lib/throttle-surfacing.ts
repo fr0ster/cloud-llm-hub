@@ -11,9 +11,9 @@
  * envelope beside the handler passes while the handler sends nothing at all.
  */
 
-import { findThrottled } from '@mcp-abap-adt/llm-agent';
+import { findThrottled, httpStatusOf } from '@mcp-abap-adt/llm-agent';
 import type { OutputSink } from './detached-sink';
-import { clientRunFailure } from './llm-failure';
+import { clientRunFailure, runErrorCode } from './llm-failure';
 import type { RunRefusal } from './long-session';
 import { describeCause } from './mcp-outage';
 
@@ -144,6 +144,28 @@ function retryAfterSecondsHeader(
 ): string | undefined {
   if (seconds === undefined || !Number.isFinite(seconds)) return undefined;
   return String(Math.max(0, Math.ceil(seconds)));
+}
+
+export interface ChatRunFailureFacts {
+  code?: string;
+  status?: number;
+  throttled?: boolean;
+  retryAfterSeconds?: number;
+}
+
+/** Capture the facts needed to map a chat failure after its turn settles. */
+export function chatRunFailureFacts<T>(error: T): ChatRunFailureFacts {
+  const status = httpStatusOf(
+    typeof error === 'object' && error !== null ? error : undefined,
+  );
+  const limit = throttleOf(error);
+  const seconds = limit?.retryAfterSeconds;
+  return {
+    code: runErrorCode(error),
+    status: status ?? (limit ? 429 : undefined),
+    throttled: limit !== undefined,
+    retryAfterSeconds: Number.isFinite(seconds) ? seconds : undefined,
+  };
 }
 
 /** Add throttle details to a typed chat failure before encoding its response. */

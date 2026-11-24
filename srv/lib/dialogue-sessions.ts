@@ -96,7 +96,6 @@ import {
   captureTokenUsage,
   isLlmFailure,
   llmFailure,
-  runErrorCode,
   runWithoutLlmSpend,
   safeContextExceeded,
 } from './llm-failure';
@@ -134,6 +133,10 @@ import { recordTurn, waitForSessionTurns } from './session-turns';
 import { cachedSystemIdentity } from './system-identity-cache';
 import { createTaskResultStore } from './task-result-store';
 import { type TaskView, taskView } from './task-view';
+import {
+  type ChatRunFailureFacts,
+  chatRunFailureFacts,
+} from './throttle-surfacing';
 import { toolCallDiagnosticsLogger } from './tool-call-diagnostics';
 import { type JournalEntry, withWriteActions } from './tool-journal';
 import { resolverFor, type TrustResolver } from './trust-resolver';
@@ -196,6 +199,19 @@ export interface DialoguePlan {
   status: 'active' | 'waiting_user' | 'done';
 }
 
+type DialogueFailure = ChatRunFailureFacts & { cause?: string };
+
+function plannerFailure<T>(
+  error: T,
+  overflow: ReturnType<typeof safeContextExceeded>,
+): DialogueFailure | undefined {
+  const facts = chatRunFailureFacts(overflow ?? error);
+  const cause =
+    overflow?.message ?? (isLlmFailure(error) ? llmFailure(error) : undefined);
+  if (cause || facts.code || facts.status !== undefined)
+    return { ...facts, cause };
+}
+
 /** Absent plans emit nothing; session reset clears the WebUI locally. */
 export function dialoguePlan(
   state: ReturnType<DialogueSession['snapshot']>,
@@ -231,8 +247,7 @@ export interface DialogueHandle {
     idle: boolean;
     settledSeq: number;
     lastFailedSeq: number;
-    failureCause?: string;
-    failureCode?: string;
+    failure?: DialogueFailure;
   };
   runStep<T extends { ok: boolean }>(
     run: (signal: AbortSignal | undefined) => Promise<T>,
@@ -450,11 +465,10 @@ async function open(
   // the reply so live subscribers see it on first emission.
   const replyUsage = new WeakMap<object, TokenUsage>();
   let turnReplyUsage: TokenUsage | undefined;
-  // Cause of the last failed settlement; the turn's own cause is collected
+  // Facts of the last failed settlement; the turn's own failure is collected
   // separately and becomes it only when that turn settles as failed.
-  let failureCause: string | undefined;
-  let failureCode: string | undefined;
-  let turnFailureCause: string | ReturnType<typeof safeContextExceeded>;
+  let failure: DialogueFailure | undefined;
+  let turnFailure: DialogueFailure | undefined;
   // Every planner call of the turn, background corrections included.
   let turnPlannerUsage: TokenUsage | undefined;
   let turnRetrieval: ReturnType<typeof captureTokenUsage> | undefined;
@@ -1188,18 +1202,17 @@ async function open(
       if (outcome === 'failed') {
         lastFailedSeq = settledSeq;
         lastFailureUsage = failedTurnUsage();
-        const overflow =
-          safeContextExceeded(request?.terminalError) ??
-          safeContextExceeded(turnFailureCause);
-        failureCause =
-          overflow?.message ??
-          (typeof turnFailureCause === 'string' ? turnFailureCause : undefined);
-        failureCode = overflow?.code ?? runErrorCode(request?.terminalError);
+        const terminalError = request?.terminalError;
+        const overflow = safeContextExceeded(terminalError);
+        failure = overflow
+          ? { ...chatRunFailureFacts(overflow), cause: overflow.message }
+          : (turnFailure ??
+            (terminalError && chatRunFailureFacts(terminalError)));
       } else if (trigger === 'user' && messageId) {
         const retrieval = turnRetrieval?.usage();
         if (retrieval) replyRetrieval.set(messageId, retrieval);
       }
-      turnFailureCause = undefined;
+      turnFailure = undefined;
       turnPlannerUsage = undefined;
       turnRetrieval = undefined;
       turnReply = undefined;
@@ -1314,29 +1327,17 @@ async function open(
           if (!result.ok) {
             turnReplyUsage = addTokenUsage(turnReplyUsage, spend.usage());
             const overflow = safeContextExceeded(result.error);
-            if (overflow) {
-              turnFailureCause = overflow;
-              return { ok: false as const, error: overflow };
-            }
-            // Only a model failure is replaced by its content-free cause.
-            turnFailureCause = isLlmFailure(result.error)
-              ? llmFailure(result.error)
-              : undefined;
+            turnFailure = plannerFailure(result.error, overflow);
+            if (overflow) return { ok: false as const, error: overflow };
           }
           return result;
         } catch (error) {
           turnReplyUsage = addTokenUsage(turnReplyUsage, spend.usage());
           const overflow = safeContextExceeded(error);
-          if (overflow) {
-            turnFailureCause = overflow;
-            throw overflow;
-          }
-          if (!isLlmFailure(error)) {
-            turnFailureCause = undefined;
-            throw error;
-          }
-          turnFailureCause = llmFailure(error);
-          throw new Error(turnFailureCause);
+          turnFailure = plannerFailure(error, overflow);
+          if (overflow) throw overflow;
+          if (turnFailure?.cause) throw new Error(turnFailure.cause);
+          throw error;
         } finally {
           turnPlannerUsage = addTokenUsage(
             turnPlannerUsage,
@@ -1932,8 +1933,7 @@ async function open(
       return {
         settledSeq,
         lastFailedSeq,
-        failureCause,
-        ...(failureCode && { failureCode }),
+        failure,
         turnActive: activity?.turnActive ?? false,
         queuedInputs: activity?.queuedInputs,
         running: activity?.running ?? 0,

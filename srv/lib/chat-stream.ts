@@ -327,15 +327,19 @@ export async function streamDialogue(opts: {
             stream.measurement?.end(item.reason);
             if (item.reason === 'error') {
               addDeliveredUsage(item.usage);
+              const { cause, code, status, throttled, retryAfterSeconds } =
+                item;
+              // Keep the safe model cause available to the shared error mapper.
               throw (
                 safeContextExceeded(item) ??
                 Object.assign(
                   new Error(
-                    item.cause
-                      ? `Background planner turn failed: ${item.cause}`
+                    cause
+                      ? `Background planner turn failed: ${cause}`
                       : 'Background planner turn failed',
+                    cause ? { cause: new Error(cause) } : undefined,
                   ),
-                  { code: item.code },
+                  { code, status, throttled, retryAfterSeconds },
                 )
               );
             } else if (item.note)

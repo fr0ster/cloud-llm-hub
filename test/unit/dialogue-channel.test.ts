@@ -1227,8 +1227,10 @@ for (const anthropic of [false, true]) {
       settledSeq: failed ? 2 : 0,
       lastFailedSeq: failed ? 2 : 0,
       ...(failed && {
-        failureCode: MODEL_CONTEXT_EXCEEDED,
-        failureCause: 'private provider error',
+        failure: {
+          code: MODEL_CONTEXT_EXCEEDED,
+          cause: 'private provider error',
+        },
       }),
       status: 'active',
       turnActive: false,
@@ -1658,7 +1660,7 @@ for (const anthropic of [false, true]) {
       handle.state = () => ({
         settledSeq,
         lastFailedSeq,
-        failureCause: 'LLM unavailable (HTTP 503)',
+        failure: { cause: 'LLM unavailable (HTTP 503)' },
         status: 'active',
         turnActive: false,
         queuedInputs: 0,
