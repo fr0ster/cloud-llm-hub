@@ -14,10 +14,11 @@ import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
 import { getExecutionLimits } from './lib/execution-limits';
 import {
+  AgentInitializationError,
+  agentInitializationFailure,
   captureTokenUsage,
   failureMessage,
   llmFailure,
-  runContextOverflow,
 } from './lib/llm-failure';
 import { capabilitiesFor } from './lib/model-capabilities';
 import { awaitModelCatalog, ensureModelCatalog } from './lib/model-catalog';
@@ -100,7 +101,6 @@ import { admitPipeline, type PipelineSession } from './lib/gatekeeper';
 import { recordDestinationRefusal } from './lib/gatekeeper-metrics';
 import { type LongSession, longSessions } from './lib/long-session';
 import { describeCause, isOutageError } from './lib/mcp-outage';
-import { classifyProbe } from './lib/probe-classifier';
 import { establishRequestConnection } from './lib/request-connection';
 import {
   resolveRequestSystem,
@@ -165,7 +165,24 @@ function jsonError(message: string, type: string): string {
   return JSON.stringify(openAiError(message, type));
 }
 
-function openAiRunError(failure: ChatRunFailure) {
+function openAiRunError(
+  failure: ChatRunFailure,
+  initialization?: AgentInitializationError,
+) {
+  if (initialization?.code === 'destination_unreachable') {
+    return {
+      error: {
+        type: 'destination_unreachable',
+        code: failure.code,
+        message: failure.message,
+        destination: initialization.destination,
+        destination_status: initialization.destinationStatus,
+        classified_status: initialization.probe?.status ?? 'unknown',
+        hint: initialization.probe?.hint ?? '',
+        diagnose_url: '/odata/v4/mcp-proxy/DiagnoseDestinations()',
+      },
+    };
+  }
   return openAiError(
     failure.message,
     failure.status === 400 ? 'invalid_request_error' : 'server_error',
@@ -567,7 +584,12 @@ async function handleChatCompletionsScoped(
           failure,
           measurement?.traceId,
         );
-      const payload = openAiRunError(failure);
+      const payload = openAiRunError(
+        failure,
+        !early?.opened && error instanceof AgentInitializationError
+          ? error
+          : undefined,
+      );
       if (early?.opened) early.error(payload, true);
       else if (res.headersSent)
         res.end(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
@@ -916,80 +938,8 @@ async function serveChatCompletions(
     );
   } catch (err) {
     await releaseRequestConnection(requestConnection, s);
-    if (runContextOverflow(err)) {
-      setErrorHeaders();
-      throw err;
-    }
-    const message = err instanceof Error ? err.message : String(err);
-    if (early?.opened) {
-      early.error({
-        error: {
-          type: 'server_error',
-          message: `Agent initialization failed: ${message}`,
-        },
-      });
-      return;
-    }
-    // Propagate the structured destination_unreachable error from getSmartAgent
-    // so clients can distinguish "your SAP system isn't reachable" from generic
-    // server faults (see issue #83). Falls through to generic 503 otherwise.
-    const errObj = err as {
-      statusCode?: number;
-      code?: string;
-      destination?: string;
-      destinationStatus?: string;
-    };
-    log.error('Failed to initialize SmartAgent', {
-      error: message,
-      code: errObj.code,
-      destination: errObj.destination,
-      destinationStatus: errObj.destinationStatus,
-    });
-    const status = errObj.statusCode ?? 503;
-    res.writeHead(status, { 'Content-Type': 'application/json' });
-    if (errObj.code === 'destination_unreachable') {
-      // Run the shared classifier (#85) on the last-known probe error so
-      // non-UI clients (curl, MCP, IDE integrations) get the same triage
-      // info the WebUI DIAG button shows — without paying for a live probe.
-      let classified: { status: string; hint: string } = {
-        status: 'unknown',
-        hint: '',
-      };
-      try {
-        // Pull the cached destination state through the public listing so
-        // we don't widen agent-manager's surface; status carries the
-        // last-known raw error if any.
-        const states = getDestinationStates();
-        const state = states.find((s) => s.name === errObj.destination);
-        classified = classifyProbe(
-          0,
-          state?.error || message,
-          // proxyType not exposed on state; default to onpremise hint set
-          // which is the common case for this product.
-          'OnPremise',
-        );
-      } catch {
-        // classification is best-effort; never block the error response
-      }
-      res.end(
-        JSON.stringify({
-          error: {
-            type: 'destination_unreachable',
-            message,
-            destination: errObj.destination,
-            destination_status: errObj.destinationStatus,
-            classified_status: classified.status,
-            hint: classified.hint,
-            diagnose_url: '/odata/v4/mcp-proxy/DiagnoseDestinations()',
-          },
-        }),
-      );
-    } else {
-      res.end(
-        jsonError(`Agent initialization failed: ${message}`, 'server_error'),
-      );
-    }
-    return;
+    setErrorHeaders();
+    throw agentInitializationFailure(err, destAfter);
   }
 
   const dialogue =

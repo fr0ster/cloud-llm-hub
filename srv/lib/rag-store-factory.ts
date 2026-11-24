@@ -118,10 +118,16 @@ export function createRagStoreFactory(
     try {
       const res = await fetch(url, { ...init, headers: headers() });
       if (!res.ok)
-        return err(
-          `Qdrant ${what}: HTTP ${res.status} ${await res.text()}`,
-          code,
-        );
+        return {
+          ok: false,
+          error: Object.assign(
+            new RagError(
+              `Qdrant ${what}: HTTP ${res.status} ${await res.text()}`,
+              code,
+            ),
+            { status: res.status },
+          ),
+        };
       return { ok: true, value: (await res.json()) as T };
     } catch (e) {
       return err(`Qdrant ${what}: ${String(e)}`, code);

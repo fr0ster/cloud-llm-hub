@@ -5,10 +5,15 @@ import {
   contextExceededError,
   EMBEDDING_CONTEXT_EXCEEDED,
   findThrottled,
+  httpStatusOf,
   LlmError,
+  McpError,
   MODEL_CONTEXT_EXCEEDED,
   preserveThrottled,
+  retryAfterSecondsOf,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
+import type { ProbeClassification } from './probe-classifier';
 import { throttleCallScope, withThrottleCall } from './throttle-strategy';
 import { reportWorkerActivity } from './worker-activity';
 
@@ -172,6 +177,143 @@ export function runContextOverflow<T>(error: T): boolean {
   return contextOverflowMessage(runErrorCode(error)) !== undefined;
 }
 
+export interface SafeFailure {
+  code: string;
+  message: string;
+  status?: number;
+  throttled?: boolean;
+  retryAfterSeconds?: number;
+}
+
+const failureMessages = new Map([
+  ['EMBED_ERROR', 'Embedding request failed.'],
+  ['LLM_OUTPUT_TRUNCATED', 'Provider stopped at the output token limit'],
+  [
+    'MODEL_NOT_ALLOWED',
+    'MODEL_NOT_ALLOWED: The selected model is not allowed.',
+  ],
+  [
+    'SAP_CREDENTIALS_PENDING',
+    "no SAP credentials yet; they arrive with the user's next message",
+  ],
+  ['SAP_AUTH_REJECTED', 'SAP connection failed: authentication rejected'],
+  ['SAP_CONNECTION_FAILED', 'SAP connection failed'],
+]);
+
+const ragBackendErrors = new Set([
+  'RAG_ERROR',
+  'RAG_ACCESS_STORE_ERROR',
+  'RAG_BACKEND_ERROR',
+  'RAG_CATALOG_ERROR',
+  'RAG_COUNT_ERROR',
+  'RAG_CREATE_ERROR',
+  'RAG_DELETE_ERROR',
+  'RAG_LIST_ERROR',
+  'RAG_MIGRATION_ERROR',
+  'RAG_OPEN_ERROR',
+  'RAG_UPDATE_ERROR',
+  'QUERY_ERROR',
+  'UPSERT_ERROR',
+  'DELETE_ERROR',
+  'CLEAR_ERROR',
+  'HEALTH_CHECK_ERROR',
+  'CONNECTION_ERROR',
+]);
+
+/** Recognize infrastructure failures even after their error class is lost. */
+export function isInfrastructureFailure<T>(error: T): boolean {
+  const details =
+    typeof error === 'object' && error !== null ? error : undefined;
+  const seen = new Set<object>();
+  let current: object | undefined = details;
+  while (current && !seen.has(current)) {
+    if (current instanceof McpError) return false;
+    if (current instanceof LlmError) return true;
+    const code = 'code' in current ? current.code : undefined;
+    if (
+      typeof code === 'string' &&
+      (contextOverflowMessage(code) ||
+        /^(?:LLM_|EMBED_)/.test(code) ||
+        ragBackendErrors.has(code) ||
+        /^(?:ECONN(?:ABORTED|REFUSED|RESET)|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ERR_NETWORK|UND_ERR_[A-Z_]+)$/.test(
+          code,
+        ))
+    )
+      return true;
+    seen.add(current);
+    const cause = 'cause' in current ? current.cause : undefined;
+    current = typeof cause === 'object' && cause !== null ? cause : undefined;
+  }
+  const status = httpStatusOf(details);
+  return status !== undefined && status >= 400 && status <= 599;
+}
+
+/** Copy only structured facts. The fallback message is owned by the hub. */
+export function sanitizeFailure<T>(
+  error: T,
+  fallback: SafeFailure,
+): SafeFailure {
+  const details =
+    typeof error === 'object' && error !== null ? error : undefined;
+  const reportedCode = runErrorCode(error) ?? terminalRunError(error)?.code;
+  const code =
+    reportedCode && /^[a-z][a-z0-9_.-]*$/i.test(reportedCode)
+      ? reportedCode
+      : fallback.code;
+  const overflow = contextOverflowMessage(code);
+  const limit = findThrottled(details);
+  const status = httpStatusOf(details);
+  const retryAfterSeconds = retryAfterSecondsOf(details);
+  return {
+    code,
+    message: overflow ?? failureMessages.get(code) ?? fallback.message,
+    ...(overflow
+      ? { status: 400 }
+      : Number.isFinite(status)
+        ? { status }
+        : limit
+          ? { status: 429 }
+          : {}),
+    ...((limit || status === 429) && { throttled: true }),
+    ...(retryAfterSeconds !== undefined && { retryAfterSeconds }),
+  };
+}
+
+export class AgentInitializationError extends Error {
+  readonly code: string;
+  readonly status?: number;
+  readonly throttled?: boolean;
+  readonly retryAfterSeconds?: number;
+
+  get statusCode(): number {
+    return contextOverflowMessage(this.code) ? 400 : 503;
+  }
+
+  constructor(
+    failure: SafeFailure,
+    readonly destination?: string,
+    readonly destinationStatus?: string,
+    readonly probe?: ProbeClassification,
+  ) {
+    super(failure.message);
+    this.code = failure.code;
+    this.status = failure.status;
+    this.throttled = failure.throttled;
+    this.retryAfterSeconds = failure.retryAfterSeconds;
+  }
+}
+
+export function agentInitializationFailure<T>(error: T, destination?: string) {
+  if (error instanceof AgentInitializationError) return error;
+  return new AgentInitializationError(
+    sanitizeFailure(error, {
+      code: 'destination_unreachable',
+      message: 'Agent initialization failed.',
+    }),
+    destination,
+  );
+}
+
 export function clientRunFailure<T>(error: T, unansweredSapWrite = false) {
   const code = runErrorCode(error);
   if (!code) return;
@@ -184,6 +326,8 @@ export function clientRunFailure<T>(error: T, unansweredSapWrite = false) {
         : overflow,
       status: 400,
     };
+  if (error instanceof AgentInitializationError)
+    return { code, message: error.message, status: error.statusCode };
   const message =
     code === 'COORDINATOR_STEP_FAILED'
       ? 'A coordinator work step failed.'
@@ -191,9 +335,8 @@ export function clientRunFailure<T>(error: T, unansweredSapWrite = false) {
         ? 'A coordinator check could not be completed.'
         : code === 'PLANNER_ERROR'
           ? 'Planner turn failed.'
-          : isLlmFailure(error)
-            ? llmFailure(error)
-            : 'Agent run failed.';
+          : (failureMessages.get(code) ??
+            (isLlmFailure(error) ? llmFailure(error) : 'Agent run failed.'));
   return {
     code,
     message: unansweredSapWrite

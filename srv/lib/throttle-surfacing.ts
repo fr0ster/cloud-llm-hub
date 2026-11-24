@@ -13,7 +13,11 @@
 
 import { findThrottled, httpStatusOf } from '@mcp-abap-adt/llm-agent';
 import type { OutputSink } from './detached-sink';
-import { clientRunFailure, runErrorCode } from './llm-failure';
+import {
+  AgentInitializationError,
+  clientRunFailure,
+  runErrorCode,
+} from './llm-failure';
 import type { RunRefusal } from './long-session';
 import { describeCause } from './mcp-outage';
 
@@ -181,7 +185,10 @@ export function chatRunFailure<T>(
 ) {
   const failure = clientRunFailure(error, options.unansweredSapWrite);
   if (!failure) return undefined;
-  const limit = failure.status === 400 ? undefined : throttleOf(error);
+  const limit =
+    failure.status === 400 || error instanceof AgentInitializationError
+      ? undefined
+      : throttleOf(error);
   if (!limit) return { ...failure, throttled: false };
 
   const retryAfter = retryAfterSecondsHeader(limit.retryAfterSeconds);

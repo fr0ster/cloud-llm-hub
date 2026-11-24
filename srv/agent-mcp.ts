@@ -42,6 +42,8 @@ import {
 } from './lib/coordinator-tool-definitions';
 import { runExecutorStep } from './lib/executor-step';
 import {
+  AgentInitializationError,
+  agentInitializationFailure,
   captureTokenUsage,
   clientRunFailure,
   llmFailure,
@@ -504,7 +506,9 @@ async function executeStepRun(
         currentLimit('executor', 'maxIterations') !== undefined ||
         currentLimit('executor', 'maxToolCalls') !== undefined ||
         currentSessionLimit('toolResultMaxChars') !== undefined,
-    );
+    ).catch((error) => {
+      throw agentInitializationFailure(error, targetDestination);
+    });
     handle = agentHandle;
     const stepDestination = targetDestination;
 
@@ -743,7 +747,12 @@ async function executeStepRun(
       handle?.recMcp?.getToolRecords(traceId) ?? [],
     );
     const failure = clientRunFailure(err, unanswered);
-    if (failure?.status !== 400 && targetDestination && isOutageError(err)) {
+    if (
+      !(err instanceof AgentInitializationError) &&
+      failure?.status !== 400 &&
+      targetDestination &&
+      isOutageError(err)
+    ) {
       closeDestination(targetDestination, describeCause(err));
     }
     if (failure) {

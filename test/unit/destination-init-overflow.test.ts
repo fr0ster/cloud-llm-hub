@@ -1,13 +1,21 @@
 import { LlmError, MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import { OpenAiEmbedder } from '@mcp-abap-adt/openai-embedder';
 import cds from '@sap/cds';
+import { clearAgentConfig } from '../../srv/agent-config';
 import * as manager from '../../srv/agent-manager';
 import { handleAnthropicMessages } from '../../srv/anthropic-handler';
 import * as destinationResolver from '../../srv/connections/destinationResolver';
 import * as destinations from '../../srv/lib/btp-destinations';
 import * as llmFactory from '../../srv/lib/llm-factory';
+import {
+  longSessions,
+  longSessionsIfReady,
+  setLongSessionsForTest,
+} from '../../srv/lib/long-session';
 import * as requestConnection from '../../srv/lib/request-connection';
 import { handleChatCompletions } from '../../srv/openai-handler';
+import { liveSession } from './helpers/canonical-rag';
 import { fakeReq, fakeRes } from './helpers/channel-harness';
 import { initInMemoryProviders } from './helpers/providers';
 import { typedRequest, typedResponse } from './helpers/response-model';
@@ -39,20 +47,36 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await longSessionsIfReady()?.closeAll('shutdown');
+  setLongSessionsForTest(undefined);
   manager.clearDestinationStatesForTest();
   jest.restoreAllMocks();
+  clearAgentConfig();
 });
 
-async function request(handler: typeof handleChatCompletions, stream: boolean) {
+async function request(
+  handler: typeof handleChatCompletions,
+  stream: boolean,
+  early = false,
+) {
   const res = fakeRes();
-  const req = fakeReq({
-    model: manager.getCurrentModel(),
-    max_tokens: 100,
-    stream,
-    messages: [{ role: 'user', content: 'hello' }],
-  });
-  await handler(typedRequest(req), typedResponse(res));
+  const key = early ? liveSession('alice', 'init') : 'init';
+  const req = typedRequest(
+    fakeReq(
+      {
+        model: manager.getCurrentModel(),
+        max_tokens: 100,
+        stream,
+        messages: [{ role: 'user', content: 'hello' }],
+      },
+      key,
+      !early,
+    ),
+  );
+  if (early)
+    Object.assign(req, { longSession: longSessions().get('alice', key) });
+  await handler(req, typedResponse(res));
   return res;
 }
 
@@ -108,9 +132,101 @@ it('keeps ordinary destination build failures on the established HTTP 503 path',
   expect(JSON.parse(res.body)).toMatchObject({
     error: {
       type: 'destination_unreachable',
-      message: 'Destination "DEST" is error: agent build failed',
+      code: 'destination_unreachable',
+      message: 'Agent initialization failed.',
       destination: 'DEST',
       destination_status: 'error',
     },
   });
+  const anthropic = await request(handleAnthropicMessages, false);
+  expect(anthropic.statusCode).toBe(503);
+  expect(JSON.parse(anthropic.body)).toEqual({
+    type: 'error',
+    error: {
+      type: 'api_error',
+      code: 'destination_unreachable',
+      message: 'Agent initialization failed.',
+    },
+  });
 });
+
+it.each([
+  { stream: false, early: false },
+  { stream: true, early: false },
+  { stream: true, early: true },
+])(
+  'maps an embedder HTTP 401 for both APIs (stream=$stream, SSE open=$early)',
+  async ({ stream, early }) => {
+    if (early) {
+      jest.replaceProperty(process, 'env', {
+        ...process.env,
+        LLM_AGENT_CHAT_COORDINATOR: 'dialogue',
+      });
+      clearAgentConfig();
+    }
+    const privateBody = 'PRIVATE_INIT_PROVIDER_BODY';
+    const fetch = jest
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(
+        async () => new Response(privateBody, { status: 401 }),
+      );
+    const embedder = new OpenAiEmbedder({
+      model: 'test-embedder',
+      credential: { kind: 'api-key', secret: async () => 'test-key' },
+    });
+    const build = jest
+      .spyOn(SmartAgentBuilder.prototype, 'build')
+      .mockImplementationOnce(async () => {
+        await embedder.embed('build input');
+        throw new Error('Expected embedder failure');
+      });
+    const managerLog = jest
+      .spyOn(cds.log('agent-manager'), 'error')
+      .mockImplementation(() => {});
+    const openaiLog = jest
+      .spyOn(cds.log('openai-handler'), 'error')
+      .mockImplementation(() => {});
+    const anthropicLog = jest
+      .spyOn(cds.log('anthropic-handler'), 'error')
+      .mockImplementation(() => {});
+
+    for (const [handler, type] of [
+      [handleChatCompletions, 'server_error'],
+      [handleAnthropicMessages, 'api_error'],
+    ] as const) {
+      const res = await request(handler, stream, early);
+      expect(res.statusCode).toBe(early ? 200 : 503);
+      expect(res.body).not.toContain(privateBody);
+      const errorLine = res.body
+        .split('\n')
+        .find((line) => line.startsWith('data: '));
+      if (early) expect(res.body).toContain('event: error\n');
+      expect(
+        JSON.parse(errorLine?.slice('data: '.length) ?? res.body),
+      ).toMatchObject({
+        error: {
+          type,
+          code: 'EMBED_ERROR',
+          message: 'Embedding request failed.',
+        },
+      });
+    }
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(build).toHaveBeenCalledTimes(1);
+    expect(manager.getDestinationStates()).toEqual([
+      expect.objectContaining({
+        name: 'DEST',
+        status: 'error',
+        error: 'Embedding request failed.',
+      }),
+    ]);
+    for (const log of [managerLog, openaiLog, anthropicLog]) {
+      expect(log.mock.calls).toEqual([
+        [
+          'Destination initialization failed',
+          { code: 'EMBED_ERROR', status: 401, destination: 'DEST' },
+        ],
+      ]);
+    }
+  },
+);

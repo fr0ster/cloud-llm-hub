@@ -45,14 +45,12 @@ export function taskView(task: TaskView): TaskView {
     state: task.state,
     createdAt: task.createdAt,
     ...(task.finishedAt === undefined ? {} : { finishedAt: task.finishedAt }),
+    ...(task.terminalErrorCode !== undefined && {
+      terminalErrorCode: task.terminalErrorCode,
+    }),
     ...(task.terminalErrorCode === MODEL_CONTEXT_EXCEEDED
-      ? {
-          terminalErrorCode: MODEL_CONTEXT_EXCEEDED,
-          error: modelContextMessage,
-        }
-      : task.error === undefined
-        ? {}
-        : { error: task.error }),
+      ? { error: modelContextMessage }
+      : task.error !== undefined && { error: task.error }),
     ...(task.startedAt === undefined ? {} : { startedAt: task.startedAt }),
   };
 }

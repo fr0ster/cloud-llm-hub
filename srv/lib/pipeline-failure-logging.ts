@@ -1,5 +1,6 @@
 import type { InterpretContext } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
+import { AgentInitializationError } from './llm-failure';
 
 type LogStep = NonNullable<InterpretContext['sessionLogger']>['logStep'];
 
@@ -9,6 +10,10 @@ export function logRunFailure<T>(
   { code, status }: { code: string; status: number },
   traceId?: string,
 ) {
+  if (error instanceof AgentInitializationError) {
+    logAgentInitializationFailure(log, error);
+    return;
+  }
   let component: string | undefined;
   let stepId: string | undefined;
   let current: object | undefined =
@@ -29,6 +34,17 @@ export function logRunFailure<T>(
     ...(traceId !== undefined && { traceId }),
     ...(component !== undefined && { component }),
     ...(stepId !== undefined && { stepId }),
+  });
+}
+
+export function logAgentInitializationFailure(
+  log: Pick<ReturnType<typeof cds.log>, 'error'>,
+  error: AgentInitializationError,
+) {
+  log.error('Destination initialization failed', {
+    code: error.code,
+    status: error.status ?? 503,
+    destination: error.destination,
   });
 }
 

@@ -16,6 +16,7 @@ import {
   directTransport,
   memorySink,
 } from '@mcp-abap-adt/llm-usage';
+import { OpenAiEmbedder } from '@mcp-abap-adt/openai-embedder';
 import cds from '@sap/cds';
 import express from 'express';
 import { executeRagTool } from '../../srv/agent-mcp-rag';
@@ -28,6 +29,7 @@ import {
 } from '../../srv/lib/checker-verdict-tool';
 import { consumerHistoryRag } from '../../srv/lib/client-history';
 import { dialogueChat } from '../../srv/lib/dialogue-chat';
+import { handleDialogueEvents } from '../../srv/lib/dialogue-events-handler';
 import { followDialogue } from '../../srv/lib/dialogue-follow';
 import {
   clientTurnId,
@@ -2996,6 +2998,7 @@ test.each(['returned', 'thrown'] as const)(
     const terminalError = {
       code: 'LLM_ERROR',
       message: 'Planner turn failed.',
+      status: 401,
     };
     const sending = h.session.send('go');
     await expect(sending).rejects.toBeInstanceOf(Error);
@@ -3007,10 +3010,149 @@ test.each(['returned', 'thrown'] as const)(
     expect(JSON.stringify(saved)).not.toContain(privateMessage);
     expect(snapshot.requests?.[0].terminalError).toEqual(terminalError);
     expect(saved?.requests?.[0].terminalError).toEqual(terminalError);
-    await expect(sending).rejects.toMatchObject({
-      ...terminalError,
-      status: 401,
+    await expect(sending).rejects.toMatchObject(terminalError);
+  },
+);
+
+test.each(['retrieval', 'worker'] as const)(
+  'an embedder HTTP 401 during %s reaches dialogue storage and SSE as safe facts',
+  async (source) => {
+    mockChatCoordinator = 'dialogue';
+    const privateBody = 'PRIVATE_EMBEDDER_BODY';
+    const fetch = jest
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(
+        async () => new Response(privateBody, { status: 401 }),
+      );
+    const embedder = new OpenAiEmbedder({
+      model: 'test-embedder',
+      credential: { kind: 'api-key', secret: async () => 'test-key' },
     });
+    const retrieval = jest.spyOn(plannerMemory, 'plannerSessionOptions');
+    const startWorker = deferred<void>();
+    if (source === 'retrieval') {
+      retrieval.mockResolvedValue({
+        plannerKnowledge: [
+          {
+            name: 'planning',
+            async search() {
+              await embedder.embed('planner input');
+              return [];
+            },
+          },
+        ],
+      });
+    } else {
+      mockPlannerHook = async () => {
+        await new PlannerToolsClient().callTool('plan_update', {
+          plan: 'Read class',
+          status: 'active',
+        });
+      };
+      mockFinalAnswer = 'Started work';
+      mockRun.mockImplementation(async () => {
+        await startWorker.promise;
+        await embedder.embed('worker input');
+        return { output: 'finished' };
+      });
+    }
+    const context = new cds.EventContext({ event: 'test' });
+    context.user = new cds.User({
+      id: 'alice',
+      attr: {},
+      roles: ['MCP_Developer'],
+    });
+    const previousContext = cds.context;
+    cds.context = context;
+    const logs = [
+      jest.spyOn(cds.log('dialogue'), 'info').mockImplementation(() => {}),
+      jest.spyOn(cds.log('dialogue'), 'warn').mockImplementation(() => {}),
+      jest
+        .spyOn(cds.log('openai-handler'), 'error')
+        .mockImplementation(() => {}),
+    ];
+    try {
+      const { h } = await ready();
+      const response = fakeRes();
+      const subscribe = h.subscribe.bind(h);
+      if (source === 'worker') {
+        jest
+          .spyOn(h, 'subscribe')
+          .mockImplementation((listener, cursor, consumesToolResults) => {
+            const stop = subscribe(listener, cursor, consumesToolResults);
+            if (consumesToolResults && response.body.includes(': turn-end\n'))
+              startWorker.resolve();
+            return stop;
+          });
+      }
+      liveSession('alice', 'key');
+      const req = typedRequest(
+        fakeReq(
+          {
+            model: 'm',
+            stream: true,
+            messages: [{ role: 'user', content: 'go' }],
+          },
+          'key',
+          false,
+        ),
+      );
+      req.headers['x-sap-destination'] = 'TEST';
+      req.headers.authorization = 'Bearer test';
+      Object.assign(req, { longSession: longSessions().get('alice', 'key') });
+      await handleChatCompletions(req, typedResponse(response));
+      await h.outbox.flushed();
+      const snapshot = h.session.snapshot();
+      const stored = await getDialogueStoreBackend().load('alice', 'key');
+      const failure = {
+        code: 'EMBED_ERROR',
+        status: 401,
+        message: 'Embedding request failed.',
+      };
+      expect(fetch).toHaveBeenCalledTimes(1);
+      for (const state of [snapshot, stored]) {
+        expect(JSON.stringify(state)).not.toContain(privateBody);
+        if (source === 'retrieval') {
+          expect(state?.requests?.[0].terminalError).toEqual(failure);
+        } else {
+          expect(state?.tasks[0]).toMatchObject({
+            error: failure.message,
+            summary: failure.message,
+            terminalErrorCode: failure.code,
+            failure,
+          });
+        }
+      }
+      expect(response.statusCode).toBe(200);
+      expect(response.body).not.toContain(privateBody);
+      if (source === 'retrieval') {
+        expect(response.body).toContain('event: error\n');
+        expect(response.body).toContain('"code":"EMBED_ERROR"');
+        expect(response.body).toContain(failure.message);
+      } else {
+        const events = fakeRes();
+        const eventResponse = Object.assign(events, { flushHeaders() {} });
+        Object.assign(req, { query: {} });
+        try {
+          await handleDialogueEvents(req, typedResponse(eventResponse));
+          expect(events.body).toContain('event: tasks\n');
+          expect(events.body).toContain('"terminalErrorCode":"EMBED_ERROR"');
+          expect(events.body).toContain(failure.message);
+          expect(events.body).not.toContain(privateBody);
+        } finally {
+          events.disconnect();
+        }
+      }
+      expect(JSON.stringify(logs.map((log) => log.mock.calls))).not.toContain(
+        privateBody,
+      );
+    } finally {
+      startWorker.resolve();
+      fetch.mockRestore();
+      retrieval.mockRestore();
+      for (const log of logs) log.mockRestore();
+      cds.context = previousContext;
+    }
   },
 );
 
@@ -3296,6 +3438,37 @@ test('a background worker overflow retains its code in the task and follow outco
   } finally {
     controller.abort();
   }
+});
+
+test('a failed worker report keeps SAP diagnostics in live events and restored results', async () => {
+  const { h } = await ready();
+  const diagnostic = 'HTTP 400: Activation failed. Syntax error in ZCL_DEMO.';
+  const summary = 'SAP rejected the class activation';
+  const events: DialogueEvent[] = [];
+  h.subscribe((event) => events.push(event));
+  mockRun.mockResolvedValue({
+    errorClass: 'epicfail',
+    output: diagnostic,
+    summary,
+  });
+
+  await h.session.send('activate');
+  await until(() => h.session.snapshot().tasks[0]?.state === 'failed');
+  const result = {
+    state: 'failed',
+    output: diagnostic,
+    error: diagnostic,
+    summary,
+  };
+  expect(h.session.snapshot().tasks[0]).toMatchObject(result);
+  expect(events).toContainEqual({
+    kind: 'task',
+    task: expect.objectContaining({ state: 'failed', error: diagnostic }),
+  });
+  await until(() => h.state().running === 0);
+  await h.outbox.flushed();
+  const stored = await getDialogueStoreBackend().load('alice', 'key');
+  expect(stored?.tasks[0]).toMatchObject(result);
 });
 
 test('a failed turn keeps planner spend observed before the failure', async () => {

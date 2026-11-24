@@ -105,6 +105,7 @@ type Args = {
 type ValidatedArgs = Args & { scope?: 'user' | 'session' };
 
 import {
+  AgentInitializationError,
   captureTokenUsage,
   clientRunFailure,
   runContextOverflow,
@@ -140,7 +141,10 @@ export function mcpRunError<T>(
   options?: { traceId?: string; writeNotice?: string },
 ) {
   logRunFailure(cds.log('agent-mcp'), error, failure, options?.traceId);
-  const limit = failure.status === 400 ? undefined : throttleOf(error);
+  const limit =
+    failure.status === 400 || error instanceof AgentInitializationError
+      ? undefined
+      : throttleOf(error);
   const message = limit
     ? throttleMessage(limit, options?.writeNotice)
     : failure.message;

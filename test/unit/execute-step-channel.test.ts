@@ -171,6 +171,37 @@ afterEach(async () => {
   configure();
 });
 
+it('returns a safe typed initialization failure in agent MCP', async () => {
+  const gate = deferred();
+  harness.agentGate = gate.promise.then(() => {
+    throw Object.assign(new Error('PRIVATE_INIT_PROVIDER_BODY'), {
+      code: 'EMBED_ERROR',
+      status: 401,
+    });
+  });
+  const result = step();
+  await tick();
+  gate.resolve();
+
+  await expect(result).resolves.toMatchObject({
+    isError: true,
+    content: [{ type: 'text', text: 'Embedding request failed.' }],
+    structuredContent: {
+      error: {
+        code: 'EMBED_ERROR',
+        status: 503,
+        message: 'Embedding request failed.',
+      },
+    },
+  });
+  expect(mockRunError.mock.calls).toEqual([
+    [
+      'Destination initialization failed',
+      { code: 'EMBED_ERROR', status: 401, destination: 'DEST' },
+    ],
+  ]);
+});
+
 it.each([false, true])(
   'logs typed throttling safely and keeps the retry text (write=%s)',
   async (write) => {

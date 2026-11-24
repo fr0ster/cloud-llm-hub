@@ -21,11 +21,11 @@ import { collectionRetrieval } from './lib/collection-retrieval';
 import { lookupDialogue } from './lib/dialogue-sessions';
 import { getExecutionLimits } from './lib/execution-limits';
 import {
+  agentInitializationFailure,
   captureTokenUsage,
   failureMessage,
   llmFailure,
   mergeStreamUsage,
-  runContextOverflow,
   runErrorCode,
 } from './lib/llm-failure';
 import { awaitModelCatalog } from './lib/model-catalog';
@@ -703,27 +703,7 @@ async function serveMessages(
     );
   } catch (err) {
     await releaseRequestConnection(requestConnection, s);
-    if (runContextOverflow(err)) throw err;
-    const message = err instanceof Error ? err.message : String(err);
-    if (early?.opened) {
-      early.error({
-        type: 'error',
-        error: {
-          type: 'api_error',
-          message: `Agent initialization failed: ${message}`,
-        },
-      });
-      return;
-    }
-    log.error('Failed to initialize SmartAgent', { error: message });
-    res.status(503).json({
-      type: 'error',
-      error: {
-        type: 'api_error',
-        message: `Agent initialization failed: ${message}`,
-      },
-    });
-    return;
+    throw agentInitializationFailure(err, destination);
   }
 
   // Unique per-request traceId — required for the recording logger's
