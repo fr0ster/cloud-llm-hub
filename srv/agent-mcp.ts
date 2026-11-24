@@ -41,7 +41,11 @@ import {
   listDestinationsDefinition,
 } from './lib/coordinator-tool-definitions';
 import { runExecutorStep } from './lib/executor-step';
-import { captureTokenUsage, clientRunFailure } from './lib/llm-failure';
+import {
+  captureTokenUsage,
+  clientRunFailure,
+  llmFailure,
+} from './lib/llm-failure';
 import { requestStart } from './lib/request-start';
 import type { LongSessionRequest } from './lib/session-connection';
 import {
@@ -664,18 +668,25 @@ async function executeStepRun(
     const actions = collectActions();
 
     if (!r.ok) {
-      const failure = clientRunFailure(
-        r.error,
-        hasUnansweredSapWrite(handle.recMcp?.getToolRecords(traceId) ?? []),
+      const unanswered = hasUnansweredSapWrite(
+        handle.recMcp?.getToolRecords(traceId) ?? [],
       );
+      const failure = clientRunFailure(r.error, unanswered);
       if (failure?.status !== 400 && isOutageError(r.error)) {
         closeDestination(targetDestination, describeCause(r.error));
       }
       const tokens = spend.usage();
       if (failure)
         return mcpRunError(
+          r.error,
           failure,
           timedUsageToWire(tokens, Date.now() - stepStartedAt),
+          {
+            traceId,
+            writeNotice:
+              unverifiedWriteFor(handle, traceId, llmFailure(r.error)) ??
+              (unanswered ? failure.message : undefined),
+          },
         );
       log.info('execute_step done', {
         ok: false,
@@ -728,18 +739,25 @@ async function executeStepRun(
     const content = [notice, reply, actions].filter(Boolean).join('\n');
     return mcpUsageResult(content, wireUsage, emptyResult);
   } catch (err) {
-    const failure = clientRunFailure(
-      err,
-      hasUnansweredSapWrite(handle?.recMcp?.getToolRecords(traceId) ?? []),
+    const unanswered = hasUnansweredSapWrite(
+      handle?.recMcp?.getToolRecords(traceId) ?? [],
     );
+    const failure = clientRunFailure(err, unanswered);
     if (failure?.status !== 400 && targetDestination && isOutageError(err)) {
       closeDestination(targetDestination, describeCause(err));
     }
     if (failure) {
       measurement?.end('error');
       return mcpRunError(
+        err,
         failure,
         timedUsageToWire(spend.usage(), Date.now() - stepStartedAt),
+        {
+          traceId,
+          writeNotice:
+            unverifiedWriteFor(handle, traceId, llmFailure(err)) ??
+            (unanswered ? failure.message : undefined),
+        },
       );
     }
     const unverified = unverifiedWriteFor(handle, traceId, err);

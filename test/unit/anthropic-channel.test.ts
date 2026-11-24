@@ -12,6 +12,8 @@ import { chatSessionBodyTests } from './helpers/chat-session-body';
 import { clientToolHistoryTests } from './helpers/client-tool-history';
 import { responseModelTests, typedResponse } from './helpers/response-model';
 
+const mockRunError = jest.fn();
+
 // Bootstrap logging is tested with real CAP in logging-config.test.ts.
 jest.mock('../../srv/lib/logging-config', () => ({
   applyLoggingConfig: jest.fn(),
@@ -22,7 +24,12 @@ jest.mock(
   () => ({
     __esModule: true,
     default: {
-      log: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
+      log: (name: string) => ({
+        info() {},
+        warn() {},
+        error: name === 'anthropic-handler' ? mockRunError : () => {},
+        debug() {},
+      }),
       get context() {
         return { user: require('./helpers/channel-harness').harness.user };
       },
@@ -123,7 +130,10 @@ function call(
   return { res, done };
 }
 
-beforeEach(() => harness.reset());
+beforeEach(() => {
+  harness.reset();
+  mockRunError.mockClear();
+});
 afterEach(() => configure());
 
 it.each([
@@ -143,7 +153,95 @@ it.each([
     error: { type: 'api_error', code, message },
   });
   expect(res.body).not.toContain('Private component failure');
+  expect(mockRunError.mock.calls).toEqual([
+    ['Agent run failed', { code, status: 500, traceId: expect.any(String) }],
+  ]);
 });
+
+it('logs a returned typed streaming failure before writing the error event', async () => {
+  const privateText = 'Private component failure and user content';
+  const error = Object.assign(
+    new OrchestratorError(privateText, 'CONFIG_ERROR'),
+    {
+      component: 'executor',
+      stepId: 'first',
+    },
+  );
+  harness.stream = async function* () {
+    yield { ok: false, error };
+  };
+  const res = fakeRes();
+  const write = jest.spyOn(res, 'write');
+  const { done } = call(body(true), res);
+  await done;
+
+  expect(res.body).toContain('event: error');
+  expect(res.body).not.toContain(privateText);
+  expect(mockRunError.mock.calls).toEqual([
+    [
+      'Agent run failed',
+      {
+        code: 'CONFIG_ERROR',
+        status: 500,
+        traceId: expect.any(String),
+        component: 'executor',
+        stepId: 'first',
+      },
+    ],
+  ]);
+  const errorWrite = write.mock.calls.findIndex(([chunk]) =>
+    chunk.startsWith('event: error\n'),
+  );
+  expect(mockRunError.mock.invocationCallOrder[0]).toBeLessThan(
+    write.mock.invocationCallOrder[errorWrite],
+  );
+});
+
+it.each([
+  { stream: false, write: false },
+  { stream: false, write: true },
+  { stream: true, write: false },
+  { stream: true, write: true },
+])(
+  'keeps typed throttle details (stream=$stream, write=$write)',
+  async ({ stream, write }) => {
+    const error = Object.assign(
+      new LlmError('LLM unavailable (HTTP 429)', 'LLM_ERROR'),
+      {
+        throttled: true,
+        retryAfterSeconds: 41.5,
+      },
+    );
+    harness.process = async () => ({ ok: false, error });
+    harness.stream = async function* () {
+      yield { ok: false, error };
+    };
+    if (write) harness.unanswered = [{ call: { name: 'CreateClass' } }];
+    const { res, done } = call(body(stream));
+    await done;
+
+    const retry =
+      'The AI service is rate-limited right now. Please try again in about 42 seconds.';
+    const message = write
+      ? `CreateClass was sent and no answer came back (LLM unavailable (HTTP 429)). It was NOT retried. ${retry}`
+      : stream
+        ? 'LLM unavailable (HTTP 429)'
+        : retry;
+    expect(res.statusCode).toBe(stream ? 200 : 529);
+    expect(res.headers['Retry-After']).toBe(stream ? undefined : '42');
+    const event = res.body
+      .split('\n\n')
+      .find((chunk) => chunk.startsWith('event: error\n'));
+    expect(
+      JSON.parse(
+        stream ? (event?.slice('event: error\ndata: '.length) ?? '') : res.body,
+      ),
+    ).toEqual({
+      type: 'error',
+      error: { type: 'overloaded_error', code: 'LLM_ERROR', message },
+    });
+  },
+);
 
 it.each(['chat', 'stream', 'started stream'])(
   'maps model context overflow to an Anthropic request error (%s)',

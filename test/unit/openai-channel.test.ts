@@ -18,6 +18,7 @@ import {
   LlmError,
   McpError,
   MODEL_CONTEXT_EXCEEDED,
+  OrchestratorError,
 } from '@mcp-abap-adt/llm-agent';
 import { reliableLlm, reportLlmSpend } from '../../srv/lib/llm-failure';
 import { chatSessionBodyTests } from './helpers/chat-session-body';
@@ -153,6 +154,85 @@ function call(
 
 beforeEach(() => harness.reset());
 afterEach(() => configure());
+
+it.each([false, true])(
+  'logs returned typed failures safely and preserves tool headers (stream=%s)',
+  async (stream) => {
+    mockCatalogError.mockClear();
+    const error = Object.assign(
+      new OrchestratorError('Private component failure', 'CONFIG_ERROR'),
+      { component: 'executor', cause: { stepId: 'first' } },
+    );
+    harness.process = async () => ({ ok: false, error });
+    harness.stream = async function* () {
+      yield { ok: false, error };
+    };
+    const { res, done } = call({
+      ...body(stream),
+      tools: [{ type: 'function', function: { name: '' } }],
+    });
+    await done;
+
+    expect(res.statusCode).toBe(stream ? 200 : 500);
+    expect(res.headers['x-smartagent-invalid-tools']).toBe('1');
+    expect(res.headers['Content-Type']).toBe(
+      stream ? 'text/event-stream' : 'application/json',
+    );
+    expect(res.headers['X-SAP-Active-Destination']).toBe(
+      stream ? 'DEST' : undefined,
+    );
+    expect(res.body).toContain('"code":"CONFIG_ERROR"');
+    expect(mockCatalogError.mock.calls).toEqual([
+      [
+        'Agent run failed',
+        {
+          code: 'CONFIG_ERROR',
+          status: 500,
+          traceId: expect.any(String),
+          component: 'executor',
+          stepId: 'first',
+        },
+      ],
+    ]);
+  },
+);
+
+it.each([false, true])(
+  'keeps the typed throttle text (stream=%s)',
+  async (stream) => {
+    const error = Object.assign(
+      new LlmError('Private provider failure', 'LLM_ERROR'),
+      {
+        throttled: true,
+        retryAfterSeconds: 41.5,
+      },
+    );
+    harness.process = async () => ({ ok: false, error });
+    harness.stream = async function* () {
+      yield { ok: false, error };
+    };
+    const { res, done } = call(body(stream));
+    await done;
+
+    const retry =
+      'The AI service is rate-limited right now. Please try again in about 42 seconds.';
+    const payload = {
+      error: {
+        code: 'LLM_ERROR',
+        type: 'server_error',
+        message: stream ? `LLM unavailable (HTTP 429). ${retry}` : retry,
+      },
+    };
+    expect(res.statusCode).toBe(stream ? 200 : 500);
+    expect(res.headers['Retry-After']).toBeUndefined();
+    const event = res.body
+      .split('\n')
+      .find((line) => line.startsWith('data: '));
+    expect(
+      JSON.parse(stream ? (event?.slice('data: '.length) ?? '') : res.body),
+    ).toEqual(payload);
+  },
+);
 
 it.each(['chat', 'chat exception', 'stream', 'started stream'])(
   'maps model context overflow to an OpenAI request error (%s)',

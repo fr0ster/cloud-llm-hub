@@ -24,13 +24,17 @@ import {
   captureTokenUsage,
   clientRunFailure,
   failureMessage,
+  llmFailure,
   mergeStreamUsage,
   runContextOverflow,
   runErrorCode,
 } from './lib/llm-failure';
 import { awaitModelCatalog } from './lib/model-catalog';
 import { ignoredModelHeader } from './lib/model-policy';
-import { pipelineFailureLogger } from './lib/pipeline-failure-logging';
+import {
+  logRunFailure,
+  pipelineFailureLogger,
+} from './lib/pipeline-failure-logging';
 import { bindCaller, callOptionsFor } from './lib/rag-caller';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
@@ -459,6 +463,12 @@ async function handleAnthropicMessagesScoped(
     measurement?.end('error');
     const failure = clientRunFailure(error, unansweredSapWrite);
     if (failure) {
+      logRunFailure(
+        cds.log('anthropic-handler'),
+        error,
+        failure,
+        measurement?.traceId,
+      );
       const payload = anthropicRunError(failure);
       if (early?.opened) early.error(payload);
       else if (res.headersSent)
@@ -901,6 +911,7 @@ async function serveMessages(
         run: runAgent,
         onError: (error) => {
           const failure = typedFailure(error);
+          if (failure) logRunFailure(log, error, failure, traceId);
           if (failure?.status === 400) return anthropicRunError(failure);
           if (isOutageError(error))
             closeDestination(destination, describeCause(error));
@@ -1087,6 +1098,7 @@ async function serveMessages(
       } catch (err) {
         streamSucceeded = false;
         const failure = typedFailure(err);
+        if (failure) logRunFailure(log, err, failure, traceId);
         if (failure?.status === 400) {
           requestMeasurement(req)?.end('error');
           clearInterval(keepAlive);
@@ -1102,9 +1114,17 @@ async function serveMessages(
         if (isOutageError(err))
           closeDestination(destination, describeCause(err));
         if (failure) {
+          const limit = throttleOf(err);
+          const writeNotice = limit
+            ? unverifiedWriteFor(handle, traceId, llmFailure(err))
+            : undefined;
+          const message =
+            limit && (writeNotice || unansweredSapWrite())
+              ? throttleMessage(limit, writeNotice ?? failure.message)
+              : failure.message;
           const payload = anthropicRunError(
-            failure,
-            throttleOf(err) ? 'overloaded_error' : 'api_error',
+            { ...failure, message },
+            limit ? 'overloaded_error' : 'api_error',
           );
           writeStream(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
           clearInterval(keepAlive);
@@ -1213,6 +1233,7 @@ async function serveMessages(
     } else {
       const failure = typedFailure(result.error);
       if (failure?.status === 400) {
+        logRunFailure(log, result.error, failure, traceId);
         out.json(failure.status, withUsage(anthropicRunError(failure)));
         return;
       }
@@ -1221,13 +1242,22 @@ async function serveMessages(
       }
       const limit = throttleOf(result.error);
       if (failure) {
+        const status = limit ? statusForError(result.error) : failure.status;
+        logRunFailure(log, result.error, { ...failure, status }, traceId);
         const retryAfter = retryAfterHeader(result.error);
         if (retryAfter) out.setHeader('Retry-After', retryAfter);
+        const writeNotice = limit
+          ? (unverifiedWriteFor(handle, traceId, llmFailure(result.error)) ??
+            (unansweredSapWrite() ? failure.message : undefined))
+          : undefined;
+        const message = limit
+          ? throttleMessage(limit, writeNotice)
+          : failure.message;
         out.json(
-          limit ? statusForError(result.error) : failure.status,
+          status,
           withUsage(
             anthropicRunError(
-              failure,
+              { ...failure, message },
               limit ? 'overloaded_error' : 'api_error',
             ),
           ),

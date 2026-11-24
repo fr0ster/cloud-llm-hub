@@ -194,11 +194,15 @@ export async function executeOrchestrationTool(
             );
             const usage = timedUsageToWire(spend.usage(), Date.now() - started);
             if (!result.ok) {
-              const failure = clientRunFailure(
-                result.error,
-                hasUnansweredSapWrite(handle.toolJournal().values()),
+              const unanswered = hasUnansweredSapWrite(
+                handle.toolJournal().values(),
               );
-              if (failure) return mcpRunError(failure, usage);
+              const failure = clientRunFailure(result.error, unanswered);
+              if (failure)
+                return mcpRunError(result.error, failure, usage, {
+                  ...trace,
+                  writeNotice: unanswered ? failure.message : undefined,
+                });
               return mcpUsageResult(result.error.message, usage, true);
             }
             const content = toolText(result.value);
@@ -283,11 +287,15 @@ export async function executeOrchestrationTool(
         error.refused === 'SESSION_STORE_UNAVAILABLE')
     )
       return ragTextResult(error.refused, true);
-    const failure = clientRunFailure(
-      error,
-      hasUnansweredSapWrite(dialogue?.toolJournal().values() ?? []),
+    const unanswered = hasUnansweredSapWrite(
+      dialogue?.toolJournal().values() ?? [],
     );
-    if (failure) return mcpRunError(failure);
+    const failure = clientRunFailure(error, unanswered);
+    if (failure)
+      return mcpRunError(error, failure, undefined, {
+        traceId: requestMeasurement(req)?.traceId,
+        writeNotice: unanswered ? failure.message : undefined,
+      });
     return ragTextResult(
       error instanceof Error ? error.message : String(error),
       true,

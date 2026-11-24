@@ -68,14 +68,18 @@ export function throttleOf(
 }
 
 /** What the caller is told once the provider's own policy is spent. */
-export function throttleMessage(limit: { retryAfterSeconds?: number }): string {
+export function throttleMessage(
+  limit: { retryAfterSeconds?: number },
+  prefix?: string,
+): string {
   const seconds = limit.retryAfterSeconds;
-  if (seconds === undefined || !Number.isFinite(seconds)) {
-    return 'The AI service is rate-limited right now. Please try again shortly.';
-  }
-  return `The AI service is rate-limited right now. Please try again in about ${Math.ceil(
-    seconds,
-  )} seconds.`;
+  const message =
+    seconds === undefined || !Number.isFinite(seconds)
+      ? 'The AI service is rate-limited right now. Please try again shortly.'
+      : `The AI service is rate-limited right now. Please try again in about ${Math.ceil(seconds)} seconds.`;
+  return prefix
+    ? `${prefix}${prefix.endsWith('.') ? ' ' : '. '}${message}`
+    : message;
 }
 
 /**

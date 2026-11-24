@@ -110,6 +110,8 @@ import {
   runContextOverflow,
   safeContextExceeded,
 } from './lib/llm-failure';
+import { logRunFailure } from './lib/pipeline-failure-logging';
+import { throttleMessage, throttleOf } from './lib/throttle-surfacing';
 import { timedUsageToWire, type WireAgentUsage } from './lib/usage-wire';
 
 export function ragTextResult(text: string, isError = false) {
@@ -131,18 +133,26 @@ export function mcpUsageResult(
   };
 }
 
-export function mcpRunError(
-  error: NonNullable<ReturnType<typeof clientRunFailure>>,
+export function mcpRunError<T>(
+  error: T,
+  failure: NonNullable<ReturnType<typeof clientRunFailure>>,
   usage?: WireAgentUsage,
+  options?: { traceId?: string; writeNotice?: string },
 ) {
-  const { message } = error;
-  const failure: RagWriteErrorResult = {
+  logRunFailure(cds.log('agent-mcp'), error, failure, options?.traceId);
+  const limit = failure.status === 400 ? undefined : throttleOf(error);
+  const message = limit
+    ? throttleMessage(limit, options?.writeNotice)
+    : failure.message;
+  const structured: RagWriteErrorResult = {
     result: message,
-    error,
+    error: { ...failure, message },
   };
   return {
     ...ragTextResult(message, true),
-    structuredContent: usage ? Object.assign({}, failure, { usage }) : failure,
+    structuredContent: usage
+      ? Object.assign({}, structured, { usage })
+      : structured,
   };
 }
 interface WriteFields {
@@ -814,7 +824,7 @@ async function executeRagMcpToolImpl(
   } catch (error) {
     if (runContextOverflow(error)) {
       const failure = clientRunFailure(error);
-      if (failure) return mcpRunError(failure);
+      if (failure) return mcpRunError(error, failure);
     }
     if (
       error instanceof Error &&
