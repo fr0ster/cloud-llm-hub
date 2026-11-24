@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { type CallOptions, RagError } from '@mcp-abap-adt/llm-agent';
+import type { CallOptions } from '@mcp-abap-adt/llm-agent';
 import {
   normalizeLogicalId,
   resolveRouteId,
@@ -15,7 +15,7 @@ import { isReadOnlyTools } from '../request-session';
 import { checkAccess, collectionAccessError } from './collection-access';
 import { CollectionBackendError } from './collection-persistence';
 import { assertCollectionWrite } from './collection-write-scope';
-
+import { isInfrastructureFailure, sanitizeFailure } from './llm-failure';
 import { RagWriteError } from './rag-write-error';
 import { buildSkillsPool } from './skills-pool';
 import { trustWriteError } from './trust-guard';
@@ -376,6 +376,19 @@ export function ragWriteFailure(
   error: Error,
   fallback: number,
 ): { code: string; status: number; message: string } {
+  if (isInfrastructureFailure(error)) {
+    const failure = sanitizeFailure(error, {
+      code: 'BACKEND_ERROR',
+      message: 'Collection write failed.',
+    });
+    return {
+      ...failure,
+      status:
+        error instanceof CollectionBackendError
+          ? error.httpStatus
+          : (failure.status ?? fallback),
+    };
+  }
   if (error.message.startsWith('TOOL_FORBIDDEN:'))
     return { code: 'TOOL_FORBIDDEN', status: 403, message: error.message };
   return {
@@ -384,11 +397,9 @@ export function ragWriteFailure(
         ? error.code
         : error instanceof CollectionBackendError
           ? error.cause.code
-          : error instanceof RagError
-            ? error.code
-            : /embed/i.test(error.message)
-              ? 'EMBEDDING_FAILED'
-              : 'BACKEND_ERROR',
+          : /embed/i.test(error.message)
+            ? 'EMBEDDING_FAILED'
+            : 'BACKEND_ERROR',
     status:
       error instanceof RagWriteError
         ? error.status

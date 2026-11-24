@@ -1,13 +1,18 @@
 import type { InterpretContext } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
-import { AgentInitializationError } from './llm-failure';
+import {
+  AgentInitializationError,
+  failureCauses,
+  failureOrigin,
+  sanitizeFailure,
+} from './llm-failure';
 
 type LogStep = NonNullable<InterpretContext['sessionLogger']>['logStep'];
 
 export function logRunFailure<T>(
   log: Pick<ReturnType<typeof cds.log>, 'error'>,
   error: T,
-  { code, status }: { code: string; status: number },
+  failure: { code: string; status: number; message: string },
   traceId?: string,
 ) {
   if (error instanceof AgentInitializationError) {
@@ -16,21 +21,19 @@ export function logRunFailure<T>(
   }
   let component: string | undefined;
   let stepId: string | undefined;
-  let current: object | undefined =
-    typeof error === 'object' && error !== null ? error : undefined;
-  const seen = new Set<object>();
-  while (current && !seen.has(current)) {
-    seen.add(current);
+  for (const current of failureCauses(error)) {
     if ('component' in current && typeof current.component === 'string')
       component ??= current.component;
     if ('stepId' in current && typeof current.stepId === 'string')
       stepId ??= current.stepId;
-    const cause = 'cause' in current ? current.cause : undefined;
-    current = typeof cause === 'object' && cause !== null ? cause : undefined;
   }
+  const origin = failureOrigin(error);
   log.error('Agent run failed', {
-    code,
-    status,
+    code: failure.code,
+    status: failure.status,
+    ...((origin === 'domain' || origin === 'hub') && {
+      error: failure.message,
+    }),
     ...(traceId !== undefined && { traceId }),
     ...(component !== undefined && { component }),
     ...(stepId !== undefined && { stepId }),
@@ -41,9 +44,10 @@ export function logAgentInitializationFailure(
   log: Pick<ReturnType<typeof cds.log>, 'error'>,
   error: AgentInitializationError,
 ) {
+  const failure = sanitizeFailure(error, error);
   log.error('Destination initialization failed', {
-    code: error.code,
-    status: error.status ?? 503,
+    code: failure.code,
+    status: error.status ?? error.statusCode,
     destination: error.destination,
   });
 }

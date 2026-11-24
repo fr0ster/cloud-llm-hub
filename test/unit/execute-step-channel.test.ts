@@ -107,8 +107,7 @@ jest.mock('@modelcontextprotocol/sdk/server/streamableHttp.js', () => ({
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ILlm } from '@mcp-abap-adt/llm-agent';
-import { LlmError } from '@mcp-abap-adt/llm-agent';
+import { type ILlm, LlmError, McpError } from '@mcp-abap-adt/llm-agent';
 import type { Request } from 'express';
 import {
   createAgentMcpServerForRequest,
@@ -200,6 +199,54 @@ it('returns a safe typed initialization failure in agent MCP', async () => {
       { code: 'EMBED_ERROR', status: 401, destination: 'DEST' },
     ],
   ]);
+});
+
+it('preserves a typed SAP activation diagnostic in agent MCP', async () => {
+  const message = 'HTTP 400: Activation failed. Syntax error in ZCL_DEMO.';
+  const code = 'MCP_HTTP_400';
+  harness.process = async () => ({
+    ok: false,
+    error: new McpError(message, code),
+  });
+
+  await expect(step()).resolves.toMatchObject({
+    isError: true,
+    content: [{ type: 'text', text: message }],
+    structuredContent: { error: { code, message, status: 400 } },
+  });
+});
+
+it('keeps retry details with a throttled initialization failure in agent MCP', async () => {
+  const gate = deferred();
+  const privateBody = 'PRIVATE_INIT_THROTTLE_BODY';
+  harness.agentGate = gate.promise.then(() => {
+    throw Object.assign(new LlmError(privateBody), {
+      status: 429,
+      throttled: true,
+      retryAfterSeconds: 41.5,
+    });
+  });
+  const pending = step();
+  await tick();
+  gate.resolve();
+
+  const result = await pending;
+  const message =
+    'Agent initialization failed. The AI service is rate-limited right now. Please try again in about 42 seconds.';
+  expect(result).toMatchObject({
+    isError: true,
+    content: [{ type: 'text', text: message }],
+    structuredContent: {
+      error: {
+        code: 'LLM_ERROR',
+        message,
+        status: 503,
+        throttled: true,
+        retryAfterSeconds: 41.5,
+      },
+    },
+  });
+  expect(JSON.stringify(result)).not.toContain(privateBody);
 });
 
 it.each([false, true])(

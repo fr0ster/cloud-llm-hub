@@ -1,6 +1,7 @@
 import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
 import {
   LlmError,
+  McpError,
   MODEL_CONTEXT_EXCEEDED,
   OrchestratorError,
   staticApiKey,
@@ -157,6 +158,39 @@ it.each([
     ['Agent run failed', { code, status: 500, traceId: expect.any(String) }],
   ]);
 });
+
+it.each([false, true])(
+  'preserves a SAP activation diagnostic (stream=%s)',
+  async (stream) => {
+    const message = 'HTTP 400: Activation failed. Syntax error in ZCL_DEMO.';
+    const error = new McpError(message, 'MCP_HTTP_400');
+    harness.process = async () => ({ ok: false, error });
+    harness.stream = async function* () {
+      yield { ok: true, value: { content: 'partial' } };
+      yield { ok: false, error };
+    };
+
+    const { res, done } = call(body(stream));
+    await done;
+
+    expect(res.statusCode).toBe(stream ? 200 : 400);
+    const event = res.body
+      .split('\n\n')
+      .find((chunk) => chunk.startsWith('event: error\n'));
+    expect(
+      JSON.parse(
+        stream ? (event?.slice('event: error\ndata: '.length) ?? '') : res.body,
+      ),
+    ).toMatchObject({
+      type: 'error',
+      error: { code: 'MCP_HTTP_400', message, ...(stream && { status: 400 }) },
+    });
+    expect(mockRunError).toHaveBeenCalledWith(
+      'Agent run failed',
+      expect.objectContaining({ code: 'MCP_HTTP_400', status: 400 }),
+    );
+  },
+);
 
 it('logs a returned typed streaming failure before writing the error event', async () => {
   const privateText = 'Private component failure and user content';

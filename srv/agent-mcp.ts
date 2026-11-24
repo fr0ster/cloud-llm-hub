@@ -47,6 +47,7 @@ import {
   captureTokenUsage,
   clientRunFailure,
   llmFailure,
+  runContextOverflow,
 } from './lib/llm-failure';
 import { requestStart } from './lib/request-start';
 import type { LongSessionRequest } from './lib/session-connection';
@@ -676,7 +677,7 @@ async function executeStepRun(
         handle.recMcp?.getToolRecords(traceId) ?? [],
       );
       const failure = clientRunFailure(r.error, unanswered);
-      if (failure?.status !== 400 && isOutageError(r.error)) {
+      if (!runContextOverflow(r.error) && isOutageError(r.error)) {
         closeDestination(targetDestination, describeCause(r.error));
       }
       const tokens = spend.usage();
@@ -749,7 +750,7 @@ async function executeStepRun(
     const failure = clientRunFailure(err, unanswered);
     if (
       !(err instanceof AgentInitializationError) &&
-      failure?.status !== 400 &&
+      !runContextOverflow(err) &&
       targetDestination &&
       isOutageError(err)
     ) {

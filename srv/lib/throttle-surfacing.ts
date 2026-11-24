@@ -11,11 +11,20 @@
  * envelope beside the handler passes while the handler sends nothing at all.
  */
 
-import { findThrottled, httpStatusOf } from '@mcp-abap-adt/llm-agent';
+import {
+  findThrottled,
+  httpStatusOf,
+  retryAfterSecondsOf,
+} from '@mcp-abap-adt/llm-agent';
 import type { OutputSink } from './detached-sink';
 import {
   AgentInitializationError,
   clientRunFailure,
+  failureCauses,
+  failureMessage,
+  failureOrigin,
+  isInfrastructureFailure,
+  runContextOverflow,
   runErrorCode,
 } from './llm-failure';
 import type { RunRefusal } from './long-session';
@@ -33,42 +42,41 @@ import { describeCause } from './mcp-outage';
  * Retrying here would undo the point of the shared pause: another request into
  * a quota the server has just said is closed, earning another penalty.
  */
-export function throttleOf(
-  error: unknown,
+export function throttleOf<T>(
+  error: T,
 ): { retryAfterSeconds?: number; reason?: string } | undefined {
+  const origin = failureOrigin(error);
+  if (origin === 'domain') return undefined;
+  const details =
+    typeof error === 'object' && error !== null ? error : undefined;
   const marked = findThrottled(error);
   if (marked) {
     return {
-      retryAfterSeconds: marked.retryAfterSeconds,
+      retryAfterSeconds: retryAfterSecondsOf(details),
       reason: marked.reason,
     };
   }
+  const status = httpStatusOf(details);
+  if (status === 429) {
+    const seconds = retryAfterSecondsOf(details);
+    return seconds === undefined ? {} : { retryAfterSeconds: seconds };
+  }
+  if (origin === 'hub' || (status !== undefined && status !== 0))
+    return undefined;
   // Fallback for an error that lost the marker on the way up, e.g. one rebuilt
   // by a layer that keeps only the message. A structured status first, then the
   // status named in the text on a WORD BOUNDARY — never a bare includes('429'),
   // which also fires on an id, a byte count or a token total.
-  let current: unknown = error;
-  for (let depth = 0; current && depth < 5; depth++) {
-    const http = current as {
-      response?: { status?: number };
-      status?: number;
-      statusCode?: number;
-    };
-    if (
-      http?.response?.status === 429 ||
-      http?.status === 429 ||
-      http?.statusCode === 429
-    ) {
-      return {};
-    }
-    const text = current instanceof Error ? current.message : String(current);
+  for (const current of failureCauses(error)) {
+    const text =
+      'message' in current && typeof current.message === 'string'
+        ? current.message
+        : '';
     if (
       /(^|[^\d])429([^\d]|$)|too many requests|rate[\s_-]?limit/i.test(text)
     ) {
       return {};
     }
-    if (!(current instanceof Error)) break;
-    current = (current as { cause?: unknown }).cause;
   }
   return undefined;
 }
@@ -103,7 +111,7 @@ export function anthropicErrorPayload(error: unknown): {
   error: { type: string; message: string };
 } {
   const limit = throttleOf(error);
-  const fallback = error instanceof Error ? error.message : String(error);
+  const fallback = failureMessage(error);
   return {
     type: 'error',
     error: {
@@ -185,22 +193,34 @@ export function chatRunFailure<T>(
 ) {
   const failure = clientRunFailure(error, options.unansweredSapWrite);
   if (!failure) return undefined;
-  const limit =
-    failure.status === 400 || error instanceof AgentInitializationError
-      ? undefined
-      : throttleOf(error);
-  if (!limit) return { ...failure, throttled: false };
+  const initialization = error instanceof AgentInitializationError;
+  const contextOverflow = runContextOverflow(error);
+  const limit = contextOverflow ? undefined : throttleOf(error);
+  if (!limit)
+    return {
+      ...failure,
+      contextOverflow,
+      throttled: false,
+      ...(options.stream &&
+        failureOrigin(error) === 'domain' && {
+          domainStatus: failure.status,
+        }),
+    };
 
   const retryAfter = retryAfterSecondsHeader(limit.retryAfterSeconds);
   if (retryAfter !== undefined) options.setHeader('Retry-After', retryAfter);
   const prefix =
     options.writeNotice?.() ??
-    (options.unansweredSapWrite || options.stream
+    (initialization || options.unansweredSapWrite || options.stream
       ? failure.message
       : undefined);
   return {
     ...failure,
-    status: options.protocol === 'anthropic' ? 529 : failure.status,
+    contextOverflow,
+    status:
+      options.protocol === 'anthropic' && !initialization
+        ? 529
+        : failure.status,
     message: throttleMessage(limit, prefix),
     throttled: true,
   };
@@ -218,7 +238,7 @@ export type ChatRunFailure = NonNullable<ReturnType<typeof chatRunFailure>>;
 export function failureText(error: unknown): string {
   const limit = throttleOf(error);
   if (limit) return throttleMessage(limit);
-  return error instanceof Error ? error.message : String(error);
+  return failureMessage(error);
 }
 
 /** Why admission was withheld, in the order admission checks. */
@@ -456,7 +476,7 @@ export function unverifiedWriteFor(
   if (pending.length === 0) return undefined;
   return unverifiedWriteText(
     pending.map((r) => r.call),
-    describeCause(err),
+    isInfrastructureFailure(err) ? failureMessage(err) : describeCause(err),
   );
 }
 

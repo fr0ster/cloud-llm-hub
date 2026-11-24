@@ -340,7 +340,7 @@ describe('loadToolCorpus, vector backend with a matching bundle', () => {
         error: { message: 'store down' },
       }))) as never;
     await expect(loadToolCorpus(p as never, docs)).rejects.toThrow(
-      /tool:GetClass: store down/,
+      /^Tool corpus load failed writing tool:GetClass\. Check the RAG backend\.$/,
     );
   });
 });

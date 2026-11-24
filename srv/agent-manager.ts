@@ -138,6 +138,7 @@ import {
   type Message,
   OrchestratorError,
   QueryEmbedding,
+  type RagError,
   type RagMetadata,
   type RagResult,
   stampRagOwner,
@@ -192,6 +193,8 @@ import { FixedExecutorPlanner } from './lib/fixed-executor-planner';
 import {
   AgentInitializationError,
   agentInitializationFailure,
+  failureMessage,
+  HubError,
   runContextOverflow,
   runWithoutLlmSpend,
   sanitizeFailure,
@@ -1257,7 +1260,7 @@ export function getDestinationStates(): Array<{
     name,
     status: state.status,
     toolCount: state.toolCount,
-    error: state.error?.message,
+    error: state.error && failureMessage(state.error),
     proxyType: state.proxyType,
     requiresCredentials: state.requiresCredentials,
     authentication: state.authentication,
@@ -2112,7 +2115,7 @@ export async function loadToolCorpus(
       opts.toolGate,
     );
     const w = store.writer();
-    if (!w) throw new Error('Tool corpus store is not writable (in-memory)');
+    if (!w) throw new HubError('Tool corpus store is not writable (in-memory)');
     let count = 0;
     for (const x of docs) {
       const res = await w.upsertRaw(x.id, x.text, {
@@ -2132,13 +2135,18 @@ export async function loadToolCorpus(
       reader: toolStoreName('reader'),
       writer: toolStoreName('writer'),
     };
-    const catalog = await readCatalog(p).catch(() => {
-      throw new AgentInitializationError({
-        code: 'RAG_CATALOG_ERROR',
-        message:
-          'Qdrant catalog unreachable. Check the Qdrant service and connection settings.',
-      });
-    });
+    let catalog: Awaited<ReturnType<CatalogReader>>;
+    try {
+      catalog = await readCatalog(p);
+    } catch (error) {
+      throw new AgentInitializationError(
+        sanitizeFailure(error, {
+          code: 'RAG_CATALOG_ERROR',
+          message:
+            'Qdrant catalog unreachable. Check the Qdrant service and connection settings.',
+        }),
+      );
+    }
     const problems: string[] = [];
     for (const role of ['reader', 'writer'] as const) {
       const collection = p.stores.qdrantCollection(names[role]);
@@ -2206,7 +2214,7 @@ export async function loadToolCorpus(
   );
   const write = store.writer()?.upsertPrecomputedRaw;
   if (!write)
-    throw new Error(
+    throw new HubError(
       'Tool corpus store cannot take precomputed vectors (vector backend)',
     );
   let count = 0;
@@ -2222,8 +2230,13 @@ export async function loadToolCorpus(
 }
 
 /** A failed corpus write: the load fails, naming the tool, instead of a partial corpus. */
-function corpusWriteError(id: string, cause: { message: string }): Error {
-  return new Error(`Tool corpus load failed writing ${id}: ${cause.message}`);
+function corpusWriteError(id: string, cause: RagError): Error {
+  return new AgentInitializationError(
+    sanitizeFailure(cause, {
+      code: 'RAG_UPDATE_ERROR',
+      message: `Tool corpus load failed writing ${id}. Check the RAG backend.`,
+    }),
+  );
 }
 
 let sharedToolsRag: ExpositionFilteringRag | null = null;

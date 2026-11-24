@@ -2,6 +2,7 @@ import { LlmError, MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import { OpenAiEmbedder } from '@mcp-abap-adt/openai-embedder';
 import cds from '@sap/cds';
+import { getDestination } from '@sap-cloud-sdk/connectivity';
 import { clearAgentConfig } from '../../srv/agent-config';
 import * as manager from '../../srv/agent-manager';
 import { handleAnthropicMessages } from '../../srv/anthropic-handler';
@@ -19,6 +20,13 @@ import { liveSession } from './helpers/canonical-rag';
 import { fakeReq, fakeRes } from './helpers/channel-harness';
 import { initInMemoryProviders } from './helpers/providers';
 import { typedRequest, typedResponse } from './helpers/response-model';
+
+jest.mock('@sap-cloud-sdk/connectivity', () => ({
+  ...jest.requireActual<typeof import('@sap-cloud-sdk/connectivity')>(
+    '@sap-cloud-sdk/connectivity',
+  ),
+  getDestination: jest.fn(),
+}));
 
 beforeEach(() => {
   initInMemoryProviders();
@@ -149,6 +157,56 @@ it('keeps ordinary destination build failures on the established HTTP 503 path',
     },
   });
 });
+
+it('keeps the resolver diagnostic in both 503 responses and destination state', async () => {
+  jest.mocked(destinationResolver.resolveDestinationSapConfig).mockRestore();
+  jest
+    .mocked(getDestination)
+    .mockResolvedValueOnce({ url: 'https://sap.invalid' });
+  const message = 'Destination "DEST" is missing Authentication property.';
+
+  for (const handler of [handleChatCompletions, handleAnthropicMessages]) {
+    const res = await request(handler, false);
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toMatchObject({ error: { message } });
+  }
+  expect(manager.getDestinationStates()).toEqual([
+    expect.objectContaining({ name: 'DEST', status: 'error', error: message }),
+  ]);
+});
+
+it.each([false, true])(
+  'keeps a build throttle on the initialization 503 path (stream=%s)',
+  async (stream) => {
+    const privateBody = 'PRIVATE_INIT_THROTTLE_BODY';
+    const build = jest
+      .spyOn(SmartAgentBuilder.prototype, 'build')
+      .mockRejectedValueOnce(
+        Object.assign(new LlmError(privateBody), {
+          status: 429,
+          throttled: true,
+          retryAfterSeconds: 41.5,
+        }),
+      );
+    for (const handler of [handleChatCompletions, handleAnthropicMessages]) {
+      const res = await request(handler, stream);
+      expect(res.statusCode).toBe(503);
+      expect(res.headers['Retry-After']).toBe('42');
+      expect(JSON.parse(res.body)).toMatchObject({
+        error: {
+          code: 'LLM_ERROR',
+          message:
+            'Agent initialization failed. The AI service is rate-limited right now. Please try again in about 42 seconds.',
+        },
+      });
+      expect(res.body).not.toContain(privateBody);
+    }
+    expect(build).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(manager.getDestinationStates())).not.toContain(
+      privateBody,
+    );
+  },
+);
 
 it.each([
   { stream: false, early: false },

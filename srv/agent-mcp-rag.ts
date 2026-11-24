@@ -108,8 +108,13 @@ import {
   AgentInitializationError,
   captureTokenUsage,
   clientRunFailure,
+  failureMessage,
+  HubError,
+  isInfrastructureFailure,
   runContextOverflow,
+  type SafeFailure,
   safeContextExceeded,
+  sanitizeFailure,
 } from './lib/llm-failure';
 import { logRunFailure } from './lib/pipeline-failure-logging';
 import { throttleMessage, throttleOf } from './lib/throttle-surfacing';
@@ -141,16 +146,28 @@ export function mcpRunError<T>(
   options?: { traceId?: string; writeNotice?: string },
 ) {
   logRunFailure(cds.log('agent-mcp'), error, failure, options?.traceId);
-  const limit =
-    failure.status === 400 || error instanceof AgentInitializationError
-      ? undefined
-      : throttleOf(error);
+  const limit = runContextOverflow(error) ? undefined : throttleOf(error);
   const message = limit
-    ? throttleMessage(limit, options?.writeNotice)
+    ? throttleMessage(
+        limit,
+        options?.writeNotice ??
+          (error instanceof AgentInitializationError
+            ? failure.message
+            : undefined),
+      )
     : failure.message;
   const structured: RagWriteErrorResult = {
     result: message,
-    error: { ...failure, message },
+    error: {
+      ...failure,
+      message,
+      ...(limit && {
+        throttled: true,
+        ...(limit.retryAfterSeconds !== undefined && {
+          retryAfterSeconds: limit.retryAfterSeconds,
+        }),
+      }),
+    },
   };
   return {
     ...ragTextResult(message, true),
@@ -826,7 +843,10 @@ async function executeRagMcpToolImpl(
         )
       : result;
   } catch (error) {
-    if (runContextOverflow(error)) {
+    if (
+      runContextOverflow(error) ||
+      (!isWriteTool(name) && isInfrastructureFailure(error))
+    ) {
       const failure = clientRunFailure(error);
       if (failure) return mcpRunError(error, failure);
     }
@@ -854,7 +874,7 @@ async function executeRagMcpToolImpl(
       error instanceof RagWriteError
         ? `${error.code}: ${error.message}`
         : error instanceof Error
-          ? error.message
+          ? failureMessage(error)
           : String(error),
       true,
     );
@@ -1179,7 +1199,10 @@ async function runRagTool(
       source?: string;
       trust?: number;
     }[] = [];
-    const unavailable: { collection: string; error: string }[] = [];
+    const unavailable: (Omit<SafeFailure, 'message'> & {
+      collection: string;
+      error: string;
+    })[] = [];
     for (const id of ids) {
       try {
         if (role === 'coordinator' && id === '@skills') {
@@ -1226,7 +1249,7 @@ async function runRagTool(
         )
           continue;
         const store = await registry.getRagStore(id);
-        if (!store) throw new Error('Collection store unavailable');
+        if (!store) throw new HubError('Collection store unavailable');
         const result = await new CollectionSearchRag(store).query(
           embedding,
           args.k ?? 8,
@@ -1263,9 +1286,14 @@ async function runRagTool(
       } catch (error) {
         const overflow = safeContextExceeded(error);
         if (overflow) throw overflow;
+        const { message, ...facts } = sanitizeFailure(error, {
+          code: 'QUERY_ERROR',
+          message: 'Collection search failed.',
+        });
         unavailable.push({
           collection: role ? await label(id) : id,
-          error: error instanceof Error ? error.message : String(error),
+          error: message,
+          ...facts,
         });
       }
     }

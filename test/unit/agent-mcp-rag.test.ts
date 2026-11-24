@@ -219,7 +219,14 @@ const responseSchema = z.object({
     .default([]),
   records: z.array(z.object({ id: z.string() })).default([]),
   unavailable: z
-    .array(z.object({ collection: z.string(), error: z.string() }))
+    .array(
+      z.object({
+        collection: z.string(),
+        error: z.string(),
+        code: z.string(),
+        status: z.number().optional(),
+      }),
+    )
     .optional(),
   offset: z.number().optional(),
   total: z.number().optional(),
@@ -853,7 +860,7 @@ test.each(['store', 'query-result', 'query-throw', 'missing-store'])(
     if (failure === 'store' || failure === 'missing-store') {
       jest.spyOn(registry, 'getRagStore').mockImplementation(async (id) => {
         if (id === cid) {
-          if (failure === 'store') throw new Error(message);
+          if (failure === 'store') throw new llmFailure.HubError(message);
           return null;
         }
         return getStore(id);
@@ -863,8 +870,13 @@ test.each(['store', 'query-result', 'query-throw', 'missing-store'])(
       jest
         .spyOn(CollectionSearchRag.prototype, 'query')
         .mockImplementationOnce(async () => {
-          if (failure === 'query-throw') throw new Error(message);
-          return { ok: false, error: new RagError(message, 'QUERY_ERROR') };
+          if (failure === 'query-throw') throw new llmFailure.HubError(message);
+          return {
+            ok: false,
+            error: Object.assign(new RagError(message, 'QUERY_ERROR'), {
+              status: 502,
+            }),
+          };
         })
         .mockImplementation(query);
     }
@@ -882,10 +894,18 @@ test.each(['store', 'query-result', 'query-throw', 'missing-store'])(
           error:
             failure === 'missing-store'
               ? 'Collection store unavailable'
-              : message,
+              : failure === 'query-result'
+                ? 'Collection search failed.'
+                : message,
+          ...(failure === 'query-result' && {
+            code: 'QUERY_ERROR',
+            status: 502,
+          }),
         },
       ],
     });
+    if (failure === 'query-result')
+      expect(result.content[0].text).not.toContain(message);
     expect(
       (await body(Promise.resolve(result))).hits.every(
         (hit) => hit.collection === second,
@@ -904,7 +924,7 @@ test('search includes full notes for every unavailable collection', async () => 
   const getStore = registry.getRagStore.bind(registry);
   jest.spyOn(registry, 'getRagStore').mockImplementation(async (id) => {
     const error = errors.get(id);
-    if (error) throw new Error(error);
+    if (error) throw new llmFailure.HubError(error);
     return getStore(id);
   });
   const result = await body(
@@ -1397,13 +1417,15 @@ test('write argument limit counts UTF-8 and JSON escaping at the exact boundary'
 
 test('write errors preserve backend codes and separate embedding and storage failures', async () => {
   const write = jest.spyOn(registry, 'addDocument');
-  write.mockRejectedValueOnce(
-    new RagError('backend rejected', 'CUSTOM_STORE_ERROR'),
-  );
-  expect(assertWriteResult(await call('record_add')).error).toMatchObject({
+  const privateBody = 'PRIVATE_RAG_WRITE_BODY';
+  write.mockRejectedValueOnce(new RagError(privateBody, 'CUSTOM_STORE_ERROR'));
+  const failed = await call('record_add');
+  expect(assertWriteResult(failed).error).toMatchObject({
     code: 'CUSTOM_STORE_ERROR',
     status: 400,
+    message: 'Collection write failed.',
   });
+  expect(JSON.stringify(failed)).not.toContain(privateBody);
   write.mockRejectedValueOnce(new Error('embedding failed'));
   expect(assertWriteResult(await call('record_add')).error?.code).toBe(
     'EMBEDDING_FAILED',

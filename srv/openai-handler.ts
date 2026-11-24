@@ -183,13 +183,16 @@ function openAiRunError(
       },
     };
   }
-  return openAiError(
+  const payload = openAiError(
     failure.message,
     failure.status === 400 ? 'invalid_request_error' : 'server_error',
-    failure.code === MODEL_CONTEXT_EXCEEDED
+    failure.contextOverflow && failure.code === MODEL_CONTEXT_EXCEEDED
       ? 'context_length_exceeded'
       : failure.code,
   );
+  return failure.domainStatus === undefined
+    ? payload
+    : { error: { ...payload.error, status: failure.domainStatus } };
 }
 
 /**
@@ -599,7 +602,7 @@ async function handleChatCompletionsScoped(
     if (!early?.opened) throw error;
     early.error({
       error: {
-        message: error instanceof Error ? error.message : String(error),
+        message: failureMessage(error),
         type: 'server_error',
       },
     });
@@ -1180,13 +1183,13 @@ async function serveChatCompletions(
           ),
         onError: (error) => {
           const failure = typedFailure(error);
-          if (failure?.status === 400) return openAiRunError(failure);
+          if (failure?.contextOverflow) return openAiRunError(failure);
           if (isOutageError(error))
             closeDestination(destAfter, describeCause(error));
           if (failure) return openAiRunError(failure);
           return {
             error: {
-              message: error instanceof Error ? error.message : String(error),
+              message: failureMessage(error),
               type: 'server_error',
             },
           };
@@ -1283,7 +1286,7 @@ async function serveChatCompletions(
                           requestMeasurement(req)?.end('error');
                           const err = chunk.error;
                           streamFailure = typedFailure(err);
-                          if (streamFailure?.status === 400) break;
+                          if (streamFailure?.contextOverflow) break;
                           if (isOutageError(chunk.error)) {
                             closeDestination(
                               destAfter,
@@ -1455,7 +1458,7 @@ async function serveChatCompletions(
                     } catch (err) {
                       requestMeasurement(req)?.end('error');
                       streamFailure = typedFailure(err);
-                      if (streamFailure?.status === 400) return;
+                      if (streamFailure?.contextOverflow) return;
                       if (isOutageError(err)) {
                         closeDestination(destAfter, describeCause(err));
                       }
@@ -1492,7 +1495,7 @@ async function serveChatCompletions(
 
       const tokens = spend.usage(lastUsage);
       if (tokens?.models) log.info('Token usage by model', tokens.models);
-      if (streamFailure?.status === 400) {
+      if (streamFailure?.contextOverflow) {
         clearInterval(keepAlive);
         const payload = openAiRunError(streamFailure);
         if (res.headersSent || streamFailure.code !== MODEL_CONTEXT_EXCEEDED) {
@@ -1637,7 +1640,7 @@ async function serveChatCompletions(
 
     if (!result.ok) requestMeasurement(req)?.end('error');
     const failure = result.ok ? undefined : typedFailure(result.error);
-    if (failure?.status === 400) {
+    if (failure?.contextOverflow) {
       out.json(failure.status, openAiRunError(failure));
       return;
     }

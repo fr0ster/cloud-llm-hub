@@ -211,17 +211,27 @@ test.each(['absent', 'failed'])(
   },
 );
 
-test('does not retry unrelated SDK failures with a user token', async () => {
+test('redacts unrelated SDK failures without retrying with a user token', async () => {
   setDestinationSource({
     list: async () => [],
     metadata: async () => undefined,
     clearCache() {},
     refuse: () => null,
   });
-  sdkGet.mockRejectedValue(new Error('service unavailable'));
-  await expect(resolveDestinationSapConfig('PP', 'user-jwt')).rejects.toThrow(
-    'service unavailable',
+  sdkGet.mockRejectedValue(
+    Object.assign(new Error('PRIVATE_DESTINATION_BODY'), {
+      code: 'DESTINATION_SDK_FAILURE',
+      response: { status: 503 },
+    }),
   );
+  await expect(
+    resolveDestinationSapConfig('PP', 'user-jwt'),
+  ).rejects.toMatchObject({
+    code: 'DESTINATION_SDK_FAILURE',
+    statusCode: 503,
+    message:
+      'Failed to resolve destination "PP". Check the destination service and connection settings.',
+  });
   expect(sdkGet).toHaveBeenCalledTimes(1);
 });
 

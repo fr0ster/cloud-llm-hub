@@ -19,7 +19,7 @@ import {
   type dialogueChat,
   failDialogueResponse,
 } from './dialogue-chat';
-import { runErrorCode, safeContextExceeded } from './llm-failure';
+import { HubError, runErrorCode, safeContextExceeded } from './llm-failure';
 import { type LongSession, longSessions } from './long-session';
 import { summarizeToolResult } from './tool-result-summary';
 import { responseMeasurement } from './usage/request-records';
@@ -333,11 +333,12 @@ export async function streamDialogue(opts: {
               throw (
                 safeContextExceeded(item) ??
                 Object.assign(
-                  new Error(
-                    cause
-                      ? `Background planner turn failed: ${cause}`
-                      : 'Background planner turn failed',
-                    cause ? { cause: new Error(cause) } : undefined,
+                  new HubError(
+                    cause && code && throttled
+                      ? cause
+                      : cause
+                        ? `Background planner turn failed: ${cause}`
+                        : 'Background planner turn failed',
                   ),
                   { code, status, throttled, retryAfterSeconds },
                 )

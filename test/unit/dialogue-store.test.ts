@@ -80,6 +80,11 @@ it('sanitizes error fields on direct store writes and keeps typed facts', async 
   const store = new MemoryDialogueStore();
   const raw = 'PRIVATE_STORED_PROVIDER_BODY';
   const sapError = 'HTTP 400: Activation failed: ZCL_DEMO has a syntax error';
+  const domainFailure = {
+    code: 'MCP_HTTP_400',
+    status: 400,
+    message: sapError,
+  };
   const failure = {
     code: 'EMBED_ERROR',
     message: 'Embedding request failed.',
@@ -117,7 +122,8 @@ it('sanitizes error fields on direct store writes and keeps typed facts', async 
     error: sapError,
     output: sapError,
     summary: sapError,
-    terminalErrorCode: undefined,
+    terminalErrorCode: domainFailure.code,
+    failure: domainFailure,
   };
   const eventNote = (id: string, error: string) =>
     `[task events] task ${id} (executor) failed: read — task ${id} (executor) failed; kind: report; summary: ${error}; chars: 0; result: not stored; goal: read; error: ${error}`;
@@ -157,6 +163,7 @@ it('sanitizes error fields on direct store writes and keeps typed facts', async 
           },
         ],
       },
+      { id: 'r2', openedAt: 2, text: 'activate', terminalError: domainFailure },
     ],
     tasks: [
       { ...task, failure: { ...failure, message: raw } },
@@ -193,6 +200,7 @@ it('sanitizes error fields on direct store writes and keeps typed facts', async 
   const restored = await store.load('alice', 'terminal');
   expect(JSON.stringify(restored)).not.toContain(raw);
   expect(restored?.requests?.[0].terminalError).toEqual(failure);
+  expect(restored?.requests?.[1].terminalError).toEqual(domainFailure);
   expect(restored?.tasks[0]).toMatchObject({
     error: failure.message,
     output: failure.message,

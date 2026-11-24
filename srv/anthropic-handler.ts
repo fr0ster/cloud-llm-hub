@@ -24,6 +24,7 @@ import {
   agentInitializationFailure,
   captureTokenUsage,
   failureMessage,
+  isInfrastructureFailure,
   llmFailure,
   mergeStreamUsage,
   runErrorCode,
@@ -146,7 +147,14 @@ function anthropicRunError(failure: ChatRunFailure) {
       : 'api_error';
   return {
     type: 'error' as const,
-    error: { type, message: failure.message, code: failure.code },
+    error: {
+      type,
+      message: failure.message,
+      code: failure.code,
+      ...(failure.domainStatus !== undefined && {
+        status: failure.domainStatus,
+      }),
+    },
   };
 }
 
@@ -491,7 +499,7 @@ async function handleAnthropicMessagesScoped(
     early.error({
       type: 'error',
       error: {
-        message: error instanceof Error ? error.message : String(error),
+        message: failureMessage(error),
         type: 'api_error',
       },
     });
@@ -911,7 +919,7 @@ async function serveMessages(
         run: runAgent,
         onError: (error) => {
           const failure = typedFailure(error);
-          if (failure?.status === 400) return anthropicRunError(failure);
+          if (failure?.contextOverflow) return anthropicRunError(failure);
           if (isOutageError(error))
             closeDestination(destination, describeCause(error));
           if (failure) return anthropicRunError(failure);
@@ -919,7 +927,7 @@ async function serveMessages(
             type: 'error',
             error: {
               type: 'api_error',
-              message: error instanceof Error ? error.message : String(error),
+              message: failureMessage(error),
             },
           };
         },
@@ -985,7 +993,11 @@ async function serveMessages(
                 }
                 if (!chunk.ok && streamError === undefined) {
                   requestMeasurement(req)?.end('error');
-                  if (runErrorCode(chunk.error)) throw chunk.error;
+                  if (
+                    runErrorCode(chunk.error) ||
+                    isInfrastructureFailure(chunk.error)
+                  )
+                    throw chunk.error;
                   streamError = chunk.error;
                 }
                 if (chunk.ok && !chunk.value.status && chunk.value.content)
@@ -1097,7 +1109,7 @@ async function serveMessages(
       } catch (err) {
         streamSucceeded = false;
         const failure = typedFailure(err);
-        if (failure?.status === 400) {
+        if (failure?.contextOverflow) {
           requestMeasurement(req)?.end('error');
           clearInterval(keepAlive);
           const payload = anthropicRunError(failure);
@@ -1219,7 +1231,7 @@ async function serveMessages(
       out.json(200, withUsage(adapter.formatResult(result.value, context)));
     } else {
       const failure = typedFailure(result.error);
-      if (failure?.status === 400) {
+      if (failure?.contextOverflow) {
         out.json(failure.status, withUsage(anthropicRunError(failure)));
         return;
       }
