@@ -1,7 +1,6 @@
 import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
 import {
   LlmError,
-  McpError,
   MODEL_CONTEXT_EXCEEDED,
   OrchestratorError,
   staticApiKey,
@@ -138,59 +137,28 @@ beforeEach(() => {
 afterEach(() => configure());
 
 it.each([
-  ['COORDINATOR_STEP_FAILED', 'A coordinator work step failed.'],
-  ['COORDINATOR_CHECK_FAILED', 'A coordinator check could not be completed.'],
-  ['CONFIG_ERROR', 'Agent run failed.'],
-])('passes through %s with a safe error message', async (code, message) => {
+  'COORDINATOR_STEP_FAILED',
+  'COORDINATOR_CHECK_FAILED',
+  'CONFIG_ERROR',
+])('passes through %s with the existing error message', async (code) => {
   harness.process = async () => ({
     ok: false,
-    error: new OrchestratorError('Private component failure', code),
+    error: new OrchestratorError('Component failure', code),
   });
   const { res, done } = call(body(false));
   await done;
   expect(res.statusCode).toBe(500);
   expect(JSON.parse(res.body)).toMatchObject({
     type: 'error',
-    error: { type: 'api_error', code, message },
+    error: { type: 'api_error', code, message: 'Component failure' },
   });
-  expect(res.body).not.toContain('Private component failure');
   expect(mockRunError.mock.calls).toEqual([
-    ['Agent run failed', { code, status: 500, traceId: expect.any(String) }],
+    [
+      'Agent run failed',
+      { code, status: 500, traceId: expect.stringMatching(/./) },
+    ],
   ]);
 });
-
-it.each([false, true])(
-  'preserves a SAP activation diagnostic (stream=%s)',
-  async (stream) => {
-    const message = 'HTTP 400: Activation failed. Syntax error in ZCL_DEMO.';
-    const error = new McpError(message, 'MCP_HTTP_400');
-    harness.process = async () => ({ ok: false, error });
-    harness.stream = async function* () {
-      yield { ok: true, value: { content: 'partial' } };
-      yield { ok: false, error };
-    };
-
-    const { res, done } = call(body(stream));
-    await done;
-
-    expect(res.statusCode).toBe(stream ? 200 : 400);
-    const event = res.body
-      .split('\n\n')
-      .find((chunk) => chunk.startsWith('event: error\n'));
-    expect(
-      JSON.parse(
-        stream ? (event?.slice('event: error\ndata: '.length) ?? '') : res.body,
-      ),
-    ).toMatchObject({
-      type: 'error',
-      error: { code: 'MCP_HTTP_400', message, ...(stream && { status: 400 }) },
-    });
-    expect(mockRunError).toHaveBeenCalledWith(
-      'Agent run failed',
-      expect.objectContaining({ code: 'MCP_HTTP_400', status: 400 }),
-    );
-  },
-);
 
 it('logs a returned typed streaming failure before writing the error event', async () => {
   const privateText = 'Private component failure and user content';
@@ -210,14 +178,14 @@ it('logs a returned typed streaming failure before writing the error event', asy
   await done;
 
   expect(res.body).toContain('event: error');
-  expect(res.body).not.toContain(privateText);
+  expect(res.body).toContain(privateText);
   expect(mockRunError.mock.calls).toEqual([
     [
       'Agent run failed',
       {
         code: 'CONFIG_ERROR',
         status: 500,
-        traceId: expect.any(String),
+        traceId: expect.stringMatching(/./),
         component: 'executor',
         stepId: 'first',
       },
@@ -237,6 +205,7 @@ it.each([
   { stream: false, started: false, write: true, throws: true },
   { stream: true, started: false, write: false, throws: false },
   { stream: true, started: true, write: true, throws: false },
+  { stream: true, started: true, write: true, throws: true },
 ])(
   'keeps typed throttle details (stream=$stream, started=$started, write=$write, throws=$throws)',
   async ({ stream, started, write, throws }) => {
@@ -253,6 +222,7 @@ it.each([
     };
     harness.stream = async function* () {
       if (started) yield { ok: true, value: { content: 'partial' } };
+      if (throws) throw error;
       yield { ok: false, error };
     };
     if (write) harness.unanswered = [{ call: { name: 'CreateClass' } }];
@@ -264,12 +234,12 @@ it.each([
     const message = write
       ? `CreateClass was sent and no answer came back (LLM unavailable (HTTP 429)). It was NOT retried. ${retry}`
       : stream
-        ? `LLM unavailable (HTTP 429). ${retry}`
+        ? 'LLM unavailable (HTTP 429)'
         : retry;
     expect(res.statusCode).toBe(stream ? 200 : 529);
     expect(res.headers['x-clh-model-ignored']).toBe('outside-allowlist');
     expect(res.headers['x-clh-params-ignored']).toBe('max_tokens');
-    expect(res.headers['Retry-After']).toBe(started ? undefined : '42');
+    expect(res.headers['Retry-After']).toBe(stream ? undefined : '42');
     const event = res.body
       .split('\n\n')
       .find((chunk) => chunk.startsWith('event: error\n'));
@@ -279,7 +249,11 @@ it.each([
       ),
     ).toEqual({
       type: 'error',
-      error: { type: 'overloaded_error', code: 'LLM_ERROR', message },
+      error: {
+        type: stream && !write ? 'api_error' : 'overloaded_error',
+        code: 'LLM_ERROR',
+        message,
+      },
     });
   },
 );

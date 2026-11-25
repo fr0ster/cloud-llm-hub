@@ -1,6 +1,8 @@
 import {
+  contextExceededError,
   InMemoryRag,
   type IUsageRecorder,
+  MODEL_CONTEXT_EXCEEDED,
   QueryEmbedding,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
@@ -105,19 +107,12 @@ type Args = {
 type ValidatedArgs = Args & { scope?: 'user' | 'session' };
 
 import {
-  AgentInitializationError,
   captureTokenUsage,
-  clientRunFailure,
-  failureMessage,
-  HubError,
-  isInfrastructureFailure,
-  runContextOverflow,
-  type SafeFailure,
+  type clientRunFailure,
+  contextExceededMessage,
   safeContextExceeded,
-  sanitizeFailure,
 } from './lib/llm-failure';
 import { logRunFailure } from './lib/pipeline-failure-logging';
-import { throttleMessage, throttleOf } from './lib/throttle-surfacing';
 import { timedUsageToWire, type WireAgentUsage } from './lib/usage-wire';
 
 export function ragTextResult(text: string, isError = false) {
@@ -143,37 +138,40 @@ export function mcpRunError<T>(
   error: T,
   failure: NonNullable<ReturnType<typeof clientRunFailure>>,
   usage?: WireAgentUsage,
-  options?: { traceId?: string; writeNotice?: string },
+  options?: { traceId?: string; message?: string },
 ) {
   logRunFailure(cds.log('agent-mcp'), error, failure, options?.traceId);
-  const limit = runContextOverflow(error) ? undefined : throttleOf(error);
-  const message = limit
-    ? throttleMessage(
-        limit,
-        options?.writeNotice ??
-          (error instanceof AgentInitializationError
-            ? failure.message
-            : undefined),
-      )
-    : failure.message;
+  const message =
+    failure.message ??
+    options?.message ??
+    (error instanceof Error ? error.message : String(error));
   const structured: RagWriteErrorResult = {
     result: message,
-    error: {
-      ...failure,
-      message,
-      ...(limit && {
-        throttled: true,
-        ...(limit.retryAfterSeconds !== undefined && {
-          retryAfterSeconds: limit.retryAfterSeconds,
-        }),
-      }),
-    },
+    error: { ...failure, message },
   };
   return {
     ...ragTextResult(message, true),
     structuredContent: usage
       ? Object.assign({}, structured, { usage })
       : structured,
+  };
+}
+export function mcpContextExceeded(
+  usage?: WireAgentUsage,
+  unansweredSapWrite = false,
+) {
+  const message = contextExceededMessage(unansweredSapWrite);
+  const failure: RagWriteErrorResult = {
+    result: message,
+    error: {
+      code: MODEL_CONTEXT_EXCEEDED,
+      message,
+      status: 400,
+    },
+  };
+  return {
+    ...ragTextResult(message, true),
+    structuredContent: usage ? Object.assign({}, failure, { usage }) : failure,
   };
 }
 interface WriteFields {
@@ -843,13 +841,7 @@ async function executeRagMcpToolImpl(
         )
       : result;
   } catch (error) {
-    if (
-      runContextOverflow(error) ||
-      (!isWriteTool(name) && isInfrastructureFailure(error))
-    ) {
-      const failure = clientRunFailure(error);
-      if (failure) return mcpRunError(error, failure);
-    }
+    if (contextExceededError(error)) return mcpContextExceeded();
     if (
       error instanceof Error &&
       'refused' in error &&
@@ -874,7 +866,7 @@ async function executeRagMcpToolImpl(
       error instanceof RagWriteError
         ? `${error.code}: ${error.message}`
         : error instanceof Error
-          ? failureMessage(error)
+          ? error.message
           : String(error),
       true,
     );
@@ -1199,10 +1191,7 @@ async function runRagTool(
       source?: string;
       trust?: number;
     }[] = [];
-    const unavailable: (Omit<SafeFailure, 'message'> & {
-      collection: string;
-      error: string;
-    })[] = [];
+    const unavailable: { collection: string; error: string }[] = [];
     for (const id of ids) {
       try {
         if (role === 'coordinator' && id === '@skills') {
@@ -1249,7 +1238,7 @@ async function runRagTool(
         )
           continue;
         const store = await registry.getRagStore(id);
-        if (!store) throw new HubError('Collection store unavailable');
+        if (!store) throw new Error('Collection store unavailable');
         const result = await new CollectionSearchRag(store).query(
           embedding,
           args.k ?? 8,
@@ -1286,14 +1275,9 @@ async function runRagTool(
       } catch (error) {
         const overflow = safeContextExceeded(error);
         if (overflow) throw overflow;
-        const { message, ...facts } = sanitizeFailure(error, {
-          code: 'QUERY_ERROR',
-          message: 'Collection search failed.',
-        });
         unavailable.push({
           collection: role ? await label(id) : id,
-          error: message,
-          ...facts,
+          error: error instanceof Error ? error.message : String(error),
         });
       }
     }
@@ -1491,7 +1475,7 @@ export async function executeRagMcpTool(
   if (!usage) return result;
   if (
     result.structuredContent &&
-    runContextOverflow(result.structuredContent.error)
+    contextExceededError(result.structuredContent.error)
   )
     return {
       ...result,

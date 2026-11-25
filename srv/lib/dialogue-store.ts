@@ -17,11 +17,6 @@ import { ensureDialogueStore } from './collection-persistence';
 import type { OutboxEntry } from './dialogue-outbox';
 import { guardedTask } from './guarded-task';
 import {
-  isInfrastructureFailure,
-  type SafeFailure,
-  sanitizeFailure,
-} from './llm-failure';
-import {
   createCollectionProvider,
   defaultCtors,
   PROVIDER_DEFAULT_DIMENSION,
@@ -35,18 +30,8 @@ import { type DialogueBytes, storageEnabled } from './usage/storage-values';
 type Plan = Exclude<DialogueState['plan'], string | undefined>;
 type PlanStep = Plan['steps'][number];
 type TaskRecord = DialogueState['tasks'][number];
-type DialogueTask = TaskRecord & { failure?: SafeFailure };
-type DialogueRequest = NonNullable<DialogueState['requests']>[number] & {
-  terminalError?: SafeFailure;
-};
 
-export type HubDialogueState = Omit<
-  DialogueState,
-  'requests' | 'tasks' | 'pendingEvents'
-> & {
-  requests?: DialogueRequest[];
-  tasks: DialogueTask[];
-  pendingEvents?: (Omit<TaskEvent, 'task'> & { task: DialogueTask })[];
+export type HubDialogueState = DialogueState & {
   coordinatorModel?: string;
   toolContractVersion?: number;
   outbox?: OutboxEntry[];
@@ -56,155 +41,6 @@ export type HubDialogueState = Omit<
 };
 
 export const DIALOGUE_TOOL_CONTRACT_VERSION = 3;
-
-export const plannerFailure = {
-  code: 'PLANNER_ERROR',
-  message: 'Planner turn failed.',
-};
-export const workerFailure = {
-  code: 'WORKER_ERROR',
-  message: 'Worker task failed.',
-};
-
-export function sanitizeTaskFailure(
-  task: Pick<TaskRecord, 'error' | 'terminalErrorCode'>,
-  facts?: SafeFailure,
-): SafeFailure | undefined {
-  if (task.error === undefined) return;
-  const terminal = { code: task.terminalErrorCode };
-  if (facts || isInfrastructureFailure(terminal))
-    return sanitizeFailure(facts ?? terminal, workerFailure);
-}
-
-function isFailureCopy(text: string | undefined, error: string): boolean {
-  if (text === error) return true;
-  if (text === undefined) return false;
-  // TaskBoard cuts the stored copy independently of the original error.
-  const cut = /\n\[cut: (\d+) characters omitted\]$/.exec(text);
-  return (
-    cut !== null &&
-    error.length - cut.index === Number(cut[1]) &&
-    error.startsWith(text.slice(0, cut.index))
-  );
-}
-
-/** Project error fields for both live snapshots and the store codec. */
-export function sanitizeDialogueState(
-  state: HubDialogueState,
-  taskFailures?: ReadonlyMap<string, SafeFailure>,
-  requestFailure?: (request: DialogueRequest) => SafeFailure | undefined,
-): HubDialogueState {
-  const taskErrors = new Map<
-    string,
-    { raw: string; safe: string; summary?: string }
-  >();
-  const sanitizeTask = (task: DialogueTask): DialogueTask => {
-    const facts = taskFailures?.get(task.id) ?? task.failure;
-    const failure = sanitizeTaskFailure(task, facts);
-    if (!failure || task.error === undefined) return task;
-    const errorOutput = isFailureCopy(task.output, task.error);
-    const errorSummary = isFailureCopy(task.summary, task.error);
-    if (task.error && task.error !== failure.message)
-      taskErrors.set(task.id, {
-        raw: task.error,
-        safe: failure.message,
-        summary: errorSummary ? task.summary : undefined,
-      });
-    return {
-      ...task,
-      failure,
-      error: failure.message,
-      ...(task.terminalErrorCode !== undefined && {
-        terminalErrorCode: failure.code,
-      }),
-      ...(errorOutput && { output: failure.message }),
-      ...(errorSummary && { summary: failure.message }),
-    };
-  };
-  const taskFacts = new Map(
-    state.tasks.map((task) => [task.id, task] as const),
-  );
-  const tasks = state.tasks.map(sanitizeTask);
-  const pendingEvents = state.pendingEvents?.map((event) => {
-    const original = taskFacts.get(event.task.id);
-    const failure =
-      original?.error === event.task.error ? original?.failure : undefined;
-    return {
-      ...event,
-      task: sanitizeTask({
-        ...event.task,
-        ...(failure && { failure }),
-      }),
-    };
-  });
-  const scrubTaskNotes = (text: string) =>
-    text
-      .split(/(?<=\n)(?=\[(?:task events|actions|delivered)\] )/)
-      .map((note) => {
-        // These are the library's task-event and delivery projections.
-        const id =
-          /^\[(?:task events|actions)(?:\] from \S+:|\]) task (\S+).*? — task \1 /s.exec(
-            note,
-          )?.[1] ?? /^\[delivered\] task (\S+) /.exec(note)?.[1];
-        const error = id === undefined ? undefined : taskErrors.get(id);
-        return error
-          ? note
-              .replace(
-                `; summary: ${error.summary ?? error.raw}; chars: `,
-                () => `; summary: ${error.safe}; chars: `,
-              )
-              .replace(`; error: ${error.raw}`, () => `; error: ${error.safe}`)
-          : note;
-      })
-      .join('');
-  return {
-    ...state,
-    tasks,
-    ...(pendingEvents && { pendingEvents }),
-    ...(state.requests && {
-      requests: state.requests.map((request) => {
-        const failure = requestFailure?.(request) ?? request.terminalError;
-        return {
-          ...request,
-          ...(failure &&
-            isInfrastructureFailure(failure) && {
-              terminalError: sanitizeFailure(failure, plannerFailure),
-            }),
-          ...(taskErrors.size > 0 &&
-            request.transcript && {
-              transcript: request.transcript.map((message) =>
-                message.internalKind && message.content
-                  ? { ...message, content: scrubTaskNotes(message.content) }
-                  : message,
-              ),
-            }),
-        };
-      }),
-    }),
-    ...(taskErrors.size > 0 && {
-      conversation: state.conversation.map((message) =>
-        message.role === 'user' && message.content
-          ? {
-              ...message,
-              content: scrubTaskNotes(message.content),
-            }
-          : message,
-      ),
-    }),
-    ...(typeof state.plan === 'object' &&
-      taskErrors.size > 0 && {
-        plan: {
-          ...state.plan,
-          steps: state.plan.steps.map((step) => {
-            const error = step.taskIds
-              .map((id) => taskErrors.get(id))
-              .find((failure) => failure && failure.raw === step.note);
-            return error ? { ...step, note: error.safe } : step;
-          }),
-        },
-      }),
-  };
-}
 
 /** Older tool contracts require replanning without replaying writes. */
 export function migrateDialogueToolContract(
@@ -262,13 +98,6 @@ export interface DialogueStoreBackend {
 }
 const str = z.string();
 const num = z.number().finite();
-const failureFacts = z.object({
-  code: str,
-  message: str,
-  status: num.optional(),
-  throttled: z.boolean().optional(),
-  retryAfterSeconds: num.optional(),
-});
 const tokenUsage = z.object({
   cachedInputTokens: num.optional(),
   cacheCreationInputTokens: num.optional(),
@@ -431,7 +260,7 @@ const requestFields = z.object({
     >)
     .optional(),
   lastTurnOk: z.boolean().optional(),
-  terminalError: failureFacts.optional(),
+  terminalError: z.object({ code: str, message: str }).optional(),
   resolvedFailures: ids.optional(),
   deliveredTaskIds: ids.optional(),
   transcript: requestTranscript.optional(),
@@ -514,8 +343,7 @@ const taskRecord = z.object({
   lastActivityAt: num.optional(),
   currentAction: str.optional(),
   idleMs: num.optional(),
-  failure: failureFacts.optional(),
-} satisfies Shape<DialogueTask>);
+} satisfies Shape<TaskRecord>);
 type TaskEvent = NonNullable<DialogueState['pendingEvents']>[number];
 const taskEvent = z.object({
   stalled: z.boolean().optional(),
@@ -566,7 +394,7 @@ function stored(record: HubDialogueState): HubDialogueState {
             }),
           )
           .parse(outbox);
-  return sanitizeDialogueState({
+  return {
     ...state,
     coordinatorModel: z
       .string()
@@ -586,7 +414,7 @@ function stored(record: HubDialogueState): HubDialogueState {
     ...(parsed?.length ? { outbox: parsed } : {}),
     ...(journal.success ? { toolJournal: journal.data } : {}),
     ...(ackMode !== undefined ? { ackMode } : {}),
-  });
+  };
 }
 function encode(
   record: HubDialogueState,

@@ -135,10 +135,10 @@ import {
   type IRagEditor,
   type IRagProvider,
   type ISubAgent,
+  type LlmError,
   type Message,
   OrchestratorError,
   QueryEmbedding,
-  type RagError,
   type RagMetadata,
   type RagResult,
   stampRagOwner,
@@ -190,23 +190,14 @@ import {
 } from './lib/dialogue-rag-tools';
 import { type ExpositionLevel, resolveExposition } from './lib/exposition';
 import { FixedExecutorPlanner } from './lib/fixed-executor-planner';
-import {
-  AgentInitializationError,
-  agentInitializationFailure,
-  failureMessage,
-  HubError,
-  runContextOverflow,
-  runWithoutLlmSpend,
-  sanitizeFailure,
-} from './lib/llm-failure';
+import { runWithoutLlmSpend, safeContextExceeded } from './lib/llm-failure';
 import {
   asOutage,
   outageClassifier,
   outageFromToolResult,
 } from './lib/mcp-outage';
 import { NoticeFinalizer } from './lib/notice-finalizer';
-import { logAgentInitializationFailure } from './lib/pipeline-failure-logging';
-import { classifyProbe } from './lib/probe-classifier';
+import { logAdaptiveStepStop } from './lib/pipeline-failure-logging';
 import {
   agentQueryEmbedder,
   type EmbedderFingerprint,
@@ -1095,7 +1086,7 @@ export interface DestinationState {
   toolsRag: ExpositionFilteringRag;
   toolCount: number;
   status: 'pending' | 'ready' | 'vectorizing' | 'error' | 'unreachable';
-  error?: AgentInitializationError;
+  error?: string | LlmError;
   /** BTP destination ProxyType ('OnPremise' | 'Internet'), when known. */
   proxyType?: string;
   /**
@@ -1171,7 +1162,8 @@ export function resolveSystemDestination(systemCode: string): {
   // are all resolvable. Fail only on a terminal state (unreachable / error).
   const state = destinationStates.get(dest);
   if (state?.status === 'unreachable' || state?.status === 'error') {
-    const error = state.error?.message;
+    const error =
+      state.error instanceof Error ? state.error.message : state.error;
     return {
       ok: false,
       error: `Destination "${dest}" (mapped from "${systemCode}") is ${state.status}: ${error || 'unavailable'}`,
@@ -1260,7 +1252,7 @@ export function getDestinationStates(): Array<{
     name,
     status: state.status,
     toolCount: state.toolCount,
-    error: state.error && failureMessage(state.error),
+    error: state.error instanceof Error ? state.error.message : state.error,
     proxyType: state.proxyType,
     requiresCredentials: state.requiresCredentials,
     authentication: state.authentication,
@@ -2037,14 +2029,12 @@ export function loadToolEmbeddingBundle(
  * defect (spec §4.4): startup never embeds the corpus, so the fix is to run the
  * build step for the target configuration and restart.
  */
-export class ToolCorpusMissingError extends AgentInitializationError {
+export class ToolCorpusMissingError extends Error {
   constructor(detail: string) {
-    super({
-      code: 'TOOL_CORPUS_MISSING',
-      message:
-        `Tool vectors for this configuration were not built (${detail}). ` +
+    super(
+      `Tool vectors for this configuration were not built (${detail}). ` +
         'Run the build step: npx tsx tools/generate-tool-embeddings.ts with the target configuration.',
-    });
+    );
     this.name = 'ToolCorpusMissingError';
   }
 }
@@ -2115,7 +2105,7 @@ export async function loadToolCorpus(
       opts.toolGate,
     );
     const w = store.writer();
-    if (!w) throw new HubError('Tool corpus store is not writable (in-memory)');
+    if (!w) throw new Error('Tool corpus store is not writable (in-memory)');
     let count = 0;
     for (const x of docs) {
       const res = await w.upsertRaw(x.id, x.text, {
@@ -2135,18 +2125,7 @@ export async function loadToolCorpus(
       reader: toolStoreName('reader'),
       writer: toolStoreName('writer'),
     };
-    let catalog: Awaited<ReturnType<CatalogReader>>;
-    try {
-      catalog = await readCatalog(p);
-    } catch (error) {
-      throw new AgentInitializationError(
-        sanitizeFailure(error, {
-          code: 'RAG_CATALOG_ERROR',
-          message:
-            'Qdrant catalog unreachable. Check the Qdrant service and connection settings.',
-        }),
-      );
-    }
+    const catalog = await readCatalog(p);
     const problems: string[] = [];
     for (const role of ['reader', 'writer'] as const) {
       const collection = p.stores.qdrantCollection(names[role]);
@@ -2158,18 +2137,7 @@ export async function loadToolCorpus(
         );
       else {
         const count = await p.stores.countPoints('tools', names[role]);
-        if (!count.ok) {
-          const failure = sanitizeFailure(count.error, {
-            code: 'RAG_COUNT_ERROR',
-            message: `Could not read the Qdrant tool corpus point count for ${collection}. Check the Qdrant service and connection settings.`,
-          });
-          cds.log('tool-rag').error('Qdrant tool corpus point count failed', {
-            code: failure.code,
-            status: failure.status,
-            collection,
-          });
-          throw new AgentInitializationError(failure);
-        }
+        if (!count.ok) throw count.error;
         if (count.value === 0)
           cds
             .log('tool-rag')
@@ -2214,7 +2182,7 @@ export async function loadToolCorpus(
   );
   const write = store.writer()?.upsertPrecomputedRaw;
   if (!write)
-    throw new HubError(
+    throw new Error(
       'Tool corpus store cannot take precomputed vectors (vector backend)',
     );
   let count = 0;
@@ -2230,20 +2198,17 @@ export async function loadToolCorpus(
 }
 
 /** A failed corpus write: the load fails, naming the tool, instead of a partial corpus. */
-function corpusWriteError(id: string, cause: RagError): Error {
-  return new AgentInitializationError(
-    sanitizeFailure(cause, {
-      code: 'RAG_UPDATE_ERROR',
-      message: `Tool corpus load failed writing ${id}. Check the RAG backend.`,
-    }),
-  );
+function corpusWriteError(id: string, cause: { message: string }): Error {
+  return new Error(`Tool corpus load failed writing ${id}: ${cause.message}`);
 }
 
 let sharedToolsRag: ExpositionFilteringRag | null = null;
 let sharedToolsInit: Promise<ExpositionFilteringRag> | null = null;
 let sharedToolCount = 0;
-// Keep the failure facts for requests that cannot use the shared corpus.
-let sharedToolsLoadError: AgentInitializationError | null = null;
+// The last failed load's error — a missing corpus, or an unreachable Qdrant
+// catalog — so a request that needs tools can say WHY it cannot have them
+// instead of "still initializing". Cleared on success.
+let sharedToolsLoadError: Error | null = null;
 
 /**
  * Load (once) and return the shared tool-RAG store. Global single-flight:
@@ -2272,7 +2237,7 @@ function ensureSharedToolsVectorized(): Promise<ExpositionFilteringRag> {
     return store;
   });
   sharedToolsInit.catch((err) => {
-    sharedToolsLoadError = agentInitializationFailure(err);
+    sharedToolsLoadError = err instanceof Error ? err : new Error(String(err));
     // Allow a retry on the next call after a failed load.
     sharedToolsInit = null;
   });
@@ -2352,22 +2317,24 @@ async function initDestination(
       toolCount: state.toolCount,
     });
   } catch (err) {
-    const failure = agentInitializationFailure(err, destinationName);
-    const connectionError = state.mcpAdapter === null && err instanceof Error;
-    const probe = connectionError
-      ? classifyProbe(0, err.message, proxyType ?? 'OnPremise')
-      : undefined;
-    state.status =
-      connectionError && err.message.includes('unreachable')
-        ? 'unreachable'
-        : 'error';
-    state.error = new AgentInitializationError(
-      failure,
-      destinationName,
-      state.status,
-      probe,
-    );
-    logAgentInitializationFailure(log, state.error);
+    const overflow = safeContextExceeded(err);
+    const errorMsg =
+      overflow?.message ?? (err instanceof Error ? err.message : String(err));
+    state.error = overflow ?? errorMsg;
+    // Distinguish unreachable (probe failed) from other init errors
+    if (errorMsg.includes('unreachable')) {
+      state.status = 'unreachable';
+      log.warn('Destination unreachable, skipping', {
+        destination: destinationName,
+        error: errorMsg,
+      });
+    } else {
+      state.status = 'error';
+      log.error('Destination initialization failed', {
+        destination: destinationName,
+        error: errorMsg,
+      });
+    }
   }
 
   return state;
@@ -2463,7 +2430,9 @@ async function initBackgroundDestinations(): Promise<void> {
     // Schedule periodic retry for unreachable destinations
     scheduleUnreachableRetry();
   } catch (err) {
-    logAgentInitializationFailure(log, agentInitializationFailure(err));
+    log.warn('Background destination initialization failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
@@ -2554,7 +2523,9 @@ async function runProbe(): Promise<void> {
       }
     }
   } catch (err) {
-    logAgentInitializationFailure(log, agentInitializationFailure(err));
+    log.warn('Probe run failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   } finally {
     probeRunning = false;
   }
@@ -2593,15 +2564,9 @@ function scheduleUnreachableRetry(): void {
  */
 export function closeDestination(name: string, reason: string): void {
   const existing = destinationStates.get(name);
-  const error = new AgentInitializationError(
-    { code: 'destination_unreachable', message: 'Destination is unreachable.' },
-    name,
-    'unreachable',
-    classifyProbe(0, reason, existing?.proxyType ?? 'OnPremise'),
-  );
   if (existing) {
     existing.status = 'unreachable';
-    existing.error = error;
+    existing.error = reason;
   } else {
     // The same shape the background discovery pass builds for a pending
     // destination (above, where `status: 'pending'` entries are created).
@@ -2613,12 +2578,12 @@ export function closeDestination(name: string, reason: string): void {
       toolsRag: toolsStore(new InMemoryRag(), new InMemoryRag()),
       toolCount: 0,
       status: 'unreachable',
-      error,
+      error: reason,
     });
   }
   cds
     .log('agent-manager')
-    .warn('destination closed', { destination: name, code: error.code });
+    .warn('destination closed', { destination: name, reason });
 
   // `scheduleUnreachableRetry` below is a no-op while a timer is already
   // pending, so without this a destination closed mid-countdown would report
@@ -3873,11 +3838,8 @@ export async function buildAgentForDestination(
         const ok = await withWriteActions(journal, () =>
           stage.execute(scopedContext, stageConfig, span),
         );
-        if (!ok && context.error)
-          options?.sessionLogger?.logStep('adaptive_run_stopped', {
-            code: context.error.code,
-            stepId: currentStep,
-          });
+        if (!ok && context.error && currentStep)
+          logAdaptiveStepStop(context.error.code, currentStep, traceId);
         return ok;
       },
     };
@@ -4328,25 +4290,6 @@ export async function getSmartAgent(
   requestedDestination?: string,
   scopedExecutor = false,
 ): Promise<HubAgentHandle> {
-  try {
-    return await resolveSmartAgent(
-      requestedModel,
-      requestedDestination,
-      scopedExecutor,
-    );
-  } catch (error) {
-    throw agentInitializationFailure(
-      error,
-      requestedDestination || getAgentConfig().mcp.destination,
-    );
-  }
-}
-
-async function resolveSmartAgent(
-  requestedModel: string | undefined,
-  requestedDestination: string | undefined,
-  scopedExecutor: boolean,
-): Promise<HubAgentHandle> {
   await assertToolSearchHealthy();
   const log = cds.log('agent-manager');
   const config = getAgentConfig();
@@ -4414,8 +4357,9 @@ async function resolveSmartAgent(
   // WAIT for this destination's vectorization instead of erroring. All callers
   // share one init via ensureDestinationInit; no hub deadline cuts preparation.
   if (!isTerminal(destinationStates.get(destName)?.status)) {
-    await ensureDestinationInit(destName).catch((error) => {
-      if (runContextOverflow(error)) throw error;
+    await ensureDestinationInit(destName).catch((err) => {
+      const overflow = safeContextExceeded(err);
+      if (overflow) throw overflow;
     });
     handle = agentHandles.get(destName);
     if (handle) {
@@ -4423,7 +4367,8 @@ async function resolveSmartAgent(
     }
   }
 
-  // Still not ready after initialization. Fail fast for an explicit destination — silently
+  // Still not ready after the wait: timed out (still vectorizing) or terminal
+  // (error/unreachable). Fail fast for an explicit destination — silently
   // degrading to LLM-only would fabricate an answer from training data instead
   // of hitting the caller's SAP system (issue #83). Non-explicit requests get
   // LLM-only ONLY with the escape hatch (LLM_AGENT_ALLOW_LLM_ONLY_FALLBACK);
@@ -4431,24 +4376,36 @@ async function resolveSmartAgent(
   // retry shortly after usually succeeds).
   const destState = destinationStates.get(destName);
   const initError = destState?.error;
-  if (runContextOverflow(initError)) throw initError;
+  if (initError instanceof Error) throw initError;
   const status = destState?.status ?? 'unknown';
 
   if (isExplicit || !allowFallback) {
+    // A failed tool-corpus load is why the destination cannot become ready
+    // (a missing corpus will not fix itself by retrying), so name it instead
+    // of "initializing".
+    const detail = sharedToolsLoadError
+      ? sharedToolsLoadError.message
+      : isTerminal(status)
+        ? initError || status
+        : `still initializing after ${Math.round(getDestinationInitWaitMs() / 1000)}s — retry shortly`;
+    const destError = new Error(
+      `Destination "${destName}" is ${status}: ${detail}`,
+    ) as Error & {
+      statusCode?: number;
+      code?: string;
+      destinationStatus?: string;
+      destination?: string;
+    };
+    destError.statusCode = 503;
+    destError.code = 'destination_unreachable';
+    destError.destinationStatus = status;
+    destError.destination = destName;
     log.warn('Destination not ready after wait — refusing LLM-only fallback', {
       destination: destName,
       status,
       explicit: isExplicit,
     });
-    if (initError) throw initError;
-    throw new AgentInitializationError(
-      sharedToolsLoadError ?? {
-        code: 'destination_unreachable',
-        message: 'Destination is not ready. Retry shortly.',
-      },
-      destName,
-      status,
-    );
+    throw destError;
   }
 
   // Non-explicit + escape hatch → legacy permissive LLM-only.
@@ -4517,17 +4474,17 @@ function startDestinationWarmup(): void {
     // The process keeps running, but no destination ever becomes ready: every
     // SAP request answers 503 naming this error. Build the corpus and restart.
     if (err instanceof ToolCorpusMissingError) {
-      log.error('Shared tool corpus missing', {
-        code: err.code,
-        status: err.statusCode,
-        error: err.message,
-      });
+      log.error('Shared tool corpus missing', { error: err.message });
       return;
     }
-    logAgentInitializationFailure(log, agentInitializationFailure(err));
+    log.warn('Shared tool corpus load error', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   });
   initBackgroundDestinations().catch((err) => {
-    logAgentInitializationFailure(log, agentInitializationFailure(err));
+    log.warn('Background destination warmup error', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   });
 }
 

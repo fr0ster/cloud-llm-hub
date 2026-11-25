@@ -76,157 +76,39 @@ it.each<NonNullable<DialogueState['tasks'][number]['checkerVerdict']>>([
     expect(await store.load('alice', 'task-results')).toEqual(snapshot);
   },
 );
-it('sanitizes error fields on direct store writes and keeps typed facts', async () => {
+it('round-trips terminal request errors and terminal task error codes', async () => {
   const store = new MemoryDialogueStore();
-  const raw = 'PRIVATE_STORED_PROVIDER_BODY';
-  const sapError = 'HTTP 400: Activation failed: ZCL_DEMO has a syntax error';
-  const domainFailure = {
-    code: 'MCP_HTTP_400',
-    status: 400,
-    message: sapError,
-  };
-  const failure = {
-    code: 'EMBED_ERROR',
-    message: 'Embedding request failed.',
-    status: 401,
-    retryAfterSeconds: 12,
-  };
-  const task: DialogueState['tasks'][number] = {
-    id: 't1',
-    worker: 'executor',
-    goal: 'read',
-    state: 'failed',
-    createdAt: 1,
-    error: raw,
-    output: raw,
-    summary: raw,
-    terminalErrorCode: 'EMBED_ERROR',
-    toolTrace: {
-      entries: [
-        {
-          outcome: 'error',
-          sequence: 1,
-          toolName: 'search',
-          arguments: '{}',
-          error: sapError,
-          resultExcerpt: sapError,
-        },
-      ],
-      omittedCount: 0,
-      complete: true,
-    },
-  };
-  const domainTask = {
-    ...task,
-    id: 't2',
-    error: sapError,
-    output: sapError,
-    summary: sapError,
-    terminalErrorCode: domainFailure.code,
-    failure: domainFailure,
-  };
-  const eventNote = (id: string, error: string) =>
-    `[task events] task ${id} (executor) failed: read — task ${id} (executor) failed; kind: report; summary: ${error}; chars: 0; result: not stored; goal: read; error: ${error}`;
-  const notes = (infrastructureError: string) =>
-    [eventNote('t1', infrastructureError), eventNote('t2', sapError)].join(
-      '\n',
-    );
-  const toolJournal = {
-    requestId: 'r1',
-    entries: [
-      {
-        call: { id: 'activation', name: 'ActivateClass', arguments: {} },
-        result: {
-          isError: true,
-          content: { error: sapError, activated: false },
-        },
-        answered: true,
-        write: true,
-        system: 'sap' as const,
-      },
-    ],
-  };
-  const snapshot: Parameters<MemoryDialogueStore['save']>[2] = {
+  const snapshot: DialogueState = {
     ...state,
-    conversation: [{ role: 'user', content: notes(raw) }],
     requests: [
       {
         id: 'r1',
         openedAt: 1,
         text: 'describe',
-        terminalError: { ...failure, message: raw },
-        transcript: [
-          {
-            role: 'user',
-            content: notes(raw),
-            internalKind: 'events',
-          },
-        ],
+        terminalError: {
+          code: 'LLM_OUTPUT_TRUNCATED',
+          message: 'Provider stopped at the output token limit',
+        },
       },
-      { id: 'r2', openedAt: 2, text: 'activate', terminalError: domainFailure },
     ],
     tasks: [
-      { ...task, failure: { ...failure, message: raw } },
-      domainTask,
-      { ...task, id: 't3', output: undefined, summary: sapError },
+      {
+        id: 't1',
+        worker: 'executor',
+        goal: 'read',
+        state: 'failed',
+        createdAt: 1,
+        error: 'Provider stopped at the output token limit',
+        terminalErrorCode: 'LLM_OUTPUT_TRUNCATED',
+      },
     ],
-    pendingEvents: [
-      { kind: 'failed', task },
-      { kind: 'failed', task: domainTask },
-    ],
-    plan: {
-      version: 1,
-      status: 'active',
-      steps: [
-        {
-          id: 'step1',
-          goal: 'read',
-          state: 'failed',
-          taskIds: ['t1'],
-          note: raw,
-        },
-        {
-          id: 'step2',
-          goal: 'activate',
-          state: 'failed',
-          taskIds: ['t2'],
-          note: sapError,
-        },
-      ],
-    },
-    toolJournal,
   };
   await store.save('alice', 'terminal', snapshot);
   const restored = await store.load('alice', 'terminal');
-  expect(JSON.stringify(restored)).not.toContain(raw);
-  expect(restored?.requests?.[0].terminalError).toEqual(failure);
-  expect(restored?.requests?.[1].terminalError).toEqual(domainFailure);
-  expect(restored?.tasks[0]).toMatchObject({
-    error: failure.message,
-    output: failure.message,
-    summary: failure.message,
-    terminalErrorCode: failure.code,
-    failure,
-  });
-  expect(restored?.tasks[0].toolTrace).toEqual(task.toolTrace);
-  expect(restored?.tasks[1]).toEqual(domainTask);
-  expect(restored?.tasks[2]).toMatchObject({
-    error: failure.message,
-    summary: sapError,
-  });
-  expect(restored?.pendingEvents?.[0].task.summary).toBe(failure.message);
-  expect(restored?.pendingEvents?.[1].task).toEqual(domainTask);
-  expect(restored?.requests?.[0].transcript?.[0].content).toBe(
-    notes(failure.message),
-  );
-  expect(restored?.conversation[0].content).toBe(notes(failure.message));
-  expect(restored?.plan).toMatchObject({
-    steps: [{ note: failure.message }, { note: sapError }],
-  });
-  expect(restored?.toolJournal).toEqual(toolJournal);
+  expect(restored).toEqual(snapshot);
   if (!restored) throw new Error('missing restored state');
   await store.save('alice', 'terminal', restored);
-  expect(await store.load('alice', 'terminal')).toEqual(restored);
+  expect(await store.load('alice', 'terminal')).toEqual(snapshot);
 });
 it('round-trips planner projection metadata, resolved failures and cache usage', async () => {
   const store = new MemoryDialogueStore();

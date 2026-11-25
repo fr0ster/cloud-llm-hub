@@ -7,10 +7,9 @@ import {
   refuseDestination,
 } from '../lib/btp-destinations';
 import { userDependentAuthenticationTypes } from '../lib/destination-authentication';
-import { failureOrigin, HubError, sanitizeFailure } from '../lib/llm-failure';
+import { formatErrorMessage, logErrorSafely } from '../lib/errorUtils';
 import {
   DESTINATION_SYSTEM_TYPE_PROPERTY,
-  InvalidSystemTypeError,
   parseSystemType,
   type SystemType,
 } from '../lib/system-type';
@@ -166,7 +165,7 @@ async function buildSapConfigFromDestination(
 ): Promise<DestinationResolution> {
   const rawUrl = destination.url || getCaseInsensitive(destination, 'URL');
   if (!rawUrl) {
-    throw new HubError(
+    throw new Error(
       `Destination "${destinationName}" is missing URL property.`,
     );
   }
@@ -189,7 +188,7 @@ async function buildSapConfigFromDestination(
   );
 
   if (!authentication) {
-    throw new HubError(
+    throw new Error(
       `Destination "${destinationName}" is missing Authentication property.`,
     );
   }
@@ -203,7 +202,7 @@ async function buildSapConfigFromDestination(
     case 'PrincipalPropagation':
       if (!jwtToken && !allowMissingUserToken) {
         throw Object.assign(
-          new HubError(
+          new Error(
             `Destination "${destinationName}" uses principal propagation and requires a logged-in user token.`,
           ),
           { statusCode: 401, code: 'SAP_USER_TOKEN_REQUIRED' },
@@ -219,7 +218,7 @@ async function buildSapConfigFromDestination(
       authType = 'basic'; // will be populated by x-sap-login/x-sap-password headers
       break;
     default:
-      throw new HubError(
+      throw new Error(
         `Destination "${destinationName}" uses unsupported authentication type "${authentication}".`,
       );
   }
@@ -297,7 +296,7 @@ export async function resolveDestinationSapConfig(
     // the Cloud SDK would fall back to the BTP Destination service and answer
     // with that service's error instead.
     const refusal = refuseDestination(destinationName);
-    if (refusal) throw new HubError(refusal);
+    if (refusal) throw new Error(refusal);
 
     // Metadata discovery must not trigger the SDK's user-dependent proxy setup.
     // It also lets missing-token requests fail with our actionable 401.
@@ -309,7 +308,7 @@ export async function resolveDestinationSapConfig(
     );
     if (userDependent && !jwtToken && !options.metadataOnly) {
       throw Object.assign(
-        new HubError(
+        new Error(
           `Destination "${destinationName}" uses ${authenticationMetadata?.authentication === 'PrincipalPropagation' ? 'principal propagation' : authenticationMetadata?.authentication} and requires a logged-in user token.`,
         ),
         { statusCode: 401, code: 'SAP_USER_TOKEN_REQUIRED' },
@@ -351,24 +350,25 @@ export async function resolveDestinationSapConfig(
         ? { jwt: jwtToken }
         : {}),
     };
-    let destination: Awaited<ReturnType<typeof getDestination>>;
-    try {
-      destination = await getDestination(destinationOptions);
-    } catch (error) {
-      // The SDK uses a plain Error. Match its exact missing-token diagnostic.
-      if (
-        authenticationMetadata ||
-        !jwtToken ||
-        options.metadataOnly ||
-        !isSdkUserTokenMissing(error)
-      )
+    const destination = await getDestination(destinationOptions).catch(
+      (error: unknown) => {
+        // The SDK throws a plain Error (no code/subclass). Match its exact
+        // diagnostic, including the authentication type, through SDK causes.
+        if (
+          !authenticationMetadata &&
+          jwtToken &&
+          !options.metadataOnly &&
+          isSdkUserTokenMissing(error)
+        ) {
+          return getDestination({ destinationName, jwt: jwtToken });
+        }
         throw error;
-      destination = await getDestination({ destinationName, jwt: jwtToken });
-    }
+      },
+    );
 
     if (!destination) {
       log.error('Destination not found', { destinationName });
-      throw new HubError(`Destination "${destinationName}" not found.`);
+      throw new Error(`Destination "${destinationName}" not found.`);
     }
 
     const authentication =
@@ -417,28 +417,92 @@ export async function resolveDestinationSapConfig(
       options.metadataOnly,
     );
     return resolved;
-  } catch (error) {
-    const diagnostic =
-      error instanceof InvalidSystemTypeError
-        ? Object.assign(new HubError(error.message), {
-            code: error.code,
-            status: error.statusCode,
-          })
-        : error;
-    const failure = sanitizeFailure(diagnostic, {
-      code: 'DESTINATION_RESOLUTION_FAILED',
-      message: `Failed to resolve destination "${destinationName}". Check the destination service and connection settings.`,
-    });
-    const status = failure.status ?? 502;
-    log.error('Destination resolution failed', {
+  } catch (error: unknown) {
+    // Log detailed error information for debugging
+    const errorDetails: Record<string, unknown> = {
       destinationName,
-      code: failure.code,
-      status,
-      ...(failureOrigin(diagnostic) === 'hub' && { error: failure.message }),
+      hasVcapServices: !!process.env.VCAP_SERVICES,
+      isLocal: !process.env.VCAP_APPLICATION,
+      errorType: error instanceof Error ? error.constructor.name : typeof error,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    };
+
+    // Add error code if available
+    const errWithCode = error as Error & {
+      code?: string;
+      cause?: unknown;
+      rootCause?: unknown;
+    };
+    if (error instanceof Error && errWithCode.code) {
+      errorDetails.errorCode = errWithCode.code;
+    }
+
+    // Add cause/rootCause if available (SAP Cloud SDK errors often have cause)
+    if (error instanceof Error && errWithCode.cause) {
+      errorDetails.cause =
+        errWithCode.cause instanceof Error
+          ? errWithCode.cause.message
+          : String(errWithCode.cause);
+    }
+    if (error instanceof Error && errWithCode.rootCause) {
+      errorDetails.rootCause =
+        errWithCode.rootCause instanceof Error
+          ? errWithCode.rootCause.message
+          : String(errWithCode.rootCause);
+    }
+
+    // Add VCAP_SERVICES destination service info if available
+    if (process.env.VCAP_SERVICES) {
+      try {
+        const vcapServices = JSON.parse(process.env.VCAP_SERVICES);
+        const destService = vcapServices.destination?.[0];
+        if (destService) {
+          errorDetails.destinationService = {
+            name: destService.name,
+            hasCredentials: !!destService.credentials,
+            hasClientId: !!destService.credentials?.clientid,
+            hasClientSecret: !!destService.credentials?.clientsecret,
+            hasUri: !!destService.credentials?.uri,
+            uri: destService.credentials?.uri,
+            url: destService.credentials?.url,
+          };
+        } else {
+          errorDetails.destinationService = 'NOT_FOUND_IN_VCAP_SERVICES';
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    }
+
+    // Add stack trace in development mode
+    if (
+      error instanceof Error &&
+      error.stack &&
+      process.env.NODE_ENV !== 'production'
+    ) {
+      errorDetails.stack = error.stack.substring(0, 500);
+    }
+
+    log.error('Destination resolution failed', errorDetails);
+
+    // Use synchronized error handling from errorUtils
+    logErrorSafely(log, 'Destination resolution', error, {
+      destinationName,
     });
-    throw Object.assign(new HubError(failure.message), failure, {
-      statusCode: status,
-    });
+
+    // Create error with status code for proper HTTP response
+    const message = formatErrorMessage(error);
+    const destinationError = new Error(
+      `Failed to resolve destination "${destinationName}": ${message}`,
+    ) as Error & { statusCode?: number; code?: string };
+    destinationError.statusCode =
+      (error as { statusCode?: number }).statusCode ?? 502; // Bad Gateway
+    const errorObj = error as { code?: string };
+    destinationError.code =
+      error instanceof Error && errorObj.code
+        ? errorObj.code
+        : 'DESTINATION_RESOLUTION_FAILED';
+    throw destinationError;
   }
 }
 

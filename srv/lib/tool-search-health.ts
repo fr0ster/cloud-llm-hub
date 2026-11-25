@@ -1,6 +1,6 @@
 import { RagError, type RagResult, type Result } from '@mcp-abap-adt/llm-agent';
 import type { RequestHandler } from 'express';
-import { AgentInitializationError, runWithoutLlmSpend } from './llm-failure';
+import { runWithoutLlmSpend } from './llm-failure';
 
 type SearchResult = Result<RagResult[], RagError>;
 type Failure = { message: string } & (
@@ -44,9 +44,12 @@ export function trackHubBackendRepair(
   void repair.then(clear, clear);
 }
 
-export class ToolSearchUnavailableError extends AgentInitializationError {
+export class ToolSearchUnavailableError extends Error {
+  readonly statusCode = 503;
+  readonly code = 'tool_search_unavailable';
+
   constructor(message: string) {
-    super({ code: 'tool_search_unavailable', message });
+    super(message);
     this.name = 'ToolSearchUnavailableError';
   }
 }

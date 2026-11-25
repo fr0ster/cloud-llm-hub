@@ -5,13 +5,12 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import type { Delivery } from './dialogue-outbox';
 import type { DialogueEvent, DialogueHandle } from './dialogue-sessions';
-import type { ChatRunFailureFacts } from './throttle-surfacing';
 
 export type FollowItem =
   | Extract<DialogueEvent, { kind: 'activity' | 'turn' }>
   | { kind: 'tool-result'; record: ToolCallRecord; written?: () => void }
   | { kind: 'message'; message: PlannerMessage; written(): void }
-  | (ChatRunFailureFacts & {
+  | {
       kind: 'end';
       reason:
         | 'done'
@@ -22,8 +21,9 @@ export type FollowItem =
         | 'error';
       note?: string;
       cause?: string;
+      code?: string;
       usage?: PlannerMessageUsage;
-    });
+    };
 type End = Extract<FollowItem, { kind: 'end' }>;
 const follows = new WeakMap<
   DialogueHandle,
@@ -132,7 +132,8 @@ export function followDialogue(
           forced ??= {
             kind: 'end',
             reason: 'error',
-            ...state.failure,
+            cause: state.failureCause,
+            ...(state.failureCode && { code: state.failureCode }),
             usage: handle.failedUsage?.(),
           };
         // Supersession must finish before another request reads the outbox.

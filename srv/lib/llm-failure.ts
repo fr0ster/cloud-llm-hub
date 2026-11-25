@@ -5,16 +5,10 @@ import {
   contextExceededError,
   EMBEDDING_CONTEXT_EXCEEDED,
   findThrottled,
-  httpStatusOf,
   LlmError,
-  McpError,
   MODEL_CONTEXT_EXCEEDED,
   preserveThrottled,
-  RagError,
-  retryAfterSecondsOf,
-  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
-import type { ProbeClassification } from './probe-classifier';
 import { throttleCallScope, withThrottleCall } from './throttle-strategy';
 import { reportWorkerActivity } from './worker-activity';
 
@@ -156,251 +150,41 @@ function contextOverflowMessage(code: string | undefined): string | undefined {
   if (code === EMBEDDING_CONTEXT_EXCEEDED) return embeddingContextMessage;
 }
 
+const retainedRunErrorCodes = new WeakMap<Error, string>();
+
+/** Keep the code when an existing boundary replaces a provider error. */
+export function retainRunErrorCode(error: Error, code: string | undefined) {
+  if (code) retainedRunErrorCodes.set(error, code);
+  return error;
+}
+
 export function runErrorCode<T>(error: T): string | undefined {
   if (contextExceededError(error)) return MODEL_CONTEXT_EXCEEDED;
+  let current: object | undefined =
+    typeof error === 'object' && error !== null ? error : undefined;
+  const seen = new Set<object>();
   let code: string | undefined;
-  for (const current of failureCauses(error)) {
+  while (current && !seen.has(current)) {
+    seen.add(current);
     if ('code' in current && typeof current.code === 'string') {
       if (current.code === EMBEDDING_CONTEXT_EXCEEDED) return current.code;
       code ??= current.code;
     }
+    if (current instanceof Error) code ??= retainedRunErrorCodes.get(current);
+    const cause = 'cause' in current ? current.cause : undefined;
+    current = typeof cause === 'object' && cause !== null ? cause : undefined;
   }
   return code;
 }
 
 export function runContextOverflow<T>(error: T): boolean {
-  return (
-    contextOverflowMessage(runErrorCode(error)) !== undefined &&
-    failureOrigin(error) !== 'domain'
-  );
-}
-
-export interface SafeFailure {
-  code: string;
-  message: string;
-  status?: number;
-  throttled?: boolean;
-  retryAfterSeconds?: number;
-}
-
-/** An actionable message authored by the hub. */
-export class HubError extends Error {}
-
-const failureMessages = new Map([
-  ['EMBED_ERROR', 'Embedding request failed.'],
-  ['LLM_OUTPUT_TRUNCATED', 'Provider stopped at the output token limit'],
-  [
-    'MODEL_NOT_ALLOWED',
-    'MODEL_NOT_ALLOWED: The selected model is not allowed.',
-  ],
-  [
-    'SAP_CREDENTIALS_PENDING',
-    "no SAP credentials yet; they arrive with the user's next message",
-  ],
-  ['SAP_AUTH_REJECTED', 'SAP connection failed: authentication rejected'],
-  ['SAP_CONNECTION_FAILED', 'SAP connection failed'],
-  ['COORDINATOR_STEP_FAILED', 'A coordinator work step failed.'],
-  ['COORDINATOR_CHECK_FAILED', 'A coordinator check could not be completed.'],
-  ['PLANNER_ERROR', 'Planner turn failed.'],
-]);
-
-const ragBackendErrors = new Set([
-  'RAG_ERROR',
-  'RAG_ACCESS_STORE_ERROR',
-  'RAG_BACKEND_ERROR',
-  'RAG_CATALOG_ERROR',
-  'RAG_COUNT_ERROR',
-  'RAG_CREATE_ERROR',
-  'RAG_DELETE_ERROR',
-  'RAG_LIST_ERROR',
-  'RAG_MIGRATION_ERROR',
-  'RAG_OPEN_ERROR',
-  'RAG_UPDATE_ERROR',
-  'QUERY_ERROR',
-  'UPSERT_ERROR',
-  'DELETE_ERROR',
-  'CLEAR_ERROR',
-  'HEALTH_CHECK_ERROR',
-  'CONNECTION_ERROR',
-]);
-
-export function* failureCauses<T>(error: T) {
-  const seen = new Set<object>();
-  let current: object | undefined =
-    typeof error === 'object' && error !== null ? error : undefined;
-  while (current && !seen.has(current)) {
-    seen.add(current);
-    yield current;
-    const cause = 'cause' in current ? current.cause : undefined;
-    current = typeof cause === 'object' && cause !== null ? cause : undefined;
-  }
-}
-
-type FailureOrigin =
-  | 'hub'
-  | 'domain'
-  | 'llm'
-  | 'embedding'
-  | 'rag'
-  | 'transport';
-type ClassifiedFailure = { origin: FailureOrigin; source: object };
-
-/** Identify the producer, including library projections that retain only a code. */
-function classifyFailure<T>(error: T): ClassifiedFailure | undefined {
-  let projected: ClassifiedFailure | undefined;
-  let transport: object | undefined;
-  for (const current of failureCauses(error)) {
-    if (current instanceof HubError) return { origin: 'hub', source: current };
-    if (current instanceof McpError)
-      return { origin: 'domain', source: current };
-    const code = 'code' in current ? current.code : undefined;
-    const embedding =
-      code === EMBEDDING_CONTEXT_EXCEEDED || code === 'EMBED_ERROR';
-    if (current instanceof LlmError)
-      return { origin: embedding ? 'embedding' : 'llm', source: current };
-    if (current instanceof RagError) return { origin: 'rag', source: current };
-
-    // A wrapper or dialogue record can retain only a code or a safe provider message.
-    if (projected) continue;
-    if (embedding) projected = { origin: 'embedding', source: current };
-    else if (typeof code === 'string') {
-      if (/^MCP_(?:ERROR$|HTTP_|UNAVAILABLE$)/.test(code))
-        projected = { origin: 'domain', source: current };
-      else if (code === MODEL_CONTEXT_EXCEEDED || code.startsWith('LLM_'))
-        projected = { origin: 'llm', source: current };
-      else if (ragBackendErrors.has(code))
-        projected = { origin: 'rag', source: current };
-      else if (
-        /^(?:ECONN(?:ABORTED|REFUSED|RESET)|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ERR_NETWORK|UND_ERR_[A-Z_]+)$/.test(
-          code,
-        )
-      )
-        transport ??= current;
-    }
-    if (
-      !projected &&
-      current instanceof Error &&
-      current.message.startsWith('LLM unavailable (')
-    )
-      projected = { origin: 'llm', source: current };
-  }
-  if (projected) return projected;
-  const details =
-    typeof error === 'object' && error !== null ? error : undefined;
-  const status = httpStatusOf(details);
-  if (transport) return { origin: 'transport', source: transport };
-  if (details && status !== undefined && status >= 400 && status <= 599)
-    return { origin: 'transport', source: details };
-  const limit = findThrottled(error);
-  if (limit) return { origin: 'llm', source: limit };
-}
-
-export function failureOrigin<T>(error: T) {
-  return classifyFailure(error)?.origin;
-}
-
-export function isInfrastructureFailure<T>(error: T): boolean {
-  const origin = failureOrigin(error);
-  return origin !== undefined && origin !== 'domain' && origin !== 'hub';
-}
-
-function reportedMessage<T>(error: T): string | undefined {
-  if (typeof error === 'string') return error;
-  for (const current of failureCauses(error)) {
-    if ('message' in current && typeof current.message === 'string')
-      return current.message;
-  }
-}
-
-/** Keep structured facts and expose diagnostics from the hub or MCP tools. */
-export function sanitizeFailure<T>(
-  error: T,
-  fallback: SafeFailure,
-): SafeFailure {
-  const classified = classifyFailure(error);
-  const origin = classified?.origin;
-  const verbatim = origin === 'hub' || origin === 'domain';
-  const source = classified && verbatim ? classified.source : error;
-  const details =
-    typeof source === 'object' && source !== null ? source : undefined;
-  const reportedCode = verbatim
-    ? details && 'code' in details && typeof details.code === 'string'
-      ? details.code
-      : undefined
-    : (runErrorCode(source) ?? terminalRunError(source)?.code);
-  const code =
-    reportedCode && /^[a-z][a-z0-9_.-]*$/i.test(reportedCode)
-      ? reportedCode
-      : fallback.code;
-  const overflow = verbatim ? undefined : contextOverflowMessage(code);
-  const limit = findThrottled(details);
-  const mcpStatus = origin === 'domain' && /^MCP_HTTP_([45]\d{2})$/.exec(code);
-  const status =
-    httpStatusOf(details) ?? (mcpStatus ? Number(mcpStatus[1]) : undefined);
-  const retryAfterSeconds = retryAfterSecondsOf(details);
-  return {
-    code,
-    message: verbatim
-      ? (reportedMessage(source) ?? fallback.message)
-      : (overflow ?? failureMessages.get(code) ?? fallback.message),
-    ...(overflow
-      ? { status: 400 }
-      : Number.isFinite(status)
-        ? { status }
-        : limit
-          ? { status: 429 }
-          : {}),
-    ...((limit || (!verbatim && status === 429)) && { throttled: true }),
-    ...(retryAfterSeconds !== undefined && { retryAfterSeconds }),
-  };
-}
-
-export class AgentInitializationError extends HubError {
-  readonly code: string;
-  readonly status?: number;
-  readonly throttled?: boolean;
-  readonly retryAfterSeconds?: number;
-
-  get statusCode(): number {
-    return contextOverflowMessage(this.code) ? 400 : 503;
-  }
-
-  constructor(
-    failure: SafeFailure,
-    readonly destination?: string,
-    readonly destinationStatus?: string,
-    readonly probe?: ProbeClassification,
-  ) {
-    super(failure.message);
-    this.code = failure.code;
-    this.status = failure.status;
-    this.throttled = failure.throttled;
-    this.retryAfterSeconds = failure.retryAfterSeconds;
-  }
-}
-
-export function agentInitializationFailure<T>(error: T, destination?: string) {
-  if (error instanceof AgentInitializationError) return error;
-  return new AgentInitializationError(
-    sanitizeFailure(error, {
-      code: 'destination_unreachable',
-      message: 'Agent initialization failed.',
-    }),
-    destination,
-  );
+  return contextOverflowMessage(runErrorCode(error)) !== undefined;
 }
 
 export function clientRunFailure<T>(error: T, unansweredSapWrite = false) {
-  const origin = failureOrigin(error);
-  if (!runErrorCode(error) && (origin === undefined || origin === 'hub'))
-    return;
-  const safe = sanitizeFailure(error, {
-    code: 'AGENT_RUN_ERROR',
-    message: origin === 'llm' ? llmFailure(error) : 'Agent run failed.',
-  });
-  const { code, message } = safe;
-  const overflow =
-    origin === 'domain' ? undefined : contextOverflowMessage(code);
+  const code = runErrorCode(error);
+  if (!code) return;
+  const overflow = contextOverflowMessage(code);
   if (overflow)
     return {
       code,
@@ -409,38 +193,30 @@ export function clientRunFailure<T>(error: T, unansweredSapWrite = false) {
         : overflow,
       status: 400,
     };
-  if (error instanceof AgentInitializationError)
-    return { code, message: error.message, status: error.statusCode };
-  return {
-    code,
-    message: unansweredSapWrite
-      ? `${message} The outcome of the SAP write is unknown. Check SAP before retrying.`
-      : message,
-    status:
-      (origin === 'domain' || !safe.throttled) &&
-      safe.status !== undefined &&
-      safe.status >= 400 &&
-      safe.status <= 599
-        ? safe.status
-        : 500,
-  };
+  return { code, status: 500 };
+}
+
+export function contextExceededMessage(unansweredSapWrite: boolean): string {
+  return unansweredSapWrite
+    ? `${modelContextMessage}. ${unansweredWriteWarning}`
+    : modelContextMessage;
 }
 
 export function safeContextExceeded<T>(error: T) {
-  if (failureOrigin(error) === 'domain') return;
-  const code = runErrorCode(error);
-  const message = contextOverflowMessage(code);
-  if (code && message) {
-    const projected =
-      code === EMBEDDING_CONTEXT_EXCEEDED
-        ? new LlmError(message, code)
-        : new HubError(message);
-    return Object.assign(projected, { code, status: 400 });
-  }
+  if (contextExceededError(error))
+    return Object.assign(
+      new LlmError(modelContextMessage, MODEL_CONTEXT_EXCEEDED),
+      { status: 400 },
+    );
 }
 
-export function anthropicStreamCode<T>(error: T): string | undefined {
-  for (const current of failureCauses(error)) {
+export function anthropicStreamCode(
+  error: Parameters<typeof llmFailure>[0],
+): string | undefined {
+  let current = error;
+  const seen = new Set<object>();
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
     const code =
       'code' in current && typeof current.code === 'string'
         ? current.code
@@ -454,17 +230,20 @@ export function anthropicStreamCode<T>(error: T): string | undefined {
         : undefined;
     if (code && anthropicErrorCodes.has(code)) return code;
     if (prefix && anthropicErrorCodes.has(prefix)) return prefix;
+    current = 'cause' in current ? current.cause : undefined;
   }
   return undefined;
 }
 
 /** Keep only status facts: provider messages may contain prompts or credentials. */
-export function llmFailure<T>(error: T): string {
+export function llmFailure(error: unknown): string {
   if (contextExceededError(error)) return modelContextMessage;
   const streamCode = anthropicStreamCode(error);
   if (streamCode) return `LLM unavailable (${streamCode})`;
   if (findThrottled(error)) return 'LLM unavailable (HTTP 429)';
-  for (const current of failureCauses(error)) {
+  let current = error;
+  for (let depth = 0; depth < 6 && current; depth++) {
+    if (typeof current !== 'object') break;
     const status =
       'status' in current
         ? current.status
@@ -499,6 +278,7 @@ export function llmFailure<T>(error: T): string {
       )?.[1];
       if (code) return `LLM unavailable (HTTP ${code})`;
     }
+    current = 'cause' in current ? current.cause : undefined;
   }
   return 'LLM unavailable (no response from model)';
 }
@@ -510,12 +290,13 @@ export class StreamContentError extends LlmError {
   }
 }
 
-function safeLlmError<T>(error: T): LlmError {
-  const message = llmFailure(error);
-  const facts = sanitizeFailure(error, { code: 'LLM_ERROR', message });
-  if (contextOverflowMessage(facts.code))
-    return Object.assign(new LlmError(facts.message, facts.code), facts);
-  const safe = new LlmError(message, facts.code);
+function safeLlmError(error: unknown): LlmError {
+  const overflow = safeContextExceeded(error);
+  if (overflow) return overflow;
+  const safe = new LlmError(
+    llmFailure(error),
+    error instanceof LlmError ? error.code : undefined,
+  );
   // Preserve exhausted-policy facts so an outer retry decorator cannot start
   // another six unnamed waits. No raw provider cause is attached to this error.
   const throttled = findThrottled(error);
@@ -528,10 +309,7 @@ function safeLlmError<T>(error: T): LlmError {
   // The builder retries structured 503 failures before output starts.
   if (streamCode === 'overloaded_error' || streamCode === 'api_error')
     return Object.assign(safe, { status: 503 });
-  return Object.assign(safe, {
-    status: facts.status,
-    retryAfterSeconds: facts.retryAfterSeconds,
-  });
+  return safe;
 }
 
 /** Normalize at the hub boundary before the tool loop drops structured causes. */
@@ -643,15 +421,30 @@ export function reliableLlm(inner: ILlm): ILlm {
 }
 
 /** Is this failure the model's (an LLM error or a throttle anywhere in the cause chain)? */
-export function isLlmFailure<T>(error: T): boolean {
-  return failureOrigin(error) === 'llm';
+export function isLlmFailure(error: unknown): boolean {
+  if (contextExceededError(error) || findThrottled(error)) return true;
+  let current = error;
+  for (let depth = 0; depth < 6 && current; depth++) {
+    if (current instanceof LlmError) return true;
+    // The safe text survives a library rewrap that drops the cause chain.
+    if (
+      current instanceof Error &&
+      current.message.startsWith('LLM unavailable (')
+    )
+      return true;
+    if (typeof current !== 'object') return false;
+    current = 'cause' in current ? current.cause : undefined;
+  }
+  return false;
 }
 
-/** Client-facing text for both mapped and plain errors. */
-export function failureMessage<T>(error: T): string {
-  return (
-    clientRunFailure(error)?.message ?? reportedMessage(error) ?? String(error)
-  );
+/**
+ * Client-facing text for a failed request: the content-free LLM cause for model
+ * failures; any other failure keeps its own message, as before this change.
+ */
+export function failureMessage(error: unknown): string {
+  if (isLlmFailure(error)) return llmFailure(error);
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**

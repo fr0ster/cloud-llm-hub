@@ -161,7 +161,7 @@ it.each([
   { stream: true, throws: false },
   { stream: true, throws: true },
 ])(
-  'logs typed failures safely and preserves tool headers (stream=$stream, throws=$throws)',
+  'logs typed failures and preserves tool headers (stream=$stream, throws=$throws)',
   async ({ stream, throws }) => {
     mockCatalogError.mockClear();
     const error = Object.assign(
@@ -193,13 +193,16 @@ it.each([
       stream ? 'DEST' : undefined,
     );
     expect(res.body).toContain('"code":"CONFIG_ERROR"');
+    expect(res.body).toContain(
+      stream ? 'Private component failure' : 'Error: Private component failure',
+    );
     expect(mockCatalogError.mock.calls).toEqual([
       [
         'Agent run failed',
         {
           code: 'CONFIG_ERROR',
           status: 500,
-          traceId: expect.any(String),
+          traceId: expect.stringMatching(/./),
           component: 'executor',
           stepId: 'first',
         },
@@ -213,6 +216,7 @@ it.each([
   { stream: false, started: false, throws: true },
   { stream: true, started: false, throws: false },
   { stream: true, started: true, throws: false },
+  { stream: true, started: true, throws: true },
 ])(
   'keeps typed throttle details (stream=$stream, started=$started, throws=$throws)',
   async ({ stream, started, throws }) => {
@@ -229,6 +233,7 @@ it.each([
     };
     harness.stream = async function* () {
       if (started) yield { ok: true, value: { content: 'partial' } };
+      if (throws) throw error;
       yield { ok: false, error };
     };
     const { res, done } = call(body(stream));
@@ -243,15 +248,13 @@ it.each([
         message: stream ? `LLM unavailable (HTTP 429). ${retry}` : retry,
       },
     };
-    expect(res.statusCode).toBe(stream ? 200 : 500);
-    expect(res.headers['Retry-After']).toBe(started ? undefined : '42');
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['Retry-After']).toBeUndefined();
     const event = res.body
       .split('\n\n')
-      .find((chunk) => chunk.startsWith('event: error\n'));
+      .find((chunk) => chunk.startsWith('data: {"error":'));
     expect(
-      JSON.parse(
-        stream ? (event?.slice('event: error\ndata: '.length) ?? '') : res.body,
-      ),
+      JSON.parse(stream ? (event?.slice('data: '.length) ?? '') : res.body),
     ).toEqual(payload);
   },
 );
@@ -1484,34 +1487,6 @@ test.each([false, true])(
 );
 
 chatSessionBodyTests('/chat/completions', handleChatCompletions);
-
-it.each([false, true])(
-  'preserves a SAP activation diagnostic (stream=%s)',
-  async (stream) => {
-    const message = 'HTTP 400: Activation failed. Syntax error in ZCL_DEMO.';
-    const error = new McpError(message, 'MCP_HTTP_400');
-    harness.process = async () => ({ ok: false, error });
-    harness.stream = async function* () {
-      yield { ok: true, value: { content: 'partial' } };
-      yield { ok: false, error };
-    };
-
-    const { res, done } = call(body(stream));
-    await done;
-
-    expect(res.statusCode).toBe(stream ? 200 : 400);
-    const event = res.body
-      .split('\n\n')
-      .find((chunk) => chunk.startsWith('event: error\n'));
-    expect(
-      JSON.parse(
-        stream ? (event?.slice('event: error\ndata: '.length) ?? '') : res.body,
-      ),
-    ).toMatchObject({
-      error: { code: 'MCP_HTTP_400', message, ...(stream && { status: 400 }) },
-    });
-  },
-);
 
 it.each([429, 503, 0])(
   'stream exceptions report a safe cause and retain spent usage (%s)',

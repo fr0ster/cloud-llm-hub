@@ -3,7 +3,6 @@ import { deployModel } from './deploy-model';
 import { configuredRoleModel } from './deploy-role-config';
 import { resolveDialogueRoleModel } from './dialogue-role-model';
 import { type ExecutionLimits, withExecutionLimits } from './execution-limits';
-import { AgentInitializationError } from './llm-failure';
 import { configuredMaxTokens } from './max-tokens-config';
 import { parseModelAllowlist } from './model-policy';
 import {
@@ -45,12 +44,11 @@ export function withRoleModels<T>(
   return limits === undefined ? run() : withExecutionLimits(limits, run);
 }
 
-export class RoleModelNotAllowedError extends AgentInitializationError {
+export class RoleModelNotAllowedError extends Error {
   constructor(role: RoleName, model: string) {
-    super({
-      code: 'MODEL_NOT_ALLOWED',
-      message: `${role}.model: MODEL_NOT_ALLOWED: model "${model}" is outside the current allowlist`,
-    });
+    super(
+      `${role}.model: MODEL_NOT_ALLOWED: model "${model}" is outside the current allowlist`,
+    );
     this.name = 'RoleModelNotAllowedError';
   }
 }

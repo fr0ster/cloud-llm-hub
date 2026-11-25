@@ -201,7 +201,6 @@ export async function executeOrchestrationTool(
               if (failure)
                 return mcpRunError(result.error, failure, usage, {
                   ...trace,
-                  writeNotice: unanswered ? failure.message : undefined,
                 });
               return mcpUsageResult(result.error.message, usage, true);
             }
@@ -294,7 +293,6 @@ export async function executeOrchestrationTool(
     if (failure)
       return mcpRunError(error, failure, undefined, {
         traceId: requestMeasurement(req)?.traceId,
-        writeNotice: unanswered ? failure.message : undefined,
       });
     return ragTextResult(
       error instanceof Error ? error.message : String(error),

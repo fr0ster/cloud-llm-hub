@@ -16,7 +16,6 @@ import {
   directTransport,
   memorySink,
 } from '@mcp-abap-adt/llm-usage';
-import { OpenAiEmbedder } from '@mcp-abap-adt/openai-embedder';
 import cds from '@sap/cds';
 import express from 'express';
 import { executeRagTool } from '../../srv/agent-mcp-rag';
@@ -29,7 +28,6 @@ import {
 } from '../../srv/lib/checker-verdict-tool';
 import { consumerHistoryRag } from '../../srv/lib/client-history';
 import { dialogueChat } from '../../srv/lib/dialogue-chat';
-import { handleDialogueEvents } from '../../srv/lib/dialogue-events-handler';
 import { followDialogue } from '../../srv/lib/dialogue-follow';
 import {
   clientTurnId,
@@ -176,7 +174,9 @@ const mockEnvironments: string[] = [];
 let mockWorkerModel: string | undefined;
 let mockGoal = 'read';
 let mockWorkerTrust: { target: number } | undefined;
-let mockPlannerHook: ((text: string) => Promise<void | LlmError>) | undefined;
+let mockPlannerHook:
+  | ((text: string) => Promise<void> | Promise<LlmError | undefined>)
+  | undefined;
 let mockPlannerPreparationHook: (() => void) | undefined;
 let mockWorkerPreparationHook: (() => Promise<void>) | undefined;
 let mockCaptureLlm: (() => Promise<ILlm>) | undefined;
@@ -2984,282 +2984,11 @@ test('revival drops a saved coordinator model removed from the allowlist', async
   }
 });
 
-test.each(['returned', 'thrown'] as const)(
-  'a %s planner error is sanitized in the snapshot and persisted state',
-  async (mode) => {
-    const { h } = await ready();
-    const privateMessage = 'PRIVATE_PROVIDER_SECRET';
-    const error = Object.assign(new LlmError(privateMessage), { status: 401 });
-    mockPlannerHook = async () => {
-      if (mode === 'thrown') throw error;
-      return error;
-    };
-
-    const terminalError = {
-      code: 'LLM_ERROR',
-      message: 'Planner turn failed.',
-      status: 401,
-    };
-    const sending = h.session.send('go');
-    await expect(sending).rejects.toBeInstanceOf(Error);
-    await h.outbox.flushed();
-
-    const snapshot = h.session.snapshot();
-    const saved = await getDialogueStoreBackend().load('alice', 'key');
-    expect(JSON.stringify(snapshot)).not.toContain(privateMessage);
-    expect(JSON.stringify(saved)).not.toContain(privateMessage);
-    expect(snapshot.requests?.[0].terminalError).toEqual(terminalError);
-    expect(saved?.requests?.[0].terminalError).toEqual(terminalError);
-    await expect(sending).rejects.toMatchObject(terminalError);
-  },
-);
-
-test.each(['retrieval', 'worker'] as const)(
-  'an embedder HTTP 401 during %s reaches dialogue storage and SSE as safe facts',
-  async (source) => {
-    mockChatCoordinator = 'dialogue';
-    const privateBody = 'PRIVATE_EMBEDDER_BODY';
-    const fetch = jest
-      .spyOn(globalThis, 'fetch')
-      .mockImplementation(
-        async () => new Response(privateBody, { status: 401 }),
-      );
-    const embedder = new OpenAiEmbedder({
-      model: 'test-embedder',
-      credential: { kind: 'api-key', secret: async () => 'test-key' },
-    });
-    const retrieval = jest.spyOn(plannerMemory, 'plannerSessionOptions');
-    const startWorker = deferred<void>();
-    if (source === 'retrieval') {
-      retrieval.mockResolvedValue({
-        plannerKnowledge: [
-          {
-            name: 'planning',
-            async search() {
-              await embedder.embed('planner input');
-              return [];
-            },
-          },
-        ],
-      });
-    } else {
-      mockPlannerHook = async () => {
-        await new PlannerToolsClient().callTool('plan_update', {
-          plan: 'Read class',
-          status: 'active',
-        });
-      };
-      mockFinalAnswer = 'Started work';
-      mockRun.mockImplementation(async () => {
-        await startWorker.promise;
-        await embedder.embed('worker input');
-        return { output: 'finished' };
-      });
-    }
-    const context = new cds.EventContext({ event: 'test' });
-    context.user = new cds.User({
-      id: 'alice',
-      attr: {},
-      roles: ['MCP_Developer'],
-    });
-    const previousContext = cds.context;
-    cds.context = context;
-    const logs = [
-      jest.spyOn(cds.log('dialogue'), 'info').mockImplementation(() => {}),
-      jest.spyOn(cds.log('dialogue'), 'warn').mockImplementation(() => {}),
-      jest
-        .spyOn(cds.log('openai-handler'), 'error')
-        .mockImplementation(() => {}),
-    ];
-    try {
-      const { h } = await ready();
-      const response = fakeRes();
-      const subscribe = h.subscribe.bind(h);
-      if (source === 'worker') {
-        jest
-          .spyOn(h, 'subscribe')
-          .mockImplementation((listener, cursor, consumesToolResults) => {
-            const stop = subscribe(listener, cursor, consumesToolResults);
-            if (consumesToolResults && response.body.includes(': turn-end\n'))
-              startWorker.resolve();
-            return stop;
-          });
-      }
-      liveSession('alice', 'key');
-      const req = typedRequest(
-        fakeReq(
-          {
-            model: 'm',
-            stream: true,
-            messages: [{ role: 'user', content: 'go' }],
-          },
-          'key',
-          false,
-        ),
-      );
-      req.headers['x-sap-destination'] = 'TEST';
-      req.headers.authorization = 'Bearer test';
-      Object.assign(req, { longSession: longSessions().get('alice', 'key') });
-      await handleChatCompletions(req, typedResponse(response));
-      await h.outbox.flushed();
-      const snapshot = h.session.snapshot();
-      const stored = await getDialogueStoreBackend().load('alice', 'key');
-      const failure = {
-        code: 'EMBED_ERROR',
-        status: 401,
-        message: 'Embedding request failed.',
-      };
-      expect(fetch).toHaveBeenCalledTimes(1);
-      for (const state of [snapshot, stored]) {
-        expect(JSON.stringify(state)).not.toContain(privateBody);
-        if (source === 'retrieval') {
-          expect(state?.requests?.[0].terminalError).toEqual(failure);
-        } else {
-          expect(state?.tasks[0]).toMatchObject({
-            error: failure.message,
-            summary: failure.message,
-            terminalErrorCode: failure.code,
-            failure,
-          });
-        }
-      }
-      expect(response.statusCode).toBe(200);
-      expect(response.body).not.toContain(privateBody);
-      if (source === 'retrieval') {
-        expect(response.body).toContain('event: error\n');
-        expect(response.body).toContain('"code":"EMBED_ERROR"');
-        expect(response.body).toContain(failure.message);
-      } else {
-        const events = fakeRes();
-        const eventResponse = Object.assign(events, { flushHeaders() {} });
-        Object.assign(req, { query: {} });
-        try {
-          await handleDialogueEvents(req, typedResponse(eventResponse));
-          expect(events.body).toContain('event: tasks\n');
-          expect(events.body).toContain('"terminalErrorCode":"EMBED_ERROR"');
-          expect(events.body).toContain(failure.message);
-          expect(events.body).not.toContain(privateBody);
-        } finally {
-          events.disconnect();
-        }
-      }
-      expect(JSON.stringify(logs.map((log) => log.mock.calls))).not.toContain(
-        privateBody,
-      );
-    } finally {
-      startWorker.resolve();
-      fetch.mockRestore();
-      retrieval.mockRestore();
-      for (const log of logs) log.mockRestore();
-      cds.context = previousContext;
-    }
-  },
-);
-
-describe.each(['returned', 'thrown'] as const)(
-  '%s planner throttle',
-  (mode) => {
-    test.each([
-      ['openai', 'JSON', handleChatCompletions, 'server_error', 500],
-      ['openai', 'SSE', handleChatCompletions, 'server_error', 200],
-      ['anthropic', 'JSON', handleAnthropicMessages, 'overloaded_error', 529],
-      ['anthropic', 'SSE', handleAnthropicMessages, 'overloaded_error', 200],
-    ] as const)(
-      '%s surfaces planner throttling over %s',
-      async (protocol, format, handler, errorType, status) => {
-        mockChatCoordinator = 'dialogue';
-        const privateMessage = 'PRIVATE_PROVIDER_SECRET';
-        const error = Object.assign(new LlmError(privateMessage), {
-          status: 503,
-          throttled: true,
-          retryAfterSeconds: 41.5,
-        });
-        mockPlannerHook = async () => {
-          if (mode === 'thrown') throw error;
-          return error;
-        };
-
-        const context = new cds.EventContext({ event: 'test' });
-        context.user = new cds.User({
-          id: 'alice',
-          attr: {},
-          roles: ['MCP_Developer'],
-        });
-        const priorContext = cds.context;
-        const log = jest
-          .spyOn(cds.log(`${protocol}-handler`), 'error')
-          .mockImplementation(() => {});
-        cds.context = context;
-        try {
-          const { h } = await ready();
-          liveSession('alice', 'key');
-          const stream = format === 'SSE';
-          const req = typedRequest(
-            fakeReq(
-              {
-                model: 'm',
-                max_tokens: 100,
-                stream,
-                messages: [{ role: 'user', content: 'go' }],
-              },
-              'key',
-              false,
-            ),
-          );
-          req.headers['x-sap-destination'] = 'TEST';
-          req.headers.authorization = 'Bearer test';
-          Object.assign(req, {
-            longSession: longSessions().get('alice', 'key'),
-          });
-
-          const response = fakeRes();
-          await handler(req, typedResponse(response));
-          expect(response.statusCode).toBe(status);
-          expect(h.state().failure).toMatchObject({
-            code: 'LLM_ERROR',
-            status: 503,
-            throttled: true,
-            retryAfterSeconds: 41.5,
-          });
-          let body = response.body;
-          if (stream) {
-            const prefix = 'event: error\ndata: ';
-            const errors = body
-              .split('\n\n')
-              .filter((event) => event.startsWith(prefix));
-            expect(errors).toHaveLength(1);
-            body = errors[0].slice(prefix.length);
-          } else {
-            expect(response.headers['Retry-After']).toBe('42');
-          }
-          const retryMessage =
-            'The AI service is rate-limited right now. Please try again in about 42 seconds.';
-          expect(JSON.parse(body)).toEqual({
-            ...(protocol === 'anthropic' && { type: 'error' }),
-            error: {
-              code: 'LLM_ERROR',
-              type: errorType,
-              message: stream
-                ? `LLM unavailable (HTTP 429). ${retryMessage}`
-                : retryMessage,
-            },
-          });
-          expect(response.body).not.toContain(privateMessage);
-          expect(JSON.stringify(log.mock.calls)).not.toContain(privateMessage);
-        } finally {
-          cds.context = priorContext;
-          log.mockRestore();
-        }
-      },
-    );
-  },
-);
-
 test.each([
   ['openai', handleChatCompletions, 'server_error', 500],
-  ['anthropic', handleAnthropicMessages, 'overloaded_error', 529],
+  ['anthropic', handleAnthropicMessages, 'api_error', 500],
 ] as const)(
-  '%s follow surfaces a background planner throttle',
+  '%s follow retains the code and text of a background planner failure',
   async (protocol, handler, errorType, errorStatus) => {
     mockChatCoordinator = 'dialogue';
     const privateMessage = 'Private provider failure';
@@ -3321,26 +3050,24 @@ test.each([
       await handler(req, typedResponse(response));
       expect(response.body).toContain('Started work');
       expect(response.statusCode).toBe(200);
-      expect(h.state().failure).toEqual({
-        cause: 'LLM unavailable (HTTP 429)',
-        code: 'LLM_ERROR',
-        status: 429,
-        throttled: true,
-        retryAfterSeconds: 41.5,
-      });
+      expect(h.state().failureCause).toBe('LLM unavailable (HTTP 429)');
+      expect(h.state().failureCode).toBe('LLM_ERROR');
+      expect(response.headers['Retry-After']).toBeUndefined();
+      const prefix =
+        protocol === 'anthropic' ? 'event: error\ndata: ' : 'data: ';
       const errors = response.body
         .split('\n\n')
-        .filter((event) => event.startsWith('event: error\n'));
+        .filter(
+          (event) =>
+            event.startsWith(prefix) && event.includes('"code":"LLM_ERROR"'),
+        );
       expect(errors).toHaveLength(1);
-      expect(
-        JSON.parse(errors[0].slice('event: error\ndata: '.length)),
-      ).toEqual({
+      expect(JSON.parse(errors[0].slice(prefix.length))).toEqual({
         ...(protocol === 'anthropic' && { type: 'error' }),
         error: {
           code: 'LLM_ERROR',
           type: errorType,
-          message:
-            'LLM unavailable (HTTP 429). The AI service is rate-limited right now. Please try again in about 42 seconds.',
+          message: 'Background planner turn failed: LLM unavailable (HTTP 429)',
         },
       });
       expect(response.body).not.toMatch(/\[DONE\]|event: message_stop/);
@@ -3379,13 +3106,8 @@ test.each([429, 503, 0])(
     const cause = status
       ? `LLM unavailable (HTTP ${status})`
       : 'LLM unavailable (no response from model)';
-    const failure = {
-      cause,
-      code: 'LLM_ERROR',
-      status: status || undefined,
-      throttled: status === 429,
-    };
-    expect(h.state().failure).toMatchObject(failure);
+    expect(h.state().failureCause).toBe(cause);
+    expect(h.state().failureCode).toBe('LLM_ERROR');
     expect(h.failedUsage?.().tasks).toEqual([
       expect.objectContaining({
         worker: 'executor',
@@ -3396,7 +3118,7 @@ test.each([429, 503, 0])(
     mockPlannerHook = undefined;
     mockPlan = { plan: 'Finished', status: 'done' };
     await h.session.send('finish');
-    expect(h.state().failure).toMatchObject(failure);
+    expect(h.state().failureCause).toBe(cause);
     expect(h.failedUsage?.().tasks).toHaveLength(1);
   },
 );
@@ -3440,37 +3162,6 @@ test('a background worker overflow retains its code in the task and follow outco
   }
 });
 
-test('a failed worker report keeps SAP diagnostics in live events and restored results', async () => {
-  const { h } = await ready();
-  const diagnostic = 'HTTP 400: Activation failed. Syntax error in ZCL_DEMO.';
-  const summary = 'SAP rejected the class activation';
-  const events: DialogueEvent[] = [];
-  h.subscribe((event) => events.push(event));
-  mockRun.mockResolvedValue({
-    errorClass: 'epicfail',
-    output: diagnostic,
-    summary,
-  });
-
-  await h.session.send('activate');
-  await until(() => h.session.snapshot().tasks[0]?.state === 'failed');
-  const result = {
-    state: 'failed',
-    output: diagnostic,
-    error: diagnostic,
-    summary,
-  };
-  expect(h.session.snapshot().tasks[0]).toMatchObject(result);
-  expect(events).toContainEqual({
-    kind: 'task',
-    task: expect.objectContaining({ state: 'failed', error: diagnostic }),
-  });
-  await until(() => h.state().running === 0);
-  await h.outbox.flushed();
-  const stored = await getDialogueStoreBackend().load('alice', 'key');
-  expect(stored?.tasks[0]).toMatchObject(result);
-});
-
 test('a failed turn keeps planner spend observed before the failure', async () => {
   const { h } = await ready();
   mockPlannerHook = async () => {
@@ -3483,7 +3174,7 @@ test('a failed turn keeps planner spend observed before the failure', async () =
   };
   await h.session.send('go').catch(() => undefined);
   await until(() => h.state().lastFailedSeq > 0);
-  expect(h.state().failure?.cause).toBe('LLM unavailable (HTTP 503)');
+  expect(h.state().failureCause).toBe('LLM unavailable (HTTP 503)');
   expect(h.failedUsage?.().planner).toEqual({
     promptTokens: 5,
     completionTokens: 2,
@@ -3506,14 +3197,14 @@ test('a later non-model failure does not inherit an earlier model cause', async 
   };
   await h.session.send('first').catch(() => undefined);
   await until(() => h.state().lastFailedSeq > 0);
-  expect(h.state().failure?.cause).toBe('LLM unavailable (HTTP 429)');
+  expect(h.state().failureCause).toBe('LLM unavailable (HTTP 429)');
   const failed = h.state().lastFailedSeq;
   mockPlannerHook = async () => {
     throw new Error('storage unavailable');
   };
   await h.session.send('second').catch(() => undefined);
   await until(() => h.state().lastFailedSeq > failed);
-  expect(h.state().failure).toBeUndefined();
+  expect(h.state().failureCause).toBeUndefined();
 });
 
 test.each([true, false])(
@@ -4882,10 +4573,7 @@ test.each(
       const sendB = () =>
         clientTurnId.run('correction-B', () => h.session.send('CLIENT_B'));
       if (correctionFails) {
-        await expect(sendB()).rejects.toMatchObject({
-          code: 'LLM_ERROR',
-          message: 'Planner turn failed.',
-        });
+        await expect(sendB()).rejects.toThrow('B correction failed');
         expect(record).toHaveBeenCalledTimes(1);
         expect(record.mock.calls[0][0].userText).toBe('CLIENT_A');
       }

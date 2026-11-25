@@ -11,22 +11,7 @@
  * envelope beside the handler passes while the handler sends nothing at all.
  */
 
-import {
-  findThrottled,
-  httpStatusOf,
-  retryAfterSecondsOf,
-} from '@mcp-abap-adt/llm-agent';
-import type { OutputSink } from './detached-sink';
-import {
-  AgentInitializationError,
-  clientRunFailure,
-  failureCauses,
-  failureMessage,
-  failureOrigin,
-  isInfrastructureFailure,
-  runContextOverflow,
-  runErrorCode,
-} from './llm-failure';
+import { findThrottled } from '@mcp-abap-adt/llm-agent';
 import type { RunRefusal } from './long-session';
 import { describeCause } from './mcp-outage';
 
@@ -42,58 +27,55 @@ import { describeCause } from './mcp-outage';
  * Retrying here would undo the point of the shared pause: another request into
  * a quota the server has just said is closed, earning another penalty.
  */
-export function throttleOf<T>(
-  error: T,
+export function throttleOf(
+  error: unknown,
 ): { retryAfterSeconds?: number; reason?: string } | undefined {
-  const origin = failureOrigin(error);
-  if (origin === 'domain') return undefined;
-  const details =
-    typeof error === 'object' && error !== null ? error : undefined;
   const marked = findThrottled(error);
   if (marked) {
     return {
-      retryAfterSeconds: retryAfterSecondsOf(details),
+      retryAfterSeconds: marked.retryAfterSeconds,
       reason: marked.reason,
     };
   }
-  const status = httpStatusOf(details);
-  if (status === 429) {
-    const seconds = retryAfterSecondsOf(details);
-    return seconds === undefined ? {} : { retryAfterSeconds: seconds };
-  }
-  if (origin === 'hub' || (status !== undefined && status !== 0))
-    return undefined;
   // Fallback for an error that lost the marker on the way up, e.g. one rebuilt
   // by a layer that keeps only the message. A structured status first, then the
   // status named in the text on a WORD BOUNDARY — never a bare includes('429'),
   // which also fires on an id, a byte count or a token total.
-  for (const current of failureCauses(error)) {
-    const text =
-      'message' in current && typeof current.message === 'string'
-        ? current.message
-        : '';
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 5; depth++) {
+    const http = current as {
+      response?: { status?: number };
+      status?: number;
+      statusCode?: number;
+    };
+    if (
+      http?.response?.status === 429 ||
+      http?.status === 429 ||
+      http?.statusCode === 429
+    ) {
+      return {};
+    }
+    const text = current instanceof Error ? current.message : String(current);
     if (
       /(^|[^\d])429([^\d]|$)|too many requests|rate[\s_-]?limit/i.test(text)
     ) {
       return {};
     }
+    if (!(current instanceof Error)) break;
+    current = (current as { cause?: unknown }).cause;
   }
   return undefined;
 }
 
 /** What the caller is told once the provider's own policy is spent. */
-export function throttleMessage(
-  limit: { retryAfterSeconds?: number },
-  prefix?: string,
-): string {
+export function throttleMessage(limit: { retryAfterSeconds?: number }): string {
   const seconds = limit.retryAfterSeconds;
-  const message =
-    seconds === undefined || !Number.isFinite(seconds)
-      ? 'The AI service is rate-limited right now. Please try again shortly.'
-      : `The AI service is rate-limited right now. Please try again in about ${Math.ceil(seconds)} seconds.`;
-  return prefix
-    ? `${prefix}${prefix.endsWith('.') ? ' ' : '. '}${message}`
-    : message;
+  if (seconds === undefined || !Number.isFinite(seconds)) {
+    return 'The AI service is rate-limited right now. Please try again shortly.';
+  }
+  return `The AI service is rate-limited right now. Please try again in about ${Math.ceil(
+    seconds,
+  )} seconds.`;
 }
 
 /**
@@ -111,7 +93,7 @@ export function anthropicErrorPayload(error: unknown): {
   error: { type: string; message: string };
 } {
   const limit = throttleOf(error);
-  const fallback = failureMessage(error);
+  const fallback = error instanceof Error ? error.message : String(error);
   return {
     type: 'error',
     error: {
@@ -148,85 +130,10 @@ export function statusForError(error: unknown): number {
  * remaining pause is rounded up — early is worse than late here.
  */
 export function retryAfterHeader(error: unknown): string | undefined {
-  return retryAfterSecondsHeader(throttleOf(error)?.retryAfterSeconds);
-}
-
-function retryAfterSecondsHeader(
-  seconds: number | undefined,
-): string | undefined {
+  const seconds = throttleOf(error)?.retryAfterSeconds;
   if (seconds === undefined || !Number.isFinite(seconds)) return undefined;
   return String(Math.max(0, Math.ceil(seconds)));
 }
-
-export interface ChatRunFailureFacts {
-  code?: string;
-  status?: number;
-  throttled?: boolean;
-  retryAfterSeconds?: number;
-}
-
-/** Capture the facts needed to map a chat failure after its turn settles. */
-export function chatRunFailureFacts<T>(error: T): ChatRunFailureFacts {
-  const status = httpStatusOf(
-    typeof error === 'object' && error !== null ? error : undefined,
-  );
-  const limit = throttleOf(error);
-  const seconds = limit?.retryAfterSeconds;
-  return {
-    code: runErrorCode(error),
-    status: status ?? (limit ? 429 : undefined),
-    throttled: limit !== undefined,
-    retryAfterSeconds: Number.isFinite(seconds) ? seconds : undefined,
-  };
-}
-
-/** Add throttle details to a typed chat failure before encoding its response. */
-export function chatRunFailure<T>(
-  error: T,
-  options: {
-    protocol: 'openai' | 'anthropic';
-    stream?: boolean;
-    unansweredSapWrite?: boolean;
-    writeNotice?: () => string | undefined;
-    setHeader: OutputSink['setHeader'];
-  },
-) {
-  const failure = clientRunFailure(error, options.unansweredSapWrite);
-  if (!failure) return undefined;
-  const initialization = error instanceof AgentInitializationError;
-  const contextOverflow = runContextOverflow(error);
-  const limit = contextOverflow ? undefined : throttleOf(error);
-  if (!limit)
-    return {
-      ...failure,
-      contextOverflow,
-      throttled: false,
-      ...(options.stream &&
-        failureOrigin(error) === 'domain' && {
-          domainStatus: failure.status,
-        }),
-    };
-
-  const retryAfter = retryAfterSecondsHeader(limit.retryAfterSeconds);
-  if (retryAfter !== undefined) options.setHeader('Retry-After', retryAfter);
-  const prefix =
-    options.writeNotice?.() ??
-    (initialization || options.unansweredSapWrite || options.stream
-      ? failure.message
-      : undefined);
-  return {
-    ...failure,
-    contextOverflow,
-    status:
-      options.protocol === 'anthropic' && !initialization
-        ? 529
-        : failure.status,
-    message: throttleMessage(limit, prefix),
-    throttled: true,
-  };
-}
-
-export type ChatRunFailure = NonNullable<ReturnType<typeof chatRunFailure>>;
 
 /**
  * One line of failure text for a plain-text channel, such as the MCP
@@ -238,7 +145,7 @@ export type ChatRunFailure = NonNullable<ReturnType<typeof chatRunFailure>>;
 export function failureText(error: unknown): string {
   const limit = throttleOf(error);
   if (limit) return throttleMessage(limit);
-  return failureMessage(error);
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** Why admission was withheld, in the order admission checks. */
@@ -476,7 +383,7 @@ export function unverifiedWriteFor(
   if (pending.length === 0) return undefined;
   return unverifiedWriteText(
     pending.map((r) => r.call),
-    isInfrastructureFailure(err) ? failureMessage(err) : describeCause(err),
+    describeCause(err),
   );
 }
 

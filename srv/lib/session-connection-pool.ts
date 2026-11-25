@@ -65,8 +65,6 @@ async function build(
   };
 }
 export class NoCredentialsError extends Error {
-  readonly code = 'SAP_CREDENTIALS_PENDING';
-
   constructor() {
     super("no SAP credentials yet; they arrive with the user's next message");
     this.name = 'NoCredentialsError';
@@ -243,13 +241,10 @@ export class SessionConnectionFactory {
         status: typeof status === 'number' ? status : undefined,
         code: auth ? 'AUTH_REJECTED' : 'CONNECTION_FAILED',
       });
-      throw Object.assign(
-        new Error(
-          auth
-            ? 'SAP connection failed: authentication rejected'
-            : 'SAP connection failed',
-        ),
-        { code: auth ? 'SAP_AUTH_REJECTED' : 'SAP_CONNECTION_FAILED' },
+      throw new Error(
+        auth
+          ? 'SAP connection failed: authentication rejected'
+          : 'SAP connection failed',
       );
     }
   }

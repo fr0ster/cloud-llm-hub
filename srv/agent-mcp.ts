@@ -41,14 +41,7 @@ import {
   listDestinationsDefinition,
 } from './lib/coordinator-tool-definitions';
 import { runExecutorStep } from './lib/executor-step';
-import {
-  AgentInitializationError,
-  agentInitializationFailure,
-  captureTokenUsage,
-  clientRunFailure,
-  llmFailure,
-  runContextOverflow,
-} from './lib/llm-failure';
+import { captureTokenUsage, clientRunFailure } from './lib/llm-failure';
 import { requestStart } from './lib/request-start';
 import type { LongSessionRequest } from './lib/session-connection';
 import {
@@ -464,6 +457,40 @@ async function executeStepRun(
     });
     return writeActions(entries);
   };
+  const stepFailureText = <T>(error: T) => {
+    const limit = throttleOf(error);
+    const unverified = unverifiedWriteFor(handle, traceId, error);
+    return unverified
+      ? limit
+        ? `${unverified} ${throttleMessage(limit)}`
+        : unverified
+      : failureText(error);
+  };
+  const typedStepFailure = <T>(error: T, actions: string | undefined) => {
+    const failure = clientRunFailure(
+      error,
+      hasUnansweredSapWrite(handle?.recMcp?.getToolRecords(traceId) ?? []),
+    );
+    if (!failure || (!handle && failure.status !== 400)) return;
+    if (failure.status !== 400 && targetDestination && isOutageError(error))
+      closeDestination(targetDestination, describeCause(error));
+    return mcpRunError(
+      error,
+      failure,
+      timedUsageToWire(spend.usage(), Date.now() - stepStartedAt),
+      {
+        traceId,
+        message:
+          failure.message ??
+          [
+            `ERROR on destination "${targetDestination}": ${stepFailureText(error)}`,
+            actions,
+          ]
+            .filter(Boolean)
+            .join('\n'),
+      },
+    );
+  };
   // NOTE: no `req.on('close', ...)` safe-stop hook here. For Node/Express,
   // the request stream's `close` event fires once the BODY is consumed —
   // right after this JSON-RPC call starts — NOT reliably on client abort.
@@ -507,9 +534,7 @@ async function executeStepRun(
         currentLimit('executor', 'maxIterations') !== undefined ||
         currentLimit('executor', 'maxToolCalls') !== undefined ||
         currentSessionLimit('toolResultMaxChars') !== undefined,
-    ).catch((error) => {
-      throw agentInitializationFailure(error, targetDestination);
-    });
+    );
     handle = agentHandle;
     const stepDestination = targetDestination;
 
@@ -673,38 +698,17 @@ async function executeStepRun(
     const actions = collectActions();
 
     if (!r.ok) {
-      const unanswered = hasUnansweredSapWrite(
-        handle.recMcp?.getToolRecords(traceId) ?? [],
-      );
-      const failure = clientRunFailure(r.error, unanswered);
-      if (!runContextOverflow(r.error) && isOutageError(r.error)) {
+      const typed = typedStepFailure(r.error, actions);
+      if (typed) return typed;
+      if (isOutageError(r.error))
         closeDestination(targetDestination, describeCause(r.error));
-      }
       const tokens = spend.usage();
-      if (failure)
-        return mcpRunError(
-          r.error,
-          failure,
-          timedUsageToWire(tokens, Date.now() - stepStartedAt),
-          {
-            traceId,
-            writeNotice:
-              unverifiedWriteFor(handle, traceId, llmFailure(r.error)) ??
-              (unanswered ? failure.message : undefined),
-          },
-        );
       log.info('execute_step done', {
         ok: false,
         destination: targetDestination,
         models: tokens?.models,
       });
-      const limit = throttleOf(r.error);
-      const unverified = unverifiedWriteFor(handle, traceId, r.error);
-      const message = unverified
-        ? limit
-          ? `${unverified} ${throttleMessage(limit)}`
-          : unverified
-        : failureText(r.error);
+      const message = stepFailureText(r.error);
       return mcpUsageResult(
         [`ERROR on destination "${targetDestination}": ${message}`, actions]
           .filter(Boolean)
@@ -744,32 +748,14 @@ async function executeStepRun(
     const content = [notice, reply, actions].filter(Boolean).join('\n');
     return mcpUsageResult(content, wireUsage, emptyResult);
   } catch (err) {
-    const unanswered = hasUnansweredSapWrite(
-      handle?.recMcp?.getToolRecords(traceId) ?? [],
-    );
-    const failure = clientRunFailure(err, unanswered);
-    if (
-      !(err instanceof AgentInitializationError) &&
-      !runContextOverflow(err) &&
-      targetDestination &&
-      isOutageError(err)
-    ) {
-      closeDestination(targetDestination, describeCause(err));
-    }
-    if (failure) {
+    const actions = collectActions();
+    const typed = typedStepFailure(err, actions);
+    if (typed) {
       measurement?.end('error');
-      return mcpRunError(
-        err,
-        failure,
-        timedUsageToWire(spend.usage(), Date.now() - stepStartedAt),
-        {
-          traceId,
-          writeNotice:
-            unverifiedWriteFor(handle, traceId, llmFailure(err)) ??
-            (unanswered ? failure.message : undefined),
-        },
-      );
+      return typed;
     }
+    if (targetDestination && isOutageError(err))
+      closeDestination(targetDestination, describeCause(err));
     const unverified = unverifiedWriteFor(handle, traceId, err);
     const message =
       unverified ?? (err instanceof Error ? err.message : String(err));
@@ -781,7 +767,7 @@ async function executeStepRun(
       models: tokens?.models,
     });
     return mcpUsageResult(
-      [`ERROR: ${message}`, collectActions()].filter(Boolean).join('\n'),
+      [`ERROR: ${message}`, actions].filter(Boolean).join('\n'),
       timedUsageToWire(tokens, Date.now() - stepStartedAt),
       true,
     );

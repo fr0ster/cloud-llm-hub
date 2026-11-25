@@ -21,11 +21,8 @@ import type {
 import {
   addTokenUsage,
   type CallOptions,
-  LlmError,
   RagAccessDeniedError,
   type RagCaller,
-  SmartAgentError,
-  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import {
   DefaultPlannerContextBuilder,
@@ -85,11 +82,7 @@ import {
   getDialogueStoreBackend,
   type HubDialogueState,
   migrateDialogueToolContract,
-  plannerFailure,
-  sanitizeDialogueState,
-  sanitizeTaskFailure,
   touchDialogueState,
-  workerFailure,
 } from './dialogue-store';
 import {
   clientTurnId,
@@ -101,18 +94,18 @@ import { admitBackground, type PipelineSession } from './gatekeeper';
 import {
   attributeTokenUsage,
   captureTokenUsage,
-  isInfrastructureFailure,
   isLlmFailure,
   llmFailure,
+  retainRunErrorCode,
+  runErrorCode,
   runWithoutLlmSpend,
-  type SafeFailure,
   safeContextExceeded,
-  sanitizeFailure,
 } from './llm-failure';
 import { longSessionsIfReady } from './long-session';
 import { withModelCatalog } from './model-catalog';
 import { parseModelAllowlist, resolveRequestModel } from './model-policy';
 import { stripNoMessage } from './no-message';
+import { pipelineFailureLogger } from './pipeline-failure-logging';
 import {
   planAuthorContextNotes,
   plannerSessionOptions,
@@ -143,10 +136,6 @@ import { recordTurn, waitForSessionTurns } from './session-turns';
 import { cachedSystemIdentity } from './system-identity-cache';
 import { createTaskResultStore } from './task-result-store';
 import { type TaskView, taskView } from './task-view';
-import {
-  type ChatRunFailureFacts,
-  chatRunFailureFacts,
-} from './throttle-surfacing';
 import { toolCallDiagnosticsLogger } from './tool-call-diagnostics';
 import { type JournalEntry, withWriteActions } from './tool-journal';
 import { resolverFor, type TrustResolver } from './trust-resolver';
@@ -209,28 +198,6 @@ export interface DialoguePlan {
   status: 'active' | 'waiting_user' | 'done';
 }
 
-type DialogueFailure = ChatRunFailureFacts & { cause?: string };
-
-function sanitizePlannerFailure<T>(error: T) {
-  const safe = sanitizeFailure(error, plannerFailure);
-  const cause =
-    safeContextExceeded(safe)?.message ??
-    (safe.code === 'EMBED_ERROR' ? safe.message : undefined) ??
-    (isLlmFailure(error) ? llmFailure(error) : undefined);
-  const failure: DialogueFailure | undefined =
-    cause || safe.code !== plannerFailure.code || safe.status !== undefined
-      ? {
-          ...chatRunFailureFacts(safe),
-          retryAfterSeconds: safe.retryAfterSeconds,
-          cause,
-        }
-      : undefined;
-  const safeError = isLlmFailure(error)
-    ? new LlmError(safe.message, safe.code)
-    : new SmartAgentError(safe.message, safe.code);
-  return { error: Object.assign(safeError, safe), failure };
-}
-
 /** Absent plans emit nothing; session reset clears the WebUI locally. */
 export function dialoguePlan(
   state: ReturnType<DialogueSession['snapshot']>,
@@ -248,7 +215,7 @@ export function dialoguePlan(
 export interface DialogueHandle {
   readonly caller: RagCaller;
   destination: string;
-  session: { snapshot(): HubDialogueState } & DialogueSession;
+  session: DialogueSession;
   usage?: IUsageRecorder;
   failedUsage?(): PlannerMessageUsage;
   coordinatorResolver(): Promise<TrustResolver>;
@@ -266,7 +233,8 @@ export interface DialogueHandle {
     idle: boolean;
     settledSeq: number;
     lastFailedSeq: number;
-    failure?: DialogueFailure;
+    failureCause?: string;
+    failureCode?: string;
   };
   runStep<T extends { ok: boolean }>(
     run: (signal: AbortSignal | undefined) => Promise<T>,
@@ -484,11 +452,12 @@ async function open(
   // the reply so live subscribers see it on first emission.
   const replyUsage = new WeakMap<object, TokenUsage>();
   let turnReplyUsage: TokenUsage | undefined;
-  // Facts of the last failed settlement; the turn's own failure is collected
+  // Cause of the last failed settlement; the turn's own cause is collected
   // separately and becomes it only when that turn settles as failed.
-  let failure: DialogueFailure | undefined;
-  let turnFailure: DialogueFailure | undefined;
-  const taskFailures = new Map<string, SafeFailure>();
+  let failureCause: string | undefined;
+  let failureCode: string | undefined;
+  let turnFailureCode: string | undefined;
+  let turnFailureCause: string | ReturnType<typeof safeContextExceeded>;
   // Every planner call of the turn, background corrections included.
   let turnPlannerUsage: TokenUsage | undefined;
   let turnRetrieval: ReturnType<typeof captureTokenUsage> | undefined;
@@ -499,22 +468,6 @@ async function open(
     return turnRetrieval && !plannerTrace.getStore()?.active
       ? turnRetrieval.run(run)
       : run();
-  }
-  async function retrieve<T>(run: () => Promise<T>): Promise<T> {
-    const retrieval = turnRetrieval;
-    try {
-      return await observeRetrieval(run);
-    } catch (error) {
-      if (!isInfrastructureFailure(error)) throw error;
-      const safe = sanitizePlannerFailure(error);
-      if (
-        retrieval &&
-        turnRetrieval === retrieval &&
-        terminalRunError(safe.error)
-      )
-        turnFailure = safe.failure;
-      throw safe.error;
-    }
   }
   function addRetrieval(
     planner: TokenUsage | undefined,
@@ -612,13 +565,7 @@ async function open(
   const emitTask = (task: TaskView) => {
     if (taskStates.get(task.id) === task.state) return;
     taskStates.set(task.id, task.state);
-    const failure = sanitizeTaskFailure(task, taskFailures.get(task.id));
-    emit({
-      kind: 'task',
-      task: taskView(
-        withQueueActivity(failure ? { ...task, error: failure.message } : task),
-      ),
-    });
+    emit({ kind: 'task', task: taskView(withQueueActivity(task)) });
   };
   // Shared by TaskBoard.wrapRun and synchronous coordinator steps.
   async function runAdmitted<
@@ -831,27 +778,6 @@ async function open(
   let selectedModel = model ?? restoredModel.model;
   if (selectedModel !== undefined) setRequestModel(userId, key, selectedModel);
   let saving = Promise.resolve();
-  const safeState = (state: HubDialogueState) =>
-    sanitizeDialogueState(state, taskFailures, (request) => {
-      const terminal = request.terminalError;
-      if (!terminal) return;
-      if (request.closedAt === undefined && turnFailure?.code === terminal.code)
-        return {
-          ...turnFailure,
-          code: terminal.code,
-          message: terminal.message,
-        };
-      const previous = savedState?.requests?.find(
-        (entry) => entry.id === request.id,
-      )?.terminalError;
-      if (previous?.code === terminal.code) return previous;
-      const task = state.tasks.find(
-        (entry) =>
-          entry.terminalErrorCode === terminal.code &&
-          state.taskRequests?.[entry.id] === request.id,
-      );
-      return (task && taskFailures.get(task.id)) ?? terminal;
-    });
   const persist = (
     outboxMessages: OutboxEntry[],
     ackMode: boolean,
@@ -1036,7 +962,6 @@ async function open(
         task.state === 'failed' ||
         task.state === 'stopped'
       ) {
-        if (task.state === 'failed') emitTask(task);
         for (const turn of taskHistoryTurns.get(task.id) ?? []) {
           if (!turn.taskAnswers.has(task.id))
             turn.taskAnswers.set(
@@ -1266,22 +1191,22 @@ async function open(
       if (outcome === 'failed') {
         lastFailedSeq = settledSeq;
         lastFailureUsage = failedTurnUsage();
-        const terminalError = request?.terminalError;
-        const overflow = safeContextExceeded(terminalError);
-        failure = overflow
-          ? { ...chatRunFailureFacts(overflow), cause: overflow.message }
-          : (turnFailure ??
-            (terminalError && {
-              ...chatRunFailureFacts(terminalError),
-              ...(terminalError.code === 'EMBED_ERROR' && {
-                cause: terminalError.message,
-              }),
-            }));
+        const overflow =
+          safeContextExceeded(request?.terminalError) ??
+          safeContextExceeded(turnFailureCause);
+        failureCause =
+          overflow?.message ??
+          (typeof turnFailureCause === 'string' ? turnFailureCause : undefined);
+        failureCode =
+          overflow?.code ??
+          turnFailureCode ??
+          runErrorCode(request?.terminalError);
       } else if (trigger === 'user' && messageId) {
         const retrieval = turnRetrieval?.usage();
         if (retrieval) replyRetrieval.set(messageId, retrieval);
       }
-      turnFailure = undefined;
+      turnFailureCode = undefined;
+      turnFailureCause = undefined;
       turnPlannerUsage = undefined;
       turnRetrieval = undefined;
       turnReply = undefined;
@@ -1395,18 +1320,35 @@ async function open(
           }
           if (!result.ok) {
             turnReplyUsage = addTokenUsage(turnReplyUsage, spend.usage());
-            if (!isInfrastructureFailure(result.error)) return result;
-            const { error, failure } = sanitizePlannerFailure(result.error);
-            turnFailure = failure;
-            return { ok: false as const, error };
+            turnFailureCode = runErrorCode(result.error);
+            const overflow = safeContextExceeded(result.error);
+            if (overflow) {
+              turnFailureCause = overflow;
+              return { ok: false as const, error: overflow };
+            }
+            // Only a model failure is replaced by its content-free cause.
+            turnFailureCause = isLlmFailure(result.error)
+              ? llmFailure(result.error)
+              : undefined;
           }
           return result;
         } catch (error) {
           turnReplyUsage = addTokenUsage(turnReplyUsage, spend.usage());
-          if (!isInfrastructureFailure(error)) throw error;
-          const safe = sanitizePlannerFailure(error);
-          turnFailure = safe.failure;
-          throw safe.error;
+          turnFailureCode = runErrorCode(error);
+          const overflow = safeContextExceeded(error);
+          if (overflow) {
+            turnFailureCause = overflow;
+            throw overflow;
+          }
+          if (!isLlmFailure(error)) {
+            turnFailureCause = undefined;
+            throw error;
+          }
+          turnFailureCause = llmFailure(error);
+          throw retainRunErrorCode(
+            new Error(turnFailureCause),
+            turnFailureCode,
+          );
         } finally {
           turnPlannerUsage = addTokenUsage(
             turnPlannerUsage,
@@ -1485,21 +1427,7 @@ async function open(
             // Keep the final task output before a correction consumes its event.
             for (const turn of taskHistoryTurns.get(entry.id) ?? [])
               turn.taskAnswers.set(entry.id, entry.output);
-            const result = await spend.run(() =>
-              taskResultStore.put(entry, options),
-            );
-            if (result.ok || result.error.code !== 'unavailable') return result;
-            const { code } = result.error;
-            return {
-              ok: false,
-              error: {
-                ...sanitizeFailure(result.error, {
-                  code,
-                  message: 'Task result storage failed.',
-                }),
-                code,
-              },
-            };
+            return await spend.run(() => taskResultStore.put(entry, options));
           } finally {
             addTaskSpend(entry.id, spend.usage());
           }
@@ -1551,38 +1479,24 @@ async function open(
         validateModel: (model) => profileRunner.validateModel(model),
         createWorker: async (input, options) =>
           withSessionSettings(userId, key, async () => {
-            const fallback = {
-              code: 'WORKER_PROFILE_ERROR',
-              message: 'Worker profile could not be loaded.',
-            };
-            try {
-              const result = await observeProfilePreparation(
-                options?.signal,
-                () => profileRunner.createWorker(input, options),
-              );
-              if (!result.ok && !isInfrastructureFailure(result.error))
-                return result;
-              if (!result.ok) throw result.error;
-              return {
-                ok: true,
-                value: wrapWorker(
-                  result.value,
-                  input.profile,
-                  currentRoleModel(roleOfProfile(input.profile)) ??
-                    input.model ??
-                    input.profile.model ??
-                    config.llm.model,
-                  input.model,
-                ),
-              };
-            } catch (error) {
-              if (!isInfrastructureFailure(error)) throw error;
-              const safe = sanitizeFailure(error, fallback);
-              throw Object.assign(
-                new SmartAgentError(safe.message, safe.code),
-                safe,
-              );
-            }
+            const result = await observeProfilePreparation(
+              options?.signal,
+              () => profileRunner.createWorker(input, options),
+            );
+            return result.ok
+              ? {
+                  ok: true,
+                  value: wrapWorker(
+                    result.value,
+                    input.profile,
+                    currentRoleModel(roleOfProfile(input.profile)) ??
+                      input.model ??
+                      input.profile.model ??
+                      config.llm.model,
+                    input.model,
+                  ),
+                }
+              : result;
           }),
         preparePlanner: async (input, options) =>
           withSessionSettings(userId, key, () =>
@@ -1646,14 +1560,7 @@ async function open(
           get(target, property) {
             if (property === 'query') {
               const query: typeof target.query = (...args) =>
-                retrieve(async () => {
-                  const result = await target.query(...args);
-                  if (result.ok || !isInfrastructureFailure(result.error))
-                    return result;
-                  const safe = sanitizePlannerFailure(result.error);
-                  if (terminalRunError(safe.error)) throw safe.error;
-                  return { ok: false, error: safe.error };
-                });
+                observeRetrieval(() => target.query(...args));
               return query;
             }
             const value = Reflect.get(target, property);
@@ -1667,7 +1574,7 @@ async function open(
             get(target, property) {
               if (property === 'search') {
                 const search: typeof target.search = (...args) =>
-                  retrieve(() => target.search(...args));
+                  observeRetrieval(() => target.search(...args));
                 return search;
               }
               return Reflect.get(target, property, target);
@@ -1703,7 +1610,7 @@ async function open(
         },
         save: async (_id, state) => {
           clearUnusableCheckerFailures(state);
-          savedState = safeState({
+          savedState = {
             ...state,
             tasks: state.tasks.map(withTaskSpend),
             coordinatorModel: selectedModel,
@@ -1711,10 +1618,10 @@ async function open(
             ...(savedState?.agentsCollectionId !== undefined
               ? { agentsCollectionId: savedState.agentsCollectionId }
               : {}),
-          });
+          };
           // turn() has recomputed plan status before persisting, including
           // turns triggered by background task events.
-          emitPlan(savedState);
+          emitPlan(state);
           const assistant = turnReply
             ? [...state.conversation]
                 .reverse()
@@ -1763,10 +1670,23 @@ async function open(
         maxTasks: config.agent.dialogue.maxTasks,
         // TaskBoard owns the outer pool slot, including cancellation and release.
         pool: sharedExecutorPool(),
-        baseInput: () => ({
-          sessionId: key,
-          sessionLogger: toolCallDiagnosticsLogger({ channel: 'dialogue' }),
-        }),
+        baseInput: () => {
+          const diagnostics = toolCallDiagnosticsLogger({
+            channel: 'dialogue',
+          });
+          const pipelineFailures = pipelineFailureLogger(
+            plannerTrace.getStore()?.traceId,
+          );
+          return {
+            sessionId: key,
+            sessionLogger: {
+              logStep(name, data) {
+                if (!pipelineFailures.logStep(name, data))
+                  diagnostics.logStep(name, data);
+              },
+            },
+          };
+        },
         async wrapRun(task, run) {
           // TaskBoard starts execution in the scheduling planner scope; its
           // async context survives pool waits and later user turns.
@@ -1787,8 +1707,7 @@ async function open(
             goalChars: task.goal.length,
           });
           let state: TaskRecord['state'] = 'failed';
-          let failure: SafeFailure | undefined;
-          let terminalErrorCode: string | undefined;
+          let overflow: ReturnType<typeof safeContextExceeded>;
           const spend = captureTokenUsage();
           const traceId = randomUUID();
           const traces = activeWorkerTraces.get(journal) ?? new Set<string>();
@@ -1843,15 +1762,8 @@ async function open(
           } catch (error) {
             tasksWithoutRecordedWorkerUsage.add(task.id);
             addTaskSpend(task.id, spend.usage());
-            if (!isInfrastructureFailure(error)) throw error;
-            failure = sanitizeFailure(error, workerFailure);
-            taskFailures.set(task.id, failure);
-            const safe = Object.assign(
-              new SmartAgentError(failure.message, failure.code),
-              failure,
-            );
-            terminalErrorCode = terminalRunError(safe)?.code;
-            throw safe;
+            overflow = safeContextExceeded(error);
+            throw overflow ?? error;
           } finally {
             if (!stopped) addJournal(journal, traceId);
             traces.delete(traceId);
@@ -1863,15 +1775,14 @@ async function open(
                 errorType: error instanceof Error ? error.name : typeof error,
               });
             }
-            if (state !== 'failed' || failure)
-              emitTask({
-                ...task,
-                state,
-                ...(failure && {
-                  error: failure.message,
-                  terminalErrorCode,
-                }),
-              });
+            emitTask({
+              ...task,
+              state,
+              ...(overflow && {
+                error: overflow.message,
+                terminalErrorCode: overflow.code,
+              }),
+            });
             log().info('task finished', {
               id: task.id,
               state,
@@ -1914,13 +1825,13 @@ async function open(
   session.snapshot = () => {
     const state = snapshot();
     clearUnusableCheckerFailures(state);
-    return safeState({
+    return {
       ...state,
       tasks: state.tasks.map((task) => ({
         ...withTaskSpend(task),
         ...withQueueActivity(task),
       })),
-    });
+    };
   };
   lastPlan = dialoguePlan(session.snapshot());
   // Requests may bind a new caller; the library session owns one caller object.
@@ -2046,7 +1957,8 @@ async function open(
       return {
         settledSeq,
         lastFailedSeq,
-        failure,
+        failureCause,
+        ...(failureCode && { failureCode }),
         turnActive: activity?.turnActive ?? false,
         queuedInputs: activity?.queuedInputs,
         running: activity?.running ?? 0,

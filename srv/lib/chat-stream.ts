@@ -19,7 +19,7 @@ import {
   type dialogueChat,
   failDialogueResponse,
 } from './dialogue-chat';
-import { HubError, runErrorCode, safeContextExceeded } from './llm-failure';
+import { safeContextExceeded } from './llm-failure';
 import { type LongSession, longSessions } from './long-session';
 import { summarizeToolResult } from './tool-result-summary';
 import { responseMeasurement } from './usage/request-records';
@@ -76,7 +76,7 @@ export function chatStream(
       timer = setInterval(beat, 10_000);
       timer.unref?.();
     },
-    error<T>(body: T, coded = false) {
+    error<T>(body: T) {
       if (ended) return;
       ended = true;
       stop();
@@ -84,7 +84,7 @@ export function chatStream(
       // A failed response must never count as an ended outbox delivery.
       failDialogueResponse(res);
       out.write(
-        `${protocol === 'anthropic' || coded ? 'event: error\n' : ''}data: ${JSON.stringify(body)}\n\n`,
+        `${protocol === 'anthropic' ? 'event: error\n' : ''}data: ${JSON.stringify(body)}\n\n`,
       );
       out.end();
     },
@@ -110,7 +110,7 @@ export async function streamDialogue(opts: {
   agent: Pick<ReturnType<typeof dialogueChat>, 'follow' | 'hasFollow'>;
   source: AsyncIterable<Result<DialogueStreamChunk, OrchestratorError>>;
   run: (fn: () => Promise<void>) => Promise<void>;
-  onError: <T>(error: T) => object;
+  onError: <T>(error: T) => object | string;
   onTurnEnd?: (text: string, following: boolean) => void;
   onEnd?: (text: string) => void;
 }): Promise<() => Promise<void>> {
@@ -232,7 +232,6 @@ export async function streamDialogue(opts: {
       }
     } catch (error) {
       terminalSucceeded = false;
-      const payload = opts.onError(error);
       // Spend survives a failed turn. Emit it before the error closes the socket.
       const spent = terminalUsage();
       if (spent) {
@@ -245,7 +244,7 @@ export async function streamDialogue(opts: {
             `data: ${JSON.stringify({ ...base, choices: [], usage: openAiUsageToWire(spent, responseModel()) })}\n\n`,
           );
       }
-      stream.error(payload, runErrorCode(error) !== undefined);
+      stream.error(opts.onError(error));
     }
   })();
   const content = async (value: string) => {
@@ -327,20 +326,15 @@ export async function streamDialogue(opts: {
             stream.measurement?.end(item.reason);
             if (item.reason === 'error') {
               addDeliveredUsage(item.usage);
-              const { cause, code, status, throttled, retryAfterSeconds } =
-                item;
-              // Keep the safe model cause available to the shared error mapper.
               throw (
                 safeContextExceeded(item) ??
                 Object.assign(
-                  new HubError(
-                    cause && code && throttled
-                      ? cause
-                      : cause
-                        ? `Background planner turn failed: ${cause}`
-                        : 'Background planner turn failed',
+                  new Error(
+                    item.cause
+                      ? `Background planner turn failed: ${item.cause}`
+                      : 'Background planner turn failed',
                   ),
-                  { code, status, throttled, retryAfterSeconds },
+                  { code: item.code },
                 )
               );
             } else if (item.note)

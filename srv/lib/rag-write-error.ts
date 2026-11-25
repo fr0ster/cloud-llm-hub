@@ -1,6 +1,4 @@
-import { HubError } from './llm-failure';
-
-export class RagWriteError extends HubError {
+export class RagWriteError extends Error {
   constructor(
     readonly code: string,
     readonly status: number,
