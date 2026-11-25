@@ -1851,7 +1851,10 @@ export async function handleModels(
   const config = getAgentConfig();
   const activeModel = getCurrentModel();
   const ownedBy =
-    config.llm.provider === 'sap-ai-sdk' ? 'sap-ai-core' : config.llm.provider;
+    config.llm.provider === 'sap-ai-sdk' ||
+    config.llm.provider === 'sap-aicore-foundation'
+      ? 'sap-ai-core'
+      : config.llm.provider;
 
   let models: {
     id: string;

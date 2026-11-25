@@ -140,6 +140,7 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
           ...recording,
           model: cfg.model,
           resourceGroup: cfg.resourceGroup,
+          scenario: cfg.scenario,
         });
       case 'openai': {
         const OpenAiEmbedder = OpenAiConstructor;

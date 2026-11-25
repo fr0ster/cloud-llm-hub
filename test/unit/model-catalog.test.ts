@@ -244,7 +244,9 @@ it('rejects catalog with unsupported providers during startup validation', () =>
         LLM_AGENT_MODELS: 'catalog',
         LLM_AGENT_PROVIDER: provider,
       }),
-    ).toThrow('catalog requires LLM_AGENT_PROVIDER=sap-ai-sdk or anthropic');
+    ).toThrow(
+      'catalog requires LLM_AGENT_PROVIDER=sap-ai-sdk, sap-aicore-foundation or anthropic',
+    );
   }
 });
 it('defers configured role checks, logs missing models after loading, and rejects at runtime', async () => {

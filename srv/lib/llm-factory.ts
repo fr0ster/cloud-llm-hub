@@ -22,6 +22,7 @@ import {
   type ILlm,
   type IThrottleStrategy,
   type IUsageRecorder,
+  type LLMProvider,
   type LLMResponse,
   ReportThrottling,
   runWithThrottleRetry,
@@ -31,11 +32,18 @@ import { LlmAdapter, LlmProviderBridge } from '@mcp-abap-adt/llm-agent-libs';
 import { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
 import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
 import {
+  type SapAiCoreFoundationConfig,
+  SapAiCoreFoundationProvider,
   type SapCoreAIConfig,
   SapCoreAIProvider,
 } from '@mcp-abap-adt/sap-aicore-llm';
 import cds from '@sap/cds';
-import { getAgentConfig, type LlmProvider } from '../agent-config';
+import {
+  aiCoreServiceKeyFromEnv,
+  getAgentConfig,
+  type LlmProvider,
+} from '../agent-config';
+import { BuildValidationError } from './build-validation-error';
 import { captureLlm } from './context-capture';
 import { deployModel } from './deploy-model';
 import {
@@ -50,6 +58,7 @@ import {
   reportUsageFreeLlmAttempt,
   StreamContentError,
 } from './llm-failure';
+import { foundationMaxTokens } from './model-capabilities';
 import { sessionLlms } from './session-llms';
 import { usageRuntime } from './usage/runtime';
 
@@ -207,13 +216,13 @@ export interface HubLlmConfig {
     | 'analyst'
     | 'tool-retriever';
   contextCapture?: 'off' | 'stats' | 'full';
-  /** API key for openai / anthropic / deepseek. Unused for sap-ai-sdk. */
+  /** API key for openai / anthropic / deepseek. */
   apiKey?: string;
   /** Base URL for OpenAI-compatible endpoints (Azure OpenAI, Ollama, vLLM). */
   baseURL?: string;
   model?: string;
   maxTokens?: number;
-  /** SAP AI Core resource group (sap-ai-sdk only). */
+  /** SAP AI Core resource group. */
   resourceGroup?: string;
   whenThrottled?: IThrottleStrategy;
   quotaScope?: string;
@@ -230,19 +239,20 @@ const apiKeyCredentials = new Map<string, IApiKeyCredential>();
 /**
  * The AI Core service key, as the SAP AI SDK itself used to find it: the
  * `aicore` / `ai-core` binding in VCAP_SERVICES first, then AICORE_SERVICE_KEY
- * (set directly, or assembled from AICORE_* by `ensureAiCoreCredentials`).
+ * or the individual AICORE_* variables.
  */
 export function readAiCoreServiceKey(): string {
   const vcap = process.env.VCAP_SERVICES;
   if (vcap) {
     const services = JSON.parse(vcap) as Record<
       string,
-      Array<{ credentials?: unknown }> | undefined
+      Array<{ credentials?: object }> | undefined
     >;
     const binding = services.aicore?.[0] ?? services['ai-core']?.[0];
     if (binding?.credentials) return JSON.stringify(binding.credentials);
   }
-  const serviceKey = process.env.AICORE_SERVICE_KEY;
+  const serviceKey =
+    process.env.AICORE_SERVICE_KEY || aiCoreServiceKeyFromEnv(process.env);
   if (serviceKey) return serviceKey;
   throw new Error(
     'SAP AI Core credentials not found: bind an "aicore" service or set AICORE_SERVICE_KEY (or AICORE_AUTH_URL, AICORE_CLIENT_ID, AICORE_CLIENT_SECRET, AICORE_BASE_URL).',
@@ -306,6 +316,20 @@ export function makeHubCatalogProvider(): SapCoreAIProvider {
   });
 }
 
+export function makeHubFoundationProvider(
+  options: Omit<SapAiCoreFoundationConfig, 'credential' | 'apiBaseUrl'>,
+): SapAiCoreFoundationProvider {
+  const access = getAiCoreAccess();
+  return new SapAiCoreFoundationProvider({
+    ...options,
+    resourceGroup: options.resourceGroup?.trim() || undefined,
+    credential: access.credential,
+    get apiBaseUrl() {
+      return access.apiBaseUrl;
+    },
+  });
+}
+
 /** The Anthropic construction shared by chat and catalog discovery. */
 function anthropicProvider(
   cfg: Pick<HubLlmConfig, 'apiKey' | 'baseURL'>,
@@ -353,7 +377,7 @@ export function hubLlmKey(
   temperature: number | undefined,
 ): string {
   const credential =
-    cfg.provider === 'sap-ai-sdk'
+    cfg.provider === 'sap-ai-sdk' || cfg.provider === 'sap-aicore-foundation'
       ? getAiCoreAccess().credential
       : apiKeyCredential(cfg.apiKey ?? '');
   let credentialId = credentialIds.get(credential);
@@ -424,7 +448,12 @@ async function createHubLlm(
   temperature: number | undefined,
   promptCaching: boolean,
 ): Promise<ILlm> {
-  const maxTokens = cfg.maxTokens != null ? Number(cfg.maxTokens) : undefined;
+  const modelMaximum =
+    cfg.provider === 'sap-aicore-foundation' && cfg.model
+      ? foundationMaxTokens(cfg.model)
+      : undefined;
+  const maxTokens =
+    modelMaximum ?? (cfg.maxTokens != null ? Number(cfg.maxTokens) : undefined);
   const usage = usageRuntime()?.recorder;
   const common = {
     ...(usage ? { usage } : {}),
@@ -436,14 +465,20 @@ async function createHubLlm(
     quotaScope: cfg.quotaScope,
   };
 
-  let provider:
-    | SapCoreAIProvider
-    | OpenAIProvider
-    | AnthropicProvider
-    | DeepSeekProvider;
+  let provider: LLMProvider & { readonly model: string };
   switch (cfg.provider) {
     case 'sap-ai-sdk':
       provider = aiCoreProvider({
+        ...common,
+        resourceGroup: cfg.resourceGroup,
+      });
+      break;
+    case 'sap-aicore-foundation':
+      if (!cfg.model)
+        throw new BuildValidationError(
+          'A deployed model is required for LLM_AGENT_PROVIDER=sap-aicore-foundation.',
+        );
+      provider = makeHubFoundationProvider({
         ...common,
         resourceGroup: cfg.resourceGroup,
       });

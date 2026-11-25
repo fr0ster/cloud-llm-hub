@@ -350,6 +350,19 @@ jest.mock('@mcp-abap-adt/sap-aicore-llm', (): object => {
   >('@mcp-abap-adt/sap-aicore-llm');
   return {
     ...actual,
+    SapAiCoreFoundationProvider: class extends actual.SapAiCoreFoundationProvider {
+      constructor(
+        config: ConstructorParameters<
+          typeof actual.SapAiCoreFoundationProvider
+        >[0],
+      ) {
+        super(config);
+        mockConstructions.push({
+          name: 'SapAiCoreFoundationProvider',
+          usage: config.usage,
+        });
+      }
+    },
     SapCoreAIProvider: class extends actual.SapCoreAIProvider {
       constructor(
         config: ConstructorParameters<typeof actual.SapCoreAIProvider>[0],
@@ -445,17 +458,12 @@ test.each([true, false])(
         'anthropic',
         'deepseek',
         'sap-ai-sdk',
-      ]) {
-        if (
-          provider === 'openai' ||
-          provider === 'anthropic' ||
-          provider === 'deepseek' ||
-          provider === 'sap-ai-sdk'
-        )
-          await makeHubLlm(
-            { provider, apiKey: 'test', model: 'test', contextCapture: 'off' },
-            0,
-          );
+        'sap-aicore-foundation',
+      ] as const) {
+        await makeHubLlm(
+          { provider, apiKey: 'test', model: 'test', contextCapture: 'off' },
+          0,
+        );
       }
       for (const kind of ['openai', 'ollama', 'sap-ai-core']) {
         if (kind === 'openai' || kind === 'ollama' || kind === 'sap-ai-core') {
@@ -475,6 +483,7 @@ test.each([true, false])(
         'OpenAIProvider',
         'OpenAiEmbedder',
         'SapAiCoreEmbedder',
+        'SapAiCoreFoundationProvider',
         'SapCoreAIProvider',
       ];
       expect(
@@ -543,6 +552,7 @@ test.each([true, false])(
         'srv/lib/llm-factory.ts:DeepSeekProvider',
         'srv/lib/llm-factory.ts:HubAnthropicProvider',
         'srv/lib/llm-factory.ts:OpenAIProvider',
+        'srv/lib/llm-factory.ts:SapAiCoreFoundationProvider',
         'srv/lib/llm-factory.ts:SapCoreAIProvider',
         'srv/lib/providers.ts:OllamaEmbedder',
         'srv/lib/providers.ts:OpenAiEmbedder',

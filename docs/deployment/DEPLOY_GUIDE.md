@@ -41,6 +41,28 @@ modules:
       LLM_AGENT_MCP_DESTINATION: "DEV_ABAP_SYSTEM"
 ```
 
+### SAP AI Core with foundation-models deployments
+
+Keep the SAP AI Core service binding active. Set these MTA extension parameters
+to use the running `foundation-models` deployments in your resource group:
+
+```yaml
+parameters:
+  LLM_AGENT_PROVIDER: "sap-aicore-foundation"
+  LLM_AGENT_RESOURCE_GROUP: "<resource-group>"
+  LLM_AGENT_MODEL: "<deployed-chat-model>"
+  LLM_AGENT_MODELS: "catalog"
+  LLM_AGENT_RAG_TYPE: "vector"
+  LLM_AGENT_EMBEDDER: "sap-ai-core"
+  LLM_AGENT_EMBEDDING_MODEL: "text-embedding-3-small"
+```
+
+Use the model names from the running chat and embedding deployments. If your
+extension sets `LLM_AGENT_CLASSIFIER_MODEL` or separate role models, use deployed
+names from the same resource group. Leave the classifier model empty to use the
+configured chat model. For keyword-only RAG, set `LLM_AGENT_RAG_TYPE` to
+`in-memory` and omit the embedder settings. See the [SAP AI Core foundation-models configuration](../llm-agent/CONFIG_USAGE.md#sap-ai-core-foundation-models).
+
 ## Build and Deploy
 
 ### Option 1: Using npm scripts (Recommended)
