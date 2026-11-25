@@ -124,6 +124,7 @@ function makeChainableBuilder() {
   builder.withLlmCallStrategy = chainable(jest.fn());
   builder.withToolReselection = chainable(jest.fn());
   builder.withToolSelectionStrategy = chainable(jest.fn());
+  builder.withToolCandidateFilter = chainable(jest.fn());
   builder.withToolCache = chainable(withToolCache);
   builder.withMetrics = chainable(jest.fn());
   builder.withClientAdapter = chainable(jest.fn());

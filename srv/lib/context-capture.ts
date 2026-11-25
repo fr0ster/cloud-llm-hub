@@ -41,6 +41,7 @@ type Component =
   | 'executor'
   | 'checker'
   | 'chat'
+  | 'tool-retriever'
   | 'other'
   | 'planner-author';
 const scope = new AsyncLocalStorage<{

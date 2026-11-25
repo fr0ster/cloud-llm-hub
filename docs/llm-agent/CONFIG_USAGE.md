@@ -1,9 +1,10 @@
 # SmartAgent Configuration
 
-How cloud-llm-hub configures the agent. Everything here is read by
-`srv/agent-config.ts`, which assembles a singleton config from `LLM_AGENT_*`
-environment variables — there is no config file. The one thing a request can
-change is the **model**: `/v1/chat/completions` passes `body.model` into
+How cloud-llm-hub configures the agent. `srv/agent-config.ts` assembles the
+agent configuration primarily from `LLM_AGENT_*` environment variables. Tool
+retrieval also reads CAP configuration files through `cds.env`. A request can
+set the main model:
+`/v1/chat/completions` passes `body.model` into
 `getSmartAgent`, which hot-swaps it for every cached agent, not just the caller.
 Provider and credentials are process-wide.
 
@@ -23,6 +24,24 @@ Provider and credentials are process-wide.
 There is **no HTTP-header override** for provider credentials — headers naming
 an LLM vendor or key are not read anywhere. SAP connection headers (`x-sap-*`)
 are a different mechanism and do apply per request.
+
+## Tool retrieval
+
+| Config key | Environment variable | Default |
+|------------|----------------------|---------|
+| `toolRetrieval.strategy` | `LLM_AGENT_TOOL_RETRIEVAL` | `rag` |
+| `toolRetrieval.model` | `LLM_AGENT_TOOL_RETRIEVAL_MODEL` | Unset |
+
+Each environment variable overrides its corresponding CAP configuration key
+independently. Set the keys under `toolRetrieval` in `.cdsrc.json`, or under
+`cds.toolRetrieval` in `package.json`.
+
+`rag` uses the existing tool search. `llm` sends the step and the
+role-filtered candidate names, descriptions, and input schemas to the
+configured model through the Hub's LLM provider. The model is required for
+`llm`, and the Hub rejects missing models or invalid strategies at startup.
+An invalid selection ends the step with `TOOL_RETRIEVAL_INVALID`.
+Token usage is attributed to `tool-retriever` and tracked by model.
 
 ## Variables
 

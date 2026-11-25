@@ -65,6 +65,10 @@ export type RagType = 'in-memory' | 'ollama';
 
 export type LlmProvider = 'sap-ai-sdk' | 'openai' | 'anthropic' | 'deepseek';
 
+export type ToolRetrievalConfig =
+  | { strategy: 'rag'; model?: string }
+  | { strategy: 'llm'; model: string };
+
 export type EmbedderKind = 'sap-ai-core' | 'openai' | 'ollama';
 export type RagBackendKind =
   | 'in-memory'
@@ -182,6 +186,7 @@ export function parseAgentProfilesConfig(
 }
 
 export interface AgentConfig {
+  toolRetrieval?: ToolRetrievalConfig;
   limits: ExecutionLimits;
   trust: { defaults: TrustDefaults };
   externalMcp?: ExternalMcpConfig;
@@ -607,6 +612,14 @@ export function parseDestinationConfig(
  */
 let warnedClusterStrategy = false;
 export function loadAgentConfig(): AgentConfig {
+  const toolRetrievalFile: { strategy?: string; model?: string } | undefined =
+    cds.env?.toolRetrieval;
+  const toolRetrieval = parseToolRetrievalConfig(
+    process.env.LLM_AGENT_TOOL_RETRIEVAL ??
+      toolRetrievalFile?.strategy ??
+      'rag',
+    process.env.LLM_AGENT_TOOL_RETRIEVAL_MODEL ?? toolRetrievalFile?.model,
+  );
   if (
     process.env.LLM_AGENT_TOOLS_CLUSTER_STRATEGY !== undefined &&
     !warnedClusterStrategy
@@ -692,6 +705,7 @@ export function loadAgentConfig(): AgentConfig {
   );
 
   const config: AgentConfig = {
+    toolRetrieval,
     limits,
     trust: {
       defaults: parseTrustDefaults(process.env.LLM_AGENT_TRUST_DEFAULTS),
@@ -1004,4 +1018,27 @@ export function parseToolSelection(
   throw new Error(
     'LLM_AGENT_TOOLS_SELECTION must be one of: per-collection, step-kind',
   );
+}
+
+function parseToolRetrievalConfig(
+  strategy: string,
+  model: string | undefined,
+): ToolRetrievalConfig {
+  if (model !== undefined && typeof model !== 'string')
+    throw new BuildValidationError('toolRetrieval.model must be a model ID');
+  const modelId = model?.trim() || undefined;
+  switch (typeof strategy === 'string' ? strategy.trim() : strategy) {
+    case 'rag':
+      return { strategy: 'rag', ...(modelId && { model: modelId }) };
+    case 'llm':
+      if (!modelId)
+        throw new BuildValidationError(
+          'toolRetrieval.model (LLM_AGENT_TOOL_RETRIEVAL_MODEL) is required when toolRetrieval.strategy is llm',
+        );
+      return { strategy: 'llm', model: modelId };
+    default:
+      throw new BuildValidationError(
+        'toolRetrieval.strategy (LLM_AGENT_TOOL_RETRIEVAL) must be rag or llm',
+      );
+  }
 }
