@@ -197,7 +197,10 @@ import {
   outageFromToolResult,
 } from './lib/mcp-outage';
 import { NoticeFinalizer } from './lib/notice-finalizer';
-import { logAdaptiveStepStop } from './lib/pipeline-failure-logging';
+import {
+  logAdaptiveStepStop,
+  withPipelineStep,
+} from './lib/pipeline-failure-logging';
 import {
   agentQueryEmbedder,
   type EmbedderFingerprint,
@@ -3721,7 +3724,9 @@ export async function buildAgentForDestination(
                         emit(chunk);
                     },
                   };
-                if (!verdictWorkers.has(name)) return worker.run(input);
+                const runWorker = () =>
+                  withPipelineStep(currentStep, () => worker.run(input));
+                if (!verdictWorkers.has(name)) return runWorker();
                 const brief = briefs.get(currentStep ?? '');
                 let result: Awaited<ReturnType<typeof worker.run>>;
                 try {
@@ -3732,7 +3737,7 @@ export async function buildAgentForDestination(
                         journal().map((entry) => [entry.call.id, entry]),
                       ),
                     },
-                    () => worker.run(input),
+                    runWorker,
                   );
                 } catch (error) {
                   // Only a returned fail verdict should take the sequential branch.

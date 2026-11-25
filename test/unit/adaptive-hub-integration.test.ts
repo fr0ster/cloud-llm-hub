@@ -657,7 +657,10 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       .mockReturnValue(true);
     const buildWorker = jest.spyOn(SmartAgentBuilder.prototype, 'build');
     const privateText = 'Private text from the embedding provider';
-    const overflow = new RagError(privateText, EMBEDDING_CONTEXT_EXCEEDED);
+    const overflow = Object.assign(
+      new RagError(privateText, EMBEDDING_CONTEXT_EXCEEDED),
+      channel === 'agent MCP' ? { stepId: 'first', status: 413 } : {},
+    );
     const history = getSharedHistoryRag();
     const query = history.query.bind(history);
     const failWorkerQuery = jest.fn(
@@ -758,7 +761,12 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
       if (!returnsFailure)
         expect(log.mock.calls).toContainEqual([
           'stage_error_rag-history',
-          { traceId: expect.stringMatching(/./) },
+          {
+            traceId: expect.stringMatching(/./),
+            code: EMBEDDING_CONTEXT_EXCEEDED,
+            stepId: 'first',
+            ...(channel === 'agent MCP' && { status: 413 }),
+          },
         ]);
       expect(JSON.stringify(log.mock.calls)).not.toContain(privateText);
     } finally {
