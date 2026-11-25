@@ -5,6 +5,7 @@ import {
   PipelineExecutor,
 } from '@mcp-abap-adt/llm-agent-libs';
 import cds from '@sap/cds';
+import { runErrorCode } from './llm-failure';
 
 type LogStep = NonNullable<InterpretContext['sessionLogger']>['logStep'];
 
@@ -58,12 +59,6 @@ export function withPipelineStep<T>(stepId: string | undefined, run: () => T) {
   return activeStep.run(stepId, run);
 }
 
-function errorCode(error: object | undefined) {
-  return error && 'code' in error && typeof error.code === 'string'
-    ? error.code
-    : undefined;
-}
-
 function stageFailureDetails(
   data: Parameters<LogStep>[1],
   failure?: StageFailure,
@@ -72,7 +67,7 @@ function stageFailureDetails(
   const payloadError =
     payload && 'error' in payload ? errorObject(payload.error) : undefined;
   const sources = [failure?.error, payloadError, payload, failure?.thrown];
-  const code = sources.map(errorCode).find((value) => value !== undefined);
+  const code = sources.map(runErrorCode).find((value) => value !== undefined);
   const status = sources.map(httpStatusOf).find((value) => value !== undefined);
   const stepId =
     sources

@@ -62,6 +62,7 @@ describe('pipeline stage failure logging', () => {
   it.each([
     { code: 'QUERY_ERROR', status: 503, source: 'result' },
     { code: 'QUERY_ERROR', status: 503, source: 'exception' },
+    { code: 'QUERY_ERROR', status: 503, source: 'wrapped exception' },
     { code: EMBEDDING_CONTEXT_EXCEEDED, status: 413, source: 'result' },
     { code: EMBEDDING_CONTEXT_EXCEEDED, status: 413, source: 'exception' },
   ])('logs $code from a RAG $source', async ({ code, status, source }) => {
@@ -75,6 +76,8 @@ describe('pipeline stage failure logging', () => {
       .spyOn(historyRag, 'query')
       .mockImplementation(async () => {
         if (source === 'exception') throw error;
+        if (source === 'wrapped exception')
+          throw new Error('History query failed', { cause: error });
         return { ok: false, error };
       });
     const { result, yielded } = await runPipeline(historyRag);
