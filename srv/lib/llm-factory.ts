@@ -199,7 +199,13 @@ export class HubAnthropicProvider extends AnthropicProvider {
 export interface HubLlmConfig {
   provider: LlmProvider;
   role?: PromptCachingRole;
-  component?: 'chat' | 'other' | 'planner-author' | 'classifier' | 'analyst';
+  component?:
+    | 'chat'
+    | 'other'
+    | 'planner-author'
+    | 'classifier'
+    | 'analyst'
+    | 'tool-retriever';
   contextCapture?: 'off' | 'stats' | 'full';
   /** API key for openai / anthropic / deepseek. Unused for sap-ai-sdk. */
   apiKey?: string;
@@ -478,7 +484,13 @@ async function createHubLlm(
       { temperature, maxTokens },
     ),
   );
-  if (cfg.component !== 'planner-author') return llm;
+  const component = cfg.component;
+  if (component !== 'planner-author' && component !== 'tool-retriever')
+    return llm;
+  const attribution =
+    component === 'tool-retriever'
+      ? { component, role: component }
+      : { component };
   // SmartAgent supplies its tool-loop component in CallOptions. Attribute at
   // the LLM boundary, after the pipeline has selected that recorder.
   return new Proxy(llm, {
@@ -487,9 +499,7 @@ async function createHubLlm(
         return (...[messages, tools, options]: Parameters<ILlm['chat']>) =>
           target.chat(messages, tools, {
             ...options,
-            usage: (options?.usage ?? usage)?.with({
-              component: 'planner-author',
-            }),
+            usage: (options?.usage ?? usage)?.with(attribution),
           });
       if (property === 'streamChat')
         return (
@@ -497,9 +507,7 @@ async function createHubLlm(
         ) =>
           target.streamChat(messages, tools, {
             ...options,
-            usage: (options?.usage ?? usage)?.with({
-              component: 'planner-author',
-            }),
+            usage: (options?.usage ?? usage)?.with(attribution),
           });
       const value = Reflect.get(target, property, target);
       return typeof value === 'function' ? value.bind(target) : value;

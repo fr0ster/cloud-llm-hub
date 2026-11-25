@@ -303,20 +303,25 @@ export function ragToolEffect(name: RagMcpTool) {
 export function isRagWriteTool(name: string): boolean {
   return isRagTool(name) && ragToolEffect(name) !== 'read';
 }
-export function eligibleRagTools(coordinator = false): RagMcpTool[] {
-  return ragToolNames.filter(
-    (name) =>
-      dialogueRagToolAllowed(
-        name,
-        coordinator
-          ? 'coordinator'
-          : isDialogueRagWorker()
-            ? 'worker'
-            : undefined,
-      ) &&
-      (profileToolAllowed(name) || isDialogueResultReader(name)) &&
-      (!isReadOnlyTools() || allowsReadOnlyEffect(ragToolEffect(name))),
+export function isRagToolExposed(
+  name: RagMcpTool,
+  coordinator = false,
+): boolean {
+  return (
+    dialogueRagToolAllowed(
+      name,
+      coordinator
+        ? 'coordinator'
+        : isDialogueRagWorker()
+          ? 'worker'
+          : undefined,
+    ) &&
+    (profileToolAllowed(name) || isDialogueResultReader(name)) &&
+    (!isReadOnlyTools() || allowsReadOnlyEffect(ragToolEffect(name)))
   );
+}
+export function eligibleRagTools(coordinator = false): RagMcpTool[] {
+  return ragToolNames.filter((name) => isRagToolExposed(name, coordinator));
 }
 export function buildRagToolSchemas(coordinator = false) {
   const role = coordinator

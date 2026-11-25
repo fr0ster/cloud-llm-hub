@@ -8,7 +8,10 @@ import {
   createCheckerWorker,
   withCheckerBrief,
 } from './lib/checker-verdict';
-import { submitVerdictTool } from './lib/checker-verdict-tool';
+import {
+  submitVerdictTool,
+  verdictToolsEnabled,
+} from './lib/checker-verdict-tool';
 import {
   clientHistoryWindow,
   consumerHistoryRag,
@@ -87,6 +90,7 @@ import { guardLlmOnlyAgent } from './lib/llm-only-guard';
 import { longSessionsIfReady } from './lib/long-session';
 import {
   isRagTool,
+  isRagToolExposed,
   ragToolEffect,
   ragToolNames,
 } from './lib/rag-tool-catalogue';
@@ -143,6 +147,7 @@ import {
   type RagResult,
   stampRagOwner,
   TextOnlyEmbedding,
+  type ToolCandidate,
   terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -152,6 +157,7 @@ import {
   InMemoryMetrics,
   type IStageHandler,
   LlmAdaptiveController,
+  LlmToolRetriever,
   type SmartAgent,
   SmartAgentBuilder,
   type SmartAgentHandle,
@@ -847,17 +853,17 @@ function getToolAnnotations(): Map<string, ToolEffectAnnotations | undefined> {
   return toolAnnotations;
 }
 
-let toolExpositionMap: Map<string, string> | null = null;
+let toolExpositionMap: Map<string, ExpositionLevel> | null = null;
 
-function getToolExpositionMap(): Map<string, string> {
+function getToolExpositionMap(): Map<string, ExpositionLevel> {
   if (toolExpositionMap) return toolExpositionMap;
 
   // Built in lib/tool-exposition-map.ts so the map — a security artefact — can
   // be tested without booting CAP.
   toolExpositionMap = buildToolExpositionMap(
     CLOUD_LOCAL_TOOL_EXPOSITIONS,
-    loggerAdapter as never,
-  ) as Map<string, string>;
+    loggerAdapter,
+  );
 
   cds.log('agent-manager').info('Built tool exposition map', {
     total: toolExpositionMap.size,
@@ -2679,8 +2685,7 @@ export async function buildEmbeddedMcpAdapter(
     metadataOnly: true,
   });
 
-  // Load ALL tool handlers — role-based filtering happens at RAG query time
-  // via ExpositionFilteringRag (post-filter by exposition metadata).
+  // Load all handlers once. Tool selection applies the caller's role per request.
   const exporter = new HandlerExporter(getHandlerExporterConfig());
 
   const entries = exporter.getHandlerEntries();
@@ -2704,7 +2709,7 @@ export async function buildEmbeddedMcpAdapter(
     // AUTHORIZATION FIRST — before any dispatch, including the cloud-local
     // branch below and the recursive RuntimeGetDumpById call it makes.
     //
-    // The RAG exposition filter only decides what is OFFERED to the model; it
+    // The exposition filter only decides what is OFFERED to the model; it
     // cannot stop a model that asks for a tool by name because the user put
     // that name in the prompt. toolNames holds every tool and is cached per
     // destination, so without this check any caller could reach any tool.
@@ -2882,6 +2887,35 @@ export async function buildEmbeddedMcpAdapter(
 }
 
 /** Create shared LLM instances (called once, reused across all agents) */
+function getOrCreateRoleLlm(
+  config: AgentConfig,
+  model: string,
+  component: 'chat' | 'planner-author' | 'tool-retriever',
+  role?: PromptCachingRole,
+): ReturnType<typeof makeHubLlm> {
+  const clients = component === 'planner-author' ? planAuthorLlms : modelLlms;
+  const llmConfig = {
+    contextCapture: config.llm.contextCapture,
+    provider: config.llm.provider,
+    model,
+    apiKey: config.llm.apiKey,
+    baseURL: config.llm.baseUrl,
+    resourceGroup: config.llm.resourceGroup,
+    whenThrottled: config.llm.whenThrottled,
+    ...(component !== 'tool-retriever' && { maxTokens: config.llm.maxTokens }),
+    component,
+    role,
+  };
+  const temperature = config.llm.temperature;
+  const clientKey = hubLlmKey(llmConfig, temperature);
+  let llm = clients.get(clientKey);
+  if (!llm) {
+    llm = makeHubLlm(llmConfig, temperature).then(trackedLlm);
+    clients.set(clientKey, llm);
+  }
+  return llm;
+}
+
 function getOrCreateSharedLlms(
   config: AgentConfig,
   component: 'chat' | 'planner-author' = 'chat',
@@ -2890,40 +2924,7 @@ function getOrCreateSharedLlms(
   mainLlm: ReturnType<typeof makeHubLlm>;
   classifierLlm: ReturnType<typeof makeHubLlm>;
 } {
-  const mainModel = config.llm.model;
-  const clients = component === 'planner-author' ? planAuthorLlms : modelLlms;
-  const clientKey = hubLlmKey(
-    {
-      provider: config.llm.provider,
-      model: config.llm.model,
-      baseURL: config.llm.baseUrl,
-      apiKey: config.llm.apiKey,
-      resourceGroup: config.llm.resourceGroup,
-      maxTokens: config.llm.maxTokens,
-      component,
-      role,
-    },
-    config.llm.temperature,
-  );
-  let mainLlm = clients.get(clientKey);
-  if (!mainLlm) {
-    mainLlm = makeHubLlm(
-      {
-        contextCapture: config.llm.contextCapture,
-        provider: config.llm.provider,
-        apiKey: config.llm.apiKey,
-        baseURL: config.llm.baseUrl,
-        component,
-        role,
-        model: mainModel,
-        maxTokens: config.llm.maxTokens,
-        resourceGroup: config.llm.resourceGroup,
-        whenThrottled: config.llm.whenThrottled,
-      },
-      config.llm.temperature,
-    ).then(trackedLlm);
-  }
-  clients.set(clientKey, mainLlm);
+  const mainLlm = getOrCreateRoleLlm(config, config.llm.model, component, role);
   if (!sharedClassifierLlm) {
     const classifierModel = config.llm.classifierModel;
     sharedClassifierLlm = makeHubLlm(
@@ -2946,6 +2947,41 @@ function getOrCreateSharedLlms(
     mainLlm,
     classifierLlm: sharedClassifierLlm,
   };
+}
+
+async function configureToolRetriever(
+  builder: SmartAgentBuilder,
+  config: AgentConfig,
+): Promise<void> {
+  if (config.toolRetrieval?.strategy === 'llm') {
+    const llm = await getOrCreateRoleLlm(
+      config,
+      config.toolRetrieval.model,
+      'tool-retriever',
+    );
+    builder.withToolRetriever(new LlmToolRetriever(llm));
+  }
+}
+
+function destinationToolCandidateAllowed(
+  { name }: ToolCandidate,
+  options?: CallOptions,
+): boolean {
+  if (isRagTool(name)) return isRagToolExposed(name);
+  if (!profileToolAllowed(name)) return false;
+  if (name === submitVerdictTool.name) return verdictToolsEnabled();
+
+  const exposition = getToolExpositionMap().get(name);
+  if (!exposition) return docsMcp().owns(name) || ownsUserMcpTool(name);
+  const requested = options?.ragFilter?.exposition;
+  const allowed = Array.isArray(requested)
+    ? requested
+    : (connectionALS.getStore()?.exposition ??
+      resolveExposition(['MCP_Reader']));
+  return (
+    allowed.includes(exposition) &&
+    (!isReadOnlyTools() || isReadOnlyTool(name, getToolAnnotations().get(name)))
+  );
 }
 
 /**
@@ -3035,6 +3071,7 @@ export async function configureDestinationAgentBuilder(
     .withToolTrust(builtInToolTrust(roleResolver))
     .withMainLlm(mainLlm)
     .withClassifierLlm(classifierLlm)
+    .withToolCandidateFilter(destinationToolCandidateAllowed)
     .withMcpClients([
       mcpAdapter instanceof RecordingMcpClient
         ? mcpAdapter.includeClients(externalClients, sessionTools)
@@ -3049,7 +3086,7 @@ export async function configureDestinationAgentBuilder(
 
   // External candidates join the role after SAP exposition filtering.
   // Their runtime indexes never write into the prebuilt corpus.
-  if (!opts?.skipRetrieval)
+  if (!opts?.skipRetrieval) {
     builder.setToolsRag(
       withDialogueRagTools(
         sessionTools
@@ -3057,6 +3094,8 @@ export async function configureDestinationAgentBuilder(
           : docsMcp().withToolsRag(toolsRag, role),
       ),
     );
+    await configureToolRetriever(builder, config);
+  }
 
   // Every destination agent recalls complete turns from its bound session,
   // independently of tool and skill retrieval.
@@ -3221,6 +3260,7 @@ export async function buildPlannerAgent(
     .setToolsRag(docsMcp().withToolsRag(plannerTools, 'planner'))
     .withClassification(false)
     .withMode('hard');
+  await configureToolRetriever(builder, config);
   if (authorClient)
     builder.withToolLoopContextStrategyFactory(createReadDedupContextStrategy);
   const handle = unwrapBuilderResult(await builder.build());
@@ -4176,6 +4216,7 @@ export async function buildLlmOnlyAgent(
     )
     .withClientAdapter(new ClineClientAdapter());
 
+  await configureToolRetriever(builder, config);
   const e = getProviders().embedding;
   if (e) builder.withEmbedder(agentQueryEmbedder(e));
 
