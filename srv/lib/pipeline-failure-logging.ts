@@ -8,11 +8,14 @@ import cds from '@sap/cds';
 
 type LogStep = NonNullable<InterpretContext['sessionLogger']>['logStep'];
 
+function errorObject<T>(error: T) {
+  return typeof error === 'object' && error !== null ? error : undefined;
+}
+
 function errorLocation<T>(error: T) {
   let component: string | undefined;
   let stepId: string | undefined;
-  let current: object | undefined =
-    typeof error === 'object' && error !== null ? error : undefined;
+  let current: object | undefined = errorObject(error);
   const seen = new Set<object>();
   while (current && !seen.has(current)) {
     seen.add(current);
@@ -21,7 +24,7 @@ function errorLocation<T>(error: T) {
     if ('stepId' in current && typeof current.stepId === 'string')
       stepId ??= current.stepId;
     const cause = 'cause' in current ? current.cause : undefined;
-    current = typeof cause === 'object' && cause !== null ? cause : undefined;
+    current = errorObject(cause);
   }
   return { component, stepId };
 }
@@ -42,40 +45,138 @@ export function logRunFailure<T>(
   });
 }
 
-const activeStageFailure = new AsyncLocalStorage<{
+type StageFailure = {
   error?: PipelineContext['error'];
-}>();
+  thrown?: object;
+  logged: boolean;
+};
+
+const activeStageFailure = new AsyncLocalStorage<StageFailure>();
 const activeStep = new AsyncLocalStorage<string | undefined>();
 
 export function withPipelineStep<T>(stepId: string | undefined, run: () => T) {
   return activeStep.run(stepId, run);
 }
 
-// llm-agent-libs 38.0.2 yields the typed error immediately before logging its
-// string form. Scope the bridge to each executor call, including parallel stages.
-const executeStages = PipelineExecutor.prototype.executeStages;
-PipelineExecutor.prototype.executeStages = function (stages, context, span) {
-  if (!context.options?.sessionLogger)
-    return executeStages.call(this, stages, context, span);
+function errorCode(error: object | undefined) {
+  return error && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : undefined;
+}
 
-  const failure: { error?: PipelineContext['error'] } = {};
-  const emit: PipelineContext['yield'] = (chunk) => {
-    if (!chunk.ok) {
-      failure.error = chunk.error;
-      queueMicrotask(() => {
-        failure.error = undefined;
-      });
-    }
-    context.yield(chunk);
+function stageFailureDetails(
+  data: Parameters<LogStep>[1],
+  failure?: StageFailure,
+) {
+  const payload = errorObject(data);
+  const payloadError =
+    payload && 'error' in payload ? errorObject(payload.error) : undefined;
+  const sources = [failure?.error, payloadError, payload, failure?.thrown];
+  const code = sources.map(errorCode).find((value) => value !== undefined);
+  const status = sources.map(httpStatusOf).find((value) => value !== undefined);
+  const stepId =
+    sources
+      .map((source) => errorLocation(source).stepId)
+      .find((id) => id !== undefined) ?? activeStep.getStore();
+  return {
+    ...(code !== undefined && { code }),
+    ...(stepId !== undefined && { stepId }),
+    ...(status !== undefined && { status }),
   };
-  const scopedContext = new Proxy(context, {
-    get(target, key, receiver) {
-      return key === 'yield' ? emit : Reflect.get(target, key, receiver);
+}
+
+// The executor's catch path stringifies exceptions it does not record on the
+// context. Keep the original exception for logging and let the executor handle it.
+function observeStageException(
+  executor: PipelineExecutor,
+  type: string,
+  failure: StageFailure,
+) {
+  // biome-ignore lint/complexity/useLiteralKeys: The executor's handler registry is private.
+  const handlers = executor['handlers'];
+  const handler = handlers.get(type);
+  if (!handler) return executor;
+
+  const scopedHandlers = new Map(handlers).set(type, {
+    async execute(...args: Parameters<typeof handler.execute>) {
+      try {
+        return await handler.execute(...args);
+      } catch (error) {
+        failure.thrown = errorObject(error);
+        throw error;
+      }
     },
   });
-  return activeStageFailure.run(failure, () =>
-    executeStages.call(this, stages, scopedContext, span),
-  );
+  return new Proxy(executor, {
+    get(target, key, receiver) {
+      return key === 'handlers'
+        ? scopedHandlers
+        : Reflect.get(target, key, receiver);
+    },
+  });
+}
+
+// llm-agent-libs 38.0.2 logs caught exceptions but emits no stage event when a
+// handler sets ctx.error and returns false. Track writes in the executing stage
+// so a shared context cannot attribute a parallel child's error to a sibling.
+const executeStages = PipelineExecutor.prototype.executeStages;
+PipelineExecutor.prototype.executeStages = async function (
+  stages,
+  context,
+  span,
+) {
+  const options = context.options;
+  const sessionLogger = options?.sessionLogger;
+  if (!sessionLogger) return executeStages.call(this, stages, context, span);
+
+  for (const stage of stages) {
+    const failure: StageFailure = { logged: false };
+    const event = `stage_error_${stage.id}`;
+    const logStep: LogStep = (name, data, area) => {
+      if (name === event && activeStageFailure.getStore() === failure) {
+        failure.logged = true;
+        sessionLogger.logStep(name, stageFailureDetails(data, failure), area);
+      } else {
+        sessionLogger.logStep(name, data, area);
+      }
+    };
+    const scopedOptions = { ...options, sessionLogger: { logStep } };
+    const scopedContext = new Proxy(context, {
+      get(target, key, receiver) {
+        return key === 'options'
+          ? scopedOptions
+          : Reflect.get(target, key, receiver);
+      },
+      set(
+        target,
+        key,
+        value: PipelineContext[keyof PipelineContext],
+        receiver: object,
+      ) {
+        const written = Reflect.set(target, key, value, receiver);
+        if (
+          written &&
+          key === 'error' &&
+          activeStageFailure.getStore() === failure
+        )
+          failure.error = target.error;
+        return written;
+      },
+    });
+    const executor = observeStageException(this, stage.type, failure);
+    const ok = await activeStageFailure.run(failure, async () => {
+      const completed = await executeStages.call(
+        executor,
+        [stage],
+        scopedContext,
+        span,
+      );
+      if (failure.error && !failure.logged) logStep(event, undefined);
+      return completed;
+    });
+    if (!ok) return false;
+  }
+  return true;
 };
 
 export function logAdaptiveStepStop(
@@ -93,16 +194,11 @@ export function logAdaptiveStepStop(
 export function pipelineFailureLogger(traceId: string | undefined) {
   const log = cds.log('smart-pipeline');
   return {
-    logStep(name: Parameters<LogStep>[0], _data: Parameters<LogStep>[1]) {
+    logStep(name: Parameters<LogStep>[0], data: Parameters<LogStep>[1]) {
       if (!name.startsWith('stage_error_')) return false;
-      const error = activeStageFailure.getStore()?.error;
-      const stepId = errorLocation(error).stepId ?? activeStep.getStore();
-      const status = httpStatusOf(error);
       log.error(name, {
         ...(traceId !== undefined && { traceId }),
-        ...(error?.code !== undefined && { code: error.code }),
-        ...(stepId !== undefined && { stepId }),
-        ...(status !== undefined && { status }),
+        ...stageFailureDetails(data),
       });
       return true;
     },
