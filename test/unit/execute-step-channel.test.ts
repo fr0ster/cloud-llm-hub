@@ -8,12 +8,18 @@ import { lifecycleHooks } from '../../srv/lib/session-lifecycle';
 const mockCreateWorker = jest.fn();
 const mockGetToolJournal = jest.fn<JournalEntry[], [string?]>(() => []);
 const mockGetProfile = jest.fn();
+const mockRunError = jest.fn();
 jest.mock(
   '@sap/cds',
   () => ({
     __esModule: true,
     default: {
-      log: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
+      log: (name: string) => ({
+        info() {},
+        warn() {},
+        error: name === 'agent-mcp' ? mockRunError : () => {},
+        debug() {},
+      }),
       get context() {
         return { user: require('./helpers/channel-harness').harness.user };
       },
@@ -102,6 +108,7 @@ jest.mock('@modelcontextprotocol/sdk/server/streamableHttp.js', () => ({
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ILlm } from '@mcp-abap-adt/llm-agent';
+import { LlmError } from '@mcp-abap-adt/llm-agent';
 import type { Request } from 'express';
 import {
   createAgentMcpServerForRequest,
@@ -150,6 +157,7 @@ beforeEach(() => {
   mockCreateWorker.mockReset();
   mockGetToolJournal.mockReset().mockReturnValue([]);
   mockGetProfile.mockReset();
+  mockRunError.mockClear();
   setLongSessionsForTest(
     new LongSessionRegistry(
       { ttlMs: 3600000, maxSessions: 10, maxPerUser: 10, queueLength: 3 },
@@ -162,6 +170,60 @@ afterEach(async () => {
   setLongSessionsForTest(undefined);
   configure();
 });
+
+it.each([
+  [false, false],
+  [true, false],
+  [false, true],
+  [true, true],
+])(
+  'logs typed throttling and keeps the retry text (write=%s, throws=%s)',
+  async (write, throws) => {
+    const error = Object.assign(
+      new LlmError('Provider returned HTTP 429', 'LLM_ERROR'),
+      {
+        throttled: true,
+        retryAfterSeconds: 41.5,
+        component: 'executor',
+        stepId: 'first',
+      },
+    );
+    harness.process = async () => {
+      if (throws) throw error;
+      return { ok: false, error };
+    };
+    if (write) harness.unanswered = [{ call: { name: 'CreateClass' } }];
+
+    const result = await step();
+
+    const retry =
+      'The AI service is rate-limited right now. Please try again in about 42 seconds.';
+    const detail = write
+      ? `CreateClass was sent and no answer came back (Provider returned HTTP 429). It was NOT retried. ${retry}`
+      : retry;
+    const message = `ERROR on destination "DEST": ${detail}`;
+    expect(result).toMatchObject({
+      isError: true,
+      content: [{ type: 'text', text: message }],
+      structuredContent: {
+        result: message,
+        error: { code: 'LLM_ERROR', status: 500, message },
+      },
+    });
+    expect(mockRunError.mock.calls).toEqual([
+      [
+        'Agent run failed',
+        {
+          code: 'LLM_ERROR',
+          status: 500,
+          traceId: expect.stringMatching(/./),
+          component: 'executor',
+          stepId: 'first',
+        },
+      ],
+    ]);
+  },
+);
 
 test.each([undefined, 'executor'])(
   'executor %s retains HEAD result metadata with a profile runner',

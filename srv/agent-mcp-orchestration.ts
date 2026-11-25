@@ -16,11 +16,7 @@ export {
 } from './lib/orchestration-tool-definitions';
 
 import { randomUUID } from 'node:crypto';
-import {
-  contextExceededError,
-  type McpToolResult,
-  type TaskRecord,
-} from '@mcp-abap-adt/llm-agent';
+import type { McpToolResult, TaskRecord } from '@mcp-abap-adt/llm-agent';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import cds from '@sap/cds';
 import type { Request } from 'express';
@@ -30,18 +26,14 @@ import {
   runWithCallerExposition,
 } from './agent-manager';
 import type { StepCaller } from './agent-mcp';
-import {
-  mcpContextExceeded,
-  mcpUsageResult,
-  ragTextResult,
-} from './agent-mcp-rag';
+import { mcpRunError, mcpUsageResult, ragTextResult } from './agent-mcp-rag';
 import {
   type DialogueHandle,
   headlessDialogueFor,
 } from './lib/dialogue-sessions';
 import { revisionPlanSchema } from './lib/dialogue-store';
 import { leaseSession } from './lib/gatekeeper';
-import { captureTokenUsage } from './lib/llm-failure';
+import { captureTokenUsage, clientRunFailure } from './lib/llm-failure';
 import { longSessions } from './lib/long-session';
 import type { LongSessionRequest } from './lib/session-connection';
 import { resolveSession } from './lib/session-lifecycle';
@@ -202,11 +194,14 @@ export async function executeOrchestrationTool(
             );
             const usage = timedUsageToWire(spend.usage(), Date.now() - started);
             if (!result.ok) {
-              if (contextExceededError(result.error))
-                return mcpContextExceeded(
-                  usage,
-                  hasUnansweredSapWrite(handle.toolJournal().values()),
-                );
+              const unanswered = hasUnansweredSapWrite(
+                handle.toolJournal().values(),
+              );
+              const failure = clientRunFailure(result.error, unanswered);
+              if (failure)
+                return mcpRunError(result.error, failure, usage, {
+                  ...trace,
+                });
               return mcpUsageResult(result.error.message, usage, true);
             }
             const content = toolText(result.value);
@@ -284,11 +279,6 @@ export async function executeOrchestrationTool(
       releaseHold();
     }
   } catch (error) {
-    if (contextExceededError(error))
-      return mcpContextExceeded(
-        undefined,
-        hasUnansweredSapWrite(dialogue?.toolJournal().values() ?? []),
-      );
     if (
       error instanceof Error &&
       'refused' in error &&
@@ -296,6 +286,14 @@ export async function executeOrchestrationTool(
         error.refused === 'SESSION_STORE_UNAVAILABLE')
     )
       return ragTextResult(error.refused, true);
+    const unanswered = hasUnansweredSapWrite(
+      dialogue?.toolJournal().values() ?? [],
+    );
+    const failure = clientRunFailure(error, unanswered);
+    if (failure)
+      return mcpRunError(error, failure, undefined, {
+        traceId: requestMeasurement(req)?.traceId,
+      });
     return ragTextResult(
       error instanceof Error ? error.message : String(error),
       true,

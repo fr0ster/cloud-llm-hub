@@ -16,8 +16,10 @@ import {
   directTransport,
   memorySink,
 } from '@mcp-abap-adt/llm-usage';
+import cds from '@sap/cds';
 import express from 'express';
 import { executeRagTool } from '../../srv/agent-mcp-rag';
+import { handleAnthropicMessages } from '../../srv/anthropic-handler';
 import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
 import { chatStream, streamDialogue } from '../../srv/lib/chat-stream';
 import {
@@ -58,10 +60,11 @@ import {
 } from '../../srv/lib/user-mcp-bridge';
 import { userMcpClient } from '../../srv/lib/user-mcp-tools';
 import { reportWorkerActivity } from '../../srv/lib/worker-activity';
+import { handleChatCompletions } from '../../srv/openai-handler';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { fixtureTrustResolver } from './helpers/agent-profiles';
 import { liveSession } from './helpers/canonical-rag';
-import { fakeReq, fakeRes } from './helpers/channel-harness';
+import { deferred, fakeReq, fakeRes } from './helpers/channel-harness';
 import { typedRequest, typedResponse } from './helpers/response-model';
 import { testAccess } from './helpers/test-rag-access';
 
@@ -73,6 +76,7 @@ jest.mock('../../srv/connections/destinationResolver', () => ({
 
 import {
   LongSessionRegistry,
+  longSessions,
   setLongSessionsForTest,
 } from '../../srv/lib/long-session';
 import { lifecycleHooks } from '../../srv/lib/session-lifecycle';
@@ -170,12 +174,15 @@ const mockEnvironments: string[] = [];
 let mockWorkerModel: string | undefined;
 let mockGoal = 'read';
 let mockWorkerTrust: { target: number } | undefined;
-let mockPlannerHook: ((text: string) => Promise<void>) | undefined;
+let mockPlannerHook:
+  | ((text: string) => Promise<void> | Promise<LlmError | undefined>)
+  | undefined;
 let mockPlannerPreparationHook: (() => void) | undefined;
 let mockWorkerPreparationHook: (() => Promise<void>) | undefined;
 let mockCaptureLlm: (() => Promise<ILlm>) | undefined;
 let mockIsolationHistory: SessionHistoryRouter | undefined;
 let mockClientHistory: 'off' | 'on' = 'off';
+let mockChatCoordinator: 'dialogue' | undefined;
 let mockFinalAnswer: string | undefined;
 let mockBackgroundAnswer: string | undefined;
 let mockPlanUsage: TokenUsage | undefined;
@@ -201,6 +208,7 @@ jest.mock('../../srv/agent-config', () => ({
   getAgentConfig: () => ({
     ...jest.requireActual('../../srv/agent-config').getAgentConfig(),
     agent: {
+      chatCoordinator: mockChatCoordinator,
       clientHistory: mockClientHistory,
       dialogue: {
         executors: 2,
@@ -214,6 +222,11 @@ jest.mock('../../srv/agent-config', () => ({
   }),
 }));
 jest.mock('../../srv/agent-manager', () => ({
+  ...jest
+    .requireActual<typeof import('./helpers/channel-harness')>(
+      './helpers/channel-harness',
+    )
+    .agentManagerMock(),
   getCollectionRegistry: () => mockTaskResultRegistry,
   getSharedHistoryRag: () => mockIsolationHistory,
   docsMcp: () => ({
@@ -293,7 +306,8 @@ jest.mock('../../srv/agent-manager', () => ({
           ? input.slice(input.indexOf('[task events]'))
           : input;
         mockPlannerTurns.push(text);
-        await mockPlannerHook?.(text);
+        const error = await mockPlannerHook?.(text);
+        if (error) return { ok: false, error };
         if (mockPlan) {
           await new PlannerToolsClient().callTool('plan_update', mockPlan);
           return {
@@ -428,6 +442,9 @@ jest.mock('../../srv/agent-manager', () => ({
   runWithRequestConnection: jest.fn((_c: unknown, fn: () => unknown) => fn()),
 }));
 jest.mock('../../srv/lib/gatekeeper', () => ({
+  ...jest.requireActual<typeof import('../../srv/lib/gatekeeper')>(
+    '../../srv/lib/gatekeeper',
+  ),
   leaseSession: () => ({ release() {} }),
   admitBackground: jest.fn(async () => ({
     admitted: {
@@ -483,6 +500,7 @@ beforeEach(() => {
   mockCaptureLlm = undefined;
   mockIsolationHistory = undefined;
   mockClientHistory = 'off';
+  mockChatCoordinator = undefined;
   mockFinalAnswer = undefined;
   mockBackgroundAnswer = undefined;
   mockJournal.clear();
@@ -2966,6 +2984,108 @@ test('revival drops a saved coordinator model removed from the allowlist', async
   }
 });
 
+test.each([
+  ['openai', handleChatCompletions, 'server_error', 500],
+  ['anthropic', handleAnthropicMessages, 'api_error', 500],
+] as const)(
+  '%s follow retains the code and text of a background planner failure',
+  async (protocol, handler, errorType, errorStatus) => {
+    mockChatCoordinator = 'dialogue';
+    const privateMessage = 'Private provider failure';
+    const error = Object.assign(new LlmError(privateMessage, 'LLM_ERROR'), {
+      throttled: true,
+      retryAfterSeconds: 41.5,
+    });
+    mockPlannerHook = async (text) => {
+      if (text.startsWith('[task events]')) return error;
+      await new PlannerToolsClient().callTool('plan_update', {
+        plan: 'Read class',
+        status: 'active',
+      });
+    };
+    mockFinalAnswer = 'Started work';
+    const worker = deferred<ISubAgentResult>();
+    mockRun.mockReturnValue(worker.promise);
+
+    const context = new cds.EventContext({ event: 'test' });
+    context.user = new cds.User({
+      id: 'alice',
+      attr: {},
+      roles: ['MCP_Developer'],
+    });
+    const priorContext = cds.context;
+    const log = jest
+      .spyOn(cds.log(`${protocol}-handler`), 'error')
+      .mockImplementation(() => {});
+    cds.context = context;
+    try {
+      const { h } = await ready();
+      const response = fakeRes();
+      const subscribe = h.subscribe.bind(h);
+      jest
+        .spyOn(h, 'subscribe')
+        .mockImplementation((listener, cursor, consumesToolResults) => {
+          const stop = subscribe(listener, cursor, consumesToolResults);
+          if (consumesToolResults && response.body.includes(': turn-end\n'))
+            worker.resolve({ output: 'read done' });
+          return stop;
+        });
+      liveSession('alice', 'key');
+      const req = typedRequest(
+        fakeReq(
+          {
+            model: 'm',
+            max_tokens: 100,
+            stream: true,
+            messages: [{ role: 'user', content: 'go' }],
+          },
+          'key',
+          false,
+        ),
+      );
+      req.headers['x-sap-destination'] = 'TEST';
+      req.headers.authorization = 'Bearer test';
+      Object.assign(req, { longSession: longSessions().get('alice', 'key') });
+
+      await handler(req, typedResponse(response));
+      expect(response.body).toContain('Started work');
+      expect(response.statusCode).toBe(200);
+      expect(h.state().failureCause).toBe('LLM unavailable (HTTP 429)');
+      expect(h.state().failureCode).toBe('LLM_ERROR');
+      expect(response.headers['Retry-After']).toBeUndefined();
+      const prefix =
+        protocol === 'anthropic' ? 'event: error\ndata: ' : 'data: ';
+      const errors = response.body
+        .split('\n\n')
+        .filter(
+          (event) =>
+            event.startsWith(prefix) && event.includes('"code":"LLM_ERROR"'),
+        );
+      expect(errors).toHaveLength(1);
+      expect(JSON.parse(errors[0].slice(prefix.length))).toEqual({
+        ...(protocol === 'anthropic' && { type: 'error' }),
+        error: {
+          code: 'LLM_ERROR',
+          type: errorType,
+          message: 'Background planner turn failed: LLM unavailable (HTTP 429)',
+        },
+      });
+      expect(response.body).not.toMatch(/\[DONE\]|event: message_stop/);
+      expect(response.body).not.toContain(privateMessage);
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith(
+        'Agent run failed',
+        expect.objectContaining({ code: 'LLM_ERROR', status: errorStatus }),
+      );
+      expect(JSON.stringify(log.mock.calls)).not.toContain(privateMessage);
+    } finally {
+      cds.context = priorContext;
+      log.mockRestore();
+      worker.resolve({ output: 'read done' });
+    }
+  },
+);
+
 test.each([429, 503, 0])(
   'background planner failures retain a safe cause and worker spend (%s)',
   async (status) => {
@@ -2987,6 +3107,7 @@ test.each([429, 503, 0])(
       ? `LLM unavailable (HTTP ${status})`
       : 'LLM unavailable (no response from model)';
     expect(h.state().failureCause).toBe(cause);
+    expect(h.state().failureCode).toBe('LLM_ERROR');
     expect(h.failedUsage?.().tasks).toEqual([
       expect.objectContaining({
         worker: 'executor',

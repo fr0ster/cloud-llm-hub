@@ -1,5 +1,8 @@
 import { isDeepStrictEqual } from 'node:util';
-import { contextExceededError } from '@mcp-abap-adt/llm-agent';
+import {
+  contextExceededError,
+  MODEL_CONTEXT_EXCEEDED,
+} from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import { type ChatStream, chatStream, streamDialogue } from './lib/chat-stream';
 import {
@@ -15,6 +18,7 @@ import { lookupDialogue } from './lib/dialogue-sessions';
 import { getExecutionLimits } from './lib/execution-limits';
 import {
   captureTokenUsage,
+  clientRunFailure,
   contextExceededMessage,
   failureMessage,
 } from './lib/llm-failure';
@@ -25,6 +29,10 @@ import {
   parseModelAllowlist,
   usesModelCatalog,
 } from './lib/model-policy';
+import {
+  logRunFailure,
+  pipelineFailureLogger,
+} from './lib/pipeline-failure-logging';
 import { bindCaller, callOptionsFor } from './lib/rag-caller';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
@@ -150,18 +158,24 @@ function mapStopReason(r: string): string {
   return r === 'stop' ? 'stop' : 'length';
 }
 
-function jsonError(message: string, type: string): string {
-  return JSON.stringify({ error: { message, type } });
+function openAiError(message: string, type: string, code?: string) {
+  return { error: { message, type, ...(code && { code }) } };
 }
 
-function openAiContextError(unansweredSapWrite = false) {
-  return {
-    error: {
-      message: contextExceededMessage(unansweredSapWrite),
-      type: 'invalid_request_error',
-      code: 'context_length_exceeded',
-    },
-  };
+function jsonError(message: string, type: string): string {
+  return JSON.stringify(openAiError(message, type));
+}
+
+type OpenAiRunFailure = { code: string; status: number; message: string };
+
+function openAiRunError(failure: OpenAiRunFailure) {
+  return openAiError(
+    failure.message,
+    failure.status === 400 ? 'invalid_request_error' : 'server_error',
+    failure.code === MODEL_CONTEXT_EXCEEDED
+      ? 'context_length_exceeded'
+      : failure.code,
+  );
 }
 
 /**
@@ -500,10 +514,7 @@ async function handleChatCompletionsScoped(
     getAgentConfig().agent.chatCoordinator === 'dialogue'
       ? chatStream(res, 'openai', s)
       : undefined;
-  let unansweredSapWrite = false;
-  const captureUnansweredSapWrite = (pending: boolean) => {
-    unansweredSapWrite = pending;
-  };
+  const capturedFailures = new WeakMap<object, OpenAiRunFailure>();
   try {
     const continuation = s
       ? await longSessions().run(
@@ -514,7 +525,7 @@ async function handleChatCompletionsScoped(
               res,
               body,
               authenticatedCaller,
-              captureUnansweredSapWrite,
+              capturedFailures,
               s,
               early,
             ),
@@ -525,7 +536,7 @@ async function handleChatCompletionsScoped(
           res,
           body,
           authenticatedCaller,
-          captureUnansweredSapWrite,
+          capturedFailures,
           undefined,
           early,
         );
@@ -540,11 +551,27 @@ async function handleChatCompletionsScoped(
     }
   } catch (error) {
     measurement?.end('error');
-    if (contextExceededError(error)) {
-      const payload = openAiContextError(unansweredSapWrite);
+    const capturedFailure =
+      typeof error === 'object' && error !== null
+        ? capturedFailures.get(error)
+        : undefined;
+    if (capturedFailure || contextExceededError(error)) {
+      const payload = openAiRunError(
+        capturedFailure ?? {
+          code: MODEL_CONTEXT_EXCEEDED,
+          message: contextExceededMessage(false),
+          status: 400,
+        },
+      );
       if (early?.opened) early.error(payload);
       else if (res.headersSent) res.end(`data: ${JSON.stringify(payload)}\n\n`);
-      else res.status(400).json(payload);
+      else if (
+        capturedFailure &&
+        !body.stream &&
+        capturedFailure.status !== 400
+      )
+        res.writeHead(capturedFailure.status).end(JSON.stringify(payload));
+      else res.status(capturedFailure?.status ?? 400).json(payload);
       return;
     }
     if (!early?.opened) throw error;
@@ -567,7 +594,7 @@ async function serveChatCompletions(
     admin: boolean;
     caller: ReturnType<typeof describeCaller>;
   },
-  captureUnansweredSapWrite: (pending: boolean) => void,
+  capturedFailures: WeakMap<object, OpenAiRunFailure>,
   s?: LongSession,
   early?: ChatStream,
 ): Promise<(() => Promise<void>) | void> {
@@ -860,7 +887,7 @@ async function serveChatCompletions(
   // detached — nothing written afterwards reaches the socket or fails the run —
   // and a caller still queued is removed from the queue.
   const out = detachedSink(res);
-  const setOverflowHeaders = () => {
+  const setErrorHeaders = () => {
     const headers = body.stream ? streamHeaders : invalidToolsHeader;
     for (const [name, value] of Object.entries(headers))
       out.setHeader(name, value);
@@ -888,7 +915,7 @@ async function serveChatCompletions(
   } catch (err) {
     await releaseRequestConnection(requestConnection, s);
     if (contextExceededError(err)) {
-      setOverflowHeaders();
+      setErrorHeaders();
       throw err;
     }
     const message = err instanceof Error ? err.message : String(err);
@@ -982,7 +1009,53 @@ async function serveChatCompletions(
   const unansweredSapWrite = () =>
     dialogue?.hasUnansweredSapWrite() ??
     hasUnansweredSapWrite(handle.recMcp?.getToolRecords(traceId) ?? []);
-  const contextError = () => openAiContextError(unansweredSapWrite());
+  const pipelineFailures = pipelineFailureLogger(traceId);
+  const jsonFailureText = <T>(
+    error: T,
+    detail = error instanceof Error ? error.message : String(error),
+  ) => {
+    const limit = throttleOf(error);
+    const unverified = unverifiedWriteFor(handle, traceId, error);
+    if (unverified)
+      return limit ? `${unverified} ${throttleMessage(limit)}` : unverified;
+    return limit ? throttleMessage(limit) : `Error: ${detail}`;
+  };
+  const streamFailureText = <T>(error: T) => {
+    const limit = throttleOf(error);
+    const unverified = unverifiedWriteFor(handle, traceId, error);
+    if (unverified)
+      return limit ? `${unverified} ${throttleMessage(limit)}` : unverified;
+    const message = failureMessage(error);
+    return limit ? `${message}. ${throttleMessage(limit)}` : message;
+  };
+  const typedFailure = <T>(
+    error: T,
+    mode: 'json' | 'stream' | 'dialogue' = body.stream ? 'stream' : 'json',
+  ): OpenAiRunFailure | undefined => {
+    const mapped = clientRunFailure(error, unansweredSapWrite());
+    if (!mapped) return;
+    const failure = {
+      code: mapped.code,
+      status:
+        mode === 'json' && mapped.message === undefined && throttleOf(error)
+          ? 200
+          : mapped.status,
+      message:
+        mapped.message ??
+        (mode === 'json'
+          ? jsonFailureText(error)
+          : mode === 'stream'
+            ? streamFailureText(error)
+            : error instanceof Error
+              ? error.message
+              : String(error)),
+    };
+    if (mode === 'json' || failure.status === 400) setErrorHeaders();
+    if (mode === 'json' && failure.status !== 400)
+      out.setHeader('Content-Type', 'application/json');
+    logRunFailure(log, error, failure, traceId);
+    return failure;
+  };
 
   // Admitted after the agent is resolved: a caller waiting for a destination to
   // warm waits outside the door, holding a request and no session.
@@ -1140,7 +1213,11 @@ async function serveChatCompletions(
       trace: { traceId },
       ...(usage ? { usage } : {}),
       sessionLogger: {
-        logStep(name: string, data: unknown) {
+        logStep(
+          name: Parameters<typeof pipelineFailures.logStep>[0],
+          data: Parameters<typeof pipelineFailures.logStep>[1],
+        ) {
+          if (pipelineFailures.logStep(name, data)) return;
           if (
             name === 'tools_selected' ||
             name === 'skills_selected' ||
@@ -1182,9 +1259,11 @@ async function serveChatCompletions(
             runWithSessionId(sessionId, fn, priorTurns, userId, ragIdentity),
           ),
         onError: (error) => {
-          if (contextExceededError(error)) return contextError();
+          const failure = typedFailure(error, 'dialogue');
+          if (failure?.status === 400) return openAiRunError(failure);
           if (isOutageError(error))
             closeDestination(destAfter, describeCause(error));
+          if (failure) return openAiRunError(failure);
           return {
             error: {
               message: error instanceof Error ? error.message : String(error),
@@ -1250,7 +1329,7 @@ async function serveChatCompletions(
       let pendingClientTools = false;
       let lastUsage: TokenUsage | undefined;
       let streamErrorMessage: string | undefined;
-      let streamOverflow: ReturnType<typeof openAiContextError> | undefined;
+      let streamFailure: OpenAiRunFailure | undefined;
 
       log.info('Starting streamProcess', { sessionId });
 
@@ -1283,16 +1362,15 @@ async function serveChatCompletions(
                           streamFailed = true;
                           requestMeasurement(req)?.end('error');
                           const err = chunk.error;
-                          if (contextExceededError(err)) {
-                            streamOverflow = contextError();
-                            break;
-                          }
+                          streamFailure = typedFailure(err);
+                          if (streamFailure?.status === 400) break;
                           if (isOutageError(chunk.error)) {
                             closeDestination(
                               destAfter,
                               describeCause(chunk.error),
                             );
                           }
+                          if (streamFailure) break;
 
                           const causes: string[] = [];
                           let current: unknown = err;
@@ -1310,19 +1388,7 @@ async function serveChatCompletions(
                             error: err.message,
                             causes,
                           });
-                          const limit = throttleOf(err);
-                          const unverified = unverifiedWriteFor(
-                            handle,
-                            traceId,
-                            err,
-                          );
-                          streamErrorMessage = unverified
-                            ? limit
-                              ? `${unverified} ${throttleMessage(limit)}`
-                              : unverified
-                            : limit
-                              ? `${failureMessage(err)}. ${throttleMessage(limit)}`
-                              : failureMessage(err);
+                          streamErrorMessage = streamFailureText(err);
                           break;
                         }
 
@@ -1456,32 +1522,19 @@ async function serveChatCompletions(
                       streamSucceeded = !streamFailed;
                     } catch (err) {
                       requestMeasurement(req)?.end('error');
-                      if (contextExceededError(err)) {
-                        streamOverflow = contextError();
-                        return;
-                      }
+                      streamFailure = typedFailure(err);
+                      if (streamFailure?.status === 400) return;
                       if (isOutageError(err)) {
                         closeDestination(destAfter, describeCause(err));
                       }
+                      if (streamFailure) return;
                       const errMsg =
                         err instanceof Error ? err.message : String(err);
                       log.error('Stream exception', {
                         error: errMsg,
                         stack: err instanceof Error ? err.stack : undefined,
                       });
-                      const streamLimit = throttleOf(err);
-                      const streamUnverified = unverifiedWriteFor(
-                        handle,
-                        traceId,
-                        err,
-                      );
-                      streamErrorMessage = streamUnverified
-                        ? streamLimit
-                          ? `${streamUnverified} ${throttleMessage(streamLimit)}`
-                          : streamUnverified
-                        : streamLimit
-                          ? `${failureMessage(err)}. ${throttleMessage(streamLimit)}`
-                          : failureMessage(err);
+                      streamErrorMessage = streamFailureText(err);
                     }
                   }),
                 ),
@@ -1495,15 +1548,17 @@ async function serveChatCompletions(
 
       const tokens = spend.usage(lastUsage);
       if (tokens?.models) log.info('Token usage by model', tokens.models);
-      if (streamOverflow) {
+      if (streamFailure?.status === 400) {
         clearInterval(keepAlive);
-        if (res.headersSent) {
-          writeStream(`data: ${JSON.stringify(streamOverflow)}\n\n`);
+        const payload = openAiRunError(streamFailure);
+        if (res.headersSent || streamFailure.code !== MODEL_CONTEXT_EXCEEDED) {
+          const event =
+            streamFailure.code === MODEL_CONTEXT_EXCEEDED
+              ? ''
+              : 'event: error\n';
+          writeStream(`${event}data: ${JSON.stringify(payload)}\n\n`);
           out.end();
-        } else {
-          setOverflowHeaders();
-          out.json(400, streamOverflow);
-        }
+        } else out.json(streamFailure.status, payload);
         return;
       }
       const usage = openAiUsageToWire(tokens, responseModel);
@@ -1513,11 +1568,12 @@ async function serveChatCompletions(
             `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: responseModel, choices: [], usage })}\n\n`,
           );
       };
-      if (streamErrorMessage !== undefined) {
+      if (streamFailure || streamErrorMessage !== undefined) {
         writeUsage();
-        writeStream(
-          `data: ${jsonError(streamErrorMessage, 'server_error')}\n\n`,
-        );
+        const payload = streamFailure
+          ? JSON.stringify(openAiRunError(streamFailure))
+          : jsonError(streamErrorMessage ?? '', 'server_error');
+        writeStream(`data: ${payload}\n\n`);
       }
 
       // Ensure finish_reason is always sent — clients require it to detect stream end
@@ -1543,7 +1599,7 @@ async function serveChatCompletions(
       // OpenAI spec gates this behind stream_options.include_usage, but in practice
       // most clients (Goose, Cline) expect it. Sending unconditionally is safe —
       // clients that don't need it simply ignore the extra chunk.
-      if (streamErrorMessage === undefined) writeUsage();
+      if (!streamFailure && streamErrorMessage === undefined) writeUsage();
 
       log.info('Stream completed', {
         chunkCount,
@@ -1632,28 +1688,14 @@ async function serveChatCompletions(
     });
 
     if (!result.ok) requestMeasurement(req)?.end('error');
-    if (!result.ok && contextExceededError(result.error)) {
-      setOverflowHeaders();
-      out.json(400, contextError());
+    const failure = result.ok ? undefined : typedFailure(result.error);
+    if (failure?.status === 400) {
+      out.json(failure.status, openAiRunError(failure));
       return;
     }
     if (!result.ok && isOutageError(result.error)) {
       closeDestination(destAfter, describeCause(result.error));
     }
-
-    const resultLimit = result.ok ? undefined : throttleOf(result.error);
-    const resultUnverified = result.ok
-      ? undefined
-      : unverifiedWriteFor(handle, traceId, result.error);
-    const finalContent = result.ok
-      ? result.value.content || '(no response)'
-      : resultUnverified
-        ? resultLimit
-          ? `${resultUnverified} ${throttleMessage(resultLimit)}`
-          : resultUnverified
-        : resultLimit
-          ? throttleMessage(resultLimit)
-          : `Error: ${result.error.message}`;
 
     const finalFinishReason = result.ok
       ? mapStopReason(result.value.stopReason)
@@ -1672,6 +1714,20 @@ async function serveChatCompletions(
     const tokens = useDialogue ? resultUsage : spend.usage(resultUsage);
     if (tokens?.models) log.info('Token usage by model', tokens.models);
     const finalUsage = openAiUsageToWire(tokens, model);
+    if (failure) {
+      out.writeHead(failure.status);
+      out.end(
+        JSON.stringify({
+          ...openAiRunError(failure),
+          ...(finalUsage && { usage: finalUsage }),
+        }),
+      );
+      return;
+    }
+
+    const finalContent = result.ok
+      ? result.value.content || '(no response)'
+      : jsonFailureText(result.error, result.error.message);
 
     const responseToolCalls = result.ok ? result.value.toolCalls : undefined;
     if (responseToolCalls?.length)
@@ -1752,9 +1808,11 @@ async function serveChatCompletions(
       }),
     );
   } catch (error) {
-    if (contextExceededError(error)) {
-      captureUnansweredSapWrite(unansweredSapWrite());
-      setOverflowHeaders();
+    const failure = typedFailure(error);
+    if (failure && typeof error === 'object' && error !== null) {
+      if (failure.status !== 400 && isOutageError(error))
+        closeDestination(destAfter, describeCause(error));
+      capturedFailures.set(error, failure);
     }
     throw error;
   } finally {

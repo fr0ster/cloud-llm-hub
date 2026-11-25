@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import {
   contextExceededError,
+  MODEL_CONTEXT_EXCEEDED,
   normalizeAndValidateExternalTools,
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
@@ -22,13 +23,18 @@ import { lookupDialogue } from './lib/dialogue-sessions';
 import { getExecutionLimits } from './lib/execution-limits';
 import {
   captureTokenUsage,
+  clientRunFailure,
   contextExceededMessage,
   failureMessage,
   mergeStreamUsage,
-  safeContextExceeded,
+  runContextOverflow,
 } from './lib/llm-failure';
 import { awaitModelCatalog } from './lib/model-catalog';
 import { ignoredModelHeader } from './lib/model-policy';
+import {
+  logRunFailure,
+  pipelineFailureLogger,
+} from './lib/pipeline-failure-logging';
 import { bindCaller, callOptionsFor } from './lib/rag-caller';
 import { buildRagToolSchemas, isRagTool } from './lib/rag-tool-catalogue';
 import { requestStart } from './lib/request-start';
@@ -131,11 +137,15 @@ import { sessionIdOf, type WithSession } from './session-id';
 
 /** Singleton adapter instance (stateless — safe to share) */
 const adapter = new AnthropicApiAdapter();
-function anthropicContextError(unansweredSapWrite = false) {
-  return anthropicUnverifiedWrite(
-    contextExceededMessage(unansweredSapWrite),
-    'invalid_request_error',
-  );
+interface AnthropicRunFailure {
+  code: string;
+  status: number;
+  message: string;
+  type: string;
+}
+
+function anthropicRunError({ code, message, type }: AnthropicRunFailure) {
+  return { type: 'error' as const, error: { type, message, code } };
 }
 
 /**
@@ -413,10 +423,7 @@ async function handleAnthropicMessagesScoped(
     getAgentConfig().agent.chatCoordinator === 'dialogue'
       ? chatStream(res, 'anthropic', s)
       : undefined;
-  let unansweredSapWrite = false;
-  const captureUnansweredSapWrite = (pending: boolean) => {
-    unansweredSapWrite = pending;
-  };
+  const capturedFailures = new WeakMap<object, AnthropicRunFailure>();
   try {
     const continuation = s
       ? await longSessions().run(
@@ -427,7 +434,7 @@ async function handleAnthropicMessagesScoped(
               res,
               normalized,
               authenticatedCaller,
-              captureUnansweredSapWrite,
+              capturedFailures,
               s,
               early,
             ),
@@ -438,7 +445,7 @@ async function handleAnthropicMessagesScoped(
           res,
           normalized,
           authenticatedCaller,
-          captureUnansweredSapWrite,
+          capturedFailures,
           undefined,
           early,
         );
@@ -452,12 +459,21 @@ async function handleAnthropicMessagesScoped(
     }
   } catch (error) {
     measurement?.end('error');
-    if (contextExceededError(error)) {
-      const payload = anthropicContextError(unansweredSapWrite);
+    const capturedFailure =
+      typeof error === 'object' && error !== null
+        ? capturedFailures.get(error)
+        : undefined;
+    if (capturedFailure || contextExceededError(error)) {
+      const payload = capturedFailure
+        ? anthropicRunError(capturedFailure)
+        : anthropicUnverifiedWrite(
+            contextExceededMessage(false),
+            'invalid_request_error',
+          );
       if (early?.opened) early.error(payload);
       else if (res.headersSent)
         res.end(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
-      else res.status(400).json(payload);
+      else res.status(capturedFailure?.status ?? 400).json(payload);
       return;
     }
     if (!early?.opened) throw error;
@@ -481,7 +497,7 @@ async function serveMessages(
     admin: boolean;
     caller: ReturnType<typeof describeCaller>;
   },
-  captureUnansweredSapWrite: (pending: boolean) => void,
+  capturedFailures: WeakMap<object, AnthropicRunFailure>,
   s?: LongSession,
   early?: ChatStream,
 ): Promise<(() => Promise<void>) | void> {
@@ -756,7 +772,47 @@ async function serveMessages(
   const unansweredSapWrite = () =>
     dialogue?.hasUnansweredSapWrite() ??
     hasUnansweredSapWrite(handle.recMcp?.getToolRecords(traceId) ?? []);
-  const contextError = () => anthropicContextError(unansweredSapWrite());
+  const pipelineFailures = pipelineFailureLogger(traceId);
+  const typedFailure = <T>(
+    error: T,
+    mode: 'json' | 'stream' | 'dialogue' = stream ? 'stream' : 'json',
+  ): AnthropicRunFailure | undefined => {
+    const mapped = clientRunFailure(error, unansweredSapWrite());
+    if (!mapped) return;
+    let { code, status, message } = mapped;
+    let type = 'api_error';
+    if (message !== undefined) {
+      type = 'invalid_request_error';
+    } else if (mode === 'dialogue') {
+      message = failureMessage(error);
+    } else {
+      const limit = throttleOf(error);
+      const unverified = unverifiedWriteFor(handle, traceId, error);
+      if (limit && mode === 'json') {
+        const retryAfter = retryAfterHeader(error);
+        if (retryAfter) out.setHeader('Retry-After', retryAfter);
+        status = statusForError(error);
+        type = 'overloaded_error';
+        message = unverified
+          ? `${unverified} ${throttleMessage(limit)}`
+          : throttleMessage(limit);
+      } else if (limit && unverified) {
+        type = 'overloaded_error';
+        message = `${unverified} ${throttleMessage(limit)}`;
+      } else {
+        message =
+          unverified ??
+          (mode === 'stream'
+            ? failureMessage(error)
+            : error instanceof Error
+              ? error.message
+              : String(error));
+      }
+    }
+    const failure = { code, status, message, type };
+    logRunFailure(log, error, failure, traceId);
+    return failure;
+  };
 
   const usage = usageRuntime()
     ?.forSession({
@@ -778,6 +834,7 @@ async function serveMessages(
       exposition: callerExposition,
     },
     trace: { ...options?.trace, traceId },
+    sessionLogger: { logStep: pipelineFailures.logStep },
     ...(usage ? { usage } : {}),
   };
 
@@ -891,9 +948,11 @@ async function serveMessages(
         source: dialogue.streamProcess(messages, agentOpts),
         run: runAgent,
         onError: (error) => {
-          if (contextExceededError(error)) return contextError();
+          const failure = typedFailure(error, 'dialogue');
+          if (failure?.status === 400) return anthropicRunError(failure);
           if (isOutageError(error))
             closeDestination(destination, describeCause(error));
+          if (failure) return anthropicRunError(failure);
           return {
             type: 'error',
             error: {
@@ -964,8 +1023,7 @@ async function serveMessages(
                 }
                 if (!chunk.ok && streamError === undefined) {
                   requestMeasurement(req)?.end('error');
-                  const overflow = safeContextExceeded(chunk.error);
-                  if (overflow) throw overflow;
+                  if (runContextOverflow(chunk.error)) throw chunk.error;
                   streamError = chunk.error;
                 }
                 if (chunk.ok && !chunk.value.status && chunk.value.content)
@@ -1050,8 +1108,13 @@ async function serveMessages(
           if (isOutageError(streamError)) {
             closeDestination(destination, describeCause(streamError));
           }
+          const failure = typedFailure(streamError, 'stream');
           const unverified = unverifiedWriteFor(handle, traceId, streamError);
-          if (unverified) {
+          if (failure) {
+            writeStream(
+              `event: error\ndata: ${JSON.stringify(anthropicRunError(failure))}\n\n`,
+            );
+          } else if (unverified) {
             const limit = throttleOf(streamError);
             log.error('Stream error chunk', {
               error: describeCause(streamError),
@@ -1076,20 +1139,28 @@ async function serveMessages(
         }
       } catch (err) {
         streamSucceeded = false;
-        if (contextExceededError(err)) {
+        const failure = typedFailure(err);
+        if (failure?.status === 400) {
           requestMeasurement(req)?.end('error');
           clearInterval(keepAlive);
-          const payload = contextError();
-          if (res.headersSent) {
+          const payload = anthropicRunError(failure);
+          if (res.headersSent || failure.code !== MODEL_CONTEXT_EXCEEDED) {
             writeStream(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
             out.end();
-          } else out.json(400, payload);
+          } else out.json(failure.status, payload);
           return;
         }
         writeTerminalUsage();
         requestMeasurement(req)?.end('error');
         if (isOutageError(err))
           closeDestination(destination, describeCause(err));
+        if (failure) {
+          const payload = anthropicRunError(failure);
+          writeStream(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
+          clearInterval(keepAlive);
+          out.end();
+          return;
+        }
         const message = err instanceof Error ? err.message : String(err);
         const limit = throttleOf(err);
         log.error('Stream error', { error: message, throttled: limit?.reason });
@@ -1190,12 +1261,17 @@ async function serveMessages(
         requestMeasurement(req)?.deliverOnResponseEnd();
       out.json(200, withUsage(adapter.formatResult(result.value, context)));
     } else {
-      if (contextExceededError(result.error)) {
-        out.json(400, withUsage(contextError()));
+      const failure = typedFailure(result.error);
+      if (failure?.status === 400) {
+        out.json(failure.status, withUsage(anthropicRunError(failure)));
         return;
       }
       if (isOutageError(result.error)) {
         closeDestination(destination, describeCause(result.error));
+      }
+      if (failure) {
+        out.json(failure.status, withUsage(anthropicRunError(failure)));
+        return;
       }
       const limit = throttleOf(result.error);
       log.error('Agent processing failed', {
@@ -1233,8 +1309,12 @@ async function serveMessages(
       }
     }
   } catch (error) {
-    if (contextExceededError(error))
-      captureUnansweredSapWrite(unansweredSapWrite());
+    const failure = typedFailure(error);
+    if (failure && typeof error === 'object' && error !== null) {
+      if (failure.status !== 400 && isOutageError(error))
+        closeDestination(destination, describeCause(error));
+      capturedFailures.set(error, failure);
+    }
     throw error;
   } finally {
     collections?.restore();

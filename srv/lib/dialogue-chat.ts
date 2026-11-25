@@ -32,7 +32,11 @@ import {
   turnSource,
   validatedClientTurnId,
 } from './dialogue-turn-source';
-import { failureMessage, safeContextExceeded } from './llm-failure';
+import {
+  failureMessage,
+  runErrorCode,
+  safeContextExceeded,
+} from './llm-failure';
 import type { LongSession } from './long-session';
 import { NoMessageFilter, stripNoMessage } from './no-message';
 import { callOptionsFor } from './rag-caller';
@@ -430,7 +434,12 @@ export function dialogueChat(
         };
         throw (
           safeContextExceeded(failure) ??
-          new Error(`Planner turn failed: ${failureMessage(failure)}`)
+          Object.assign(
+            new Error(`Planner turn failed: ${failureMessage(failure)}`),
+            {
+              code: failure.code,
+            },
+          )
         );
       }
       if (text.trim()) {
@@ -454,12 +463,12 @@ export function dialogueChat(
   };
 }
 
-function plannerError(error: unknown): OrchestratorError {
+function plannerError<T>(error: T): OrchestratorError {
   const overflow = safeContextExceeded(error);
   if (overflow) return overflow;
   const cause = error instanceof Error ? error : new Error(String(error));
   return Object.assign(cause, {
-    code: (cause as { code?: string }).code ?? 'PLANNER_ERROR',
+    code: runErrorCode(error) ?? 'PLANNER_ERROR',
   });
 }
 

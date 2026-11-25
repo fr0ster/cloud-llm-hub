@@ -108,9 +108,11 @@ type ValidatedArgs = Args & { scope?: 'user' | 'session' };
 
 import {
   captureTokenUsage,
+  type clientRunFailure,
   contextExceededMessage,
   safeContextExceeded,
 } from './lib/llm-failure';
+import { logRunFailure } from './lib/pipeline-failure-logging';
 import { timedUsageToWire, type WireAgentUsage } from './lib/usage-wire';
 
 export function ragTextResult(text: string, isError = false) {
@@ -132,6 +134,28 @@ export function mcpUsageResult(
   };
 }
 
+export function mcpRunError<T>(
+  error: T,
+  failure: NonNullable<ReturnType<typeof clientRunFailure>>,
+  usage?: WireAgentUsage,
+  options?: { traceId?: string; message?: string },
+) {
+  logRunFailure(cds.log('agent-mcp'), error, failure, options?.traceId);
+  const message =
+    failure.message ??
+    options?.message ??
+    (error instanceof Error ? error.message : String(error));
+  const structured: RagWriteErrorResult = {
+    result: message,
+    error: { ...failure, message },
+  };
+  return {
+    ...ragTextResult(message, true),
+    structuredContent: usage
+      ? Object.assign({}, structured, { usage })
+      : structured,
+  };
+}
 export function mcpContextExceeded(
   usage?: WireAgentUsage,
   unansweredSapWrite = false,

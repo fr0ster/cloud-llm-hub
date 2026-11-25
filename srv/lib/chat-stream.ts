@@ -76,7 +76,7 @@ export function chatStream(
       timer = setInterval(beat, 10_000);
       timer.unref?.();
     },
-    error(body: unknown) {
+    error<T>(body: T) {
       if (ended) return;
       ended = true;
       stop();
@@ -110,7 +110,7 @@ export async function streamDialogue(opts: {
   agent: Pick<ReturnType<typeof dialogueChat>, 'follow' | 'hasFollow'>;
   source: AsyncIterable<Result<DialogueStreamChunk, OrchestratorError>>;
   run: (fn: () => Promise<void>) => Promise<void>;
-  onError: (error: unknown) => unknown;
+  onError: <T>(error: T) => object | string;
   onTurnEnd?: (text: string, following: boolean) => void;
   onEnd?: (text: string) => void;
 }): Promise<() => Promise<void>> {
@@ -328,10 +328,13 @@ export async function streamDialogue(opts: {
               addDeliveredUsage(item.usage);
               throw (
                 safeContextExceeded(item) ??
-                new Error(
-                  item.cause
-                    ? `Background planner turn failed: ${item.cause}`
-                    : 'Background planner turn failed',
+                Object.assign(
+                  new Error(
+                    item.cause
+                      ? `Background planner turn failed: ${item.cause}`
+                      : 'Background planner turn failed',
+                  ),
+                  { code: item.code },
                 )
               );
             } else if (item.note)

@@ -5,7 +5,12 @@ const taskCaller = {
 };
 
 import { Stream as AnthropicStream } from '@anthropic-ai/sdk/core/streaming';
-import { LlmError, MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
+import {
+  EMBEDDING_CONTEXT_EXCEEDED,
+  LlmError,
+  MODEL_CONTEXT_EXCEEDED,
+  RagError,
+} from '@mcp-abap-adt/llm-agent';
 import express from 'express';
 import { Stream as OpenAIStream } from 'openai/core/streaming';
 import {
@@ -431,7 +436,7 @@ it('disconnect mid-answer completes without recording history', async () => {
 
 for (const anthropic of [false, true])
   for (const stream of [false, true]) {
-    it(`planner failure uses existing error response (anthropic=${anthropic}, stream=${stream})`, async () => {
+    it(`planner failure returns one typed error (anthropic=${anthropic}, stream=${stream})`, async () => {
       send.mockRejectedValue(new Error('planner failed'));
       const req = fakeReq(
         {
@@ -449,16 +454,30 @@ for (const anthropic of [false, true])
         res as unknown as Response,
       );
       expect(confirmUpTo).not.toHaveBeenCalled();
-      expect(res.body).toContain('planner failed');
-      if (stream)
-        expect(res.body).toContain(anthropic ? 'event: error' : 'server_error');
-      else if (anthropic) {
-        expect(res.statusCode).toBe(500);
-        expect(JSON.parse(res.body).error.type).toBe('api_error');
-      } else
-        expect(JSON.parse(res.body).choices[0].message.content).toBe(
-          'Error: planner failed',
-        );
+      const error = {
+        code: 'PLANNER_ERROR',
+        message: stream
+          ? 'Planner turn failed: planner failed'
+          : anthropic
+            ? 'planner failed'
+            : 'Error: planner failed',
+        type: anthropic ? 'api_error' : 'server_error',
+      };
+      expect(res.statusCode).toBe(stream ? 200 : 500);
+      if (stream) {
+        const prefix = anthropic ? 'event: error\ndata: ' : 'data: ';
+        const events = res.body
+          .split('\n\n')
+          .filter(
+            (event) =>
+              event.startsWith(prefix) &&
+              event.includes('"code":"PLANNER_ERROR"'),
+          );
+        expect(events).toHaveLength(1);
+        expect(JSON.parse(events[0].slice(prefix.length))).toMatchObject({
+          error,
+        });
+      } else expect(JSON.parse(res.body)).toMatchObject({ error });
     });
   }
 
@@ -1168,50 +1187,81 @@ it('characterizes OpenAI replay after a failed follow has already streamed repli
   ]);
 });
 
+const contextCodes = [MODEL_CONTEXT_EXCEEDED, EMBEDDING_CONTEXT_EXCEEDED];
+const overflowResponse = (code: string, anthropic: boolean, write: boolean) => {
+  const embedding = code === EMBEDDING_CONTEXT_EXCEEDED;
+  const message = embedding
+    ? 'Вхідні дані перевищують контекст моделі ембедингів'
+    : overflowMessage;
+  return {
+    ...(anthropic && { type: 'error' }),
+    error: {
+      code: !anthropic && !embedding ? 'context_length_exceeded' : code,
+      message: write
+        ? overflowWithSapWarning.replace(overflowMessage, message)
+        : message,
+      type: 'invalid_request_error',
+    },
+  };
+};
+
 for (const anthropic of [false, true]) {
   const handler = anthropic ? handleAnthropicMessages : handleChatCompletions;
   const label = anthropic ? 'anthropic' : 'openai';
-  it(`${label}: reports an unanswered worker write when a follow ends in context overflow`, async () => {
-    emptyPending = true;
-    const handle = await dialogueFor('alice', session.key, 'DEST');
-    const journal = await journalWithUnansweredSapWrite();
-    let failed = false;
-    handle.toolJournal = () => journal;
-    handle.state = () => ({
-      settledSeq: failed ? 2 : 0,
-      lastFailedSeq: failed ? 2 : 0,
-      ...(failed && {
-        failureCode: MODEL_CONTEXT_EXCEEDED,
-        failureCause: 'private provider error',
-      }),
-      status: 'active',
-      turnActive: false,
-      queuedInputs: 0,
-      running: 0,
-      total: 1,
-      done: 1,
-      idle: false,
-    });
-    send.mockImplementationOnce(async () => {
-      failed = true;
-      return { text: 'Started work' };
-    });
-    const res = fakeRes();
-    await handler(streamingRequest(), typedResponse(res));
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toContain('Started work');
-    expect(res.body.match(/Результат запису невідомий/g)).toHaveLength(1);
-    expect(res.body).toContain(overflowWithSapWarning);
-    expect(res.body).toContain('invalid_request_error');
-    if (!anthropic) expect(res.body).toContain('context_length_exceeded');
-    expect(res.body).not.toMatch(/private|event: message_stop|\[DONE\]/);
-    expect(ended).not.toHaveBeenCalled();
-  });
+  it.each(contextCodes)(
+    `${label}: reports an unanswered worker write when follow ends with %s`,
+    async (code) => {
+      emptyPending = true;
+      const handle = await dialogueFor('alice', session.key, 'DEST');
+      const journal = await journalWithUnansweredSapWrite();
+      let failed = false;
+      handle.toolJournal = () => journal;
+      handle.state = () => ({
+        settledSeq: failed ? 2 : 0,
+        lastFailedSeq: failed ? 2 : 0,
+        ...(failed && {
+          failureCode: code,
+          failureCause: 'private provider error',
+        }),
+        status: 'active',
+        turnActive: false,
+        queuedInputs: 0,
+        running: 0,
+        total: 1,
+        done: 1,
+        idle: false,
+      });
+      send.mockImplementationOnce(async () => {
+        failed = true;
+        return { text: 'Started work' };
+      });
+      const res = fakeRes();
+      await handler(streamingRequest(), typedResponse(res));
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('Started work');
+      expect(res.body.match(/Результат запису невідомий/g)).toHaveLength(1);
+      const errors = res.body
+        .split('\n')
+        .filter(
+          (line) => line.startsWith('data: ') && line.includes('"error":'),
+        );
+      expect(errors).toHaveLength(1);
+      expect(JSON.parse(errors[0].slice('data: '.length))).toEqual(
+        overflowResponse(code, anthropic, true),
+      );
+      expect(res.body).not.toMatch(/private|event: message_stop|\[DONE\]/);
+      expect(ended).not.toHaveBeenCalled();
+    },
+  );
 
   for (const stream of [false, true]) {
-    it.each([false, true])(
-      `${label}: reports planner context overflow (stream=${stream}, write=%s)`,
-      async (write) => {
+    it.each(
+      contextCodes.flatMap((code) =>
+        [false, true].map((write) => ({ code, write })),
+      ),
+    )(
+      `${label}: reports planner $code (stream=${stream}, write=$write)`,
+      async ({ code, write }) => {
         emptyPending = true;
         if (write) {
           const handle = await dialogueFor('alice', session.key, 'DEST');
@@ -1220,21 +1270,17 @@ for (const anthropic of [false, true]) {
         }
         send.mockRejectedValue(
           new Error('private wrapper', {
-            cause: new LlmError('private prompt', MODEL_CONTEXT_EXCEEDED),
+            cause:
+              code === EMBEDDING_CONTEXT_EXCEEDED
+                ? new RagError('private embedding input', code)
+                : new LlmError('private prompt', code),
           }),
         );
         const req = streamingRequest();
         req.body.stream = stream;
         const res = fakeRes();
         await handler(req, typedResponse(res));
-        const payload = {
-          ...(anthropic && { type: 'error' }),
-          error: {
-            message: write ? overflowWithSapWarning : overflowMessage,
-            type: 'invalid_request_error',
-            ...(!anthropic && { code: 'context_length_exceeded' }),
-          },
-        };
+        const payload = overflowResponse(code, anthropic, write);
         expect(res.statusCode).toBe(stream ? 200 : 400);
         const response = stream
           ? res.body

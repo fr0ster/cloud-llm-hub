@@ -96,6 +96,8 @@ import {
   captureTokenUsage,
   isLlmFailure,
   llmFailure,
+  retainRunErrorCode,
+  runErrorCode,
   runWithoutLlmSpend,
   safeContextExceeded,
 } from './llm-failure';
@@ -103,6 +105,7 @@ import { longSessionsIfReady } from './long-session';
 import { withModelCatalog } from './model-catalog';
 import { parseModelAllowlist, resolveRequestModel } from './model-policy';
 import { stripNoMessage } from './no-message';
+import { pipelineFailureLogger } from './pipeline-failure-logging';
 import {
   planAuthorContextNotes,
   plannerSessionOptions,
@@ -453,6 +456,7 @@ async function open(
   // separately and becomes it only when that turn settles as failed.
   let failureCause: string | undefined;
   let failureCode: string | undefined;
+  let turnFailureCode: string | undefined;
   let turnFailureCause: string | ReturnType<typeof safeContextExceeded>;
   // Every planner call of the turn, background corrections included.
   let turnPlannerUsage: TokenUsage | undefined;
@@ -1193,11 +1197,15 @@ async function open(
         failureCause =
           overflow?.message ??
           (typeof turnFailureCause === 'string' ? turnFailureCause : undefined);
-        failureCode = overflow?.code;
+        failureCode =
+          overflow?.code ??
+          turnFailureCode ??
+          runErrorCode(request?.terminalError);
       } else if (trigger === 'user' && messageId) {
         const retrieval = turnRetrieval?.usage();
         if (retrieval) replyRetrieval.set(messageId, retrieval);
       }
+      turnFailureCode = undefined;
       turnFailureCause = undefined;
       turnPlannerUsage = undefined;
       turnRetrieval = undefined;
@@ -1312,6 +1320,7 @@ async function open(
           }
           if (!result.ok) {
             turnReplyUsage = addTokenUsage(turnReplyUsage, spend.usage());
+            turnFailureCode = runErrorCode(result.error);
             const overflow = safeContextExceeded(result.error);
             if (overflow) {
               turnFailureCause = overflow;
@@ -1325,6 +1334,7 @@ async function open(
           return result;
         } catch (error) {
           turnReplyUsage = addTokenUsage(turnReplyUsage, spend.usage());
+          turnFailureCode = runErrorCode(error);
           const overflow = safeContextExceeded(error);
           if (overflow) {
             turnFailureCause = overflow;
@@ -1335,7 +1345,10 @@ async function open(
             throw error;
           }
           turnFailureCause = llmFailure(error);
-          throw new Error(turnFailureCause);
+          throw retainRunErrorCode(
+            new Error(turnFailureCause),
+            turnFailureCode,
+          );
         } finally {
           turnPlannerUsage = addTokenUsage(
             turnPlannerUsage,
@@ -1657,10 +1670,23 @@ async function open(
         maxTasks: config.agent.dialogue.maxTasks,
         // TaskBoard owns the outer pool slot, including cancellation and release.
         pool: sharedExecutorPool(),
-        baseInput: () => ({
-          sessionId: key,
-          sessionLogger: toolCallDiagnosticsLogger({ channel: 'dialogue' }),
-        }),
+        baseInput: () => {
+          const diagnostics = toolCallDiagnosticsLogger({
+            channel: 'dialogue',
+          });
+          const pipelineFailures = pipelineFailureLogger(
+            plannerTrace.getStore()?.traceId,
+          );
+          return {
+            sessionId: key,
+            sessionLogger: {
+              logStep(name, data) {
+                if (!pipelineFailures.logStep(name, data))
+                  diagnostics.logStep(name, data);
+              },
+            },
+          };
+        },
         async wrapRun(task, run) {
           // TaskBoard starts execution in the scheduling planner scope; its
           // async context survives pool waits and later user turns.

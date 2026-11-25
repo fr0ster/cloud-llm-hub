@@ -198,6 +198,10 @@ import {
 } from './lib/mcp-outage';
 import { NoticeFinalizer } from './lib/notice-finalizer';
 import {
+  logAdaptiveStepStop,
+  withPipelineStep,
+} from './lib/pipeline-failure-logging';
+import {
   agentQueryEmbedder,
   type EmbedderFingerprint,
   type Providers,
@@ -3720,7 +3724,9 @@ export async function buildAgentForDestination(
                         emit(chunk);
                     },
                   };
-                if (!verdictWorkers.has(name)) return worker.run(input);
+                const runWorker = () =>
+                  withPipelineStep(currentStep, () => worker.run(input));
+                if (!verdictWorkers.has(name)) return runWorker();
                 const brief = briefs.get(currentStep ?? '');
                 let result: Awaited<ReturnType<typeof worker.run>>;
                 try {
@@ -3731,7 +3737,7 @@ export async function buildAgentForDestination(
                         journal().map((entry) => [entry.call.id, entry]),
                       ),
                     },
-                    () => worker.run(input),
+                    runWorker,
                   );
                 } catch (error) {
                   // Only a returned fail verdict should take the sequential branch.
@@ -3834,9 +3840,12 @@ export async function buildAgentForDestination(
             return emit;
           },
         });
-        return withWriteActions(journal, () =>
+        const ok = await withWriteActions(journal, () =>
           stage.execute(scopedContext, stageConfig, span),
         );
+        if (!ok && context.error && currentStep)
+          logAdaptiveStepStop(context.error.code, currentStep, traceId);
+        return ok;
       },
     };
     builder.withStepperCoordinator(withCoordinatorContext(coordinator));

@@ -3,6 +3,7 @@ import type { ILlm, IUsageRecorder, TokenUsage } from '@mcp-abap-adt/llm-agent';
 import {
   addTokenUsage,
   contextExceededError,
+  EMBEDDING_CONTEXT_EXCEEDED,
   findThrottled,
   LlmError,
   MODEL_CONTEXT_EXCEEDED,
@@ -139,10 +140,65 @@ const anthropicErrorCodes = new Set([
 ]);
 
 export const modelContextMessage = 'Запит перевищує контекст моделі';
+const embeddingContextMessage =
+  'Вхідні дані перевищують контекст моделі ембедингів';
+const unansweredWriteWarning =
+  'Результат запису невідомий. Перевір стан у SAP перед повтором.';
+
+function contextOverflowMessage(code: string | undefined): string | undefined {
+  if (code === MODEL_CONTEXT_EXCEEDED) return modelContextMessage;
+  if (code === EMBEDDING_CONTEXT_EXCEEDED) return embeddingContextMessage;
+}
+
+const retainedRunErrorCodes = new WeakMap<Error, string>();
+
+/** Keep the code when an existing boundary replaces a provider error. */
+export function retainRunErrorCode(error: Error, code: string | undefined) {
+  if (code) retainedRunErrorCodes.set(error, code);
+  return error;
+}
+
+export function runErrorCode<T>(error: T): string | undefined {
+  if (contextExceededError(error)) return MODEL_CONTEXT_EXCEEDED;
+  let current: object | undefined =
+    typeof error === 'object' && error !== null ? error : undefined;
+  const seen = new Set<object>();
+  let code: string | undefined;
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    if ('code' in current && typeof current.code === 'string') {
+      if (current.code === EMBEDDING_CONTEXT_EXCEEDED) return current.code;
+      code ??= current.code;
+    }
+    if (current instanceof Error) code ??= retainedRunErrorCodes.get(current);
+    const cause = 'cause' in current ? current.cause : undefined;
+    current = typeof cause === 'object' && cause !== null ? cause : undefined;
+  }
+  return code;
+}
+
+export function runContextOverflow<T>(error: T): boolean {
+  return contextOverflowMessage(runErrorCode(error)) !== undefined;
+}
+
+export function clientRunFailure<T>(error: T, unansweredSapWrite = false) {
+  const code = runErrorCode(error);
+  if (!code) return;
+  const overflow = contextOverflowMessage(code);
+  if (overflow)
+    return {
+      code,
+      message: unansweredSapWrite
+        ? `${overflow}. ${unansweredWriteWarning}`
+        : overflow,
+      status: 400,
+    };
+  return { code, status: 500 };
+}
 
 export function contextExceededMessage(unansweredSapWrite: boolean): string {
   return unansweredSapWrite
-    ? `${modelContextMessage}. Результат запису невідомий. Перевір стан у SAP перед повтором.`
+    ? `${modelContextMessage}. ${unansweredWriteWarning}`
     : modelContextMessage;
 }
 
