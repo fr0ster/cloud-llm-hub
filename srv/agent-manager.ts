@@ -8,7 +8,10 @@ import {
   createCheckerWorker,
   withCheckerBrief,
 } from './lib/checker-verdict';
-import { submitVerdictTool } from './lib/checker-verdict-tool';
+import {
+  submitVerdictTool,
+  verdictToolsEnabled,
+} from './lib/checker-verdict-tool';
 import {
   clientHistoryWindow,
   consumerHistoryRag,
@@ -87,6 +90,7 @@ import { guardLlmOnlyAgent } from './lib/llm-only-guard';
 import { longSessionsIfReady } from './lib/long-session';
 import {
   isRagTool,
+  isRagToolExposed,
   ragToolEffect,
   ragToolNames,
 } from './lib/rag-tool-catalogue';
@@ -2963,16 +2967,12 @@ function destinationToolCandidateAllowed(
   { name }: ToolCandidate,
   options?: CallOptions,
 ): boolean {
+  if (isRagTool(name)) return isRagToolExposed(name);
+  if (!profileToolAllowed(name)) return false;
+  if (name === submitVerdictTool.name) return verdictToolsEnabled();
+
   const exposition = getToolExpositionMap().get(name);
-  if (!exposition) {
-    // Local RAG, verdict and external clients apply their own listing policies.
-    return (
-      isRagTool(name) ||
-      name === submitVerdictTool.name ||
-      docsMcp().owns(name) ||
-      ownsUserMcpTool(name)
-    );
-  }
+  if (!exposition) return docsMcp().owns(name) || ownsUserMcpTool(name);
   const requested = options?.ragFilter?.exposition;
   const allowed = Array.isArray(requested)
     ? requested
@@ -2980,7 +2980,6 @@ function destinationToolCandidateAllowed(
       resolveExposition(['MCP_Reader']));
   return (
     allowed.includes(exposition) &&
-    profileToolAllowed(name) &&
     (!isReadOnlyTools() || isReadOnlyTool(name, getToolAnnotations().get(name)))
   );
 }

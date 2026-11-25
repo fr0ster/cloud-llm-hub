@@ -15,9 +15,16 @@ import {
   ExpositionFilteringRag,
   initProviders,
 } from '../../srv/agent-manager';
+import { AgentToolPermissions } from '../../srv/lib/agent-profile-tools';
 import { BuildValidationError } from '../../srv/lib/build-validation-error';
+import { runWithVerdictTools } from '../../srv/lib/checker-verdict-tool';
+import {
+  DialogueRagMcpClient,
+  runWithDialogueRagTools,
+} from '../../srv/lib/dialogue-rag-tools';
 import { resolveExposition } from '../../srv/lib/exposition';
 import { startProviders } from '../../srv/lib/providers';
+import { runWithProfileTools } from '../../srv/request-session';
 import { bindTestCaller } from './helpers/bind-test-caller';
 
 const originalFile: { strategy?: string; model?: string } | undefined =
@@ -229,6 +236,61 @@ it('uses the existing exposition-filtered tool RAG by default', async () => {
     await handle.close();
   }
 });
+
+it.each([
+  { dialogue: true, disallowed: 'rag_search' },
+  { dialogue: false, disallowed: 'rag_read' },
+])(
+  'enforces the worker tool allow-list in the LLM catalogue (dialogue: $dialogue)',
+  async ({ dialogue, disallowed }) => {
+    process.env.LLM_AGENT_TOOL_RETRIEVAL = 'llm';
+    process.env.LLM_AGENT_TOOL_RETRIEVAL_MODEL = 'selection-model';
+    const select = jest
+      .spyOn(OpenAIProvider.prototype, 'chat')
+      .mockResolvedValue({
+        content: JSON.stringify({ tools: [disallowed] }),
+        finishReason: 'stop',
+        usage: { promptTokens: 10, completionTokens: 1, totalTokens: 11 },
+      });
+    const { main } = mockMainModel();
+    // Supply a catalogue obtained before the worker's profile was bound.
+    const localClient = new DialogueRagMcpClient(client);
+    const unscoped = await runWithVerdictTools(true, () =>
+      localClient.listTools(),
+    );
+    jest
+      .spyOn(DialogueRagMcpClient.prototype, 'listTools')
+      .mockResolvedValue(unscoped);
+    const { handle, options } = await buildAgent();
+    try {
+      const run = () => handle.agent.process('Read table rows', options);
+      const result = await runWithProfileTools(
+        new AgentToolPermissions(['GetTableContents']),
+        () =>
+          runWithVerdictTools(true, () =>
+            dialogue ? runWithDialogueRagTools(run) : run(),
+          ),
+      );
+      expect(select).toHaveBeenCalledTimes(1);
+      const catalogue = select.mock.calls[0][0][1].content;
+      expect(catalogue).toContain(JSON.stringify(sapTools[0]));
+      expect(catalogue).not.toContain('"name":"rag_search"');
+      expect(catalogue).not.toContain('"name":"submit_verdict"');
+      for (const name of ['rag_read', 'collection_records']) {
+        const entry = `"name":"${name}"`;
+        if (dialogue) expect(catalogue).toContain(entry);
+        else expect(catalogue).not.toContain(entry);
+      }
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: TOOL_RETRIEVAL_INVALID },
+      });
+      expect(main).not.toHaveBeenCalled();
+    } finally {
+      await handle.close();
+    }
+  },
+);
 
 it.each([
   ['{"tools":["GetTableContents"]}', true],
