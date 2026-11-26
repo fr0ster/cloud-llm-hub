@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file. The format 
 ### Breaking
 
 - Remove `LLM_AGENT_STEP_REVIEW_ENABLED`, `LLM_AGENT_STEP_REVIEW_TIMEOUT_MS`, `LLM_AGENT_HISTORY_TOKEN_BUDGET` (`historyTokenBudget`), `LLM_AGENT_TOOL_LOOP_WINDOW`, and `LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS`.
+- `LLM_AGENT_CLIENT_HISTORY` defaults to `off`. The hub drops client conversation messages before the last user turn. Set `LLM_AGENT_CLIENT_HISTORY=on` to pass the full client history (PR #216).
 
 ### Added
 
@@ -46,7 +47,11 @@ All notable changes to this project will be documented in this file. The format 
 
 - Restore coordinator session history retrieval, wait for pending history writes, retrieve complete turns ranked by best chunk score, and report Anthropic stream error types without provider messages.
 - Keep coordinator history embedding independent of tools retrieval, prevent history write re-entry deadlocks, retry Anthropic SSE rate limits under the configured throttle policy, and preserve credential-redacted provider migration diagnostics.
-- Oversized tool results now return an explicit error with the tool name, result size, limit and narrowing guidance, without partial data. The default size limit remains 60,000 characters; recordings and content-free warning logs report size-limit rejection.
+- When the tool-result size cap is enabled, oversized results return an explicit error with the tool name, result size, limit and narrowing guidance, without partial data. Recordings and content-free warning logs report size-limit rejections. The code fallback for `LLM_AGENT_TOOL_RESULT_MAX_CHARS` is `0` (off). `mta.yaml` still sets it to 60,000 characters.
+
+### Upgrade
+
+- For SAP HANA Cloud, deploy the updated HDI artifacts before starting the hub. The startup migration detects a missing `RAG_DOCUMENTS.FRAGMENT_ORDINAL` as `HANA_FRAGMENT_ORDINAL_MISSING` and blocks startup. For PostgreSQL, the hub's database role must be able to `ALTER` `rag_documents` in the configured schema. With Qdrant, start a single hub instance for the first startup so it can migrate the collections before other instances start. See the [deployment guide](docs/deployment/DEPLOY_GUIDE.md#upgrading-the-rag-storage-layout-for-llm-agent-35).
 
 ## [11.0.3] - 2026-11-14
 
