@@ -1598,6 +1598,10 @@ export function getSharedHistoryRag(): SessionHistoryRouter {
   sharedHistoryRag = new SessionHistoryRouter(provider, {
     storeUrl: kind === 'qdrant' ? getAgentConfig().rag.qdrant?.url : undefined,
     queryEmbedder: embedding ? agentQueryEmbedder(embedding) : undefined,
+    embedderFp:
+      embedding && isPersistentKind(kind)
+        ? fingerprintHash(embedding.fingerprint)
+        : undefined,
     storageBackend: kind,
     trustResolver: () => resolverFor(getCollectionRegistry()),
     log: cds.log('session-history'),

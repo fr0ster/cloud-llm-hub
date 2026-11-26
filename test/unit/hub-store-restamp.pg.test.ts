@@ -121,7 +121,8 @@ it('restamps legacy rows once, preserving ids, text, other metadata and zero vec
     if (!current.ok) throw current.error;
   }
   embed.mockClear();
-  expect(await restampHubStores(provider)).toEqual({
+  const embedderFp = '0123456789ab';
+  expect(await restampHubStores(provider, embedderFp)).toEqual({
     ok: true,
     value: { rewritten: 5 },
   });
@@ -155,11 +156,16 @@ it('restamps legacy rows once, preserving ids, text, other metadata and zero vec
       }),
     });
     if (record.storeName === 'h_planner_memory') {
+      expect(row?.metadata.embedder).toBe(embedderFp);
       expect(row?.metadata).not.toHaveProperty('hubSessionId');
       const current = rows.value.records.find((r) => r.id === 'current');
+      expect(current?.metadata.embedder).toBe(embedderFp);
       expect(current?.metadata.namespace).toBe('s2');
       expect(current?.metadata).not.toHaveProperty('sessionId');
       expect(current?.metadata).not.toHaveProperty('hubSessionId');
+    } else {
+      for (const { metadata } of rows.value.records)
+        expect(metadata).not.toHaveProperty('embedder');
     }
     expect(row?.metadata).not.toHaveProperty('sessionId');
     expect(row?.metadata).not.toHaveProperty('userId');

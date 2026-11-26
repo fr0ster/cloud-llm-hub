@@ -171,6 +171,7 @@ async function migrateProviderData(
   collections: IRagProvider | null,
   kind: RagBackendKind,
   log: Log,
+  embedderFp?: string,
 ): Promise<Result<void, RagError>> {
   if (!['hana-vector', 'pg-vector', 'qdrant'].includes(kind))
     return { ok: true, value: undefined };
@@ -207,10 +208,10 @@ async function migrateProviderData(
         );
     }
     stage = `${kind}/hub stores`;
-    const restamp = await restampHubStores(collections);
+    const restamp = await restampHubStores(collections, embedderFp);
     if (!restamp.ok) return failure(`${kind}/hub stores`, restamp.error, log);
     stage = `${kind}/h_history`;
-    const history = await migrateSharedHistory(collections);
+    const history = await migrateSharedHistory(collections, embedderFp);
     if (!history.ok) return failure(`${kind}/h_history`, history.error, log);
     stage = `${kind}/backend`;
     const backend =
@@ -260,9 +261,10 @@ export async function migrateHubRagProviders(
   entries: readonly ProviderMigration[],
   log: Log,
   qdrant?: QdrantMigration,
+  embedderFp?: string,
 ): Promise<Result<void, RagError>> {
   setRagMigrationReady(false);
-  const result = await migrateRagProviders(entries, log, qdrant);
+  const result = await migrateRagProviders(entries, log, qdrant, embedderFp);
   if (result.ok) setRagMigrationReady(true);
   return result;
 }
@@ -271,6 +273,7 @@ async function migrateRagProviders(
   entries: readonly ProviderMigration[],
   log: Log,
   qdrant?: QdrantMigration,
+  embedderFp?: string,
 ): Promise<Result<void, RagError>> {
   const qdrantProviders = new Set<QdrantRagProvider>();
   for (const { provider, kind } of entries) {
@@ -292,7 +295,7 @@ async function migrateRagProviders(
   for (const { provider, kind } of entries) {
     if (provider && seen.has(provider)) continue;
     if (provider) seen.add(provider);
-    const result = await migrateProviderData(provider, kind, log);
+    const result = await migrateProviderData(provider, kind, log, embedderFp);
     if (!result.ok) return result;
   }
   return { ok: true, value: undefined };

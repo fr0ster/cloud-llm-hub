@@ -36,6 +36,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import type { CollectionMeta, RagDocument } from '../rag-collections';
+import { EMBEDDED_HUB_STORES } from './hub-store-embedder';
 import { trustHistorySchema } from './trust';
 import { storageEnabled } from './usage/storage-values';
 
@@ -1198,14 +1199,16 @@ interface HubStore {
   source: string;
   /** What error messages call it. */
   label: string;
+  embedderFp?: string;
 }
 
-function historyStore(prefix?: string): HubStore {
+function historyStore(prefix?: string, embedderFp?: string): HubStore {
   return {
     storeName: historyStoreName(prefix),
     collectionName: HISTORY_STORE,
     source: 'history',
     label: 'history store',
+    embedderFp,
   };
 }
 
@@ -1214,7 +1217,11 @@ function hubRecordOptions(s: HubStore, adoptExisting: boolean) {
   return {
     scope: 'global' as const,
     collectionName: s.collectionName,
-    attributes: { writtenBy: WRITTEN_BY, source: s.source },
+    attributes: {
+      writtenBy: WRITTEN_BY,
+      source: s.source,
+      ...(s.embedderFp === undefined ? {} : { embedder: s.embedderFp }),
+    },
     ...(adoptExisting ? { adoptExisting: true } : {}),
   };
 }
@@ -1288,8 +1295,9 @@ export function isSessionRecordStore(
 export function ensureHistoryStore(
   provider: IRagProvider,
   storePrefix?: string,
+  embedderFp?: string,
 ): Promise<Result<IRag, RagError>> {
-  return ensureHubStore(provider, historyStore(storePrefix));
+  return ensureHubStore(provider, historyStore(storePrefix, embedderFp));
 }
 
 /** The long-session record store (`h_sessions`), ensured like the history store. */
@@ -1418,6 +1426,7 @@ export class PersistentHistoryStore
   private readonly coolDownMs: number;
   private readonly storePrefix?: string;
   private readonly storeName?: string;
+  private readonly embedderFp?: string;
   private readonly beforeOpen?: () => Promise<void>;
 
   constructor(
@@ -1428,6 +1437,7 @@ export class PersistentHistoryStore
       coolDownMs?: number;
       storePrefix?: string;
       storeName?: string;
+      embedderFp?: string;
       beforeOpen?: () => Promise<void>;
     } = {},
   ) {
@@ -1435,6 +1445,12 @@ export class PersistentHistoryStore
     this.coolDownMs = opts.coolDownMs ?? HISTORY_OPEN_COOL_DOWN_MS;
     this.storePrefix = opts.storePrefix;
     this.storeName = opts.storeName;
+    if (
+      EMBEDDED_HUB_STORES.some(
+        (name) => name === (opts.storeName ?? HISTORY_STORE),
+      )
+    )
+      this.embedderFp = opts.embedderFp;
     this.beforeOpen = opts.beforeOpen;
   }
 
@@ -1459,8 +1475,13 @@ export class PersistentHistoryStore
                 collectionName: this.storeName,
                 source: this.storeName,
                 label: `${this.storeName} store`,
+                embedderFp: this.embedderFp,
               })
-            : ensureHistoryStore(this.provider, this.storePrefix));
+            : ensureHistoryStore(
+                this.provider,
+                this.storePrefix,
+                this.embedderFp,
+              ));
         } catch (error) {
           return {
             ok: false,
@@ -1530,20 +1551,27 @@ export class PersistentHistoryStore
         };
   }
 
+  private writeMetadata(metadata: RagMetadata): RagMetadata {
+    return this.embedderFp === undefined
+      ? metadata
+      : { ...metadata, embedder: this.embedderFp };
+  }
+
   writer(): IRagBackendWriter {
     return {
       upsertPrecomputedRaw: async (id, text, vector, metadata, options) => {
         const w = await this.innerWriter();
         if (!w.ok) return w;
+        const stamped = this.writeMetadata(metadata);
         return w.value.upsertPrecomputedRaw
           ? w.value.upsertPrecomputedRaw(
               id,
               text,
               vector,
-              stampRagOwner(metadata, { scope: 'global' }),
+              stampRagOwner(stamped, { scope: 'global' }),
               options,
             )
-          : w.value.upsertRaw(id, text, metadata, options);
+          : w.value.upsertRaw(id, text, stamped, options);
       },
       upsertRaw: async (
         id: string,
@@ -1552,7 +1580,9 @@ export class PersistentHistoryStore
         options?: CallOptions,
       ) => {
         const w = await this.innerWriter();
-        return w.ok ? w.value.upsertRaw(id, text, metadata, options) : w;
+        return w.ok
+          ? w.value.upsertRaw(id, text, this.writeMetadata(metadata), options)
+          : w;
       },
       deleteByIdRaw: async (id: string, options?: CallOptions) => {
         const w = await this.innerWriter();

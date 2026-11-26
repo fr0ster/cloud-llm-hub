@@ -148,6 +148,7 @@ async function openHistory(
 export interface SessionHistoryRouterOptions {
   storeUrl?: string;
   queryEmbedder?: IQueryEmbedder;
+  embedderFp?: string;
   storageBackend?: string;
   storePrefix?: string;
   maxTurns?: number;
@@ -616,6 +617,9 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
       stampRagOwner(
         {
           ...rest,
+          ...(this.options.embedderFp === undefined
+            ? {}
+            : { embedder: this.options.embedderFp }),
           authorUserId: caller.userId,
           createdAt:
             metadata.createdAt ??
@@ -1065,6 +1069,7 @@ export async function waitForSessionHistoryTurns(
 /** Copy completely before deleting the shared store; stable ids make retries safe. */
 export async function migrateSharedHistory(
   provider: IRagProvider,
+  embedderFp?: string,
 ): Promise<Result<{ moved: number }, RagError>> {
   try {
     if (
@@ -1211,7 +1216,11 @@ export async function migrateSharedHistory(
             row.id,
             row.text,
             stampRagOwner(
-              { ...metadata, authorUserId: group.userId },
+              {
+                ...metadata,
+                ...(embedderFp === undefined ? {} : { embedder: embedderFp }),
+                authorUserId: group.userId,
+              },
               { scope: 'session', sessionId },
             ),
           );

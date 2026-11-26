@@ -3,7 +3,7 @@ import {
   isRagMigrationReady,
   migrateHubRagProviders,
 } from './lib/rag-migration';
-import { ragReadinessGuard } from './lib/rag-readiness';
+import { ragReadinessGuard, setRagMigrationReady } from './lib/rag-readiness';
 import { RAG_WRITE_MAX_BYTES } from './lib/rag-write-operations';
 import { requireAdminRole } from './lib/require-admin-role';
 import {
@@ -87,6 +87,7 @@ import {
 import { gatekeeperConfig } from './lib/gatekeeper-config';
 import { installThrottleObserver } from './lib/gatekeeper-metrics';
 import { guardedTask } from './lib/guarded-task';
+import { assertHubStoresEmbedder } from './lib/hub-store-embedder';
 import { initLongSessions, longSessionsIfReady } from './lib/long-session';
 import {
   agentStepCalls,
@@ -122,7 +123,7 @@ import {
 } from './lib/session-middleware';
 import { createSessionRecordStore } from './lib/session-record-store';
 import { openAiSessionRefusal } from './lib/throttle-surfacing';
-import { toolStoreName } from './lib/tool-corpus';
+import { fingerprintHash, toolStoreName } from './lib/tool-corpus';
 import {
   toolSearchReadinessGuard,
   withToolSearchHealth,
@@ -1099,6 +1100,9 @@ cds.on('served', () => {
       initProviders(p);
       const persistentKind = p.stores.backendOf('persistent');
       const sessionKind = p.stores.backendOf('session');
+      const embedderFp = p.embedding
+        ? fingerprintHash(p.embedding.fingerprint)
+        : undefined;
       const migrations = [
         { provider: p.collections ?? null, kind: persistentKind },
       ];
@@ -1118,8 +1122,20 @@ cds.on('served', () => {
         migrations,
         (line) => log.info(line),
         qdrant ? { config: qdrant, standaloneCollections } : undefined,
+        embedderFp,
       );
       if (!migration.ok) throw migration.error;
+      if (embedderFp !== undefined) {
+        setRagMigrationReady(false);
+        for (const provider of new Set(
+          migrations.map(({ provider }) => provider),
+        )) {
+          if (!provider) continue;
+          const result = await assertHubStoresEmbedder(provider, embedderFp);
+          if (!result.ok) throw result.error;
+        }
+        setRagMigrationReady(true);
+      }
       startSessionSweep();
       registerRagRoutes(ragRouter, getCollectionRegistry());
       // Restore and validate configuration before initializing agents.

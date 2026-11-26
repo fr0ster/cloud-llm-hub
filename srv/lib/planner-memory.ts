@@ -38,7 +38,7 @@ let sharedPlannerMemoryRag: IRag | undefined;
 export function getSharedPlannerMemoryRag(): IRag | undefined {
   if (sharedPlannerMemoryRag) return sharedPlannerMemoryRag;
   try {
-    const stores = getProviders().stores;
+    const { embedding, stores } = getProviders();
     const kind = stores.backendOf('session');
     sharedPlannerMemoryRag = plannerMemoryStore({
       kind,
@@ -53,6 +53,9 @@ export function getSharedPlannerMemoryRag(): IRag | undefined {
               getAgentConfig().rag.qdrant?.prefix,
             ),
             storeName: 'h_planner_memory',
+            embedderFp: embedding
+              ? fingerprintHash(embedding.fingerprint)
+              : undefined,
           },
         ),
     });
