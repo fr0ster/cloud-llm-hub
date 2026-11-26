@@ -242,6 +242,7 @@ export interface RestoreStatus {
 
 /** Dimensions are resolved without embedding stored document text. */
 export interface CollectionPersistence {
+  readonly embedderFp: string;
   vectorDimension?(
     collectionId: string,
     options?: CallOptions,
@@ -404,6 +405,7 @@ export const PAYLOAD_BOOKKEEPING = [
   'collectionId',
   'docId',
   'createdAt',
+  'embedder',
   '_createdAtMs',
 ] as const;
 
@@ -472,6 +474,7 @@ export function documentPayload(
 
 /** The part of a registry entry the document mutations below touch. */
 export interface PersistentEntry {
+  readonly embedderFp: string;
   vectorDimension?: (options?: CallOptions) => Promise<number>;
   usageTextBytes?: number;
   meta: CollectionMeta;
@@ -499,8 +502,8 @@ export function refuseWhileDeleting(
  * The backend payload of a persistent document. The point id stays
  * `doc:<collectionId>:<docId>`.
  *
- * The registry writes through raw backend writers, so stamp the catalog
- * owner here after stripping reserved fields from the document's metadata.
+ * The registry writes through raw backend writers, so stamp the catalog owner
+ * and current embedder here after stripping reserved fields from the metadata.
  */
 function payload(
   entry: PersistentEntry,
@@ -513,6 +516,7 @@ function payload(
   return stampRagOwner(
     {
       ...ownMetadata(metadata),
+      embedder: entry.embedderFp,
       id: `doc:${collectionId}:${docId}`,
       namespace: namespace ?? entry.meta.owner,
       ...documentPayload(collectionId, docId, createdAt),
@@ -829,6 +833,7 @@ export function createCollectionPersistence(
       });
     });
   return {
+    embedderFp,
     vectorDimension: (id, options) => {
       if (!opts.vectorDimension)
         throw new Error(

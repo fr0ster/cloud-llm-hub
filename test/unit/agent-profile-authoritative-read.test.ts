@@ -217,6 +217,7 @@ test.each(['create', 'replace', 'partial', 'delete'] as const)(
         createdAt: '',
       };
       const entry: PersistentEntry = {
+        embedderFp: 'fp',
         meta: {
           id: 'agents',
           logicalId: 'agents',

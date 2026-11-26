@@ -923,6 +923,7 @@ test.each([768, 3072])(
       client,
     );
     const stored = {
+      embedderFp: 'fp',
       meta: {
         id: physical,
         logicalId: 'task-results',

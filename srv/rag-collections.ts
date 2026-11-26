@@ -210,7 +210,7 @@ export interface RagDocument {
 
 export type EnabledDocument = ReturnType<typeof documentView>;
 
-interface StoredCollection {
+type StoredCollection = {
   vectorDimension?: (options?: CallOptions) => Promise<number>;
   usageTextBytes?: number;
   meta: CollectionMeta;
@@ -218,13 +218,11 @@ interface StoredCollection {
   store: string;
   /** The backend that created the store, asked to delete it on removal. */
   backend?: RagBackend;
-  /** Held in the persistence provider's catalog; see CollectionPersistence. */
-  persistent?: boolean;
   /** Set while a persistent deletion is out: writes are refused meanwhile. */
   deleting?: boolean;
   documents: Map<string, RagDocument>;
   rag: RecencyBoostedRag;
-}
+} & ({ persistent: true; embedderFp: string } | { persistent?: false });
 
 /**
  * Count logical source documents in a collection. Chunked uploads are grouped
@@ -375,14 +373,16 @@ class RecencyBoostedRag implements IRag, IRagEditor {
   private inner: IRag;
   private recencyBoost: number;
   private halfLifeMs: number;
+  private readonly persistent: boolean;
 
   constructor(
     inner: IRag,
-    opts?: { recencyBoost?: number; halfLifeMs?: number },
+    opts?: { recencyBoost?: number; halfLifeMs?: number; persistent?: boolean },
   ) {
     this.inner = inner;
     this.recencyBoost = opts?.recencyBoost ?? 0.15; // up to 15% boost
     this.halfLifeMs = opts?.halfLifeMs ?? 7 * 24 * 3600_000; // 7 days
+    this.persistent = opts?.persistent ?? false;
   }
 
   async upsert(
@@ -461,6 +461,12 @@ class RecencyBoostedRag implements IRag, IRagEditor {
       .sort((a, b) => b.score - a.score)
       .slice(0, k);
 
+    if (this.persistent) {
+      result.value = result.value.map((record) => {
+        const { embedder: _embedder, ...metadata } = record.metadata;
+        return { ...record, metadata };
+      });
+    }
     return result;
   }
 
@@ -830,8 +836,11 @@ export class CollectionRegistry {
           meta.id,
         ),
         persistent: true,
+        embedderFp: persistence.embedderFp,
         documents,
-        rag: new RecencyBoostedRag(c.rag ?? unavailableRag(c.error ?? '')),
+        rag: new RecencyBoostedRag(c.rag ?? unavailableRag(c.error ?? ''), {
+          persistent: true,
+        }),
       };
       if (storageEnabled())
         stored.usageTextBytes = c.documents.reduce(
@@ -1188,8 +1197,9 @@ export class CollectionRegistry {
       store: persistence.storeName(meta.id),
       vectorDimension: persistence.vectorDimension?.bind(persistence, meta.id),
       persistent: true,
+      embedderFp: persistence.embedderFp,
       documents: new Map(),
-      rag: new RecencyBoostedRag(handles.rag),
+      rag: new RecencyBoostedRag(handles.rag, { persistent: true }),
     });
     if (storageEnabled()) {
       const stored = this.collections.get(meta.id);
