@@ -3,6 +3,7 @@ import {
   CircuitBreakerEmbedder,
   FallbackRag,
   InMemoryRag,
+  type IRagBackendWriter,
   QueryEmbedding,
   RagError,
   symmetricEmbedder,
@@ -12,6 +13,7 @@ import { QdrantRag } from '@mcp-abap-adt/qdrant-rag';
 import type { RagConfig } from '../../srv/agent-config';
 import { buildEmbedding, prefetchEmbedder } from '../../srv/lib/providers';
 import { createRagStoreFactory } from '../../srv/lib/rag-store-factory';
+import { fingerprintHash } from '../../srv/lib/tool-corpus';
 import {
   qdrantMultivectorConfig,
   qdrantQueryFetch,
@@ -71,6 +73,62 @@ describe('RagStoreFactory', () => {
     expect(t).not.toBeInstanceOf(FallbackRag);
     expect(f.qdrantCollection('tools-reader-a-b')).toBe(
       'hub-test-tools-reader-a-b',
+    );
+  });
+
+  it('stamps standalone Qdrant planner memory writes through every writer method', async () => {
+    type Single = NonNullable<IRagBackendWriter['upsertPrecomputedRaw']>;
+    type Many = NonNullable<IRagBackendWriter['upsertManyPrecomputedRaw']>;
+    const success = { ok: true, value: undefined } as const;
+    const upsertRaw = jest.fn(
+      async (..._args: Parameters<IRagBackendWriter['upsertRaw']>) => success,
+    );
+    const upsertPrecomputedRaw = jest.fn(
+      async (..._args: Parameters<Single>) => success,
+    );
+    const upsertManyPrecomputedRaw = jest.fn(
+      async (..._args: Parameters<Many>) => success,
+    );
+    jest.spyOn(QdrantRag.prototype, 'writer').mockReturnValue({
+      upsertRaw,
+      upsertPrecomputedRaw,
+      upsertManyPrecomputedRaw,
+      deleteByIdRaw: async () => ({ ok: true, value: true }),
+    });
+    const embedding = buildEmbedding(emb);
+    if (!embedding) throw new Error('Missing embedding');
+    const factory = createRagStoreFactory(
+      { ...q, backends: { ...q.backends, session: 'qdrant' } },
+      embedding,
+    );
+    const writer = factory.create('session', 'planner-memory').writer?.();
+    if (!writer?.upsertPrecomputedRaw || !writer.upsertManyPrecomputedRaw)
+      throw new Error('Missing planner memory writer');
+    const metadata = { embedder: 'old', namespace: 'owner' };
+    const stamped = {
+      ...metadata,
+      embedder: fingerprintHash(embedding.fingerprint),
+    };
+    const vector = [1, 0];
+    const options = { signal: new AbortController().signal };
+    await writer.upsertRaw('a', 'first', metadata, options);
+    await writer.upsertPrecomputedRaw('b', 'second', vector, metadata, options);
+    await writer.upsertManyPrecomputedRaw(
+      [{ id: 'c', text: 'third', vector, metadata }],
+      options,
+    );
+
+    expect(upsertRaw).toHaveBeenCalledWith('a', 'first', stamped, options);
+    expect(upsertPrecomputedRaw).toHaveBeenCalledWith(
+      'b',
+      'second',
+      vector,
+      stamped,
+      options,
+    );
+    expect(upsertManyPrecomputedRaw).toHaveBeenCalledWith(
+      [{ id: 'c', text: 'third', vector, metadata: stamped }],
+      options,
     );
   });
 

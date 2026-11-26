@@ -1,9 +1,5 @@
 import { ensureModelCatalog } from './lib/model-catalog';
-import {
-  isRagMigrationReady,
-  migrateHubRagProviders,
-} from './lib/rag-migration';
-import { ragReadinessGuard } from './lib/rag-readiness';
+import { ragReadinessGuard, setRagMigrationReady } from './lib/rag-readiness';
 import { RAG_WRITE_MAX_BYTES } from './lib/rag-write-operations';
 import { requireAdminRole } from './lib/require-admin-role';
 import {
@@ -53,7 +49,6 @@ import {
   collectionsRestoreStatus,
   getCollectionRegistry,
   getDestinationMappings,
-  historyProvider,
   initProviders,
   initSmartAgents,
   isProvidersReady,
@@ -87,6 +82,10 @@ import {
 import { gatekeeperConfig } from './lib/gatekeeper-config';
 import { installThrottleObserver } from './lib/gatekeeper-metrics';
 import { guardedTask } from './lib/guarded-task';
+import {
+  assertHubStoresEmbedder,
+  assertStandaloneStoreEmbedder,
+} from './lib/hub-store-embedder';
 import { initLongSessions, longSessionsIfReady } from './lib/long-session';
 import {
   agentStepCalls,
@@ -96,8 +95,16 @@ import {
   mcpDestinationRefusal,
 } from './lib/mcp-destination-guard';
 import { needsSapConnection } from './lib/mcp-request';
-import { PLANNER_MEMORY_STORE } from './lib/planner-context';
+import {
+  openStandalonePlannerMemory,
+  PLANNER_MEMORY_STORE,
+} from './lib/planner-context';
 import { type Providers, startProviders } from './lib/providers';
+import {
+  isRagMigrationReady,
+  persistentMigrationProviders,
+  runStartMigrations,
+} from './lib/rag-migration';
 import { requireMcpRole } from './lib/require-mcp-role';
 import { initializeRunRecordStore } from './lib/run-record-store';
 import { sessionConfig } from './lib/session-config';
@@ -122,7 +129,10 @@ import {
 } from './lib/session-middleware';
 import { createSessionRecordStore } from './lib/session-record-store';
 import { openAiSessionRefusal } from './lib/throttle-surfacing';
-import { toolStoreName } from './lib/tool-corpus';
+import {
+  compatibleFingerprintHashes,
+  fingerprintHash,
+} from './lib/tool-corpus';
 import {
   toolSearchReadinessGuard,
   withToolSearchHealth,
@@ -1097,29 +1107,32 @@ cds.on('served', () => {
     })
     .then(async (p) => {
       initProviders(p);
-      const persistentKind = p.stores.backendOf('persistent');
-      const sessionKind = p.stores.backendOf('session');
-      const migrations = [
-        { provider: p.collections ?? null, kind: persistentKind },
-      ];
-      if (['hana-vector', 'pg-vector', 'qdrant'].includes(sessionKind))
-        migrations.push({
-          provider: historyProvider(sessionKind),
-          kind: sessionKind,
-        });
-      const qdrant = getAgentConfig().rag.qdrant;
-      const standaloneCollections = [
-        ...(p.stores.backendOf('tools') === 'qdrant'
-          ? [toolStoreName('reader'), toolStoreName('writer')]
-          : []),
-        ...(sessionKind === 'qdrant' ? [PLANNER_MEMORY_STORE] : []),
-      ].map((name) => p.stores.qdrantCollection(name));
-      const migration = await migrateHubRagProviders(
-        migrations,
-        (line) => log.info(line),
-        qdrant ? { config: qdrant, standaloneCollections } : undefined,
-      );
+      const migration = await runStartMigrations(p, (line) => log.info(line));
       if (!migration.ok) throw migration.error;
+      if (p.embedding) {
+        const embedderFp = fingerprintHash(p.embedding.fingerprint);
+        setRagMigrationReady(false);
+        for (const provider of persistentMigrationProviders(p).keys()) {
+          const result = await assertHubStoresEmbedder(provider, embedderFp);
+          if (!result.ok) throw result.error;
+        }
+        if (p.stores.backendOf('session') === 'qdrant') {
+          const opened = await openStandalonePlannerMemory(p.stores);
+          if (!opened.ok) throw opened.error;
+          if (opened.value) {
+            const result = await assertStandaloneStoreEmbedder(
+              opened.value,
+              p.stores.qdrantCollection(PLANNER_MEMORY_STORE),
+              compatibleFingerprintHashes(
+                p.embedding.fingerprint,
+                p.compatibleEmbeddingResourceGroups,
+              ),
+            );
+            if (!result.ok) throw result.error;
+          }
+        }
+        setRagMigrationReady(true);
+      }
       startSessionSweep();
       registerRagRoutes(ragRouter, getCollectionRegistry());
       // Restore and validate configuration before initializing agents.

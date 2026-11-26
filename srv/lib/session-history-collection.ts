@@ -27,6 +27,7 @@ import {
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  encodeEmbedderAttribute,
   HISTORY_OPEN_COOL_DOWN_MS,
   WRITTEN_BY,
 } from './collection-persistence';
@@ -37,6 +38,7 @@ import {
   renderTurn,
   type StoredTurn,
 } from './history-turn';
+import { SESSION_HISTORY_SOURCE } from './hub-store-embedder';
 import { runWithoutLlmSpend } from './llm-failure';
 import { getHubRagAccess } from './rag-access';
 import {
@@ -98,6 +100,7 @@ async function openHistory(
   sessionId: string,
   create: boolean,
   prefix?: string,
+  embedderFp?: string,
 ): Promise<Result<Handles | undefined, RagError>> {
   const name = historyCollectionName(sessionId);
   const store = prefix ? `${prefix}_${name}` : name;
@@ -126,7 +129,11 @@ async function openHistory(
     scope: 'session' as const,
     sessionId,
     collectionName: name,
-    attributes: { writtenBy: WRITTEN_BY, source: 'session-history' },
+    attributes: {
+      writtenBy: WRITTEN_BY,
+      source: SESSION_HISTORY_SOURCE,
+      ...(embedderFp === undefined ? {} : encodeEmbedderAttribute(embedderFp)),
+    },
   };
   let created = await provider.createCollection(store, opts);
   if (created.ok)
@@ -148,6 +155,7 @@ async function openHistory(
 export interface SessionHistoryRouterOptions {
   storeUrl?: string;
   queryEmbedder?: IQueryEmbedder;
+  embedderFp?: string;
   storageBackend?: string;
   storePrefix?: string;
   maxTurns?: number;
@@ -306,6 +314,7 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
       sessionId,
       create,
       this.options.storePrefix,
+      this.options.embedderFp,
     );
     signal?.throwIfAborted();
     if (!result.ok) {
@@ -616,6 +625,9 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
       stampRagOwner(
         {
           ...rest,
+          ...(this.options.embedderFp === undefined
+            ? {}
+            : { embedder: this.options.embedderFp }),
           authorUserId: caller.userId,
           createdAt:
             metadata.createdAt ??
@@ -1065,6 +1077,7 @@ export async function waitForSessionHistoryTurns(
 /** Copy completely before deleting the shared store; stable ids make retries safe. */
 export async function migrateSharedHistory(
   provider: IRagProvider,
+  embedderFp?: string,
 ): Promise<Result<{ moved: number }, RagError>> {
   try {
     if (
@@ -1191,7 +1204,13 @@ export async function migrateSharedHistory(
     // Every source row has passed validation before the first target is created.
     for (const { storeName, prefix, groups } of batches) {
       for (const [sessionId, group] of groups) {
-        const target = await openHistory(provider, sessionId, true, prefix);
+        const target = await openHistory(
+          provider,
+          sessionId,
+          true,
+          prefix,
+          embedderFp,
+        );
         if (!target.ok) return target;
         const writer = target.value?.rag.writer?.();
         if (!writer)
@@ -1211,7 +1230,11 @@ export async function migrateSharedHistory(
             row.id,
             row.text,
             stampRagOwner(
-              { ...metadata, authorUserId: group.userId },
+              {
+                ...metadata,
+                ...(embedderFp === undefined ? {} : { embedder: embedderFp }),
+                authorUserId: group.userId,
+              },
               { scope: 'session', sessionId },
             ),
           );

@@ -2,14 +2,31 @@ import type {
   IPlannerKnowledge,
   IRag,
   IRetrievalEmbedder,
+  RagError,
+  Result,
 } from '@mcp-abap-adt/llm-agent';
 import {
   type PlannerRetrievalOptions,
   RagPlannerKnowledge,
 } from '@mcp-abap-adt/llm-agent-libs';
+import type { RagStoreFactory } from './rag-store-factory';
 import { recordPolicy } from './record-policy';
 
 export const PLANNER_MEMORY_STORE = 'planner-memory';
+
+/** Open an existing standalone Qdrant store without creating one at startup. */
+export async function openStandalonePlannerMemory(
+  stores: Pick<RagStoreFactory, 'listStores' | 'create'>,
+): Promise<Result<IRag | undefined, RagError>> {
+  const listed = await stores.listStores('session', PLANNER_MEMORY_STORE);
+  if (!listed.ok) return listed;
+  return {
+    ok: true,
+    value: listed.value.includes(PLANNER_MEMORY_STORE)
+      ? stores.create('session', PLANNER_MEMORY_STORE)
+      : undefined,
+  };
+}
 
 export function plannerMemoryStore(options: {
   kind: string;

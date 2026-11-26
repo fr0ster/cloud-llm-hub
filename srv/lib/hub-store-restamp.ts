@@ -17,6 +17,7 @@ const stores = new Set([
 /** Run before the backend owner migration; legacy rows must be read unfiltered. */
 export async function restampHubStores(
   provider: IRagProvider,
+  embedderFp?: string,
 ): Promise<Result<{ rewritten: number }, RagError>> {
   if (!provider.describeCollections || !provider.openCollection)
     return {
@@ -92,34 +93,31 @@ export async function restampHubStores(
             if (owner === undefined && userId === undefined) continue;
             if (typeof owner === 'string') metadata.namespace = owner;
             delete metadata.hubSessionId;
+            if (embedderFp !== undefined) metadata.embedder = embedderFp;
           } else {
             if (sessionId === undefined && userId === undefined) continue;
             if (sessionId !== undefined) metadata.hubSessionId = sessionId;
           }
           if (userId !== undefined) metadata.authorUserId = userId;
-          if (
-            record.name !== 'h_planner_memory' &&
-            !writer.upsertPrecomputedRaw
-          )
+          if (!planner && !writer.upsertPrecomputedRaw)
             return {
               ok: false,
               error: new RagError(
                 `No precomputed writer for ${record.storeName}`,
               ),
             };
-          const result =
-            record.name === 'h_planner_memory'
-              ? await writer.upsertRaw(
-                  row.id,
-                  row.text,
-                  stampRagOwner(metadata, record),
-                )
-              : await writer.upsertPrecomputedRaw?.(
-                  row.id,
-                  row.text,
-                  zeroVector,
-                  stampRagOwner(metadata, record),
-                );
+          const result = planner
+            ? await writer.upsertRaw(
+                row.id,
+                row.text,
+                stampRagOwner(metadata, record),
+              )
+            : await writer.upsertPrecomputedRaw?.(
+                row.id,
+                row.text,
+                zeroVector,
+                stampRagOwner(metadata, record),
+              );
           if (!result)
             return { ok: false, error: new RagError('Missing restamp writer') };
           if (!result.ok) return result;

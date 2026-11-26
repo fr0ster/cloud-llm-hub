@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- Run the embedding migration before the hub starts on Cloud Foundry. The migration re-embeds stale persistent records, updates their catalog fingerprints, and reports per-store results and input tokens.
+- Add `npm run migrate:embeddings` for local migrations with the hub stopped. Hub startup reports `EMBEDDER_MIGRATION_REQUIRED` when an embedded hub store needs migration.
+
 ## [12.0.1] - 2026-11-26
 
 ### Added

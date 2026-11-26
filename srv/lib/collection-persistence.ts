@@ -36,6 +36,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import cds from '@sap/cds';
 import type { CollectionMeta, RagDocument } from '../rag-collections';
+import { EMBEDDED_HUB_STORES } from './hub-store-embedder';
 import { trustHistorySchema } from './trust';
 import { storageEnabled } from './usage/storage-values';
 
@@ -94,11 +95,30 @@ export function catalogOwner(meta: CollectionMeta): RagCollectionOwner {
   return { scope: 'user', userId: meta.owner };
 }
 
+export function encodeEmbedderAttribute(
+  embedderFp: string,
+  aliases: readonly string[] = [],
+) {
+  return {
+    embedder: embedderFp,
+    ...(aliases.length ? { embedderAliases: [...aliases] } : {}),
+  };
+}
+
+export function decodeEmbedderAliases(
+  value: RagJsonValue | undefined,
+): string[] {
+  return Array.isArray(value)
+    ? value.filter((hash): hash is string => typeof hash === 'string')
+    : [];
+}
+
 /** Record attributes: JSON only, no undefined values. */
 export function encodeAttributes(
   meta: CollectionMeta,
   enabled: boolean,
   embedderFp: string,
+  embedderAliases?: readonly string[],
 ): Record<string, unknown> {
   return {
     writtenBy: WRITTEN_BY,
@@ -114,7 +134,7 @@ export function encodeAttributes(
       : {}),
     ...(meta.collectionKind ? { collectionKind: meta.collectionKind } : {}),
     ...(meta.agentsCopyPending ? { agentsCopyPending: true } : {}),
-    embedder: embedderFp,
+    ...encodeEmbedderAttribute(embedderFp, embedderAliases),
     createdAt: meta.createdAt,
     ...(meta.expiresAt !== undefined ? { expiresAt: meta.expiresAt } : {}),
     hubOwner: {
@@ -127,6 +147,13 @@ export function encodeAttributes(
 const str = (v: unknown): string | undefined =>
   typeof v === 'string' ? v : undefined;
 
+type DecodedCollectionRecord = {
+  meta: CollectionMeta;
+  enabled: boolean;
+  embedderFp?: string;
+  embedderAliases?: string[];
+};
+
 /**
  * A record back into the registry's terms, or `{ foreign: true }` for anything
  * this hub did not write (another tool's record, a global one, a store name
@@ -135,12 +162,10 @@ const str = (v: unknown): string | undefined =>
 export function decodeRecord(
   rec: RagCollectionRecord,
   storePrefix?: string,
-):
-  | { meta: CollectionMeta; enabled: boolean; embedderFp?: string }
-  | { foreign: true } {
+): DecodedCollectionRecord | { foreign: true } {
   const a = rec.attributes;
   if (!a || typeof a !== 'object' || Array.isArray(a)) return { foreign: true };
-  const attrs = a as Record<string, unknown>;
+  const attrs = a as Record<string, RagJsonValue>;
   const collectionId = str(attrs.collectionId);
   const logicalId = str(attrs.logicalId);
   const hubOwner = attrs.hubOwner as Record<string, unknown> | undefined;
@@ -192,10 +217,12 @@ export function decodeRecord(
     sourceCount: 0,
   };
   const embedderFp = str(attrs.embedder);
+  const embedderAliases = decodeEmbedderAliases(attrs.embedderAliases);
   return {
     meta,
     enabled: attrs.enabled !== false,
     ...(embedderFp ? { embedderFp } : {}),
+    ...(embedderAliases.length ? { embedderAliases } : {}),
   };
 }
 
@@ -242,6 +269,7 @@ export interface RestoreStatus {
 
 /** Dimensions are resolved without embedding stored document text. */
 export interface CollectionPersistence {
+  readonly embedderFp: string;
   vectorDimension?(
     collectionId: string,
     options?: CallOptions,
@@ -404,6 +432,7 @@ export const PAYLOAD_BOOKKEEPING = [
   'collectionId',
   'docId',
   'createdAt',
+  'embedder',
   '_createdAtMs',
 ] as const;
 
@@ -472,6 +501,7 @@ export function documentPayload(
 
 /** The part of a registry entry the document mutations below touch. */
 export interface PersistentEntry {
+  readonly embedderFp: string;
   vectorDimension?: (options?: CallOptions) => Promise<number>;
   usageTextBytes?: number;
   meta: CollectionMeta;
@@ -499,8 +529,8 @@ export function refuseWhileDeleting(
  * The backend payload of a persistent document. The point id stays
  * `doc:<collectionId>:<docId>`.
  *
- * The registry writes through raw backend writers, so stamp the catalog
- * owner here after stripping reserved fields from the document's metadata.
+ * The registry writes through raw backend writers, so stamp the catalog owner
+ * and current embedder here after stripping reserved fields from the metadata.
  */
 function payload(
   entry: PersistentEntry,
@@ -513,6 +543,7 @@ function payload(
   return stampRagOwner(
     {
       ...ownMetadata(metadata),
+      embedder: entry.embedderFp,
       id: `doc:${collectionId}:${docId}`,
       namespace: namespace ?? entry.meta.owner,
       ...documentPayload(collectionId, docId, createdAt),
@@ -770,18 +801,24 @@ export function createCollectionPersistence(
   /** The tail of each collection's record-write chain. */
   const recordWrites = new Map<string, Promise<unknown>>();
   /**
-   * Preserve the original fingerprint on metadata updates, including when
-   * the collection was opened using resource-group compatibility.
+   * Preserve catalog embedder stamps on metadata updates, including when the
+   * collection was opened using resource-group compatibility.
    */
-  const recordFps = new Map<string, string>();
+  const recordStamps = new Map<
+    string,
+    { fingerprint: string; aliases?: string[] }
+  >();
   const loggedCompatibleCollections = new Set<string>();
   const restoreRecord = async (
     record: RagCollectionRecord,
-    decoded: { meta: CollectionMeta; enabled: boolean; embedderFp?: string },
+    decoded: DecodedCollectionRecord,
     options?: CallOptions,
   ): Promise<RestoredCollection> => {
     const storedFp = decoded.embedderFp;
-    recordFps.set(decoded.meta.id, storedFp ?? '');
+    recordStamps.set(decoded.meta.id, {
+      fingerprint: storedFp ?? '',
+      aliases: decoded.embedderAliases,
+    });
     const restored = await restoreOne(provider, record, decoded, options);
     if (
       restored.status ||
@@ -820,15 +857,18 @@ export function createCollectionPersistence(
             'RAG_UNSUPPORTED',
           ),
         };
+      const stamp = recordStamps.get(meta.id);
       return provider.updateCollection(storeName(meta.id), {
         attributes: encodeAttributes(
           meta,
           enabled,
-          recordFps.get(meta.id) ?? embedderFp,
+          stamp?.fingerprint ?? embedderFp,
+          stamp?.aliases,
         ),
       });
     });
   return {
+    embedderFp,
     vectorDimension: (id, options) => {
       if (!opts.vectorDimension)
         throw new Error(
@@ -872,7 +912,7 @@ export function createCollectionPersistence(
             ),
           };
         const r = await provider.deleteCollection(storeName(meta.id));
-        if (r.ok) recordFps.delete(meta.id);
+        if (r.ok) recordStamps.delete(meta.id);
         return r;
       }),
     update,
@@ -1193,14 +1233,16 @@ interface HubStore {
   source: string;
   /** What error messages call it. */
   label: string;
+  embedderFp?: string;
 }
 
-function historyStore(prefix?: string): HubStore {
+function historyStore(prefix?: string, embedderFp?: string): HubStore {
   return {
     storeName: historyStoreName(prefix),
     collectionName: HISTORY_STORE,
     source: 'history',
     label: 'history store',
+    embedderFp,
   };
 }
 
@@ -1209,7 +1251,11 @@ function hubRecordOptions(s: HubStore, adoptExisting: boolean) {
   return {
     scope: 'global' as const,
     collectionName: s.collectionName,
-    attributes: { writtenBy: WRITTEN_BY, source: s.source },
+    attributes: {
+      writtenBy: WRITTEN_BY,
+      source: s.source,
+      ...(s.embedderFp === undefined ? {} : { embedder: s.embedderFp }),
+    },
     ...(adoptExisting ? { adoptExisting: true } : {}),
   };
 }
@@ -1283,8 +1329,9 @@ export function isSessionRecordStore(
 export function ensureHistoryStore(
   provider: IRagProvider,
   storePrefix?: string,
+  embedderFp?: string,
 ): Promise<Result<IRag, RagError>> {
-  return ensureHubStore(provider, historyStore(storePrefix));
+  return ensureHubStore(provider, historyStore(storePrefix, embedderFp));
 }
 
 /** The long-session record store (`h_sessions`), ensured like the history store. */
@@ -1413,6 +1460,7 @@ export class PersistentHistoryStore
   private readonly coolDownMs: number;
   private readonly storePrefix?: string;
   private readonly storeName?: string;
+  private readonly embedderFp?: string;
   private readonly beforeOpen?: () => Promise<void>;
 
   constructor(
@@ -1423,6 +1471,7 @@ export class PersistentHistoryStore
       coolDownMs?: number;
       storePrefix?: string;
       storeName?: string;
+      embedderFp?: string;
       beforeOpen?: () => Promise<void>;
     } = {},
   ) {
@@ -1430,6 +1479,12 @@ export class PersistentHistoryStore
     this.coolDownMs = opts.coolDownMs ?? HISTORY_OPEN_COOL_DOWN_MS;
     this.storePrefix = opts.storePrefix;
     this.storeName = opts.storeName;
+    if (
+      EMBEDDED_HUB_STORES.some(
+        (name) => name === (opts.storeName ?? HISTORY_STORE),
+      )
+    )
+      this.embedderFp = opts.embedderFp;
     this.beforeOpen = opts.beforeOpen;
   }
 
@@ -1454,8 +1509,13 @@ export class PersistentHistoryStore
                 collectionName: this.storeName,
                 source: this.storeName,
                 label: `${this.storeName} store`,
+                embedderFp: this.embedderFp,
               })
-            : ensureHistoryStore(this.provider, this.storePrefix));
+            : ensureHistoryStore(
+                this.provider,
+                this.storePrefix,
+                this.embedderFp,
+              ));
         } catch (error) {
           return {
             ok: false,
@@ -1525,20 +1585,27 @@ export class PersistentHistoryStore
         };
   }
 
+  private writeMetadata(metadata: RagMetadata): RagMetadata {
+    return this.embedderFp === undefined
+      ? metadata
+      : { ...metadata, embedder: this.embedderFp };
+  }
+
   writer(): IRagBackendWriter {
     return {
       upsertPrecomputedRaw: async (id, text, vector, metadata, options) => {
         const w = await this.innerWriter();
         if (!w.ok) return w;
+        const stamped = this.writeMetadata(metadata);
         return w.value.upsertPrecomputedRaw
           ? w.value.upsertPrecomputedRaw(
               id,
               text,
               vector,
-              stampRagOwner(metadata, { scope: 'global' }),
+              stampRagOwner(stamped, { scope: 'global' }),
               options,
             )
-          : w.value.upsertRaw(id, text, metadata, options);
+          : w.value.upsertRaw(id, text, stamped, options);
       },
       upsertRaw: async (
         id: string,
@@ -1547,7 +1614,9 @@ export class PersistentHistoryStore
         options?: CallOptions,
       ) => {
         const w = await this.innerWriter();
-        return w.ok ? w.value.upsertRaw(id, text, metadata, options) : w;
+        return w.ok
+          ? w.value.upsertRaw(id, text, this.writeMetadata(metadata), options)
+          : w;
       },
       deleteByIdRaw: async (id: string, options?: CallOptions) => {
         const w = await this.innerWriter();

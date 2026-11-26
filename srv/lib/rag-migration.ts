@@ -23,11 +23,20 @@ import {
   RAG_MIGRATION_UNCONFIRMED,
   RAG_MIGRATION_VERIFICATION,
 } from '@mcp-abap-adt/qdrant-rag';
-import type { QdrantConfig, RagBackendKind } from '../agent-config';
+import {
+  getAgentConfig,
+  type QdrantConfig,
+  type RagBackendKind,
+} from '../agent-config';
+import { historyProvider } from '../agent-manager';
 import { restampHubStores } from './hub-store-restamp';
 import { apiKeyCredential } from './llm-factory';
+import { PLANNER_MEMORY_STORE } from './planner-context';
+import type { Providers } from './providers';
+import { isPersistentKind } from './rag-provider-factory';
 import { setRagMigrationReady } from './rag-readiness';
 import { migrateSharedHistory } from './session-history-collection';
+import { fingerprintHash, toolStoreName } from './tool-corpus';
 
 export { isRagMigrationReady } from './rag-readiness';
 
@@ -40,6 +49,48 @@ type QdrantMigration = {
   config: QdrantConfig;
   standaloneCollections: readonly string[];
 };
+
+function startMigrationEntries(p: Providers): ProviderMigration[] {
+  const entries = [
+    { provider: p.collections ?? null, kind: p.stores.backendOf('persistent') },
+  ];
+  const sessionKind = p.stores.backendOf('session');
+  if (isPersistentKind(sessionKind))
+    entries.push({ provider: historyProvider(sessionKind), kind: sessionKind });
+  return entries;
+}
+
+export function persistentMigrationProviders(
+  p: Providers,
+): ReadonlyMap<IRagProvider, RagBackendKind> {
+  const providers = new Map<IRagProvider, RagBackendKind>();
+  for (const { provider, kind } of startMigrationEntries(p)) {
+    if (provider && isPersistentKind(kind)) providers.set(provider, kind);
+  }
+  return providers;
+}
+
+export async function runStartMigrations(
+  p: Providers,
+  log: Log,
+): Promise<Result<void, RagError>> {
+  const entries = startMigrationEntries(p);
+  const qdrant = getAgentConfig().rag.qdrant;
+  const standaloneCollections = [
+    ...(p.stores.backendOf('tools') === 'qdrant'
+      ? [toolStoreName('reader'), toolStoreName('writer')]
+      : []),
+    ...(p.stores.backendOf('session') === 'qdrant'
+      ? [PLANNER_MEMORY_STORE]
+      : []),
+  ].map((name) => p.stores.qdrantCollection(name));
+  return migrateHubRagProviders(
+    entries,
+    log,
+    qdrant ? { config: qdrant, standaloneCollections } : undefined,
+    p.embedding ? fingerprintHash(p.embedding.fingerprint) : undefined,
+  );
+}
 
 function failure(
   stage: string,
@@ -171,6 +222,7 @@ async function migrateProviderData(
   collections: IRagProvider | null,
   kind: RagBackendKind,
   log: Log,
+  embedderFp?: string,
 ): Promise<Result<void, RagError>> {
   if (!['hana-vector', 'pg-vector', 'qdrant'].includes(kind))
     return { ok: true, value: undefined };
@@ -207,10 +259,10 @@ async function migrateProviderData(
         );
     }
     stage = `${kind}/hub stores`;
-    const restamp = await restampHubStores(collections);
+    const restamp = await restampHubStores(collections, embedderFp);
     if (!restamp.ok) return failure(`${kind}/hub stores`, restamp.error, log);
     stage = `${kind}/h_history`;
-    const history = await migrateSharedHistory(collections);
+    const history = await migrateSharedHistory(collections, embedderFp);
     if (!history.ok) return failure(`${kind}/h_history`, history.error, log);
     stage = `${kind}/backend`;
     const backend =
@@ -260,9 +312,10 @@ export async function migrateHubRagProviders(
   entries: readonly ProviderMigration[],
   log: Log,
   qdrant?: QdrantMigration,
+  embedderFp?: string,
 ): Promise<Result<void, RagError>> {
   setRagMigrationReady(false);
-  const result = await migrateRagProviders(entries, log, qdrant);
+  const result = await migrateRagProviders(entries, log, qdrant, embedderFp);
   if (result.ok) setRagMigrationReady(true);
   return result;
 }
@@ -271,6 +324,7 @@ async function migrateRagProviders(
   entries: readonly ProviderMigration[],
   log: Log,
   qdrant?: QdrantMigration,
+  embedderFp?: string,
 ): Promise<Result<void, RagError>> {
   const qdrantProviders = new Set<QdrantRagProvider>();
   for (const { provider, kind } of entries) {
@@ -292,7 +346,7 @@ async function migrateRagProviders(
   for (const { provider, kind } of entries) {
     if (provider && seen.has(provider)) continue;
     if (provider) seen.add(provider);
-    const result = await migrateProviderData(provider, kind, log);
+    const result = await migrateProviderData(provider, kind, log, embedderFp);
     if (!result.ok) return result;
   }
   return { ok: true, value: undefined };
