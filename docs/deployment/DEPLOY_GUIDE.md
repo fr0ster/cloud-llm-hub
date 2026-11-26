@@ -63,6 +63,30 @@ names from the same resource group. Leave the classifier model empty to use the
 configured chat model. For keyword-only RAG, set `LLM_AGENT_RAG_TYPE` to
 `in-memory` and omit the embedder settings. See the [SAP AI Core foundation-models configuration](../llm-agent/CONFIG_USAGE.md#sap-ai-core-foundation-models).
 
+### SAP AI Core service key for an unbound deployment
+
+If the deployment uses SAP AI Core credentials from a service key, download the
+service key JSON from SAP BTP. Run the extractor from the deployment checkout,
+or point `--dir` at that checkout.
+
+```bash
+node tools/add-aicore-service-key.js /path/to/service-key.json \
+  --dir /path/to/deploy-checkout --resource-group default \
+  --provider sap-aicore-foundation
+```
+
+The extractor creates or updates `.env` with `AICORE_AUTH_URL`,
+`AICORE_CLIENT_ID`, `AICORE_CLIENT_SECRET`, and `AICORE_BASE_URL`. The Hub appends
+`/oauth/token` to the authentication base URL. `tools/deploy.sh` loads the four
+variables into the Cloud Foundry app environment. Keep the service key JSON and
+the generated `.env` outside version control.
+
+`--resource-group` and `--provider` are optional. The provider can be `sap-ai-sdk`
+or `sap-aicore-foundation`. When supplied, these options update
+`LLM_AGENT_RESOURCE_GROUP` and `LLM_AGENT_PROVIDER` under
+`modules[].properties` for `cloud-llm-hub-srv` in the existing `.mtaext`. If
+`.mtaext` is missing, the tool reports that it skipped the optional settings.
+
 ## Build and Deploy
 
 ### Option 1: Using npm scripts (Recommended)
