@@ -82,7 +82,10 @@ import {
 import { gatekeeperConfig } from './lib/gatekeeper-config';
 import { installThrottleObserver } from './lib/gatekeeper-metrics';
 import { guardedTask } from './lib/guarded-task';
-import { assertHubStoresEmbedder } from './lib/hub-store-embedder';
+import {
+  assertHubStoresEmbedder,
+  assertStandaloneStoreEmbedder,
+} from './lib/hub-store-embedder';
 import { initLongSessions, longSessionsIfReady } from './lib/long-session';
 import {
   agentStepCalls,
@@ -92,6 +95,10 @@ import {
   mcpDestinationRefusal,
 } from './lib/mcp-destination-guard';
 import { needsSapConnection } from './lib/mcp-request';
+import {
+  openStandalonePlannerMemory,
+  PLANNER_MEMORY_STORE,
+} from './lib/planner-context';
 import { type Providers, startProviders } from './lib/providers';
 import {
   isRagMigrationReady,
@@ -122,7 +129,10 @@ import {
 } from './lib/session-middleware';
 import { createSessionRecordStore } from './lib/session-record-store';
 import { openAiSessionRefusal } from './lib/throttle-surfacing';
-import { fingerprintHash } from './lib/tool-corpus';
+import {
+  compatibleFingerprintHashes,
+  fingerprintHash,
+} from './lib/tool-corpus';
 import {
   toolSearchReadinessGuard,
   withToolSearchHealth,
@@ -1105,6 +1115,21 @@ cds.on('served', () => {
         for (const provider of persistentMigrationProviders(p).keys()) {
           const result = await assertHubStoresEmbedder(provider, embedderFp);
           if (!result.ok) throw result.error;
+        }
+        if (p.stores.backendOf('session') === 'qdrant') {
+          const opened = await openStandalonePlannerMemory(p.stores);
+          if (!opened.ok) throw opened.error;
+          if (opened.value) {
+            const result = await assertStandaloneStoreEmbedder(
+              opened.value,
+              p.stores.qdrantCollection(PLANNER_MEMORY_STORE),
+              compatibleFingerprintHashes(
+                p.embedding.fingerprint,
+                p.compatibleEmbeddingResourceGroups,
+              ),
+            );
+            if (!result.ok) throw result.error;
+          }
         }
         setRagMigrationReady(true);
       }

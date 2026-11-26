@@ -95,8 +95,22 @@ export function catalogOwner(meta: CollectionMeta): RagCollectionOwner {
   return { scope: 'user', userId: meta.owner };
 }
 
-export function encodeEmbedderAttribute(embedderFp: string) {
-  return { embedder: embedderFp };
+export function encodeEmbedderAttribute(
+  embedderFp: string,
+  aliases: readonly string[] = [],
+) {
+  return {
+    embedder: embedderFp,
+    ...(aliases.length ? { embedderAliases: [...aliases] } : {}),
+  };
+}
+
+export function decodeEmbedderAliases(
+  value: RagJsonValue | undefined,
+): string[] {
+  return Array.isArray(value)
+    ? value.filter((hash): hash is string => typeof hash === 'string')
+    : [];
 }
 
 /** Record attributes: JSON only, no undefined values. */
@@ -104,6 +118,7 @@ export function encodeAttributes(
   meta: CollectionMeta,
   enabled: boolean,
   embedderFp: string,
+  embedderAliases?: readonly string[],
 ): Record<string, unknown> {
   return {
     writtenBy: WRITTEN_BY,
@@ -119,7 +134,7 @@ export function encodeAttributes(
       : {}),
     ...(meta.collectionKind ? { collectionKind: meta.collectionKind } : {}),
     ...(meta.agentsCopyPending ? { agentsCopyPending: true } : {}),
-    ...encodeEmbedderAttribute(embedderFp),
+    ...encodeEmbedderAttribute(embedderFp, embedderAliases),
     createdAt: meta.createdAt,
     ...(meta.expiresAt !== undefined ? { expiresAt: meta.expiresAt } : {}),
     hubOwner: {
@@ -132,6 +147,13 @@ export function encodeAttributes(
 const str = (v: unknown): string | undefined =>
   typeof v === 'string' ? v : undefined;
 
+type DecodedCollectionRecord = {
+  meta: CollectionMeta;
+  enabled: boolean;
+  embedderFp?: string;
+  embedderAliases?: string[];
+};
+
 /**
  * A record back into the registry's terms, or `{ foreign: true }` for anything
  * this hub did not write (another tool's record, a global one, a store name
@@ -140,12 +162,10 @@ const str = (v: unknown): string | undefined =>
 export function decodeRecord(
   rec: RagCollectionRecord,
   storePrefix?: string,
-):
-  | { meta: CollectionMeta; enabled: boolean; embedderFp?: string }
-  | { foreign: true } {
+): DecodedCollectionRecord | { foreign: true } {
   const a = rec.attributes;
   if (!a || typeof a !== 'object' || Array.isArray(a)) return { foreign: true };
-  const attrs = a as Record<string, unknown>;
+  const attrs = a as Record<string, RagJsonValue>;
   const collectionId = str(attrs.collectionId);
   const logicalId = str(attrs.logicalId);
   const hubOwner = attrs.hubOwner as Record<string, unknown> | undefined;
@@ -197,10 +217,12 @@ export function decodeRecord(
     sourceCount: 0,
   };
   const embedderFp = str(attrs.embedder);
+  const embedderAliases = decodeEmbedderAliases(attrs.embedderAliases);
   return {
     meta,
     enabled: attrs.enabled !== false,
     ...(embedderFp ? { embedderFp } : {}),
+    ...(embedderAliases.length ? { embedderAliases } : {}),
   };
 }
 
@@ -779,18 +801,24 @@ export function createCollectionPersistence(
   /** The tail of each collection's record-write chain. */
   const recordWrites = new Map<string, Promise<unknown>>();
   /**
-   * Preserve the original fingerprint on metadata updates, including when
-   * the collection was opened using resource-group compatibility.
+   * Preserve catalog embedder stamps on metadata updates, including when the
+   * collection was opened using resource-group compatibility.
    */
-  const recordFps = new Map<string, string>();
+  const recordStamps = new Map<
+    string,
+    { fingerprint: string; aliases?: string[] }
+  >();
   const loggedCompatibleCollections = new Set<string>();
   const restoreRecord = async (
     record: RagCollectionRecord,
-    decoded: { meta: CollectionMeta; enabled: boolean; embedderFp?: string },
+    decoded: DecodedCollectionRecord,
     options?: CallOptions,
   ): Promise<RestoredCollection> => {
     const storedFp = decoded.embedderFp;
-    recordFps.set(decoded.meta.id, storedFp ?? '');
+    recordStamps.set(decoded.meta.id, {
+      fingerprint: storedFp ?? '',
+      aliases: decoded.embedderAliases,
+    });
     const restored = await restoreOne(provider, record, decoded, options);
     if (
       restored.status ||
@@ -829,11 +857,13 @@ export function createCollectionPersistence(
             'RAG_UNSUPPORTED',
           ),
         };
+      const stamp = recordStamps.get(meta.id);
       return provider.updateCollection(storeName(meta.id), {
         attributes: encodeAttributes(
           meta,
           enabled,
-          recordFps.get(meta.id) ?? embedderFp,
+          stamp?.fingerprint ?? embedderFp,
+          stamp?.aliases,
         ),
       });
     });
@@ -882,7 +912,7 @@ export function createCollectionPersistence(
             ),
           };
         const r = await provider.deleteCollection(storeName(meta.id));
-        if (r.ok) recordFps.delete(meta.id);
+        if (r.ok) recordStamps.delete(meta.id);
         return r;
       }),
     update,

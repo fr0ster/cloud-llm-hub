@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
-import { InMemoryRagProvider } from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag, InMemoryRagProvider } from '@mcp-abap-adt/llm-agent';
 import express, { type Request, type Response } from 'express';
+import type { RagStoreFactory } from '../../srv/lib/rag-store-factory';
 
 /**
  * A malformed gatekeeper variable stops the service before it takes traffic.
@@ -54,6 +55,7 @@ const agentsFailure: { error?: Error } = {};
 const migrationFailure = { failed: false };
 let collectionProvider: InMemoryRagProvider | undefined;
 let sessionProvider: InMemoryRagProvider | undefined;
+let standalonePlanner: InMemoryRag | null | undefined;
 const seedAgentConfiguration = jest.fn(async () => {});
 const createAgentMcpServerForRequest = jest.fn(async () => ({
   transport: {
@@ -84,13 +86,27 @@ jest.mock('../../srv/lib/providers', () => ({
       collections: collectionProvider,
       embedding: { fingerprint: COMMITTED_BUNDLE_FINGERPRINT },
       stores: {
-        backendOf: (scope: string) =>
+        backendOf: (scope) =>
           scope === 'persistent' && collectionProvider
             ? 'hana-vector'
-            : scope === 'session' && sessionProvider
-              ? 'pg-vector'
-              : 'in-memory',
-      },
+            : scope === 'session' && standalonePlanner !== undefined
+              ? 'qdrant'
+              : scope === 'session' && sessionProvider
+                ? 'pg-vector'
+                : 'in-memory',
+        listStores: async () => ({
+          ok: true,
+          value: standalonePlanner ? ['planner-memory'] : [],
+        }),
+        create: () => {
+          if (!standalonePlanner) throw new Error('Missing planner memory');
+          return standalonePlanner;
+        },
+        qdrantCollection: (name) => `hub-${name}`,
+      } satisfies Pick<
+        RagStoreFactory,
+        'backendOf' | 'listStores' | 'create' | 'qdrantCollection'
+      >,
     };
   },
 }));
@@ -135,7 +151,10 @@ jest.mock('../../srv/lib/gatekeeper-metrics', () => ({
 jest.mock('../../srv/lib/gatekeeper', () => ({}));
 
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
-import { COMMITTED_BUNDLE_FINGERPRINT } from '../../srv/lib/tool-corpus';
+import {
+  COMMITTED_BUNDLE_FINGERPRINT,
+  fingerprintHash,
+} from '../../srv/lib/tool-corpus';
 
 require('../../srv/server');
 
@@ -144,6 +163,7 @@ afterEach(() => {
   clearGatekeeperConfig();
   collectionProvider = undefined;
   sessionProvider = undefined;
+  standalonePlanner = undefined;
 });
 
 describe("server.ts's bootstrap listener", () => {
@@ -571,6 +591,45 @@ describe("server.ts's served listener", () => {
       'session-history',
     ]);
   });
+
+  it('checks subsequent standalone Qdrant planner pages and exits on an unstamped record', async () => {
+    standalonePlanner = new InMemoryRag();
+    const scan = jest
+      .spyOn(standalonePlanner, 'scan')
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          records: [
+            {
+              id: 'current',
+              text: 'text',
+              metadata: {
+                embedder: fingerprintHash(COMMITTED_BUNDLE_FINGERPRINT),
+              },
+            },
+          ],
+          cursor: 'next',
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { records: [{ id: 'unstamped', text: 'text', metadata: {} }] },
+      });
+
+    expect(await runServed()).toEqual([1]);
+    expect(scan.mock.calls).toEqual([[{}], [{ cursor: 'next' }]]);
+    expect(order).not.toContain('registerRagRoutes');
+  });
+
+  it.each(['empty', 'missing'])(
+    'starts with %s standalone Qdrant planner memory',
+    async (state) => {
+      standalonePlanner = state === 'empty' ? new InMemoryRag() : null;
+
+      expect(await runServed()).toEqual([]);
+      expect(order).toContain('registerRagRoutes');
+    },
+  );
 
   it('exits non-zero when the providers cannot be built, and warms nothing', async () => {
     providersFailure.error = new Error('embedder package not installed');

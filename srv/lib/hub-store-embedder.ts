@@ -1,10 +1,33 @@
 import {
+  type IRag,
   type IRagProvider,
+  isRagScanner,
+  type RagCollectionRecord,
   RagError,
+  type RagJsonValue,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 
 export const EMBEDDED_HUB_STORES = ['h_history', 'h_planner_memory'] as const;
+export const SESSION_HISTORY_SOURCE = 'session-history';
+
+export function storeAttributes({
+  attributes,
+}: RagCollectionRecord): Readonly<Record<string, RagJsonValue>> {
+  return attributes &&
+    typeof attributes === 'object' &&
+    !Array.isArray(attributes)
+    ? (attributes as Readonly<Record<string, RagJsonValue>>)
+    : {};
+}
+
+export function isEmbeddedHubStore(record: RagCollectionRecord): boolean {
+  return (
+    storeAttributes(record).source === SESSION_HISTORY_SOURCE ||
+    (record.scope === 'global' &&
+      EMBEDDED_HUB_STORES.some((name) => name === record.name))
+  );
+}
 
 export async function assertHubStoresEmbedder(
   provider: IRagProvider,
@@ -21,19 +44,9 @@ export async function assertHubStoresEmbedder(
     const catalog = await provider.describeCollections();
     if (!catalog.ok) return catalog;
     for (const record of catalog.value.records) {
-      if (
-        record.scope !== 'global' ||
-        !EMBEDDED_HUB_STORES.some((name) => name === record.name)
-      )
-        continue;
-      const { attributes } = record;
-      const stored =
-        attributes &&
-        typeof attributes === 'object' &&
-        'embedder' in attributes &&
-        typeof attributes.embedder === 'string'
-          ? attributes.embedder
-          : undefined;
+      if (!isEmbeddedHubStore(record)) continue;
+      const { embedder } = storeAttributes(record);
+      const stored = typeof embedder === 'string' ? embedder : undefined;
       if (stored !== current)
         return {
           ok: false,
@@ -50,4 +63,43 @@ export async function assertHubStoresEmbedder(
       error: error instanceof RagError ? error : new RagError(String(error)),
     };
   }
+}
+
+export async function assertStandaloneStoreEmbedder(
+  rag: IRag,
+  storeName: string,
+  accepted: ReadonlySet<string>,
+): Promise<Result<void, RagError>> {
+  if (!isRagScanner(rag))
+    return {
+      ok: false,
+      error: new RagError(`Cannot scan "${storeName}"`, 'RAG_UNSUPPORTED'),
+    };
+  let cursor: string | undefined;
+  const seenCursors = new Set<string>();
+  do {
+    const page = await rag.scan(cursor === undefined ? {} : { cursor });
+    if (!page.ok) return page;
+    for (const { id, metadata } of page.value.records) {
+      const { embedder } = metadata;
+      if (typeof embedder !== 'string' || !accepted.has(embedder))
+        return {
+          ok: false,
+          error: new RagError(
+            `hub store "${storeName}" has record "${id}" with embedder "${typeof embedder === 'string' ? embedder : 'none'}"; run npm run migrate:embeddings`,
+            'EMBEDDER_MIGRATION_REQUIRED',
+          ),
+        };
+    }
+    cursor = page.value.cursor;
+    if (cursor !== undefined) {
+      if (seenCursors.has(cursor))
+        return {
+          ok: false,
+          error: new RagError(`Collection scan did not advance: ${storeName}`),
+        };
+      seenCursors.add(cursor);
+    }
+  } while (cursor !== undefined);
+  return { ok: true, value: undefined };
 }

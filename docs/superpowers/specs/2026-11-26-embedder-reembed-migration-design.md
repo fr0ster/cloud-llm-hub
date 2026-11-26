@@ -107,41 +107,43 @@ explicit stop of the module before the hook.
    whose `embedder` attribute differs from the current fingerprint. Collections
    that are exempt from the fingerprint check today (`task-results`, zero
    vectors) are skipped.
-2. **Embedded hub stores** `h_history` and `h_planner_memory`. They have no
-   fingerprint today. This change adds an `embedder` attribute to their global
-   record, written on create. Hub stores with zero vectors (`h_sessions`,
-   `h_runs`, `h_trust`, `h_dialogue`) are not touched.
-   - Existing deployments have unstamped stores. The embedder that wrote them
-     is unknown, so the first migration treats them as old and re-embeds them
-     fully.
-   - Start check (decision): these stores serve every session, so a mismatched
-     or missing stamp does not make them `incompatible`. The start fails with an
-     error that names the store and the `npm run migrate:embeddings` command,
-     following the one failure policy (error, not silent degradation). On CF
-     this cannot happen after a successful deploy; locally it tells the
-     operator to run the command.
-   - Each store is re-embedded through the same embedder path as its own writer
-     (`h_history` through `sessionHistoryWrite`/`toolSearchEmbedder` in
-     `srv/lib/providers.ts`), so breaker and retry behaviour match normal
-     writes.
+2. **Cataloged embedded hub stores** include the global `h_history` and
+   `h_planner_memory` stores and every catalog entry with
+   `source: 'session-history'`, including `h_hist_*` collections. New stores
+   carry the current `embedder` catalog attribute. Existing deployments may
+   have unstamped stores. The first migration re-embeds their unstamped
+   records. Startup requires the current catalog stamp and fails with
+   `EMBEDDER_MIGRATION_REQUIRED` naming the store and the
+   `npm run migrate:embeddings` command when the stamp is missing or differs.
+   History stores use the `toolSearchEmbedder` path used by normal history
+   writes. Zero-vector hub stores (`h_sessions`, `h_runs`, `h_trust`,
+   `h_dialogue`) are skipped.
+3. **Standalone Qdrant planner memory** uses `<prefix>-planner-memory` when
+   the session backend is Qdrant. It has no catalog entry. The CLI checks the
+   physical vector dimension and re-embeds records with missing or unaccepted
+   `metadata.embedder` stamps. Normal writes stamp the records with the current
+   hash. Startup checks every page for missing or unaccepted stamps. A missing
+   or empty store passes.
 
-A stored fingerprint that is in the compatible set
-(`LLM_AGENT_EMBEDDING_COMPATIBLE_RESOURCE_GROUPS`) is only re-stamped, not
-re-embedded: the vectors came from the same model. After this migration the
-setting is no longer needed; it stays supported for one release and is then
-removed.
+For cataloged stores, the migration preserves vectors with compatible hashes
+from `LLM_AGENT_EMBEDDING_COMPATIBLE_RESOURCE_GROUPS`. It merges the compatible
+catalog hash and compatible record stamps it actually saw into the catalog's
+`embedderAliases` string array. Later migrations accept the current hash, the
+configured compatible hashes, and those aliases when checking records. Restore
+and startup use the catalog's primary `embedder` attribute.
 
 ### How one collection is migrated
 
 1. Read a page with `IRagScanner.scan` (fragment 0: id, full text, metadata).
-2. Skip records whose metadata already carries `embedder = <current>`.
+2. Skip records whose embedder hash is accepted. For a cataloged store, a
+   missing record stamp falls back to the catalog's `embedder` attribute.
 3. Embed the page with the library's `embedDocumentRecords` (splits long text
    into fragments by the embedder input limit, batches by `maxBatchSize`,
    retries 429 as the library does).
 4. Write with `upsertManyPrecomputedRaw`, all fragments of a record replaced,
    metadata extended with `embedder = <current>`.
-5. After the last page, re-stamp the catalog record with
-   `IRagCatalogUpdater.updateCollection` (`embedder = <current>`).
+5. After the last page of a cataloged store, update the catalog when its
+   fingerprint or aliases change.
 
 Record stamp (decision): the key `embedder` holds `fingerprintHash` (the
 12-character hash already used in the catalog). It joins the hub-owned metadata
@@ -155,11 +157,12 @@ records still carry old vectors. The pattern follows `hub-store-restamp.ts`.
 
 ### Failure policy
 
-One system-wide rule: any component failure is an error. Any embedding or store
-error stops the migration with a non-zero exit and a log line that names the
-collection, the record id and the error code (for example
-`EMBEDDING_CONTEXT_EXCEEDED`). No record is skipped. No timeouts or caps are
-added; the only limit is the CF task execution time set for the module.
+An embedding or store error stops the migration with a non-zero exit and a
+log line naming the store, the error code, and the record ID when available.
+If a page batch fails, migration tries each record individually to identify
+the failing record. If every individual attempt succeeds, it reports the
+original batch error. The failed page is never written. The CF task execution
+time sets the migration's time limit.
 
 Before touching any record, the task embeds one probe text and compares the
 dimension with the store's. A mismatch fails at once (non-goal above).

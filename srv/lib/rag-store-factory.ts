@@ -4,13 +4,18 @@ import {
   InMemoryRag,
   type IQueryPreprocessor,
   type IRag,
+  type IRagBackendWriter,
   type IRetrievalEmbedder,
   NoopDocumentEnricher,
   RagError,
   type Result,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
-import { QdrantRag, QdrantRagProvider } from '@mcp-abap-adt/qdrant-rag';
+import {
+  QdrantRag,
+  type QdrantRagConfig,
+  QdrantRagProvider,
+} from '@mcp-abap-adt/qdrant-rag';
 import type {
   QdrantConfig,
   RagBackendKind,
@@ -18,7 +23,9 @@ import type {
   RagStoreClass,
 } from '../agent-config';
 import { apiKeyCredential } from './llm-factory';
+import { PLANNER_MEMORY_STORE } from './planner-context';
 import type { Embedding } from './providers';
+import { fingerprintHash } from './tool-corpus';
 
 export interface VectorStoreOptions {
   queryPreprocessors?: IQueryPreprocessor[];
@@ -87,6 +94,51 @@ const err = (msg: string, code: string): { ok: false; error: RagError } => ({
   ok: false,
   error: new RagError(msg, code),
 });
+
+/** Standalone planner memory has no catalog fingerprint to fall back to. */
+class PlannerMemoryQdrantRag extends QdrantRag {
+  constructor(
+    config: QdrantRagConfig,
+    private readonly embedderFp: string,
+  ) {
+    super(config);
+  }
+
+  override writer(): IRagBackendWriter {
+    const inner = super.writer();
+    const writer: IRagBackendWriter = {
+      ...inner,
+      upsertRaw: (id, text, metadata, options) =>
+        inner.upsertRaw(
+          id,
+          text,
+          { ...metadata, embedder: this.embedderFp },
+          options,
+        ),
+    };
+    const single = inner.upsertPrecomputedRaw?.bind(inner);
+    if (single)
+      writer.upsertPrecomputedRaw = (id, text, vector, metadata, options) =>
+        single(
+          id,
+          text,
+          vector,
+          { ...metadata, embedder: this.embedderFp },
+          options,
+        );
+    const many = inner.upsertManyPrecomputedRaw?.bind(inner);
+    if (many)
+      writer.upsertManyPrecomputedRaw = (items, options) =>
+        many(
+          items.map((item) => ({
+            ...item,
+            metadata: { ...item.metadata, embedder: this.embedderFp },
+          })),
+          options,
+        );
+    return writer;
+  }
+}
 
 export function createRagStoreFactory(
   rag: RagConfig,
@@ -181,7 +233,7 @@ export function createRagStoreFactory(
       // embedded as asked. Retrieval across languages relies on a multilingual
       // embedder (spec §4.7); there is deliberately no hub-side translation.
       const q = needQdrant(cls);
-      return new QdrantRag({
+      const config: QdrantRagConfig = {
         url: q.url,
         collectionName: qName(name),
         embedder:
@@ -190,7 +242,13 @@ export function createRagStoreFactory(
             : embedding.retrieval,
         ...(cls === 'tools' ? { fallbackOnQueryEmbeddingError: false } : {}),
         ...(q.apiKey ? { credential: apiKeyCredential(q.apiKey) } : {}),
-      });
+      };
+      return cls === 'session' && name === PLANNER_MEMORY_STORE
+        ? new PlannerMemoryQdrantRag(
+            config,
+            fingerprintHash(embedding.fingerprint),
+          )
+        : new QdrantRag(config);
     },
     async listStores(cls, prefix) {
       const q = needQdrant(cls);

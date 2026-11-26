@@ -1,5 +1,6 @@
 import {
   InMemoryRagProvider,
+  type IRagCatalogUpdater,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
 import { userCollectionId } from '../../srv/collection-ids';
@@ -42,7 +43,7 @@ async function fixture() {
   if (!writer) throw new Error('Missing writer');
   jest.spyOn(rag, 'writer').mockReturnValue(writer);
   const upsert = jest.spyOn(writer, 'upsertRaw');
-  return { registry, newRegistry, upsert };
+  return { registry, newRegistry, provider, record: records[0], upsert };
 }
 
 test('stamps the current embedder hash on every written document', async () => {
@@ -56,6 +57,43 @@ test('stamps the current embedder hash on every written document', async () => {
     embedderFp,
     embedderFp,
   ]);
+});
+
+test('preserves embedder aliases through a restored collection metadata update', async () => {
+  const { newRegistry, provider, record } = await fixture();
+  const { attributes } = record;
+  if (
+    !attributes ||
+    typeof attributes !== 'object' ||
+    Array.isArray(attributes)
+  )
+    throw new Error('Missing collection attributes');
+  const embedderAliases = ['legacy-a', 'legacy-b'];
+  jest.spyOn(provider, 'describeCollections').mockResolvedValue({
+    ok: true,
+    value: {
+      records: [{ ...record, attributes: { ...attributes, embedderAliases } }],
+      rejected: [],
+    },
+  });
+  const updateCollection = jest.fn(
+    async (..._args: Parameters<IRagCatalogUpdater['updateCollection']>) => ({
+      ok: true as const,
+      value: undefined,
+    }),
+  );
+  Object.assign(provider, { updateCollection } satisfies IRagCatalogUpdater);
+
+  const restored = newRegistry();
+  await restored.updateCollection(id, { description: 'Updated description' });
+
+  expect(updateCollection).toHaveBeenCalledWith(record.storeName, {
+    attributes: expect.objectContaining({
+      description: 'Updated description',
+      embedder: embedderFp,
+      embedderAliases,
+    }),
+  });
 });
 
 test('client metadata cannot set embedder', async () => {

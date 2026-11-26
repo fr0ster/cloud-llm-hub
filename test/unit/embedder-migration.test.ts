@@ -15,13 +15,18 @@ import {
   type RagScanPage,
   type RagScanRecord,
   type Result,
+  validateRagAttributes,
 } from '@mcp-abap-adt/llm-agent';
 import {
   encodeAttributes,
   storeNameFor,
   unwrap,
 } from '../../srv/lib/collection-persistence';
-import { migrateEmbeddings } from '../../srv/lib/embedder-migration';
+import {
+  migrateEmbeddings,
+  migrateStandaloneStore,
+} from '../../srv/lib/embedder-migration';
+import { historyCollectionName } from '../../srv/lib/session-history-collection';
 import type { CollectionMeta } from '../../srv/rag-collections';
 
 const current = '111111111111';
@@ -162,6 +167,7 @@ function fixture(
   };
   return {
     provider,
+    rag,
     opts,
     events,
     scan,
@@ -226,14 +232,31 @@ test('skips records that already carry the current stamp after a partial run', a
   expect(result.stores).toMatchObject([{ action: 'reembedded', records: 1 }]);
 });
 
-test('a compatible collection is only re-stamped', async () => {
-  const record = registryRecord(compatible);
-  const f = fixture(
-    [record],
-    [{ records: [row('one'), row('two', { embedder: compatible })] }],
-  );
+test('persists compatible catalog and record hashes for a rerun without compatibility configured', async () => {
+  const compatibleRecord = '444444444444';
+  const existingAlias = '555555555555';
+  const unused = '666666666666';
+  const base = registryRecord(compatible);
+  const record = {
+    ...base,
+    attributes: { ...base.attributes, embedderAliases: [existingAlias] },
+  };
+  const page = {
+    records: [
+      row('one'),
+      row('two', { embedder: compatibleRecord }),
+      row('three', { embedder: existingAlias }),
+    ],
+  };
+  const f = fixture([record], [page]);
 
-  const result = unwrap(await migrateEmbeddings(f.provider, f.opts), 'migrate');
+  const result = unwrap(
+    await migrateEmbeddings(f.provider, {
+      ...f.opts,
+      compatible: new Set([current, compatible, compatibleRecord, unused]),
+    }),
+    'migrate',
+  );
 
   expect(f.scan).toHaveBeenCalledTimes(1);
   expect(f.opts.embedder.embedDocument.mock.calls).toEqual([
@@ -243,6 +266,28 @@ test('a compatible collection is only re-stamped', async () => {
   expect(result.stores).toMatchObject([
     { action: 'restamped', records: 0, fragments: 0 },
   ]);
+  const [[, patch]] = f.updateCollection.mock.calls;
+  expect(patch.attributes).toMatchObject({
+    embedder: current,
+    embedderAliases: [existingAlias, compatible, compatibleRecord],
+  });
+  const attributes = unwrap(
+    validateRagAttributes(patch.attributes),
+    'attributes',
+  );
+  const rerun = fixture([{ ...record, attributes }], [page]);
+  const repeated = unwrap(
+    await migrateEmbeddings(rerun.provider, {
+      ...rerun.opts,
+      compatible: new Set(),
+    }),
+    'rerun',
+  );
+  expect(repeated.stores).toMatchObject([{ action: 'current', records: 0 }]);
+  expect(rerun.opts.embedder.embedDocument.mock.calls).toEqual([
+    ['dimension probe'],
+  ]);
+  expect(rerun.events).toEqual([]);
 });
 
 test('re-embeds an explicit stale stamp even when the catalog is current', async () => {
@@ -261,7 +306,11 @@ test('re-embeds an explicit stale stamp even when the catalog is current', async
 
   const result = unwrap(await migrateEmbeddings(f.provider, f.opts), 'migrate');
 
-  expect(f.events).toEqual(['stale']);
+  expect(f.events).toEqual(['stale', 'catalog']);
+  expect(f.updateCollection.mock.calls[0][1].attributes).toMatchObject({
+    embedder: current,
+    embedderAliases: [compatible],
+  });
   expect(result.stores).toMatchObject([{ action: 'reembedded', records: 1 }]);
 });
 
@@ -301,14 +350,14 @@ test('migrates h_history through storeEmbedder and preserves its catalog attribu
   };
   const f = fixture([record], [{ records: [row('turn')] }]);
   const history = embedding({ vector: [0, 1] });
-  const storeEmbedder = jest.fn((_name: string) => history);
+  const storeEmbedder = jest.fn((_record: RagCollectionRecord) => history);
 
   unwrap(
     await migrateEmbeddings(f.provider, { ...f.opts, storeEmbedder }),
     'migrate',
   );
 
-  expect(storeEmbedder).toHaveBeenCalledWith('h_history');
+  expect(storeEmbedder).toHaveBeenCalledWith(record);
   expect(history.embedDocument).toHaveBeenCalledWith(
     'turn',
     expect.objectContaining({ preserveEmbeddingInput: true }),
@@ -334,6 +383,96 @@ test('fails on dimension mismatch before opening or writing any store', async ()
     },
   });
   expect(f.openCollection).not.toHaveBeenCalled();
+  expect(f.events).toEqual([]);
+});
+
+test('migrates unstamped per-session history and stamps its catalog record', async () => {
+  const sessionId = 's1';
+  const name = historyCollectionName(sessionId);
+  const record = {
+    scope: 'session',
+    sessionId,
+    name,
+    storeName: `prefix_${name}`,
+    attributes: { writtenBy: 'cloud-llm-hub', source: 'session-history' },
+  } satisfies RagCollectionRecord;
+  const f = fixture([record], [{ records: [row('turn', { sessionId })] }]);
+
+  const report = unwrap(await migrateEmbeddings(f.provider, f.opts), 'migrate');
+
+  expect(report.stores).toMatchObject([
+    { storeName: record.storeName, action: 'reembedded', records: 1 },
+  ]);
+  expect(f.upsertManyPrecomputedRaw).toHaveBeenCalledWith([
+    {
+      id: 'turn',
+      text: 'turn',
+      vector: [[1, 0]],
+      metadata: { sessionId, embedder: current },
+    },
+  ]);
+  expect(f.updateCollection).toHaveBeenCalledWith(record.storeName, {
+    attributes: { ...record.attributes, embedder: current },
+  });
+  expect(f.events).toEqual(['turn', 'catalog']);
+});
+
+test('re-embeds stale and unstamped standalone planner records while preserving metadata', async () => {
+  const name = 'prefix-planner-memory';
+  const f = fixture(
+    [],
+    [
+      {
+        records: [
+          row('missing', { namespace: 'owner' }),
+          row('accepted', { embedder: compatible }),
+        ],
+        cursor: 'next',
+      },
+      {
+        records: [
+          row('stale', { embedder: previous, namespace: 'owner' }),
+          row('current', { embedder: current }),
+        ],
+      },
+    ],
+  );
+
+  const report = unwrap(
+    await migrateStandaloneStore(f.rag, name, f.opts),
+    'migrate',
+  );
+
+  expect(report.stores).toMatchObject([
+    { storeName: name, action: 'reembedded', records: 2, fragments: 2 },
+  ]);
+  expect(f.scan.mock.calls).toEqual([[{}], [{ cursor: 'next' }]]);
+  expect(f.upsertManyPrecomputedRaw.mock.calls).toEqual(
+    ['missing', 'stale'].map((id) => [
+      [
+        {
+          id,
+          text: id,
+          vector: [[1, 0]],
+          metadata: { namespace: 'owner', embedder: current },
+        },
+      ],
+    ]),
+  );
+  expect(f.events).toEqual(['missing', 'stale']);
+});
+
+test('checks standalone planner memory dimension before scanning or writing', async () => {
+  const f = fixture([], []);
+  const result = await migrateStandaloneStore(f.rag, 'prefix-planner-memory', {
+    ...f.opts,
+    dimension: 3,
+  });
+  expect(result).toMatchObject({
+    ok: false,
+    error: { code: 'EMBEDDER_DIMENSION_MISMATCH' },
+  });
+  expect(f.scan).not.toHaveBeenCalled();
   expect(f.events).toEqual([]);
 });
 
@@ -377,9 +516,10 @@ test('identifies the failing record and its error code after a page batch fails'
   expect(f.events).toEqual([]);
 });
 
-test('writes every record and counts only the written embeddings after a partial batch failure', async () => {
+test('fails with the original batch error even when all per-record diagnostics pass', async () => {
+  const record = registryRecord();
   const f = fixture(
-    [registryRecord()],
+    [record],
     [{ records: [row('one'), row('two'), row('three')] }],
   );
   const embedDocuments = jest.fn(
@@ -403,10 +543,7 @@ test('writes every record and counts only the written embeddings after a partial
       usage: { promptTokens: 3, totalTokens: 3 },
     });
 
-  const result = unwrap(
-    await migrateEmbeddings(f.provider, { ...f.opts, embedder }),
-    'migrate',
-  );
+  const result = await migrateEmbeddings(f.provider, { ...f.opts, embedder });
 
   expect(embedDocuments.mock.calls.map(([texts]) => texts)).toEqual([
     ['one', 'two'],
@@ -415,12 +552,17 @@ test('writes every record and counts only the written embeddings after a partial
   expect(
     f.opts.embedder.embedDocument.mock.calls.map(([text]) => text),
   ).toEqual(['dimension probe', 'one', 'two', 'three']);
-  expect(f.events).toEqual(['one', 'two', 'three', 'catalog']);
-  expect([...f.vectors.values()]).toEqual([[[1, 0]], [[1, 0]], [[1, 0]]]);
+  expect(f.events).toEqual([]);
+  expect(f.vectors.size).toBe(0);
+  expect(f.opts.log).toHaveBeenCalledWith(
+    `Embedder migration ${record.storeName}: EMBEDDING_BATCH_ERROR`,
+  );
   expect(result).toMatchObject({
-    stores: [{ records: 3, fragments: 3 }],
-    promptTokens: 11,
-    tokensReported: true,
+    ok: false,
+    error: {
+      code: 'EMBEDDING_BATCH_ERROR',
+      message: `${record.storeName}: Batch embedding failed`,
+    },
   });
 });
 

@@ -27,6 +27,7 @@ import {
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  encodeEmbedderAttribute,
   HISTORY_OPEN_COOL_DOWN_MS,
   WRITTEN_BY,
 } from './collection-persistence';
@@ -37,6 +38,7 @@ import {
   renderTurn,
   type StoredTurn,
 } from './history-turn';
+import { SESSION_HISTORY_SOURCE } from './hub-store-embedder';
 import { runWithoutLlmSpend } from './llm-failure';
 import { getHubRagAccess } from './rag-access';
 import {
@@ -98,6 +100,7 @@ async function openHistory(
   sessionId: string,
   create: boolean,
   prefix?: string,
+  embedderFp?: string,
 ): Promise<Result<Handles | undefined, RagError>> {
   const name = historyCollectionName(sessionId);
   const store = prefix ? `${prefix}_${name}` : name;
@@ -126,7 +129,11 @@ async function openHistory(
     scope: 'session' as const,
     sessionId,
     collectionName: name,
-    attributes: { writtenBy: WRITTEN_BY, source: 'session-history' },
+    attributes: {
+      writtenBy: WRITTEN_BY,
+      source: SESSION_HISTORY_SOURCE,
+      ...(embedderFp === undefined ? {} : encodeEmbedderAttribute(embedderFp)),
+    },
   };
   let created = await provider.createCollection(store, opts);
   if (created.ok)
@@ -307,6 +314,7 @@ export class SessionHistoryRouter implements IRag, IRagEditor {
       sessionId,
       create,
       this.options.storePrefix,
+      this.options.embedderFp,
     );
     signal?.throwIfAborted();
     if (!result.ok) {
@@ -1196,7 +1204,13 @@ export async function migrateSharedHistory(
     // Every source row has passed validation before the first target is created.
     for (const { storeName, prefix, groups } of batches) {
       for (const [sessionId, group] of groups) {
-        const target = await openHistory(provider, sessionId, true, prefix);
+        const target = await openHistory(
+          provider,
+          sessionId,
+          true,
+          prefix,
+          embedderFp,
+        );
         if (!target.ok) return target;
         const writer = target.value?.rag.writer?.();
         if (!writer)

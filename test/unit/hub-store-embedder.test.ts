@@ -1,13 +1,18 @@
 import {
+  InMemoryRag,
   InMemoryRagProvider,
   type IRagProvider,
+  isRagScanner,
   type RagCaller,
 } from '@mcp-abap-adt/llm-agent';
 import {
   PersistentHistoryStore,
   unwrap,
 } from '../../srv/lib/collection-persistence';
-import { assertHubStoresEmbedder } from '../../srv/lib/hub-store-embedder';
+import {
+  assertHubStoresEmbedder,
+  assertStandaloneStoreEmbedder,
+} from '../../srv/lib/hub-store-embedder';
 import { restampHubStores } from '../../srv/lib/hub-store-restamp';
 import {
   createHubRagAccess,
@@ -126,7 +131,42 @@ test.each(['h_history', 'h_planner_memory'])(
   },
 );
 
-test('history writes stamp embedder on record metadata', async () => {
+test.each([undefined, '111111111111', current])(
+  'checks the per-session history catalog stamp %s',
+  async (embedder) => {
+    const provider = newProvider();
+    const sessionId = 's1';
+    const name = historyCollectionName(sessionId);
+    const storeName = `prefix_${name}`;
+    unwrap(
+      await provider.createCollection(storeName, {
+        scope: 'session',
+        sessionId,
+        collectionName: name,
+        attributes: {
+          source: 'session-history',
+          ...(embedder === undefined ? {} : { embedder }),
+          embedderAliases: [current],
+        },
+      }),
+      'create',
+    );
+    const result = await assertHubStoresEmbedder(provider, current);
+    if (embedder === current) {
+      expect(result.ok).toBe(true);
+    } else {
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: 'EMBEDDER_MIGRATION_REQUIRED',
+          message: expect.stringContaining(storeName),
+        },
+      });
+    }
+  },
+);
+
+test('history writes stamp the new catalog record and turn metadata', async () => {
   const provider = newProvider();
   const caller: RagCaller = { sessionId: 's1', userId: 'u1', isAdmin: false };
   initHubRagAccess(createHubRagAccess(null, 'in-memory'));
@@ -137,17 +177,6 @@ test('history writes stamp embedder on record metadata', async () => {
     ),
     'bind',
   );
-  const { rag } = unwrap(
-    await provider.createCollection(historyCollectionName(caller.sessionId), {
-      scope: 'session',
-      sessionId: caller.sessionId,
-    }),
-    'create',
-  );
-  const writer = rag.writer?.();
-  if (!writer) throw new Error('Missing writer');
-  jest.spyOn(rag, 'writer').mockReturnValue(writer);
-  const write = jest.spyOn(writer, 'upsertRaw');
   const history = new SessionHistoryRouter(provider, { embedderFp: current });
 
   expect(
@@ -157,8 +186,18 @@ test('history writes stamp embedder on record metadata', async () => {
       assistantText: 'hi',
     }),
   ).toBe(true);
-  expect(write).toHaveBeenCalledTimes(1);
-  expect(write.mock.calls[0][2].embedder).toBe(current);
+  const { records } = unwrap(await provider.describeCollections(), 'catalog');
+  expect(records).toMatchObject([
+    {
+      name: historyCollectionName(caller.sessionId),
+      attributes: { source: 'session-history', embedder: current },
+    },
+  ]);
+  expect((await assertHubStoresEmbedder(provider, current)).ok).toBe(true);
+  const { rag } = unwrap(await provider.openCollection(records[0]), 'open');
+  if (!isRagScanner(rag)) throw new Error('Missing scanner');
+  const page = unwrap(await rag.scan(), 'scan');
+  expect(page.records).toMatchObject([{ metadata: { embedder: current } }]);
 });
 
 test('stamps shared history rows rewritten into per-session history', async () => {
@@ -178,6 +217,11 @@ test('stamps shared history rows rewritten into per-session history', async () =
     moved: 1,
   });
   const { records } = unwrap(await provider.describeCollections(), 'catalog');
+  expect(records).toMatchObject([
+    {
+      attributes: { source: 'session-history', embedder: current },
+    },
+  ]);
   const { rag } = unwrap(await provider.openCollection(records[0]), 'open');
   const row = unwrap(
     await rag.getById('one', { ragFilter: { sessionId: 's1' } }),
@@ -199,4 +243,32 @@ test('stamps planner memory records re-embedded by the owner restamp', async () 
   const row = unwrap(await rag.getById('one'), 'read');
   expect(row?.metadata.embedder).toBe(current);
   expect((await assertHubStoresEmbedder(provider, current)).ok).toBe(false);
+});
+
+test('checks explicit record stamps in standalone planner memory', async () => {
+  const rag = new InMemoryRag();
+  const name = 'prefix-planner-memory';
+  const compatible = 'compatible';
+  const accepted = new Set([current, compatible]);
+  const writer = rag.writer();
+  unwrap(
+    await writer.upsertRaw('one', 'text', { embedder: compatible }),
+    'write compatible',
+  );
+  expect((await assertStandaloneStoreEmbedder(rag, name, accepted)).ok).toBe(
+    true,
+  );
+
+  unwrap(await writer.upsertRaw('two', 'text', {}), 'write unstamped');
+  expect(
+    await assertStandaloneStoreEmbedder(rag, name, accepted),
+  ).toMatchObject({
+    ok: false,
+    error: {
+      code: 'EMBEDDER_MIGRATION_REQUIRED',
+      message: expect.stringContaining(
+        `"${name}" has record "two" with embedder "none"`,
+      ),
+    },
+  });
 });

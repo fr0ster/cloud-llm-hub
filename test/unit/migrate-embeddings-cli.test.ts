@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import {
   CircuitBreaker,
   CircuitBreakerEmbedder,
+  InMemoryRag,
   type IRagProvider,
   RagError,
   symmetricEmbedder,
@@ -9,14 +10,20 @@ import {
 import { getAgentConfig } from '../../srv/agent-config';
 import { historyProvider, initProviders } from '../../srv/agent-manager';
 import { EnvDestinationSource } from '../../srv/lib/destination-source';
-import { migrateEmbeddings } from '../../srv/lib/embedder-migration';
+import {
+  migrateEmbeddings,
+  migrateStandaloneStore,
+} from '../../srv/lib/embedder-migration';
 import { type Providers, startProviders } from '../../srv/lib/providers';
 import { runStartMigrations } from '../../srv/lib/rag-migration';
 import {
   PROVIDER_DEFAULT_DIMENSION,
   providerVectorDimension,
 } from '../../srv/lib/rag-provider-factory';
-import { createRagStoreFactory } from '../../srv/lib/rag-store-factory';
+import {
+  createRagStoreFactory,
+  type RagStoreFactory,
+} from '../../srv/lib/rag-store-factory';
 import { fingerprintHash } from '../../srv/lib/tool-corpus';
 import { main } from '../../srv/migrate-embeddings';
 
@@ -30,6 +37,7 @@ jest.mock('../../srv/lib/embedder-migration', () => ({
     '../../srv/lib/embedder-migration',
   ),
   migrateEmbeddings: jest.fn(),
+  migrateStandaloneStore: jest.fn(),
 }));
 jest.mock('../../srv/lib/providers');
 jest.mock('../../srv/lib/rag-provider-factory', () => ({
@@ -115,6 +123,7 @@ const providers: Providers = {
 const start = jest.mocked(startProviders);
 const migrateLayout = jest.mocked(runStartMigrations);
 const migrate = jest.mocked(migrateEmbeddings);
+const migrateStandalone = jest.mocked(migrateStandaloneStore);
 const resolveDimension = jest.fn(async (_name: string) => 2);
 
 beforeEach(() => {
@@ -134,6 +143,10 @@ beforeEach(() => {
       ok: true,
       value: { stores: [], promptTokens: 12, tokensReported: true },
     };
+  });
+  migrateStandalone.mockResolvedValue({
+    ok: true,
+    value: { stores: [], promptTokens: 3, tokensReported: true },
   });
 });
 
@@ -156,13 +169,31 @@ it('initializes providers, runs startup migrations, and logs store and token sum
     fingerprintHash({ ...fingerprint, resourceGroup: 'previous-group' }),
   );
   expect(options.embedder).toBe(embedding.retrieval);
-  expect(options.storeEmbedder?.('h_planner_memory')).toBe(embedding.retrieval);
-  toolSearch.embed.mockResolvedValue({ vector: [1, 0] });
   expect(
-    await options.storeEmbedder?.('h_history').embedDocument('text'),
-  ).toEqual({
-    vector: [1, 0],
-  });
+    options.storeEmbedder?.({
+      scope: 'global',
+      name: 'h_planner_memory',
+      storeName: 'h_planner_memory',
+    }),
+  ).toBe(embedding.retrieval);
+  toolSearch.embed.mockResolvedValue({ vector: [1, 0] });
+  const histories = [
+    { scope: 'global', name: 'h_history', storeName: 'h_history' },
+    {
+      scope: 'session',
+      name: 'h_hist_test',
+      storeName: 'h_hist_test',
+      sessionId: 's1',
+      attributes: { source: 'session-history' },
+    },
+  ] as const;
+  for (const record of histories)
+    expect(await options.storeEmbedder?.(record).embedDocument('text')).toEqual(
+      {
+        vector: [1, 0],
+      },
+    );
+  expect(migrateStandalone).not.toHaveBeenCalled();
   expect(console.log).toHaveBeenCalledWith(
     expect.stringContaining('h_history'),
   );
@@ -175,6 +206,7 @@ it('migrates a distinct history provider with the physical Qdrant dimension', as
     stores: {
       ...providers.stores,
       backendOf: (name) => (name === 'session' ? 'qdrant' : 'pg-vector'),
+      listStores: async () => ({ ok: true, value: [] }),
     },
   });
   jest.mocked(historyProvider).mockReturnValue(history);
@@ -184,7 +216,50 @@ it('migrates a distinct history provider with the physical Qdrant dimension', as
   expect(migrate.mock.calls[1][0]).toBe(history);
   expect(migrate.mock.calls[1][1].dimension).toBe(2);
   expect(resolveDimension.mock.calls).toEqual([['hub_h_history']]);
+  expect(migrateStandalone).not.toHaveBeenCalled();
   expect(console.log).toHaveBeenCalledWith('tokens embedding-model: input 24');
+});
+
+it('migrates the standalone session planner store using its physical Qdrant dimension', async () => {
+  const rag = new InMemoryRag();
+  const create = jest.fn(() => rag);
+  const listStores = jest.fn(
+    async (): ReturnType<RagStoreFactory['listStores']> => ({
+      ok: true,
+      value: ['planner-memory'],
+    }),
+  );
+  start.mockResolvedValue({
+    ...providers,
+    stores: {
+      ...providers.stores,
+      backendOf: (name) => (name === 'session' ? 'qdrant' : 'pg-vector'),
+      qdrantCollection: (name) => `hub-${name}`,
+      listStores,
+      create,
+    },
+  });
+  jest.mocked(historyProvider).mockReturnValue(history);
+  resolveDimension.mockResolvedValueOnce(2).mockResolvedValueOnce(3);
+
+  expect(await main(cf)).toBe(0);
+  expect(listStores).toHaveBeenCalledWith('session', 'planner-memory');
+  expect(create).toHaveBeenCalledWith('session', 'planner-memory');
+  expect(resolveDimension.mock.calls).toEqual([
+    ['hub_h_history'],
+    ['hub-planner-memory'],
+  ]);
+  expect(migrateStandalone).toHaveBeenCalledWith(rag, 'hub-planner-memory', {
+    current: fingerprintHash(fingerprint),
+    compatible: new Set([
+      fingerprintHash(fingerprint),
+      fingerprintHash({ ...fingerprint, resourceGroup: 'previous-group' }),
+    ]),
+    embedder: embedding.retrieval,
+    dimension: 3,
+    log: console.log,
+  });
+  expect(console.log).toHaveBeenCalledWith('tokens embedding-model: input 27');
 });
 
 it('returns 1 when the startup migration fails', async () => {

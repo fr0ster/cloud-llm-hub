@@ -12,8 +12,20 @@ import {
   getAgentConfig,
   type RagBackendKind,
 } from './agent-config';
-import { initProviders } from './agent-manager';
-import { isEmbeddedStore, migrateEmbeddings } from './lib/embedder-migration';
+import { historyProvider, initProviders } from './agent-manager';
+import {
+  isEmbeddedStore,
+  migrateEmbeddings,
+  migrateStandaloneStore,
+} from './lib/embedder-migration';
+import {
+  SESSION_HISTORY_SOURCE,
+  storeAttributes,
+} from './lib/hub-store-embedder';
+import {
+  openStandalonePlannerMemory,
+  PLANNER_MEMORY_STORE,
+} from './lib/planner-context';
 import { startProviders } from './lib/providers';
 import {
   persistentMigrationProviders,
@@ -102,14 +114,36 @@ export async function main(env: NodeJS.ProcessEnv): Promise<number> {
         current,
         compatible,
         embedder: retrieval,
-        storeEmbedder: (name) =>
-          name === 'h_history' ? historyEmbedder : retrieval,
+        storeEmbedder: (record) =>
+          record.name === 'h_history' ||
+          storeAttributes(record).source === SESSION_HISTORY_SOURCE
+            ? historyEmbedder
+            : retrieval,
         dimension: await migrationDimension(provider, kind),
         log: console.log,
       });
       if (!result.ok) throw result.error;
       promptTokens += result.value.promptTokens;
       tokensReported ||= result.value.tokensReported;
+    }
+
+    if (p.stores.backendOf('session') === 'qdrant') {
+      const opened = await openStandalonePlannerMemory(p.stores);
+      if (!opened.ok) throw opened.error;
+      if (opened.value) {
+        const name = p.stores.qdrantCollection(PLANNER_MEMORY_STORE);
+        const resolve = providerVectorDimension(historyProvider('qdrant'));
+        const result = await migrateStandaloneStore(opened.value, name, {
+          current,
+          compatible,
+          embedder: retrieval,
+          dimension: await resolve(name),
+          log: console.log,
+        });
+        if (!result.ok) throw result.error;
+        promptTokens += result.value.promptTokens;
+        tokensReported ||= result.value.tokensReported;
+      }
     }
 
     const usage = tokensReported ? `input ${promptTokens}` : 'not reported';
