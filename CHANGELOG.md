@@ -4,9 +4,21 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [12.0.0] - 2026-11-26
+
+### Breaking
+
+- Remove `LLM_AGENT_STEP_REVIEW_ENABLED`, `LLM_AGENT_STEP_REVIEW_TIMEOUT_MS`, `LLM_AGENT_HISTORY_TOKEN_BUDGET` (`historyTokenBudget`), `LLM_AGENT_TOOL_LOOP_WINDOW`, and `LLM_AGENT_DIALOGUE_FOLLOW_MAX_MS`.
+
+### Added
+
+- Configure tool retrieval with `toolRetrieval.strategy` (`rag` or `llm`) and set `toolRetrieval.model` for `llm`.
+- Add the `sap-aicore-foundation` provider for SAP AI Core chat models and support embeddings through foundation model deployments.
+
 ### Changed
 
 - The coordinator chooses checks and receives typed SAP and RAG write facts in `[actions]`. Remove automatic answer review and the `LLM_AGENT_STEP_REVIEW_ENABLED` and `LLM_AGENT_STEP_REVIEW_TIMEOUT_MS` settings.
+- The coordinator prompt assigns checks to the coordinator or a checker so no agent checks its own work.
 
 - Upgrade to `@mcp-abap-adt/lib` 24.0.0 and align its ADT dependencies. Embedded calls use schema-validated handler entries and raw MCP uses lib-managed fresh connections. The catalogue adds `GetObjectDraft` and `GetObjectOutline`. Use `GetObjectOutline` and `GetWhereUsed` for structure and references previously covered by the removed ABAP analysis tools. Rebuild the tool corpus before deploying with a vector backend.
 - Upgrade llm-agent, llm-agent-libs and llm-agent-server-libs to 34.0.0. Dialogue persistence removes the byte limit and retains full conversation and request transcripts, including closed requests, with schema validation. Tool loops retain all rounds. Remove the history token budget, automatic history summarization wiring and the tool-loop window setting.
@@ -20,6 +32,7 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Fixed
 
+- Return typed `error.code` values across all channels and log pipeline failures (llm-agent 35.4).
 - Return complete RAG search hits, collection failure notes and SAP error bodies. Mask SAP credentials in diagnostic logs. Retire the chat dialogue follow deadline and remove its environment setting.
 - Apply the SAP tool gate to each tool search so documentation steps cannot hide SAP readers from later adaptive workers. Use the provider's output token default across workers and tool query analysis unless an explicit limit is configured. Keep retrying 429s without a default attempt or total wait cap, and disable global adaptive step, revision and duration limits by default. Log received, rejected and executable tool calls of every worker response on the chat, `execute_step` and dialogue paths, with the rejected tool name, reason and argument length but no content. Persist terminal request errors and terminal task error codes in dialogue state (llm-agent 34.1.0, llm-agent-libs 35.0.0, anthropic-llm 31.0.0).
 
@@ -27,7 +40,7 @@ All notable changes to this project will be documented in this file. The format 
 
 - Tool-search errors and docs MCP query-embedding failures fail the request and mark the hub unhealthy. Every API route and MCP endpoint receives an explicit 503 until a request-driven probe succeeds; GET/HEAD health endpoints report state without probing. Probes recover through open embedder breakers without a recovery timer. SAP tool stores (VectorRag/QdrantRag) and local skills set `fallbackOnQueryEmbeddingError: false` and disable keyword fallback. Tool-search query embeddings, including docs MCP and recovery probes, retain the standard 24,000-character input cap and retry only HTTP 429: honor `Retry-After` (seconds or HTTP-date), otherwise use exponential backoff starting at two seconds and doubling, with no attempt cap or timeout and only caller-abort cancellation. A 429 does not fail the search, mark the hub unhealthy or count as a breaker failure; probes keep existing health failures until recovery succeeds. Every non-429 failure propagates on the first provider call and marks the hub unhealthy. Non-tool RAG and document embeddings retain composed HTTP 429/500/502/503 retries; session, persistent and history stores retain their default embedding fallback. Qdrant tool-corpus startup checks warn for zero points and require exact nonzero per-role counts with current catalog records.
 
-- SAP AI Core caveat: the hub's existing `srv/lib/sap-ai-core-embedder.ts` adapter remains unchanged. It does not forward the caller's abort signal to SDK I/O or disable SDK retry middleware. The new composition handles surfaced HTTP 429 errors and abortable quota waits, but cannot prevent hidden SDK retries or cancel an in-flight SAP request. First-transport-attempt failure and I/O cancellation guarantees apply to OpenAI/Ollama; updating the SAP adapter is a separate task.
+- SAP AI Core orchestration embeddings still use SDK retries and do not pass the caller's abort signal to SDK I/O. The tool-search composition handles surfaced HTTP 429 errors and abortable quota waits. The foundation embedding client receives the caller's abort signal.
 
 - Hold stream metadata until content starts, record discarded attempt usage, and prevent retries from duplicating partial text or tool arguments.
 
@@ -79,7 +92,7 @@ All notable changes to this project will be documented in this file. The format 
 - Each session's history lives in its own collection and is deleted when the session ends. Long sessions keep their history across restarts.
 - Hub dialogue, run, session and planner-memory records no longer carry library identity keys. Existing rows are rewritten once at startup; rows whose owner is ambiguous are reported, not moved.
 - Shared `h_history` turns are moved into per-session collections at startup.
-- RW tool search gained configurable cluster expansion, and `LLM_AGENT_TOOLS_K_WRITER` now defaults to 1 instead of 5: on 91 measured write prompts the target cluster was still always found, with about 11.5 tools in context instead of 20.7. Superseded by the consumer selection strategies described under Unreleased.
+- RW tool search gained configurable cluster expansion, and `LLM_AGENT_TOOLS_K_WRITER` now defaults to 1 instead of 5: on 91 measured write prompts the target cluster was still always found, with about 11.5 tools in context instead of 20.7. Superseded by the consumer selection strategies described under 12.0.0.
 
 ### Added
 
