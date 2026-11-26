@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [12.0.1] - 2026-11-26
+
+### Fixed
+
+- A deploy that only moves the SAP AI Core embedder to another resource group (same model) no longer makes every persisted collection incompatible and stops the hub. `LLM_AGENT_EMBEDDING_COMPATIBLE_RESOURCE_GROUPS` lists earlier resource groups whose collections the current embedder accepts; the fingerprint format and hash are unchanged, and a model change stays incompatible (#235).
+
 ## [12.0.0] - 2026-11-26
 
 ### Breaking
