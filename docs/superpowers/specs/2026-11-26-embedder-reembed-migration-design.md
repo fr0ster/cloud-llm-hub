@@ -103,10 +103,9 @@ explicit stop of the module before the hook.
 
 ### What it migrates
 
-1. **Registry collections** in the catalog (`RAG_COLLECTIONS` / Qdrant catalog)
-   whose `embedder` attribute differs from the current fingerprint. Collections
-   that are exempt from the fingerprint check today (`task-results`, zero
-   vectors) are skipped.
+1. **Registry collections** recognized by the catalog decoder used for restore
+   (`RAG_COLLECTIONS` / Qdrant catalog), including collections without an
+   `embedder` attribute. Zero-vector `task-results` collections are skipped.
 2. **Cataloged embedded hub stores** include the global `h_history` and
    `h_planner_memory` stores and every catalog entry with
    `source: 'session-history'`, including `h_hist_*` collections. New stores
@@ -126,17 +125,23 @@ explicit stop of the module before the hook.
    or empty store passes.
 
 For cataloged stores, the migration preserves vectors with compatible hashes
-from `LLM_AGENT_EMBEDDING_COMPATIBLE_RESOURCE_GROUPS`. It merges the compatible
-catalog hash and compatible record stamps it actually saw into the catalog's
-`embedderAliases` string array. Later migrations accept the current hash, the
-configured compatible hashes, and those aliases when checking records. Restore
-and startup use the catalog's primary `embedder` attribute.
+from `LLM_AGENT_EMBEDDING_COMPATIBLE_RESOURCE_GROUPS`. When checking records,
+the migration accepts the current hash and the configured compatible hashes.
+It also accepts the catalog's `embedderAliases` when the catalog's primary
+`embedder` hash matches the current hash. When stamping a new current hash, it
+rebuilds the alias list from the previous catalog hash and the record stamps
+encountered during the scan, keeping only legacy hashes explicitly configured
+as compatible with the new hash. If none qualify, it removes the alias attribute.
+When the current hash is unchanged, existing aliases are retained and newly
+observed compatible hashes are added. Restore and startup use the catalog's
+primary `embedder` attribute.
 
 ### How one collection is migrated
 
 1. Read a page with `IRagScanner.scan` (fragment 0: id, full text, metadata).
 2. Skip records whose embedder hash is accepted. For a cataloged store, a
-   missing record stamp falls back to the catalog's `embedder` attribute.
+   missing record stamp falls back to the catalog's `embedder` attribute. If
+   both stamps are missing, the record is re-embedded.
 3. Embed the page with the library's `embedDocumentRecords` (splits long text
    into fragments by the embedder input limit, batches by `maxBatchSize`,
    retries 429 as the library does).

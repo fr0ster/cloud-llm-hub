@@ -13,6 +13,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import {
   decodeEmbedderAliases,
+  decodeRecord,
   encodeEmbedderAttribute,
 } from './collection-persistence';
 import { isEmbeddedHubStore, storeAttributes } from './hub-store-embedder';
@@ -23,6 +24,7 @@ export interface EmbedderMigrationOptions {
   embedder: IDocumentEmbedder;
   /** Alternate path to the same model, selected by the catalog record. */
   storeEmbedder?: (record: RagCollectionRecord) => IDocumentEmbedder;
+  storePrefix?: string;
   dimension: number;
   log: (line: string) => void;
 }
@@ -41,24 +43,17 @@ export interface EmbedderMigrationReport {
   tokensReported: boolean;
 }
 
-const ZERO_VECTOR_HUB_STORES = new Set([
-  'h_sessions',
-  'h_runs',
-  'h_trust',
-  'h_dialogue',
-]);
-
 type PrecomputedRecord = Parameters<
   NonNullable<IRagBackendWriter['upsertManyPrecomputedRaw']>
 >[0][number];
 
-export function isEmbeddedStore(record: RagCollectionRecord): boolean {
-  if (isEmbeddedHubStore(record)) return true;
-  if (ZERO_VECTOR_HUB_STORES.has(record.name)) return false;
-  const attributes = storeAttributes(record);
-  return (
-    attributes.collectionKind !== 'task-results' && 'embedder' in attributes
-  );
+export function isEmbeddedStore(
+  record: RagCollectionRecord,
+  storePrefix?: string,
+): boolean {
+  const decoded = decodeRecord(record, storePrefix);
+  if ('meta' in decoded) return decoded.meta.collectionKind !== 'task-results';
+  return isEmbeddedHubStore(record);
 }
 
 function newReport(): EmbedderMigrationReport {
@@ -271,7 +266,9 @@ export async function migrateEmbeddings(
         .join(', ');
       throw new RagError(`Rejected catalog records: ${rejected}`);
     }
-    const stores = catalog.value.records.filter(isEmbeddedStore);
+    const stores = catalog.value.records.filter((record) =>
+      isEmbeddedStore(record, opts.storePrefix),
+    );
     if (stores.length === 0) return { ok: true, value: report };
     if (!provider.openCollection)
       throw new RagError('Embedder migration requires a collection opener');
@@ -284,13 +281,14 @@ export async function migrateEmbeddings(
       const { storeName } = record;
       context = storeName;
       const started = Date.now();
-      const attributes = storeAttributes(record);
+      const { embedderAliases, ...attributes } = storeAttributes(record);
       const stored =
         typeof attributes.embedder === 'string'
           ? attributes.embedder
           : undefined;
+      // Catalog aliases are tied to the fingerprint they were recorded for.
       const aliases = new Set(
-        decodeEmbedderAliases(attributes.embedderAliases),
+        stored === opts.current ? decodeEmbedderAliases(embedderAliases) : [],
       );
       const aliasCount = aliases.size;
       if (

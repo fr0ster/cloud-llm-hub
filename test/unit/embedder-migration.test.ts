@@ -18,6 +18,7 @@ import {
   validateRagAttributes,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  createCollectionPersistence,
   encodeAttributes,
   storeNameFor,
   unwrap,
@@ -33,6 +34,7 @@ const current = '111111111111';
 const previous = '222222222222';
 const compatible = '333333333333';
 const dimension = 2;
+const storePrefix = 'prefix';
 
 const meta: CollectionMeta = {
   id: 'notes',
@@ -52,7 +54,7 @@ function registryRecord(embedder = previous) {
     scope: 'user',
     userId: 'alice',
     name: meta.id,
-    storeName: storeNameFor(meta.id, 'prefix'),
+    storeName: storeNameFor(meta.id, storePrefix),
     attributes: {
       ...encodeAttributes(meta, false, embedder),
       extra: { keep: [1, null, true] },
@@ -162,6 +164,7 @@ function fixture(
     current,
     compatible: new Set([compatible]),
     embedder: embedding(),
+    storePrefix,
     dimension,
     log,
   };
@@ -232,20 +235,15 @@ test('skips records that already carry the current stamp after a partial run', a
   expect(result.stores).toMatchObject([{ action: 'reembedded', records: 1 }]);
 });
 
-test('persists compatible catalog and record hashes for a rerun without compatibility configured', async () => {
+test('accepts recorded aliases on a rerun and drops them on a model change', async () => {
   const compatibleRecord = '444444444444';
-  const existingAlias = '555555555555';
+  const newModel = '555555555555';
   const unused = '666666666666';
-  const base = registryRecord(compatible);
-  const record = {
-    ...base,
-    attributes: { ...base.attributes, embedderAliases: [existingAlias] },
-  };
+  const record = registryRecord(compatible);
   const page = {
     records: [
-      row('one'),
+      row('one', { embedder: compatible }),
       row('two', { embedder: compatibleRecord }),
-      row('three', { embedder: existingAlias }),
     ],
   };
   const f = fixture([record], [page]);
@@ -269,13 +267,14 @@ test('persists compatible catalog and record hashes for a rerun without compatib
   const [[, patch]] = f.updateCollection.mock.calls;
   expect(patch.attributes).toMatchObject({
     embedder: current,
-    embedderAliases: [existingAlias, compatible, compatibleRecord],
+    embedderAliases: [compatible, compatibleRecord],
   });
   const attributes = unwrap(
     validateRagAttributes(patch.attributes),
     'attributes',
   );
-  const rerun = fixture([{ ...record, attributes }], [page]);
+  const restampedRecord = { ...record, attributes };
+  const rerun = fixture([restampedRecord], [page]);
   const repeated = unwrap(
     await migrateEmbeddings(rerun.provider, {
       ...rerun.opts,
@@ -288,6 +287,29 @@ test('persists compatible catalog and record hashes for a rerun without compatib
     ['dimension probe'],
   ]);
   expect(rerun.events).toEqual([]);
+
+  const switched = fixture([restampedRecord], [page]);
+  const changed = unwrap(
+    await migrateEmbeddings(switched.provider, {
+      ...switched.opts,
+      current: newModel,
+      compatible: new Set(),
+    }),
+    'change model',
+  );
+  expect(changed.stores).toMatchObject([{ action: 'reembedded', records: 2 }]);
+  expect(switched.events).toEqual(['one', 'two', 'catalog']);
+  expect(switched.upsertManyPrecomputedRaw).toHaveBeenCalledWith(
+    page.records.map(({ id, text }) => ({
+      id,
+      text,
+      vector: [[1, 0]],
+      metadata: { embedder: newModel },
+    })),
+  );
+  expect(switched.updateCollection).toHaveBeenCalledWith(record.storeName, {
+    attributes: { ...record.attributes, embedder: newModel },
+  });
 });
 
 test('re-embeds an explicit stale stamp even when the catalog is current', async () => {
@@ -314,14 +336,77 @@ test('re-embeds an explicit stale stamp even when the catalog is current', async
   expect(result.stores).toMatchObject([{ action: 'reembedded', records: 1 }]);
 });
 
-test('skips task-results, unstamped registry collections and zero-vector hub stores', async () => {
+test('re-embeds all unstamped records in an unstamped registry collection and restores it as compatible', async () => {
+  const { embedder: _embedder, ...attributes } = encodeAttributes(
+    meta,
+    false,
+    previous,
+  );
+  const record = {
+    ...registryRecord(),
+    attributes: unwrap(validateRagAttributes(attributes), 'attributes'),
+  };
+  const catalog: RagCollectionRecord[] = [record];
+  const page = { records: [row('one'), row('two')] };
+  const f = fixture(catalog, [page]);
+  const persistence = createCollectionPersistence(f.provider, current, {
+    storePrefix,
+  });
+  f.scan.mockResolvedValueOnce(ok(page));
+  expect(unwrap(await persistence.restore(), 'restore').collections).toEqual([
+    expect.objectContaining({ status: 'incompatible' }),
+  ]);
+
+  const migrated = unwrap(
+    await migrateEmbeddings(f.provider, f.opts),
+    'migrate',
+  );
+
+  expect(migrated.stores).toMatchObject([
+    { storeName: record.storeName, action: 'reembedded', records: 2 },
+  ]);
+  expect(f.events).toEqual(['one', 'two', 'catalog']);
+  const [[, patch]] = f.updateCollection.mock.calls;
+  expect(patch.attributes).toEqual({ ...attributes, embedder: current });
+  catalog[0] = {
+    ...record,
+    attributes: unwrap(validateRagAttributes(patch.attributes), 'attributes'),
+  };
+  const [[written]] = f.upsertManyPrecomputedRaw.mock.calls;
+  expect(written.map(({ metadata }) => metadata.embedder)).toEqual([
+    current,
+    current,
+  ]);
+  f.scan.mockResolvedValueOnce(
+    ok({
+      records: written.map(({ id, text, metadata }) => ({
+        id,
+        text,
+        metadata,
+      })),
+    }),
+  );
+
+  const restored = unwrap(await persistence.restore(), 'restore');
+  expect(restored.foreign).toEqual([]);
+  expect(restored.collections).toMatchObject([
+    { meta: { id: meta.id }, documents: [{ id: 'one' }, { id: 'two' }] },
+  ]);
+  expect(restored.collections[0].status).toBeUndefined();
+});
+
+test('skips task-results, foreign collections and zero-vector hub stores', async () => {
+  const taskResults = registryRecord();
   const f = fixture(
     [
       {
-        ...registryRecord(),
-        attributes: { collectionKind: 'task-results', embedder: previous },
+        ...taskResults,
+        attributes: {
+          ...taskResults.attributes,
+          collectionKind: 'task-results',
+        },
       },
-      { ...registryRecord(), attributes: { collectionKind: 'knowledge' } },
+      { ...registryRecord(), attributes: { embedder: previous } },
       ...['h_sessions', 'h_runs', 'h_trust', 'h_dialogue'].map(
         (name): RagCollectionRecord => ({
           name,

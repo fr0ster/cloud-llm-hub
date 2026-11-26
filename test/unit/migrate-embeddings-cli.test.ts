@@ -9,6 +9,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { getAgentConfig } from '../../srv/agent-config';
 import { historyProvider, initProviders } from '../../srv/agent-manager';
+import { storeNameFor, WRITTEN_BY } from '../../srv/lib/collection-persistence';
 import { EnvDestinationSource } from '../../srv/lib/destination-source';
 import {
   migrateEmbeddings,
@@ -54,6 +55,8 @@ jest.mock('../../srv/lib/rag-migration', () => ({
 }));
 
 const cf = { VCAP_APPLICATION: '{}' };
+const qdrant = { prefix: 'hub', url: 'http://localhost:6333' };
+const unstampedStoreName = storeNameFor('notes', qdrant.prefix);
 const fingerprint = {
   provider: 'sap-ai-sdk',
   embeddingModel: 'embedding-model',
@@ -98,6 +101,18 @@ const history: IRagProvider = {
       records: [
         { scope: 'global', name: 'h_history', storeName: 'hub_h_history' },
         { scope: 'global', name: 'h_sessions', storeName: 'hub_h_sessions' },
+        {
+          scope: 'user',
+          userId: 'alice',
+          name: 'notes',
+          storeName: unstampedStoreName,
+          attributes: {
+            writtenBy: WRITTEN_BY,
+            collectionId: 'notes',
+            logicalId: 'notes',
+            hubOwner: { userId: 'alice' },
+          },
+        },
       ],
     },
   }),
@@ -130,6 +145,15 @@ beforeEach(() => {
   jest.resetAllMocks();
   jest.spyOn(console, 'log').mockImplementation(() => {});
   jest.spyOn(console, 'error').mockImplementation(() => {});
+  const config = jest
+    .requireActual<typeof import('../../srv/agent-config')>(
+      '../../srv/agent-config',
+    )
+    .getAgentConfig();
+  jest.mocked(getAgentConfig).mockReturnValue({
+    ...config,
+    rag: { ...config.rag, qdrant },
+  });
   start.mockResolvedValue(providers);
   jest.mocked(historyProvider).mockReturnValue(collections);
   jest.mocked(providerVectorDimension).mockReturnValue(resolveDimension);
@@ -200,7 +224,7 @@ it('initializes providers, runs startup migrations, and logs store and token sum
   expect(console.log).toHaveBeenCalledWith('tokens embedding-model: input 12');
 });
 
-it('migrates a distinct history provider with the physical Qdrant dimension', async () => {
+it('checks the physical Qdrant dimension for history and unstamped registry collections', async () => {
   start.mockResolvedValue({
     ...providers,
     stores: {
@@ -215,7 +239,11 @@ it('migrates a distinct history provider with the physical Qdrant dimension', as
   expect(migrate).toHaveBeenCalledTimes(2);
   expect(migrate.mock.calls[1][0]).toBe(history);
   expect(migrate.mock.calls[1][1].dimension).toBe(2);
-  expect(resolveDimension.mock.calls).toEqual([['hub_h_history']]);
+  expect(migrate.mock.calls[1][1].storePrefix).toBe(qdrant.prefix);
+  expect(resolveDimension.mock.calls).toEqual([
+    ['hub_h_history'],
+    [unstampedStoreName],
+  ]);
   expect(migrateStandalone).not.toHaveBeenCalled();
   expect(console.log).toHaveBeenCalledWith('tokens embedding-model: input 24');
 });
@@ -240,13 +268,16 @@ it('migrates the standalone session planner store using its physical Qdrant dime
     },
   });
   jest.mocked(historyProvider).mockReturnValue(history);
-  resolveDimension.mockResolvedValueOnce(2).mockResolvedValueOnce(3);
+  resolveDimension.mockImplementation(async (name) =>
+    name === 'hub-planner-memory' ? 3 : 2,
+  );
 
   expect(await main(cf)).toBe(0);
   expect(listStores).toHaveBeenCalledWith('session', 'planner-memory');
   expect(create).toHaveBeenCalledWith('session', 'planner-memory');
   expect(resolveDimension.mock.calls).toEqual([
     ['hub_h_history'],
+    [unstampedStoreName],
     ['hub-planner-memory'],
   ]);
   expect(migrateStandalone).toHaveBeenCalledWith(rag, 'hub-planner-memory', {

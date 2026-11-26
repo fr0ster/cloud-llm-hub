@@ -13,6 +13,7 @@ import {
   type RagBackendKind,
 } from './agent-config';
 import { historyProvider, initProviders } from './agent-manager';
+import { storePrefixFor } from './lib/collection-persistence';
 import {
   isEmbeddedStore,
   migrateEmbeddings,
@@ -55,6 +56,7 @@ function hubAnswersHealth(port: string | number): Promise<boolean> {
 async function migrationDimension(
   provider: IRagProvider,
   kind: RagBackendKind,
+  storePrefix?: string,
 ): Promise<number> {
   if (kind !== 'qdrant') return PROVIDER_DEFAULT_DIMENSION;
   if (!provider.describeCollections)
@@ -64,7 +66,9 @@ async function migrationDimension(
 
   const resolve = providerVectorDimension(provider);
   let dimension: number | undefined;
-  for (const { storeName } of catalog.value.records.filter(isEmbeddedStore)) {
+  for (const record of catalog.value.records) {
+    if (!isEmbeddedStore(record, storePrefix)) continue;
+    const { storeName } = record;
     const size = await resolve(storeName);
     if (dimension !== undefined && dimension !== size)
       throw new RagError(
@@ -87,7 +91,8 @@ export async function main(env: NodeJS.ProcessEnv): Promise<number> {
     }
 
     ensureAiCoreCredentials();
-    const p = await startProviders(getAgentConfig());
+    const config = getAgentConfig();
+    const p = await startProviders(config);
     initProviders(p);
     const { embedding } = p;
     if (!embedding) {
@@ -110,16 +115,18 @@ export async function main(env: NodeJS.ProcessEnv): Promise<number> {
     let promptTokens = 0;
     let tokensReported = false;
     for (const [provider, kind] of persistentMigrationProviders(p)) {
+      const storePrefix = storePrefixFor(kind, config.rag.qdrant?.prefix);
       const result = await migrateEmbeddings(provider, {
         current,
         compatible,
         embedder: retrieval,
+        storePrefix,
         storeEmbedder: (record) =>
           record.name === 'h_history' ||
           storeAttributes(record).source === SESSION_HISTORY_SOURCE
             ? historyEmbedder
             : retrieval,
-        dimension: await migrationDimension(provider, kind),
+        dimension: await migrationDimension(provider, kind, storePrefix),
         log: console.log,
       });
       if (!result.ok) throw result.error;
