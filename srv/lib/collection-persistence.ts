@@ -756,6 +756,7 @@ export function createCollectionPersistence(
   embedderFp: string,
   opts: {
     storePrefix?: string;
+    compatibleEmbedderHashes?: ReadonlySet<string>;
     /** Physical store dimension, from backend configuration or collection info. */
     vectorDimension?: (
       storeName: string,
@@ -769,11 +770,45 @@ export function createCollectionPersistence(
   /** The tail of each collection's record-write chain. */
   const recordWrites = new Map<string, Promise<unknown>>();
   /**
-   * The fingerprint a restored record names, where it is not the current one
-   * (an incompatible collection). A record rewrite keeps it: renaming or
-   * disabling must not make old vectors look compatible.
+   * Preserve the original fingerprint on metadata updates, including when
+   * the collection was opened using resource-group compatibility.
    */
   const recordFps = new Map<string, string>();
+  const loggedCompatibleCollections = new Set<string>();
+  const restoreRecord = async (
+    record: RagCollectionRecord,
+    decoded: { meta: CollectionMeta; enabled: boolean; embedderFp?: string },
+    options?: CallOptions,
+  ): Promise<RestoredCollection> => {
+    const restored = await restoreOne(provider, record, decoded, options);
+    if (
+      restored.status ||
+      decoded.meta.collectionKind === 'task-results' ||
+      decoded.embedderFp === embedderFp
+    )
+      return restored;
+
+    const storedFp = decoded.embedderFp;
+    if (storedFp && opts.compatibleEmbedderHashes?.has(storedFp)) {
+      if (!loggedCompatibleCollections.has(decoded.meta.id)) {
+        loggedCompatibleCollections.add(decoded.meta.id);
+        cds
+          .log('rag-collections')
+          .info(
+            'Accepted collection via AI Core resource group compatibility',
+            {
+              collectionId: decoded.meta.id,
+              storedFingerprint: storedFp,
+              currentFingerprint: embedderFp,
+            },
+          );
+      }
+    } else {
+      restored.status = 'incompatible';
+      restored.error = `collection "${decoded.meta.id}" is incompatible: it was indexed with embedder "${storedFp ?? 'unknown'}", the current embedder is "${embedderFp}"`;
+    }
+    return restored;
+  };
   const update = (meta: CollectionMeta, enabled: boolean) =>
     guarded(async (): Promise<Result<void, RagError>> => {
       if (!isRagCatalogUpdater(provider))
@@ -912,13 +947,7 @@ export function createCollectionPersistence(
           const decoded = decodeRecord(record, prefix);
           if (!('meta' in decoded) || decoded.meta.id !== id)
             return { ok: true, value: null };
-          const collection = await restoreOne(
-            provider,
-            record,
-            decoded,
-            embedderFp,
-            options,
-          );
+          const collection = await restoreRecord(record, decoded, options);
           options?.signal?.throwIfAborted();
           return { ok: true, value: collection };
         },
@@ -956,9 +985,7 @@ export function createCollectionPersistence(
           }
           if (decoded.embedderFp !== embedderFp)
             recordFps.set(decoded.meta.id, decoded.embedderFp ?? '');
-          collections.push(
-            await restoreOne(provider, rec, decoded, embedderFp, options),
-          );
+          collections.push(await restoreRecord(rec, decoded, options));
         }
         return {
           ok: true,
@@ -992,8 +1019,7 @@ async function cancellableRead<T>(
 async function restoreOne(
   provider: IRagProvider,
   rec: RagCollectionRecord,
-  decoded: { meta: CollectionMeta; enabled: boolean; embedderFp?: string },
-  embedderFp: string,
+  decoded: { meta: CollectionMeta; enabled: boolean },
   options?: CallOptions,
 ): Promise<RestoredCollection> {
   const { meta, enabled } = decoded;
@@ -1041,20 +1067,12 @@ async function restoreOne(
   } catch (err) {
     return unavailable(err);
   }
-  const restored: RestoredCollection = {
+  return {
     meta,
     enabled,
     rag,
     documents: [...documents.values(), ...duplicates],
   };
-  if (
-    meta.collectionKind !== 'task-results' &&
-    decoded.embedderFp !== embedderFp
-  ) {
-    restored.status = 'incompatible';
-    restored.error = `collection "${meta.id}" is incompatible: it was indexed with embedder "${decoded.embedderFp ?? 'unknown'}", the current embedder is "${embedderFp}"`;
-  }
-  return restored;
 }
 
 // ---------------------------------------------------------------------------

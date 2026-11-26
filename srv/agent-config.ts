@@ -109,6 +109,7 @@ export interface PgRagConfig {
 }
 export interface RagConfig {
   embeddingDimension?: number;
+  compatibleEmbeddingResourceGroups?: string[];
   embedder: EmbedderConfig | null;
   backends: Record<RagStoreClass, RagBackendKind>;
   qdrant?: QdrantConfig;
@@ -386,6 +387,12 @@ export function parseRagConfig(
   );
   const dimensionConfig =
     embeddingDimension === undefined ? {} : { embeddingDimension };
+  const compatibleEmbeddingResourceGroups = (
+    env.LLM_AGENT_EMBEDDING_COMPATIBLE_RESOURCE_GROUPS ?? ''
+  )
+    .split(',')
+    .map((group) => group.trim())
+    .filter(Boolean);
   const ragType = set(env, 'LLM_AGENT_RAG_TYPE');
   const legacy: RagBackendKind =
     !ragType || ragType === 'in-memory' ? 'in-memory' : 'vector';
@@ -475,7 +482,14 @@ export function parseRagConfig(
     if (embedder[k] === undefined) delete embedder[k];
   }
 
-  const rag: RagConfig = { embedder, backends, ...dimensionConfig };
+  const rag: RagConfig = {
+    embedder,
+    backends,
+    ...dimensionConfig,
+    ...(kind === 'sap-ai-core' && compatibleEmbeddingResourceGroups.length
+      ? { compatibleEmbeddingResourceGroups }
+      : {}),
+  };
   if (Object.values(backends).includes('qdrant')) {
     const url = set(env, 'LLM_AGENT_QDRANT_URL');
     if (!url)

@@ -9,9 +9,11 @@ jest.mock(
 // No destination service: the request path below must fail on the corpus alone.
 jest.mock('../../srv/lib/btp-destinations', () => ({
   getAvailableDestinations: async () => [],
+  setDestinationSource() {},
 }));
 
 import { InMemoryRag, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+import { parseRagConfig } from '../../srv/agent-config';
 import {
   getSmartAgent,
   initProviders,
@@ -21,7 +23,13 @@ import {
   setCatalogReaderForTest,
   ToolCorpusMissingError,
 } from '../../srv/agent-manager';
-import { corpusByRole, toolRecordAttributes } from '../../srv/lib/tool-corpus';
+import { startProviders } from '../../srv/lib/providers';
+import {
+  bundleFileFor,
+  COMMITTED_BUNDLE_FINGERPRINT,
+  corpusByRole,
+  toolRecordAttributes,
+} from '../../srv/lib/tool-corpus';
 import { ToolQueryAnalyzer } from '../../srv/lib/tool-query-analyzer';
 
 const docs = [
@@ -286,6 +294,91 @@ const matchingBundle = {
   header: { embedderFingerprint: FP, embeddingDim: 2 },
   entries: docs.map((d) => ({ ...d, vector: [1, 0] })),
 };
+
+describe('AI Core tool corpus across resource groups', () => {
+  const previous = COMMITTED_BUNDLE_FINGERPRINT;
+  const current = { ...previous, resourceGroup: 'new-group' };
+
+  async function runtime(
+    backend: 'vector' | 'qdrant',
+    previousGroups?: string,
+  ) {
+    const rag = parseRagConfig(
+      {
+        LLM_AGENT_TOOLS_RAG_BACKEND: backend,
+        LLM_AGENT_QDRANT_URL: 'http://q:6333',
+        LLM_AGENT_EMBEDDING_COMPATIBLE_RESOURCE_GROUPS: previousGroups,
+      },
+      { provider: 'sap-ai-sdk', resourceGroup: current.resourceGroup },
+    );
+    return startProviders({
+      rag,
+      destinations: { source: 'env', destinations: [] },
+    });
+  }
+
+  it.each([previous.resourceGroup, 'previous-group'])(
+    'looks up a bundle indexed in %s and validates its header',
+    async (resourceGroup) => {
+      const stored = { ...previous, resourceGroup };
+      const file = bundleFileFor(stored);
+      const bundle = {
+        ...matchingBundle,
+        header: { ...matchingBundle.header, embedderFingerprint: stored },
+      };
+      const read = jest.fn((name: string) => (name === file ? bundle : null));
+      setBundleReaderForTest(read);
+      const p = await runtime(
+        'vector',
+        resourceGroup === 'default' ? undefined : resourceGroup,
+      );
+      expect((await loadToolCorpus(p, docs)).count).toBe(docs.length);
+      expect(read.mock.calls).toEqual([[bundleFileFor(current)], [file]]);
+
+      setBundleReaderForTest((name) =>
+        name === file
+          ? {
+              ...bundle,
+              header: {
+                ...bundle.header,
+                embedderFingerprint: {
+                  ...stored,
+                  embeddingModel: 'another-model',
+                },
+              },
+            }
+          : null,
+      );
+      await expect(loadToolCorpus(p, docs)).rejects.toThrow(
+        ToolCorpusMissingError,
+      );
+    },
+  );
+
+  it('requires the configured group for Qdrant completion records', async () => {
+    const p = await runtime('qdrant');
+    const roles = corpusByRole(docs);
+    const catalog = new Map(
+      (['reader', 'writer'] as const).map((role) => [
+        p.stores.qdrantCollection(`tools-${role}`),
+        toolRecordAttributes(role, previous, roles[role]),
+      ]),
+    );
+    setCatalogReaderForTest(async () => catalog);
+    await expect(loadToolCorpus(p, docs)).rejects.toThrow(/record is stale/);
+    jest
+      .spyOn(p.stores, 'countPoints')
+      .mockImplementation(async (_cls, name) => ({
+        ok: true,
+        value:
+          name === 'tools-reader' ? roles.reader.length : roles.writer.length,
+      }));
+    const compatible = await runtime('qdrant', previous.resourceGroup);
+    expect(
+      (await loadToolCorpus({ ...compatible, stores: p.stores }, docs)).count,
+    ).toBe(docs.length);
+  });
+});
 
 describe('loadToolCorpus, vector backend with a matching bundle', () => {
   it('loads every entry from the bundle, embeds nothing', async () => {

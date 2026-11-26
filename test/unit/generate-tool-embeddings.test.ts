@@ -22,7 +22,10 @@ import {
 import { clearGatekeeperConfig } from '../../srv/lib/gatekeeper-config';
 import { type Embedding, embedderFingerprint } from '../../srv/lib/providers';
 import { createCollectionProvider } from '../../srv/lib/rag-provider-factory';
-import type { SharedCorpusDoc } from '../../srv/lib/tool-corpus';
+import {
+  COMMITTED_BUNDLE_FINGERPRINT,
+  type SharedCorpusDoc,
+} from '../../srv/lib/tool-corpus';
 import {
   applyMtaext,
   checkCanary,
@@ -43,11 +46,13 @@ const RAG_VARS = [
   'LLM_AGENT_RAG_BACKEND',
   'LLM_AGENT_EMBEDDER',
   'LLM_AGENT_EMBEDDING_MODEL',
+  'LLM_AGENT_EMBEDDING_COMPATIBLE_RESOURCE_GROUPS',
   'LLM_AGENT_EMBEDDER_URL',
   'LLM_AGENT_EMBEDDER_API_KEY',
   'LLM_AGENT_QDRANT_URL',
   'LLM_AGENT_PROVIDER',
   'LLM_AGENT_BASE_URL',
+  'LLM_AGENT_RESOURCE_GROUP',
 ];
 
 const docs: SharedCorpusDoc[] = [
@@ -253,6 +258,27 @@ describe('decideToolBuild', () => {
     expect(decideToolBuild(config, fp, docs, () => bundle).action).toBe(
       'build-bundle',
     );
+  });
+
+  it('skips the build when the committed bundle covers a new AI Core resource group', () => {
+    process.env.LLM_AGENT_RAG_TYPE = 'vector';
+    process.env.LLM_AGENT_RESOURCE_GROUP = 'new-group';
+    const config = loadAgentConfig();
+    const bundle = {
+      header: {
+        embedderFingerprint: COMMITTED_BUNDLE_FINGERPRINT,
+        embeddingDim: 2,
+      },
+      entries: docs.map((doc) => ({ ...doc, vector: [1, 0] })),
+    };
+    expect(
+      decideToolBuild(config, fingerprintOf(config), docs, (file) =>
+        file === 'tool-embeddings.json' ? bundle : null,
+      ),
+    ).toEqual({
+      action: 'skip',
+      reason: 'tool-embeddings.json already matches',
+    });
   });
 
   it('default AI Core config rebuilds a bundle with a stale tool description', () => {

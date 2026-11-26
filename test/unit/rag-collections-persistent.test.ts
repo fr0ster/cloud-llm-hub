@@ -13,12 +13,13 @@ jest.mock('../../srv/lib/session-lifecycle', () => ({
  * with the same logical id, the request `backend` check and presets.
  */
 const mockCdsContext: { user?: { id: string; is?: () => boolean } } = {};
+const mockInfo = jest.fn();
 jest.mock(
   '@sap/cds',
   () => ({
     __esModule: true,
     default: {
-      log: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
+      log: () => ({ info: mockInfo, warn() {}, error() {}, debug() {} }),
       get context() {
         return mockCdsContext;
       },
@@ -43,6 +44,12 @@ import {
   createPgClient,
   PgVectorRagProvider,
 } from '@mcp-abap-adt/pg-vector-rag';
+import { parseRagConfig } from '../../srv/agent-config';
+import {
+  getCollectionRegistry,
+  initProviders,
+  startCollectionRestore,
+} from '../../srv/agent-manager';
 import { userCollectionId } from '../../srv/collection-ids';
 import {
   CollectionBackendError,
@@ -51,6 +58,12 @@ import {
   retryRestore,
   storeNameFor,
 } from '../../srv/lib/collection-persistence';
+import { startProviders } from '../../srv/lib/providers';
+import {
+  COMMITTED_BUNDLE_FINGERPRINT,
+  compatibleFingerprintHashes,
+  fingerprintHash,
+} from '../../srv/lib/tool-corpus';
 import { ensurePresets, presetCollectionId } from '../../srv/presets';
 import { CollectionRegistry } from '../../srv/rag-collections';
 import { registerRagRoutes } from '../../srv/rag-handler';
@@ -67,6 +80,8 @@ import {
 jest.setTimeout(120_000);
 
 const DIM = 8;
+const oldFingerprint = COMMITTED_BUNDLE_FINGERPRINT;
+const currentFingerprint = { ...oldFingerprint, resourceGroup: 'new-group' };
 
 type PgClient = Awaited<ReturnType<typeof createPgClient>>;
 
@@ -119,10 +134,10 @@ function holdBackend(): () => void {
   return release;
 }
 
-function newProvider(): PgVectorRagProvider {
+function newProvider(retrieval = embedder): PgVectorRagProvider {
   return new PgVectorRagProvider({
     name: 'hub-collections',
-    embedder,
+    embedder: retrieval,
     connection: {
       collectionName: 'hub-collections',
       dimension: DIM,
@@ -137,11 +152,11 @@ function newProvider(): PgVectorRagProvider {
 let provider: PgVectorRagProvider;
 let reg: CollectionRegistry;
 
-function newRegistry(p = provider): CollectionRegistry {
+function newRegistry(p = provider, fp = 'fp-test'): CollectionRegistry {
   return new CollectionRegistry({
     embedder,
     defaultBackend: 'pg-vector',
-    persistence: createCollectionPersistence(p, 'fp-test'),
+    persistence: createCollectionPersistence(p, fp),
   });
 }
 
@@ -1286,36 +1301,119 @@ describe('restore at startup (Task 7)', () => {
     ).toHaveLength(2);
   });
 
-  it('a fingerprint mismatch restores the collection as incompatible', async () => {
+  it('only a configured previous resource group opens for search and writes', async () => {
+    const oldHash = fingerprintHash(oldFingerprint);
+    const currentHash = fingerprintHash(currentFingerprint);
+    const meta = userMeta('previous-group', 'alice');
+    reg = newRegistry(provider, oldHash);
+    await reg.createCollection(meta);
+    await reg.addDocument(meta.id, {
+      id: 'd1',
+      text: 'old text',
+      metadata: {},
+    });
+    const unconfigured = newRegistry(newProvider(), currentHash);
+    expect(await unconfigured.getCollection(meta.id)).toMatchObject({
+      status: 'incompatible',
+    });
+
+    const embed = jest.fn(async (text: string) => ({ vector: vectorOf(text) }));
+    const retrieval = symmetricEmbedder({ embed });
+    const persistence = createCollectionPersistence(
+      newProvider(retrieval),
+      currentHash,
+      {
+        compatibleEmbedderHashes: compatibleFingerprintHashes(
+          currentFingerprint,
+          ['unrelated', 'default'],
+        ),
+      },
+    );
+    mockInfo.mockClear();
+    const restored = new CollectionRegistry({
+      embedder: retrieval,
+      defaultBackend: 'pg-vector',
+      persistence,
+    });
+    expect(
+      await search(await restored.getRagStore(meta.id), 'old text'),
+    ).toEqual(['old text']);
+    await restored.addDocument(meta.id, {
+      id: 'd2',
+      text: 'new text',
+      metadata: {},
+    });
+    expect(embed.mock.calls.map(([text]) => text)).toContain('new text');
+    expect(await backendDoc(meta.id, 'd2')).toMatchObject({ text: 'new text' });
+    await restored.updateCollection(meta.id, { displayName: 'Renamed' });
+    expect((await recordOf(meta.id))?.attributes).toMatchObject({
+      embedder: oldHash,
+    });
+    await persistence.readCollection(meta.id);
+    expect(
+      mockInfo.mock.calls.filter(
+        ([message]) =>
+          message ===
+          'Accepted collection via AI Core resource group compatibility',
+      ),
+    ).toEqual([
+      [
+        'Accepted collection via AI Core resource group compatibility',
+        {
+          collectionId: meta.id,
+          storedFingerprint: oldHash,
+          currentFingerprint: currentHash,
+        },
+      ],
+    ]);
+  });
+
+  it('a model mismatch stays incompatible even if the previous group is configured', async () => {
+    const oldHash = fingerprintHash({
+      ...oldFingerprint,
+      embeddingModel: 'old-model',
+    });
+    const currentHash = fingerprintHash(currentFingerprint);
     const meta = userMeta('old-embedder', 'alice');
+    reg = newRegistry(provider, oldHash);
     await reg.createCollection(meta);
     await reg.addDocument(meta.id, {
       id: 'd1',
       text: 'kangaroo jumps over the fence',
       metadata: {},
     });
-    reg = await restarted('fp-new');
+    reg = new CollectionRegistry({
+      embedder,
+      defaultBackend: 'pg-vector',
+      persistence: createCollectionPersistence(newProvider(), currentHash, {
+        compatibleEmbedderHashes: compatibleFingerprintHashes(
+          currentFingerprint,
+          ['default'],
+        ),
+      }),
+    });
 
     const got = await reg.getCollection(meta.id);
     expect(got).toMatchObject({ status: 'incompatible', documentCount: 1 });
-    expect(got?.statusError).toMatch(/fp-test/);
-    expect(got?.statusError).toMatch(/fp-new/);
+    expect(got?.statusError).toContain(oldHash);
+    expect(got?.statusError).toContain(currentHash);
     // Listed, read and exported.
     expect((await reg.listDocuments(meta.id))?.total).toBe(1);
     expect((await reg.getDocument(meta.id, 'd1'))?.text).toBe(
       'kangaroo jumps over the fence',
     );
     // Search and writes: an explicit 409 naming both fingerprints.
-    for (const p of [
-      reg.getRagStore(meta.id),
-      reg.addDocument(meta.id, { id: 'd2', text: 'x', metadata: {} }),
-      reg.updateDocument(meta.id, 'd1', { text: 'y' }),
-      reg.deleteDocument(meta.id, 'd1'),
-    ] as Promise<unknown>[]) {
-      const err = await failureOf(p);
+    for (const operation of [
+      () => reg.getRagStore(meta.id),
+      () => reg.addDocument(meta.id, { id: 'd2', text: 'x', metadata: {} }),
+      () => reg.updateDocument(meta.id, 'd1', { text: 'y' }),
+      () => reg.deleteDocument(meta.id, 'd1'),
+    ]) {
+      const err = await failureOf(operation());
       expect(err).toBeInstanceOf(CollectionBackendError);
       expect((err as CollectionBackendError).httpStatus).toBe(409);
-      expect((err as Error).message).toMatch(/fp-test.*fp-new/);
+      expect((err as Error).message).toContain(oldHash);
+      expect((err as Error).message).toContain(currentHash);
     }
     // The routes say so.
     const { router, routes } = makeMockRouter();
@@ -1350,7 +1448,7 @@ describe('restore at startup (Task 7)', () => {
     expect((await recordOf(meta.id))?.attributes).toMatchObject({
       displayName: 'Renamed',
       enabled: false,
-      embedder: 'fp-test',
+      embedder: oldHash,
     });
     // It can still be deleted.
     expect(await reg.deleteCollection(meta.id)).toBe(true);
@@ -2087,7 +2185,8 @@ test('partial agent updates preserve authoritative edits and toggle records crea
   ).toMatchObject({ text: 'new body', enabled: false });
 });
 
-test('persistent agent startup restores missing and replaces edited built-in records, then writes nothing', async () => {
+test('persistent agent startup seeds built-in records after an AI Core group change, then writes nothing', async () => {
+  reg = newRegistry(provider, fingerprintHash(oldFingerprint));
   await reg.seedAgentConfiguration('agents', 'coordinator');
   expect((await reg.readAgentCollection('agents'))?.documents).toHaveLength(7);
   await reg.updateDocument('agents', 'executor', {
@@ -2095,8 +2194,21 @@ test('persistent agent startup restores missing and replaces edited built-in rec
     metadata: { enabled: false },
   });
   await reg.deleteDocument('agents', 'analyst');
-  const restarted = newRegistry();
-  await restarted.restore();
+  const rag = parseRagConfig(
+    {
+      LLM_AGENT_RAG_BACKEND: 'pg-vector',
+      LLM_AGENT_PG_URL: pgl.url,
+      LLM_AGENT_EMBEDDING_COMPATIBLE_RESOURCE_GROUPS: 'default',
+    },
+    { provider: 'sap-ai-sdk', resourceGroup: currentFingerprint.resourceGroup },
+  );
+  const runtime = await startProviders({
+    rag,
+    destinations: { source: 'env', destinations: [] },
+  });
+  initProviders({ ...runtime, collections: newProvider() });
+  await startCollectionRestore();
+  const restarted = getCollectionRegistry();
   const add = jest.spyOn(restarted, 'addDocument');
   await restarted.seedAgentConfiguration('agents', 'coordinator');
   expect(add).toHaveBeenCalledTimes(2);

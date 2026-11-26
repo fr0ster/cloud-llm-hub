@@ -1,11 +1,15 @@
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import { QdrantRagProvider } from '@mcp-abap-adt/qdrant-rag';
 import type { RagConfig } from '../../srv/agent-config';
-import type { Embedding } from '../../srv/lib/providers';
+import { type Embedding, embedderFingerprint } from '../../srv/lib/providers';
 import {
   createCollectionProvider,
+  defaultCtors,
   providerVectorDimension,
   type RagCtors,
 } from '../../srv/lib/rag-provider-factory';
 import { createRagStoreFactory } from '../../srv/lib/rag-store-factory';
+import { fingerprintHash } from '../../srv/lib/tool-corpus';
 import {
   type QdrantVectorConfig,
   qdrantCollectionInfo,
@@ -156,6 +160,57 @@ describe('createCollectionProvider', () => {
 
 describe('Qdrant collection dimensions', () => {
   afterEach(() => jest.restoreAllMocks());
+
+  it('resolves a new dimension from an existing collection in a compatible group', async () => {
+    const embedderConfig = {
+      kind: 'sap-ai-core' as const,
+      model: 'text-embedding-3-small',
+      resourceGroup: 'new-group',
+    };
+    const oldHash = fingerprintHash(
+      embedderFingerprint({ ...embedderConfig, resourceGroup: 'default' }),
+    );
+    class CatalogProvider extends QdrantRagProvider {
+      override async describeCollections() {
+        return {
+          ok: true as const,
+          value: {
+            records: [
+              {
+                scope: 'global' as const,
+                storeName: 'old',
+                name: 'old',
+                attributes: { writtenBy: 'cloud-llm-hub', embedder: oldHash },
+              },
+            ],
+            rejected: [],
+          },
+        };
+      }
+    }
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const path = new URL(String(input)).pathname;
+      if (path === '/collections')
+        return Response.json({ result: { collections: [{ name: 'old' }] } });
+      if (path === '/collections/old')
+        return qdrantCollectionInfo({ size: 1536, distance: 'Cosine' });
+      return Response.json({}, { status: 404 });
+    });
+    const embed = jest.fn(async () => ({ vector: [0, 0, 0] }));
+    const provider = createCollectionProvider(
+      cfg('qdrant', {
+        qdrant: { url: 'http://q:6333', prefix: 'test' },
+        embedder: embedderConfig,
+        compatibleEmbeddingResourceGroups: ['default'],
+      }),
+      { retrieval: symmetricEmbedder({ embed }) },
+      env,
+      { ...defaultCtors, QdrantRagProvider: CatalogProvider },
+    );
+    if (!provider) throw new Error('expected Qdrant provider');
+    expect(await providerVectorDimension(provider)('new')).toBe(1536);
+    expect(embed).not.toHaveBeenCalled();
+  });
 
   it('shares a pending lookup and caches its successful result', async () => {
     let release!: (response: Response) => void;

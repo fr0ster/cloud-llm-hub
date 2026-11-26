@@ -41,6 +41,19 @@ describe('parseRagConfig', () => {
     });
   });
 
+  it('accepts a comma-separated list of previous groups for AI Core only', () => {
+    const env = {
+      LLM_AGENT_RAG_TYPE: 'vector',
+      LLM_AGENT_EMBEDDING_COMPATIBLE_RESOURCE_GROUPS: ' default, , previous ',
+    };
+    expect(
+      parseRagConfig(env, llmSap).compatibleEmbeddingResourceGroups,
+    ).toEqual(['default', 'previous']);
+    expect(
+      parseRagConfig(env, llmOpenai).compatibleEmbeddingResourceGroups,
+    ).toBeUndefined();
+  });
+
   it('ollama embedder needs a model and defaults its URL', () => {
     const env = {
       LLM_AGENT_TOOLS_RAG_BACKEND: 'vector',

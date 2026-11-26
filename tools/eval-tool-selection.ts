@@ -14,7 +14,7 @@ import {
 } from '../srv/agent-manager';
 import { buildEmbedding, prefetchEmbedder } from '../srv/lib/providers';
 import { createRagStoreFactory } from '../srv/lib/rag-store-factory';
-import { collectionFor, fingerprintHash } from '../srv/lib/tool-corpus';
+import { collectionFor, fingerprintMatches } from '../srv/lib/tool-corpus';
 import { selectStepTools } from '../srv/lib/tool-selection';
 
 type SelectionCase = { q: string; exp: string; writes: boolean };
@@ -94,7 +94,7 @@ async function main() {
     writer: factory.create('tools', 'writer'),
   };
   const precomputed =
-    embedding && fingerprintHash(embedding.fingerprint) === fingerprintHash(fp);
+    embedding && fingerprintMatches(fp, embedding.fingerprint);
   let precomputedCount = 0;
   try {
     for (const doc of docs) {

@@ -231,10 +231,12 @@ import {
   type ToolEffectAnnotations,
 } from './lib/tool-authorization';
 import {
-  bundleFileFor,
+  bundleFilesFor,
   collectionFor,
+  compatibleFingerprintHashes,
   corpusByRole,
   fingerprintHash,
+  fingerprintMatches,
   recordIsCurrent,
   type SharedCorpusDoc,
   toolStoreName,
@@ -243,7 +245,7 @@ import { ToolQueryAnalyzer } from './lib/tool-query-analyzer';
 import { volatileHistoryProvider } from './lib/volatile-history-provider';
 
 export type { SharedCorpusDoc } from './lib/tool-corpus';
-export { collectionFor } from './lib/tool-corpus';
+export { collectionFor, fingerprintMatches } from './lib/tool-corpus';
 
 import { buildToolExpositionMap } from './lib/tool-exposition-map';
 import { withWriteActions, withWriteActionsLlm } from './lib/tool-journal';
@@ -1381,7 +1383,12 @@ export function getTrustStore(): TrustStore | undefined {
 /** Get or create the shared CollectionRegistry. */
 export function getCollectionRegistry(): CollectionRegistry {
   if (!collectionRegistryInstance) {
-    const { embedding: e, stores, collections } = getProviders();
+    const {
+      embedding: e,
+      stores,
+      collections,
+      compatibleEmbeddingResourceGroups,
+    } = getProviders();
     const persistentKind = stores.backendOf('persistent');
     if (isPersistentKind(persistentKind)) {
       // Explicit, never a silent in-memory fallback for a persistent kind.
@@ -1407,6 +1414,10 @@ export function getCollectionRegistry(): CollectionRegistry {
               collections,
               fingerprintHash(e.fingerprint),
               {
+                compatibleEmbedderHashes: compatibleFingerprintHashes(
+                  e.fingerprint,
+                  compatibleEmbeddingResourceGroups,
+                ),
                 vectorDimension: providerVectorDimension(collections),
                 storePrefix: storePrefixFor(
                   persistentKind,
@@ -1950,19 +1961,6 @@ export type ToolEmbeddingBundle = {
   }[];
 };
 
-/** Fingerprint equality — provider + model + endpoint identity (no dim). */
-export function fingerprintMatches(
-  bundle: EmbedderFingerprint,
-  runtime: EmbedderFingerprint,
-): boolean {
-  return (
-    bundle.provider === runtime.provider &&
-    bundle.embeddingModel === runtime.embeddingModel &&
-    (bundle.baseURL ?? '') === (runtime.baseURL ?? '') &&
-    (bundle.resourceGroup ?? '') === (runtime.resourceGroup ?? '')
-  );
-}
-
 /**
  * Pure plan (no embedding, no store writes — unit-testable): given a bundle, the
  * runtime corpus docs, and the runtime fingerprint, decide what loads from the
@@ -2049,6 +2047,30 @@ export class ToolCorpusMissingError extends Error {
 }
 
 type BundleReader = (file: string) => ToolEmbeddingBundle | null;
+
+export function planToolBundleLookup(
+  fp: EmbedderFingerprint,
+  docs: SharedCorpusDoc[],
+  read: BundleReader,
+  resourceGroups?: readonly string[],
+) {
+  const [target, ...alternatives] = bundleFilesFor(fp, resourceGroups);
+  let selected = { file: target, plan: planBundleLoad(read(target), docs, fp) };
+  for (const file of alternatives) {
+    if (selected.plan.usable && selected.plan.supplementNames.length === 0)
+      break;
+    const bundle = read(file);
+    if (!bundle) continue;
+    const plan = planBundleLoad(bundle, docs, fp);
+    if (
+      plan.usable &&
+      (!selected.plan.usable || plan.supplementNames.length === 0)
+    )
+      selected = { file, plan };
+  }
+  return { target, ...selected };
+}
+
 /** Catalog records by store name → their attributes. */
 type CatalogReader = (p: Providers) => Promise<Map<string, unknown>>;
 
@@ -2128,6 +2150,7 @@ export async function loadToolCorpus(
   }
 
   const fp = p.embedding.fingerprint;
+  const resourceGroups = p.compatibleEmbeddingResourceGroups;
   if (backend === 'qdrant') {
     const roles = corpusByRole(docs);
     const names = {
@@ -2140,7 +2163,14 @@ export async function loadToolCorpus(
       const collection = p.stores.qdrantCollection(names[role]);
       if (!catalog.has(collection))
         problems.push(`${role}: no record for ${collection}`);
-      else if (!recordIsCurrent(catalog.get(collection), fp, roles[role]))
+      else if (
+        !recordIsCurrent(
+          catalog.get(collection),
+          fp,
+          roles[role],
+          resourceGroups,
+        )
+      )
         problems.push(
           `${role}: record is stale for ${collection} (built for another embedder or corpus)`,
         );
@@ -2173,13 +2203,17 @@ export async function loadToolCorpus(
     return { store, count: docs.length };
   }
 
-  // vector: exact bundle only — fingerprint AND every entry must match.
-  const plan = planBundleLoad(readBundle(bundleFileFor(fp)), docs, fp);
+  const { target, plan } = planToolBundleLookup(
+    fp,
+    docs,
+    readBundle,
+    resourceGroups,
+  );
   if (!plan.usable || plan.supplementNames.length > 0) {
     throw new ToolCorpusMissingError(
       plan.usable
         ? `bundle is stale for: ${plan.supplementNames.join(', ')}`
-        : `no bundle ${bundleFileFor(fp)}`,
+        : `no bundle ${target}`,
     );
   }
   const store = await createToolsRagStore(
