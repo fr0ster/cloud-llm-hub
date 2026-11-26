@@ -59,7 +59,7 @@ function storeAttributes({
     : {};
 }
 
-function isEmbeddedStore(record: RagCollectionRecord): boolean {
+export function isEmbeddedStore(record: RagCollectionRecord): boolean {
   if (ZERO_VECTOR_HUB_STORES.has(record.name)) return false;
   const attributes = storeAttributes(record);
   if (attributes.collectionKind === 'task-results') return false;

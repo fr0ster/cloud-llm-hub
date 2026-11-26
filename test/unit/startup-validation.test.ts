@@ -64,9 +64,12 @@ const createAgentMcpServerForRequest = jest.fn(async () => ({
   async cleanup() {},
 }));
 jest.mock('../../srv/lib/rag-migration', () => ({
+  ...jest.requireActual<typeof import('../../srv/lib/rag-migration')>(
+    '../../srv/lib/rag-migration',
+  ),
   isRagMigrationReady: () =>
     order.includes('migrateRagData') && !migrationFailure.failed,
-  migrateHubRagProviders: async () => {
+  runStartMigrations: async () => {
     order.push('migrateRagData');
     return migrationFailure.failed
       ? { ok: false, error: new Error('RAG migration reported findings') }

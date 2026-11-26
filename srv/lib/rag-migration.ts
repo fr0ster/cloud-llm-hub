@@ -23,11 +23,20 @@ import {
   RAG_MIGRATION_UNCONFIRMED,
   RAG_MIGRATION_VERIFICATION,
 } from '@mcp-abap-adt/qdrant-rag';
-import type { QdrantConfig, RagBackendKind } from '../agent-config';
+import {
+  getAgentConfig,
+  type QdrantConfig,
+  type RagBackendKind,
+} from '../agent-config';
+import { historyProvider } from '../agent-manager';
 import { restampHubStores } from './hub-store-restamp';
 import { apiKeyCredential } from './llm-factory';
+import { PLANNER_MEMORY_STORE } from './planner-context';
+import type { Providers } from './providers';
+import { isPersistentKind } from './rag-provider-factory';
 import { setRagMigrationReady } from './rag-readiness';
 import { migrateSharedHistory } from './session-history-collection';
+import { fingerprintHash, toolStoreName } from './tool-corpus';
 
 export { isRagMigrationReady } from './rag-readiness';
 
@@ -40,6 +49,48 @@ type QdrantMigration = {
   config: QdrantConfig;
   standaloneCollections: readonly string[];
 };
+
+function startMigrationEntries(p: Providers): ProviderMigration[] {
+  const entries = [
+    { provider: p.collections ?? null, kind: p.stores.backendOf('persistent') },
+  ];
+  const sessionKind = p.stores.backendOf('session');
+  if (isPersistentKind(sessionKind))
+    entries.push({ provider: historyProvider(sessionKind), kind: sessionKind });
+  return entries;
+}
+
+export function persistentMigrationProviders(
+  p: Providers,
+): ReadonlyMap<IRagProvider, RagBackendKind> {
+  const providers = new Map<IRagProvider, RagBackendKind>();
+  for (const { provider, kind } of startMigrationEntries(p)) {
+    if (provider && isPersistentKind(kind)) providers.set(provider, kind);
+  }
+  return providers;
+}
+
+export async function runStartMigrations(
+  p: Providers,
+  log: Log,
+): Promise<Result<void, RagError>> {
+  const entries = startMigrationEntries(p);
+  const qdrant = getAgentConfig().rag.qdrant;
+  const standaloneCollections = [
+    ...(p.stores.backendOf('tools') === 'qdrant'
+      ? [toolStoreName('reader'), toolStoreName('writer')]
+      : []),
+    ...(p.stores.backendOf('session') === 'qdrant'
+      ? [PLANNER_MEMORY_STORE]
+      : []),
+  ].map((name) => p.stores.qdrantCollection(name));
+  return migrateHubRagProviders(
+    entries,
+    log,
+    qdrant ? { config: qdrant, standaloneCollections } : undefined,
+    p.embedding ? fingerprintHash(p.embedding.fingerprint) : undefined,
+  );
+}
 
 function failure(
   stage: string,

@@ -1,8 +1,4 @@
 import { ensureModelCatalog } from './lib/model-catalog';
-import {
-  isRagMigrationReady,
-  migrateHubRagProviders,
-} from './lib/rag-migration';
 import { ragReadinessGuard, setRagMigrationReady } from './lib/rag-readiness';
 import { RAG_WRITE_MAX_BYTES } from './lib/rag-write-operations';
 import { requireAdminRole } from './lib/require-admin-role';
@@ -53,7 +49,6 @@ import {
   collectionsRestoreStatus,
   getCollectionRegistry,
   getDestinationMappings,
-  historyProvider,
   initProviders,
   initSmartAgents,
   isProvidersReady,
@@ -97,8 +92,12 @@ import {
   mcpDestinationRefusal,
 } from './lib/mcp-destination-guard';
 import { needsSapConnection } from './lib/mcp-request';
-import { PLANNER_MEMORY_STORE } from './lib/planner-context';
 import { type Providers, startProviders } from './lib/providers';
+import {
+  isRagMigrationReady,
+  persistentMigrationProviders,
+  runStartMigrations,
+} from './lib/rag-migration';
 import { requireMcpRole } from './lib/require-mcp-role';
 import { initializeRunRecordStore } from './lib/run-record-store';
 import { sessionConfig } from './lib/session-config';
@@ -123,7 +122,7 @@ import {
 } from './lib/session-middleware';
 import { createSessionRecordStore } from './lib/session-record-store';
 import { openAiSessionRefusal } from './lib/throttle-surfacing';
-import { fingerprintHash, toolStoreName } from './lib/tool-corpus';
+import { fingerprintHash } from './lib/tool-corpus';
 import {
   toolSearchReadinessGuard,
   withToolSearchHealth,
@@ -1098,39 +1097,12 @@ cds.on('served', () => {
     })
     .then(async (p) => {
       initProviders(p);
-      const persistentKind = p.stores.backendOf('persistent');
-      const sessionKind = p.stores.backendOf('session');
-      const embedderFp = p.embedding
-        ? fingerprintHash(p.embedding.fingerprint)
-        : undefined;
-      const migrations = [
-        { provider: p.collections ?? null, kind: persistentKind },
-      ];
-      if (['hana-vector', 'pg-vector', 'qdrant'].includes(sessionKind))
-        migrations.push({
-          provider: historyProvider(sessionKind),
-          kind: sessionKind,
-        });
-      const qdrant = getAgentConfig().rag.qdrant;
-      const standaloneCollections = [
-        ...(p.stores.backendOf('tools') === 'qdrant'
-          ? [toolStoreName('reader'), toolStoreName('writer')]
-          : []),
-        ...(sessionKind === 'qdrant' ? [PLANNER_MEMORY_STORE] : []),
-      ].map((name) => p.stores.qdrantCollection(name));
-      const migration = await migrateHubRagProviders(
-        migrations,
-        (line) => log.info(line),
-        qdrant ? { config: qdrant, standaloneCollections } : undefined,
-        embedderFp,
-      );
+      const migration = await runStartMigrations(p, (line) => log.info(line));
       if (!migration.ok) throw migration.error;
-      if (embedderFp !== undefined) {
+      if (p.embedding) {
+        const embedderFp = fingerprintHash(p.embedding.fingerprint);
         setRagMigrationReady(false);
-        for (const provider of new Set(
-          migrations.map(({ provider }) => provider),
-        )) {
-          if (!provider) continue;
+        for (const provider of persistentMigrationProviders(p).keys()) {
           const result = await assertHubStoresEmbedder(provider, embedderFp);
           if (!result.ok) throw result.error;
         }

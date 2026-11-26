@@ -77,6 +77,7 @@
     "start": "cds-serve",
     "start:log": "bash tools/start-debug.sh",
     "dev:local": "node tools/dev-local.js",
+    "migrate:embeddings": "tsx srv/migrate-embeddings.ts",
     "test": "node test/test-cap-from-yaml.js --config test/integration.yaml",
     "test:unit": "jest",
     "eval:tools": "tsx tools/eval-tool-selection.ts",

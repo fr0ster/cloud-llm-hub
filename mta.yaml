@@ -140,6 +140,14 @@ modules:
       # The proxy targetUrl points here, so a stable, named route matters.
       routes:
         - route: ${APPROUTER_HOST}-srv.${CF_LANDSCAPE}
+    hooks:
+      - name: migrate-embeddings
+        type: task
+        phases: [deploy.application.before-start]
+        parameters:
+          name: migrate-embeddings
+          command: node srv/migrate-embeddings.js
+          memory: 2048M
     properties:
       # Cap the V8 old-space below the 2G container (leaves ~512M for non-heap:
       # native buffers, code, stacks) so V8 GCs hard instead of the container
