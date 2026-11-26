@@ -10,6 +10,7 @@ import cds from '@sap/cds';
 import type { AgentConfig } from '../agent-config';
 import { getServiceCredentials, getToken } from './btp-oauth';
 import { makeHubFoundationProvider } from './llm-factory';
+import { foundationChatFamily } from './model-capabilities';
 
 /** The LLM settings the model list depends on, handed in by the caller. */
 export type ModelListConfig = Pick<
@@ -60,9 +61,7 @@ export async function getFoundationModels(
     resourceGroup: llm.resourceGroup,
   }).getModels();
   return models
-    .filter(
-      ({ id }) => !EXCLUDED_PREFIXES.some((prefix) => id.startsWith(prefix)),
-    )
+    .filter(({ id }) => foundationChatFamily(id) !== undefined)
     .map(({ id }) => ({
       id,
       object: 'model' as const,

@@ -1,5 +1,6 @@
 import { BuildValidationError } from './build-validation-error';
 import type { ExecutionLimits, Limit } from './execution-limits';
+import { requireFoundationChatFamily } from './model-capabilities';
 import { parseModelAllowlist, usesModelCatalog } from './model-policy';
 import type { RoleName } from './role-model-settings';
 
@@ -75,6 +76,8 @@ export function configuredRoleModel(
 ): string | undefined {
   const name = ROLE_ENV[role].model;
   const model = env[name]?.trim() || undefined;
+  if (model && env.LLM_AGENT_PROVIDER === 'sap-aicore-foundation')
+    requireFoundationChatFamily(model);
   if (model && !usesModelCatalog(env) && !parseModelAllowlist(env).has(model))
     throw new BuildValidationError(
       `Invalid ${name}: model is outside LLM_AGENT_MODELS`,

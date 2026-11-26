@@ -20,6 +20,7 @@ const provider = 'sap-aicore-foundation';
 const resourceGroup = 'test-group';
 const openAiModel = 'gpt-4o-mini';
 const embeddingModel = 'text-embedding-3-small';
+const unsupportedModel = 'gemini-2.5-pro';
 const missingModel = 'anthropic--unlisted-model';
 const apiBaseUrl = 'https://aicore.example.test';
 const authUrl = 'https://oauth.example.test';
@@ -115,6 +116,7 @@ it('uses binding credentials ahead of the service key and individual variables',
 it('loads deployed chat model names into both catalog paths', async () => {
   process.env.LLM_AGENT_MODELS = 'catalog';
   const sonnet = 'anthropic--claude-4.6-sonnet';
+  const reasoningModel = 'o3-mini';
   mockAiCore((url) => {
     expect(url.pathname).toBe('/v2/lm/deployments');
     expect(url.searchParams.get('status')).toBe('RUNNING');
@@ -123,18 +125,23 @@ it('loads deployed chat model names into both catalog paths', async () => {
         deployment(openAiModel),
         deployment(sonnet),
         deployment(sonnet),
+        deployment(reasoningModel),
+        deployment(unsupportedModel),
         deployment(embeddingModel),
-        deployment('orchestration-model', 'orchestration'),
+        deployment('gpt-4.1-mini', 'orchestration'),
       ],
     });
   });
 
   const { llm } = loadAgentConfig();
   await ensureModelCatalog();
-  expect(parseModelAllowlist()).toEqual(new Set([openAiModel, sonnet]));
+  expect(parseModelAllowlist()).toEqual(
+    new Set([openAiModel, sonnet, reasoningModel]),
+  );
   expect((await getAvailableModels(llm)).map(({ id }) => id)).toEqual([
     sonnet,
     openAiModel,
+    reasoningModel,
   ]);
 });
 
@@ -169,6 +176,26 @@ it.each([
     expect(fetch).toHaveBeenCalledTimes(3);
   },
 );
+
+it.each([
+  'LLM_AGENT_MODEL',
+  'LLM_AGENT_MODELS',
+  'LLM_AGENT_PLANNER_MODEL',
+  'LLM_AGENT_COORDINATOR_MODEL',
+  'LLM_AGENT_EXECUTOR_MODEL',
+  'LLM_AGENT_CHECKER_MODEL',
+  'LLM_AGENT_CLASSIFIER_MODEL',
+  'LLM_AGENT_TOOL_RETRIEVAL_MODEL',
+])('rejects an unsupported chat model in %s at startup', (setting) => {
+  process.env.LLM_AGENT_MODELS = '';
+  process.env[setting] = unsupportedModel;
+  if (setting === 'LLM_AGENT_TOOL_RETRIEVAL_MODEL')
+    process.env.LLM_AGENT_TOOL_RETRIEVAL = 'llm';
+  expect(() => loadAgentConfig()).toThrow(BuildValidationError);
+  expect(() => loadAgentConfig()).toThrow(
+    'Unsupported chat model "gemini-2.5-pro" for LLM_AGENT_PROVIDER=sap-aicore-foundation. Supported families are anthropic--* (Bedrock), gpt-*, and o<digit>* (OpenAI chat).',
+  );
+});
 
 it.each([
   'LLM_AGENT_MODEL',

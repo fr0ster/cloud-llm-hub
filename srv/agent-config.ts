@@ -820,7 +820,7 @@ export function loadAgentConfig(): AgentConfig {
       config.llm.coordinatorModel,
       config.llm.executorModel,
       config.llm.checkerModel,
-      toolRetrieval.strategy === 'llm' ? toolRetrieval.model : undefined,
+      toolRetrieval.model,
     ])) {
       if (model) foundationMaxTokens(model);
     }
