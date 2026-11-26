@@ -10,40 +10,15 @@
 const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
 
-function splitDotenvValue(source) {
-  const trimmed = source.trimStart();
-  const leading = source.slice(0, source.length - trimmed.length);
-  const quoted = /^(["'])((?:\\.|(?!\1)[^\\])*)\1(?=\s*(?:#|$))/.exec(trimmed);
-  if (quoted) {
-    const [literal, quote, body] = quoted;
-    return {
-      leading,
-      quote,
-      value: body.replace(/\\(.)/g, (escaped, char) =>
-        char === quote || char === '\\' ? char : escaped,
-      ),
-      trailing: trimmed.slice(literal.length),
-    };
-  }
-
-  // A bare # is literal unless whitespace separates it from the value.
-  const comment = source.search(/\s+#/);
-  const content = (comment < 0 ? source : source.slice(0, comment)).trimEnd();
-  return {
-    leading: content ? leading : '',
-    value: content.trimStart(),
-    trailing: source.slice(content.length),
-  };
-}
-
+/** KEY=VALUE lines; blank lines and # comments skipped; value kept verbatim (trimmed). */
 function parseDotenv(text) {
   const vars = [];
   for (const raw of text.split(/\r?\n/)) {
-    if (raw.trimStart().startsWith('#')) continue;
-    const eq = raw.indexOf('=');
-    if (eq < 0) continue;
-    const key = raw.slice(0, eq).trim();
-    if (key) vars.push([key, splitDotenvValue(raw.slice(eq + 1)).value]);
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    vars.push([line.slice(0, eq).trim(), line.slice(eq + 1).trim()]);
   }
   return vars;
 }
@@ -72,4 +47,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { parseDotenv, splitDotenvValue };
+module.exports = { parseDotenv };

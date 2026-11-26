@@ -108,11 +108,15 @@ test('updates .env in place, preserves other lines, and skips writing on a secon
   expect(first.status).toBe(0);
   expect(first.stdout).toContain(`${envFile}: AICORE_CLIENT_SECRET updated`);
   expect(first.stdout).toContain(`${envFile}: AICORE_CLIENT_ID added`);
-  expect(first.stdout).toContain(`${envFile}: AICORE_BASE_URL unchanged`);
+  expect(first.stdout).toContain(`${envFile}: AICORE_BASE_URL updated`);
   const updated = existing
     .replace(`${authBase}/`, authBase)
-    .replace('=old-value', `=${clientSecret}`)
+    .replace(
+      '  AICORE_CLIENT_SECRET =old-value  # Credential',
+      `  # Credential\r\nAICORE_CLIENT_SECRET=${clientSecret}`,
+    )
     .replace('=duplicate-value', `=${clientSecret}`)
+    .replace(`= ${apiBase}  `, `=${apiBase}`)
     .concat(`\r\nAICORE_CLIENT_ID=${clientId}\r\n`);
   expect(fs.readFileSync(envFile, 'utf8') === updated).toBe(true);
 
@@ -129,30 +133,33 @@ test('updates .env in place, preserves other lines, and skips writing on a secon
   expect(fs.statSync(envFile).mtimeMs).toBe(modifiedAt);
 });
 
-test('preserves dotenv quoting, spacing and comments through injection', () => {
+test('moves inline comments and round-trips bare credentials through the injector', () => {
   clientSecret = `${randomUUID()}\\'"#tag # literal`;
   writeKey();
   fs.writeFileSync(
     envFile,
     [
-      ' \tAICORE_CLIENT_SECRET  =  "old # inside"  # double quoted  ',
+      ' \tAICORE_CLIENT_SECRET  =  "old \\" # inside"  # double quoted  ',
       "AICORE_CLIENT_SECRET= 'old' # single quoted",
       'AICORE_CLIENT_SECRET=old#literal  # unquoted',
+      `AICORE_CLIENT_SECRET=${clientSecret} # comment after literal hash`,
       '',
     ].join('\r\n'),
   );
 
   expect(run().status).toBe(0);
   const updated = fs.readFileSync(envFile, 'utf8');
-  const escaped = clientSecret.replaceAll('\\', '\\\\');
-  const doubleQuoted = `"${escaped.replaceAll('"', '\\"')}"`;
-  const singleQuoted = `'${escaped.replaceAll("'", "\\'")}'`;
   expect(
     updated.startsWith(
       [
-        ` \tAICORE_CLIENT_SECRET  =  ${doubleQuoted}  # double quoted  `,
-        `AICORE_CLIENT_SECRET= ${singleQuoted} # single quoted`,
-        `AICORE_CLIENT_SECRET=${doubleQuoted}  # unquoted`,
+        ' \t# double quoted  ',
+        `AICORE_CLIENT_SECRET=${clientSecret}`,
+        '# single quoted',
+        `AICORE_CLIENT_SECRET=${clientSecret}`,
+        '# unquoted',
+        `AICORE_CLIENT_SECRET=${clientSecret}`,
+        '# comment after literal hash',
+        `AICORE_CLIENT_SECRET=${clientSecret}`,
         '',
       ].join('\r\n'),
     ),
@@ -162,7 +169,7 @@ test('preserves dotenv quoting, spacing and comments through injection', () => {
     injected
       .filter(([key]) => key === 'AICORE_CLIENT_SECRET')
       .map(([, value]) => value === clientSecret),
-  ).toEqual([true, true, true]);
+  ).toEqual([true, true, true, true]);
   expect(run().status).toBe(0);
   expect(fs.readFileSync(envFile, 'utf8') === updated).toBe(true);
 });
@@ -238,6 +245,71 @@ test('updates an existing srv module whose name is an alias', () => {
     ),
   );
 });
+
+test.each([false, true])(
+  'gives srv its own properties map when srv defines the shared anchor: %s',
+  (anchorOnSrv) => {
+    const definition = [
+      '    properties: &props # Shared properties',
+      '      LLM_AGENT_PROVIDER: sap-ai-sdk',
+      '      KEEP: {model: *model}',
+    ];
+    const srv = [
+      '  - name: cloud-llm-hub-srv',
+      ...(anchorOnSrv ? definition : ['    properties: *props # Srv settings']),
+    ];
+    const other = [
+      '  - name: first',
+      ...(anchorOnSrv ? ['    properties: *props # First use'] : definition),
+    ];
+    const original = [
+      'model: &model sample',
+      'modules:',
+      ...(anchorOnSrv ? [...srv, ...other] : [...other, ...srv]),
+      '  - {name: second, properties: *props}',
+      '',
+    ].join('\r\n');
+    fs.writeFileSync(mtaFile, original);
+
+    const args = [
+      '--provider',
+      'sap-aicore-foundation',
+      '--resource-group',
+      'qa',
+    ];
+    expect(run(...args).status).toBe(0);
+    const updated = fs.readFileSync(mtaFile, 'utf8');
+    expect(updated).toContain('  - {name: second, properties: *props}\r\n');
+    expect(updated).toContain('# Shared properties\r\n');
+    expect(updated).toContain(
+      anchorOnSrv ? '# First use\r\n' : '# Srv settings\r\n',
+    );
+
+    const {
+      modules,
+      model,
+    }: {
+      modules: { name: string; properties: Record<string, unknown> }[];
+      model: string;
+    } = parse(updated);
+    const byName = Object.fromEntries(
+      modules.map(({ name, properties }) => [name, properties]),
+    );
+    expect(model).toBe('sample');
+    expect(byName).toEqual({
+      'cloud-llm-hub-srv': {
+        LLM_AGENT_PROVIDER: 'sap-aicore-foundation',
+        LLM_AGENT_RESOURCE_GROUP: 'qa',
+        KEEP: { model: 'sample' },
+      },
+      first: { LLM_AGENT_PROVIDER: 'sap-ai-sdk', KEEP: { model: 'sample' } },
+      second: { LLM_AGENT_PROVIDER: 'sap-ai-sdk', KEEP: { model: 'sample' } },
+    });
+    expect(byName.first).toBe(byName.second);
+    expect(run(...args).status).toBe(0);
+    expect(fs.readFileSync(mtaFile, 'utf8')).toBe(updated);
+  },
+);
 
 test.each([
   ['*provider', '&provider sap-ai-sdk'],

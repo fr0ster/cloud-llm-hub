@@ -3,7 +3,6 @@
 const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { splitDotenvValue } = require('./set-env-from-dotenv.js');
 
 // CAP already depends on the source-preserving YAML parser.
 const yaml = require(
@@ -122,22 +121,25 @@ function lineEnding(source) {
   return source.match(/\r?\n/)?.[0] || '\n';
 }
 
-function formatDotenvValue(value, { leading, quote, trailing }) {
-  const unquoted = leading + value + trailing;
-  if (!quote && splitDotenvValue(unquoted).value === value) return unquoted;
+function dotenvComment(source, credential) {
+  const value = source.trimStart();
+  if (value.startsWith(credential)) {
+    const suffix = value.slice(credential.length);
+    if (/^(?:\s+#|\s*$)/.test(suffix)) return suffix.trimStart();
+  }
 
-  const delimiter = quote || '"';
-  const escaped = value
-    .replaceAll('\\', '\\\\')
-    .replaceAll(delimiter, `\\${delimiter}`);
-  return `${leading}${delimiter}${escaped}${delimiter}${trailing}`;
+  const quoted = /^(["'])(?:\\.|(?!\1)[^\\])*\1(?=\s*(?:#|$))/.exec(value);
+  if (quoted) return value.slice(quoted[0].length).trimStart();
+  const comment = source.search(/\s+#/);
+  return comment < 0 ? '' : source.slice(comment).trimStart();
 }
 
 function updateDotenv(source, entries) {
   const changes = new Map(Object.keys(entries).map((key) => [key, 'added']));
+  const eol = lineEnding(source);
   const updated = source
     .split(/(\r?\n)/)
-    .map((line) => {
+    .map((line, index, lines) => {
       // Match the assignments read by set-env-from-dotenv.js.
       const eq = line.indexOf('=');
       if (eq < 0 || line.trimStart().startsWith('#')) return line;
@@ -145,26 +147,24 @@ function updateDotenv(source, entries) {
       const key = line.slice(0, eq).trim();
       if (!changes.has(key)) return line;
 
-      const current = splitDotenvValue(line.slice(eq + 1));
-      if (current.value !== entries[key]) {
-        changes.set(key, 'updated');
-        return line.slice(0, eq + 1) + formatDotenvValue(entries[key], current);
+      const assignment = `${key}=${entries[key]}`;
+      if (line === assignment) {
+        if (changes.get(key) === 'added') changes.set(key, 'unchanged');
+        return line;
       }
-      if (changes.get(key) === 'added') changes.set(key, 'unchanged');
-      return line;
+
+      changes.set(key, 'updated');
+      const comment = dotenvComment(line.slice(eq + 1), entries[key]);
+      const indent = line.match(/^[ \t]*/)[0];
+      return comment
+        ? `${indent}${comment}${lines[index + 1] || eol}${assignment}`
+        : assignment;
     })
     .join('');
 
-  const eol = lineEnding(source);
   const added = [];
   for (const [key, status] of changes) {
-    if (status === 'added') {
-      const value = formatDotenvValue(entries[key], {
-        leading: '',
-        trailing: '',
-      });
-      added.push(`${key}=${value}${eol}`);
-    }
+    if (status === 'added') added.push(`${key}=${entries[key]}${eol}`);
   }
   const separator =
     added.length && updated && !updated.endsWith('\n') ? eol : '';
@@ -241,6 +241,43 @@ function findYamlAlias(doc, node) {
   return firstAlias;
 }
 
+function copyYamlMap(doc, map, anchor) {
+  // Resolve nested aliases before moving the copy to a different location.
+  const copy = doc.createNode(map.toJS(doc, { mapAsMap: true }));
+  if (anchor) copy.anchor = anchor;
+  return yaml
+    .stringify(copy, {
+      schema: doc.schema,
+      collectionStyle: 'flow',
+      doubleQuotedMinMultiLineLength: Infinity,
+      lineWidth: 0,
+    })
+    .trimEnd();
+}
+
+function detachYamlMap(source, doc, pair, map) {
+  if (yaml.isAlias(pair.value)) {
+    const [start, end] = pair.value.range;
+    return spliceSource(source, start, end, copyYamlMap(doc, map));
+  }
+
+  const alias = map.anchor && findYamlAlias(doc, map);
+  if (!alias) return source;
+
+  // Keep the srv map in place and move the shared definition to its first use.
+  const [start, end] = alias.range;
+  const updated = spliceSource(
+    source,
+    start,
+    end,
+    copyYamlMap(doc, map, map.anchor),
+  );
+  const anchor = pair.srcToken.sep.find((token) => token.type === 'anchor');
+  const anchorEnd = anchor.offset + anchor.source.length;
+  const padding = source.slice(anchorEnd).match(/^[ \t]*/)[0];
+  return spliceSource(updated, anchor.offset, anchorEnd + padding.length, '');
+}
+
 function replaceSharedYamlValue(source, doc, pair, alias, value) {
   // Move the old definition to the first use so subsequent aliases still resolve.
   const original = pair.value.clone();
@@ -293,12 +330,18 @@ function updateMtaProperty(source, key, value) {
   });
   if (!srv) return [addYamlEntry(source, modules, [module]), 'added'];
 
-  const properties = srv.get('properties', true);
-  if (!properties)
+  const propertiesPair = srv.items.find(
+    (item) => yaml.isScalar(item.key) && item.key.value === 'properties',
+  );
+  const propertiesNode = propertiesPair?.value;
+  if (!propertiesNode)
     return [addYamlEntry(source, srv, { properties: property }), 'added'];
-  if (yaml.isScalar(properties) && properties.value === null) {
-    return [replaceYamlValue(source, properties, property), 'added'];
+  if (yaml.isScalar(propertiesNode) && propertiesNode.value === null) {
+    return [replaceYamlValue(source, propertiesNode, property), 'added'];
   }
+  const properties = yaml.isAlias(propertiesNode)
+    ? propertiesNode.resolve(doc)
+    : propertiesNode;
   if (!yaml.isMap(properties))
     throw new CliError('Expected .mtaext srv properties to be a YAML mapping.');
 
@@ -306,6 +349,12 @@ function updateMtaProperty(source, key, value) {
     (item) => yaml.isScalar(item.key) && item.key.value === key,
   );
   const current = pair?.value;
+  if (yaml.isScalar(current) && current.value === value)
+    return [source, 'unchanged'];
+
+  const detached = detachYamlMap(source, doc, propertiesPair, properties);
+  if (detached !== source) return updateMtaProperty(detached, key, value);
+
   if (!current) return [addYamlEntry(source, properties, property), 'added'];
   if (!yaml.isScalar(current) && !yaml.isAlias(current)) {
     throw new CliError(
@@ -321,8 +370,6 @@ function updateMtaProperty(source, key, value) {
       ];
     }
   }
-  if (yaml.isScalar(current) && current.value === value)
-    return [source, 'unchanged'];
   return [replaceYamlValue(source, current, value), 'updated'];
 }
 
