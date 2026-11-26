@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [12.0.1] - 2026-11-26
 
+### Added
+
+- `tools/add-aicore-service-key.js <service-key.json> [--dir <deploy checkout>]` fills the four `AICORE_*` credentials of a deployment `.env` from an SAP AI Core service key, atomically and without printing secrets; resource group and provider stay deployment settings in `.mtaext` (#234).
+
 ### Fixed
 
 - A deploy that only moves the SAP AI Core embedder to another resource group (same model) no longer makes every persisted collection incompatible and stops the hub. `LLM_AGENT_EMBEDDING_COMPATIBLE_RESOURCE_GROUPS` lists earlier resource groups whose collections the current embedder accepts; the fingerprint format and hash are unchanged, and a model change stays incompatible (#235).
