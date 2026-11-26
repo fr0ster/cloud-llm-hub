@@ -461,7 +461,13 @@ test.each([true, false])(
         'sap-aicore-foundation',
       ] as const) {
         await makeHubLlm(
-          { provider, apiKey: 'test', model: 'test', contextCapture: 'off' },
+          {
+            provider,
+            apiKey: 'test',
+            model:
+              provider === 'sap-aicore-foundation' ? 'gpt-4o-mini' : 'test',
+            contextCapture: 'off',
+          },
           0,
         );
       }
