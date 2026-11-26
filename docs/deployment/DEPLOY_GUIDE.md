@@ -71,21 +71,17 @@ or point `--dir` at that checkout.
 
 ```bash
 node tools/add-aicore-service-key.js /path/to/service-key.json \
-  --dir /path/to/deploy-checkout --resource-group default \
-  --provider sap-aicore-foundation
+  --dir /path/to/deploy-checkout
 ```
 
-The extractor creates or updates `.env` with `AICORE_AUTH_URL`,
-`AICORE_CLIENT_ID`, `AICORE_CLIENT_SECRET`, and `AICORE_BASE_URL`. The Hub appends
+The extractor updates only `AICORE_AUTH_URL`, `AICORE_CLIENT_ID`,
+`AICORE_CLIENT_SECRET`, and `AICORE_BASE_URL` in `.env`. The Hub appends
 `/oauth/token` to the authentication base URL. `tools/deploy.sh` loads the four
 variables into the Cloud Foundry app environment. Keep the service key JSON and
 the generated `.env` outside version control.
 
-`--resource-group` and `--provider` are optional. The provider can be `sap-ai-sdk`
-or `sap-aicore-foundation`. When supplied, these options update
-`LLM_AGENT_RESOURCE_GROUP` and `LLM_AGENT_PROVIDER` under
-`modules[].properties` for `cloud-llm-hub-srv` in the existing `.mtaext`. If
-`.mtaext` is missing, the tool reports that it skipped the optional settings.
+Set the resource group (`LLM_AGENT_RESOURCE_GROUP`) and provider
+(`LLM_AGENT_PROVIDER`) in `.mtaext` as deployment settings.
 
 ## Build and Deploy
 
