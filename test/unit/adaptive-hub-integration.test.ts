@@ -912,6 +912,9 @@ describe('adaptive chat through the real hub build and library pipeline', () => 
     expect(calls).toEqual(['controller']);
     expect(result.usage.reduce((total, tokens) => total + tokens, 0)).toBe(0);
     expect(controllerPrompts[0]).toContain(HUB_ADAPTIVE_CONTROLLER_SYSTEM);
+    expect(controllerPrompts[0]).toContain(
+      'Assign a check step only to "self" or the checker profile, and never use the worker of any target step.',
+    );
     expect(result.callTool).not.toHaveBeenCalled();
     expect(result.record?.outcome).toBe('answered');
     expect(result.record?.steps.map((s) => s.kind)).toEqual(['answer']);

@@ -3171,6 +3171,7 @@ export const HUB_ADAPTIVE_CONTROLLER_SYSTEM =
   ADAPTIVE_CONTROLLER_SYSTEM +
   '\nWrite every step goal, question, note and check goal in the language of the request. The workers answer in that language.' +
   '\nStart by verifying before delivery when a write or sourced statement matters. The coordinator profile can adjust this policy.' +
+  '\nAssign a check step only to "self" or the checker profile, and never use the worker of any target step.' +
   '\nFor a verdict profile, set context.note to a string containing only the JSON array of cited claims. When evidence depends on a future tool call, schedule a revise step first, then use the actual callId from [actions] to build the check. Use a revise step to decide what to do with checker findings.';
 
 export async function buildPlannerAgent(
