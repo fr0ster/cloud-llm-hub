@@ -18,6 +18,7 @@ import {
   getSmartAgent,
   initProviders,
   loadToolCorpus,
+  planToolBundleLookup,
   resetToolCorpusReadersForTest,
   setBundleReaderForTest,
   setCatalogReaderForTest,
@@ -299,6 +300,36 @@ describe('AI Core tool corpus across resource groups', () => {
   const previous = COMMITTED_BUNDLE_FINGERPRINT;
   const current = { ...previous, resourceGroup: 'new-group' };
 
+  it.each([
+    { resourceGroups: [], usable: false },
+    { resourceGroups: ['unrelated'], usable: false },
+    { resourceGroups: ['default'], usable: true },
+  ])(
+    'validates the committed bundle with configured groups $resourceGroups',
+    ({ resourceGroups, usable }) => {
+      const file = bundleFileFor(previous);
+      const bundle = {
+        ...matchingBundle,
+        header: { ...matchingBundle.header, embedderFingerprint: previous },
+      };
+      const read = jest.fn((name: string) => (name === file ? bundle : null));
+      const lookup = planToolBundleLookup(current, docs, read, resourceGroups);
+      expect(lookup.plan.usable).toBe(usable);
+      expect(read).toHaveBeenCalledWith(bundleFileFor(current));
+      if (usable) expect(lookup.file).toBe(file);
+      else expect(read).not.toHaveBeenCalledWith(file);
+
+      // The header must also be checked at the exact runtime filename.
+      const atTarget = planToolBundleLookup(
+        current,
+        docs,
+        (name) => (name === bundleFileFor(current) ? bundle : null),
+        resourceGroups,
+      );
+      expect(atTarget.plan.usable).toBe(usable);
+    },
+  );
+
   async function runtime(
     backend: 'vector' | 'qdrant',
     previousGroups?: string,
@@ -328,10 +359,7 @@ describe('AI Core tool corpus across resource groups', () => {
       };
       const read = jest.fn((name: string) => (name === file ? bundle : null));
       setBundleReaderForTest(read);
-      const p = await runtime(
-        'vector',
-        resourceGroup === 'default' ? undefined : resourceGroup,
-      );
+      const p = await runtime('vector', resourceGroup);
       expect((await loadToolCorpus(p, docs)).count).toBe(docs.length);
       expect(read.mock.calls).toEqual([[bundleFileFor(current)], [file]]);
 

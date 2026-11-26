@@ -32,10 +32,10 @@
   (`.gitignore`).
 - **SAP AI Core resource groups.** Startup and the build step look for the
   exact bundle first, then bundles for the groups listed in
-  `LLM_AGENT_EMBEDDING_COMPATIBLE_RESOURCE_GROUPS` and the committed bundle.
-  The bundle header must match the current provider, embedding model, and
-  endpoint. Qdrant records carry only a hash, so they require the setting to
-  recognize a previous group.
+  `LLM_AGENT_EMBEDDING_COMPATIBLE_RESOURCE_GROUPS`. The committed bundle uses
+  the `default` group. Bundles and Qdrant records use the same fingerprint
+  rule. The provider, embedding model, and endpoint must match, and a previous
+  resource group must be listed in the setting.
 - **What a missing corpus looks like.** The process keeps running, but no
   destination becomes ready: every SAP request answers `503` with the
   `ToolCorpusMissingError` message. Run the build step and restart.

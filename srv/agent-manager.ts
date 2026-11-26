@@ -1972,6 +1972,7 @@ export function planBundleLoad(
   bundle: ToolEmbeddingBundle | null,
   runtimeDocs: SharedCorpusDoc[],
   runtime: EmbedderFingerprint,
+  resourceGroups?: readonly string[],
 ): {
   usable: boolean;
   toLoad: {
@@ -1985,7 +1986,11 @@ export function planBundleLoad(
 } {
   if (
     !bundle ||
-    !fingerprintMatches(bundle.header.embedderFingerprint, runtime)
+    !fingerprintMatches(
+      bundle.header.embedderFingerprint,
+      runtime,
+      resourceGroups,
+    )
   ) {
     return {
       usable: false,
@@ -2055,13 +2060,16 @@ export function planToolBundleLookup(
   resourceGroups?: readonly string[],
 ) {
   const [target, ...alternatives] = bundleFilesFor(fp, resourceGroups);
-  let selected = { file: target, plan: planBundleLoad(read(target), docs, fp) };
+  let selected = {
+    file: target,
+    plan: planBundleLoad(read(target), docs, fp, resourceGroups),
+  };
   for (const file of alternatives) {
     if (selected.plan.usable && selected.plan.supplementNames.length === 0)
       break;
     const bundle = read(file);
     if (!bundle) continue;
-    const plan = planBundleLoad(bundle, docs, fp);
+    const plan = planBundleLoad(bundle, docs, fp, resourceGroups);
     if (
       plan.usable &&
       (!selected.plan.usable || plan.supplementNames.length === 0)

@@ -67,18 +67,15 @@ export function compatibleFingerprintHashes(
   );
 }
 
-/** With fingerprint fields available, the stored AI Core group can be verified directly. */
+/** Match a stored fingerprint or catalog hash against the compatible identities. */
 export function fingerprintMatches(
-  stored: EmbedderFingerprint,
+  stored: EmbedderFingerprint | string,
   runtime: EmbedderFingerprint,
+  resourceGroups?: readonly string[],
 ): boolean {
-  return (
-    stored.provider === runtime.provider &&
-    stored.embeddingModel === runtime.embeddingModel &&
-    (stored.baseURL ?? '') === (runtime.baseURL ?? '') &&
-    ((stored.resourceGroup ?? '') === (runtime.resourceGroup ?? '') ||
-      (stored.provider === 'sap-ai-sdk' && Boolean(stored.resourceGroup)))
-  );
+  const storedHash =
+    typeof stored === 'string' ? stored : fingerprintHash(stored);
+  return compatibleFingerprintHashes(runtime, resourceGroups).has(storedHash);
 }
 
 /** Split a shared corpus into its reader and writer collections. */
@@ -146,9 +143,7 @@ export function recordIsCurrent(
   return (
     'fingerprint' in attributes &&
     typeof attributes.fingerprint === 'string' &&
-    compatibleFingerprintHashes(fp, resourceGroups).has(
-      attributes.fingerprint,
-    ) &&
+    fingerprintMatches(attributes.fingerprint, fp, resourceGroups) &&
     'corpus' in attributes &&
     attributes.corpus === corpusHash(docs)
   );
@@ -166,13 +161,11 @@ export function bundleFileFor(fp: EmbedderFingerprint): string {
     : `tool-embeddings.${fingerprintHash(fp)}.json`;
 }
 
-/** Prefer the exact filename, then try configured groups and the known committed bundle. */
+/** Prefer the exact filename, then try the filenames for configured groups. */
 export function bundleFilesFor(
   fp: EmbedderFingerprint,
   resourceGroups: readonly string[] = [],
 ): string[] {
   const fingerprints = [fp, ...resourceGroupFingerprints(fp, resourceGroups)];
-  if (fingerprintMatches(COMMITTED_BUNDLE_FINGERPRINT, fp))
-    fingerprints.push(COMMITTED_BUNDLE_FINGERPRINT);
   return [...new Set(fingerprints.map(bundleFileFor))];
 }

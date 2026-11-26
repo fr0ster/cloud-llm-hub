@@ -37,6 +37,7 @@ import {
   type IRag,
   type RagCollectionRecord,
   RagError,
+  stampRagOwner,
   symmetricEmbedder,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
@@ -57,6 +58,7 @@ import {
   restoreHealth,
   retryRestore,
   storeNameFor,
+  unwrap,
 } from '../../srv/lib/collection-persistence';
 import { startProviders } from '../../srv/lib/providers';
 import {
@@ -1366,6 +1368,49 @@ describe('restore at startup (Task 7)', () => {
         },
       ],
     ]);
+  });
+
+  it('keeps the stored fingerprint after readCollection, a document write, and a rename', async () => {
+    const oldHash = fingerprintHash(oldFingerprint);
+    reg = newRegistry(provider, oldHash);
+    const meta = await reg.createCollection(userMeta('direct-read', 'alice'));
+    const persistence = createCollectionPersistence(
+      newProvider(),
+      fingerprintHash(currentFingerprint),
+      {
+        compatibleEmbedderHashes: compatibleFingerprintHashes(
+          currentFingerprint,
+          ['default'],
+        ),
+      },
+    );
+
+    const opened = unwrap(await persistence.readCollection(meta.id), 'read');
+    expect(opened?.status).toBeUndefined();
+    const writer = opened?.rag?.writer?.();
+    if (!opened || !writer) throw new Error('Expected a writable collection');
+    const id = `doc:${meta.id}:d1`;
+    unwrap(
+      await writer.upsertRaw(
+        id,
+        'new text',
+        stampRagOwner({ id }, { scope: 'user', userId: 'alice' }),
+      ),
+      'add document',
+    );
+    unwrap(
+      await persistence.update(
+        { ...opened.meta, displayName: 'Renamed' },
+        opened.enabled,
+      ),
+      'rename',
+    );
+
+    expect(await backendDoc(meta.id, 'd1')).toMatchObject({ text: 'new text' });
+    expect((await recordOf(meta.id))?.attributes).toMatchObject({
+      displayName: 'Renamed',
+      embedder: oldHash,
+    });
   });
 
   it('a model mismatch stays incompatible even if the previous group is configured', async () => {

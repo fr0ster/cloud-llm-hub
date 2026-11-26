@@ -780,15 +780,16 @@ export function createCollectionPersistence(
     decoded: { meta: CollectionMeta; enabled: boolean; embedderFp?: string },
     options?: CallOptions,
   ): Promise<RestoredCollection> => {
+    const storedFp = decoded.embedderFp;
+    recordFps.set(decoded.meta.id, storedFp ?? '');
     const restored = await restoreOne(provider, record, decoded, options);
     if (
       restored.status ||
       decoded.meta.collectionKind === 'task-results' ||
-      decoded.embedderFp === embedderFp
+      storedFp === embedderFp
     )
       return restored;
 
-    const storedFp = decoded.embedderFp;
     if (storedFp && opts.compatibleEmbedderHashes?.has(storedFp)) {
       if (!loggedCompatibleCollections.has(decoded.meta.id)) {
         loggedCompatibleCollections.add(decoded.meta.id);
@@ -983,8 +984,6 @@ export function createCollectionPersistence(
             foreign.push(rec.storeName);
             continue;
           }
-          if (decoded.embedderFp !== embedderFp)
-            recordFps.set(decoded.meta.id, decoded.embedderFp ?? '');
           collections.push(await restoreRecord(rec, decoded, options));
         }
         return {

@@ -260,9 +260,10 @@ describe('decideToolBuild', () => {
     );
   });
 
-  it('skips the build when the committed bundle covers a new AI Core resource group', () => {
+  it('skips the build when the committed bundle uses a configured previous resource group', () => {
     process.env.LLM_AGENT_RAG_TYPE = 'vector';
     process.env.LLM_AGENT_RESOURCE_GROUP = 'new-group';
+    process.env.LLM_AGENT_EMBEDDING_COMPATIBLE_RESOURCE_GROUPS = 'default';
     const config = loadAgentConfig();
     const bundle = {
       header: {
