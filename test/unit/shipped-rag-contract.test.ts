@@ -307,6 +307,7 @@ it('ships notice-driven coordination and report reference hand-off', () => {
     'for an agent without dependencies, name the task whose result to use',
     'Delegate searches, document reading/analysis and compilation; read records only for short lookups.',
     'Judge results by the task notice; read the stored record only for a concrete gap the notice cannot decide.',
+    'Judge checks yourself or delegate them to the checker profile, and never assign a check to the worker of any target step.',
     'get_task returns the task notice and activity',
     'Deliver an answering task result with deliver({ task_id, note? })',
   ])
