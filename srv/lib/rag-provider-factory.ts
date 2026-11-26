@@ -22,7 +22,7 @@ import { readHanaBinding } from './hana-binding';
 import { apiKeyCredential } from './llm-factory';
 import { runWithoutLlmSpend } from './llm-failure';
 import { type Embedding, embedderFingerprint } from './providers';
-import { fingerprintHash } from './tool-corpus';
+import { compatibleFingerprintHashes } from './tool-corpus';
 
 type Env = Record<string, string | undefined>;
 
@@ -267,8 +267,11 @@ export function createCollectionProvider(
           throw new Error('Qdrant provider cannot read its catalog');
         const catalog = await provider.describeCollections();
         if (!catalog.ok) throw catalog.error;
-        const fp = rag.embedder
-          ? fingerprintHash(embedderFingerprint(rag.embedder))
+        const fingerprints = rag.embedder
+          ? compatibleFingerprintHashes(
+              embedderFingerprint(rag.embedder),
+              rag.compatibleEmbeddingResourceGroups,
+            )
           : undefined;
         const attributes = z.object({
           writtenBy: z.literal('cloud-llm-hub'),
@@ -278,9 +281,8 @@ export function createCollectionProvider(
         for (const record of catalog.value.records) {
           const attrs = attributes.safeParse(record.attributes);
           if (
-            !fp ||
             !attrs.success ||
-            attrs.data.embedder !== fp ||
+            !fingerprints?.has(attrs.data.embedder) ||
             !names.has(record.storeName)
           )
             continue;

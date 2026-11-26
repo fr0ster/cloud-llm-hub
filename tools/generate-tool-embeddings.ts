@@ -45,7 +45,7 @@ import {
 import {
   getSharedCorpusDocs,
   loadToolEmbeddingBundle,
-  planBundleLoad,
+  planToolBundleLookup,
   type ToolEmbeddingBundle,
 } from '../srv/agent-manager';
 import { BuildValidationError } from '../srv/lib/build-validation-error';
@@ -56,7 +56,6 @@ import {
 } from '../srv/lib/providers';
 import { toolCatalogProvider } from '../srv/lib/rag-store-factory';
 import {
-  bundleFileFor,
   corpusByRole,
   recordIsCurrent,
   type SharedCorpusDoc,
@@ -98,10 +97,18 @@ export function decideToolBuild(
   if (target === 'in-memory' || !fingerprint)
     return { action: 'none', reason: 'tools are in-memory' };
   if (target === 'qdrant') return { action: 'build-qdrant' }; // per-role skip via completion records
-  const file = bundleFileFor(fingerprint);
-  const plan = planBundleLoad(readBundle(file), docs, fingerprint);
+  const {
+    target: file,
+    file: matched,
+    plan,
+  } = planToolBundleLookup(
+    fingerprint,
+    docs,
+    readBundle,
+    config.rag.compatibleEmbeddingResourceGroups,
+  );
   return plan.usable && plan.supplementNames.length === 0
-    ? { action: 'skip', reason: `${file} already matches` }
+    ? { action: 'skip', reason: `${matched} already matches` }
     : { action: 'build-bundle', file };
 }
 
@@ -260,7 +267,12 @@ export async function buildQdrantStores(
     const collection = p.stores.qdrantCollection(toolStoreName(role));
     if (
       catalog.has(collection) &&
-      recordIsCurrent(catalog.get(collection), fp, roles[role])
+      recordIsCurrent(
+        catalog.get(collection),
+        fp,
+        roles[role],
+        config.rag.compatibleEmbeddingResourceGroups,
+      )
     )
       opts.log(`${role}: current, skipped`);
     else todo.push(role);

@@ -23,13 +23,19 @@
   | Tools backend | What startup loads | When it is not there |
   |---|---|---|
   | `in-memory` | the texts from `srv/tool-intents.json` | — |
-  | `vector` | `srv/tool-embeddings[.<fp>].json` — the bundle for this embedder's fingerprint, only if the fingerprint **and every entry's text** match | `ToolCorpusMissingError` |
-  | `qdrant` | the stores `<prefix>-tools-reader` and `<prefix>-tools-writer`, only if each role's record in `<prefix>-catalog` carries the current fingerprint and corpus hashes | `ToolCorpusMissingError` |
+  | `vector` | `srv/tool-embeddings[.<fp>].json` with a compatible fingerprint and matching text for every tool | `ToolCorpusMissingError` |
+  | `qdrant` | the stores `<prefix>-tools-reader` and `<prefix>-tools-writer` with a compatible fingerprint hash and matching corpus hash in each role's `<prefix>-catalog` record | `ToolCorpusMissingError` |
 
 - **Bundle names.** The committed SAP AI Core bundle keeps the name
   `srv/tool-embeddings.json`. Any other embedder gets
   `srv/tool-embeddings.<fp>.json`: built per deployment, never committed
   (`.gitignore`).
+- **SAP AI Core resource groups.** Startup and the build step look for the
+  exact bundle first, then bundles for the groups listed in
+  `LLM_AGENT_EMBEDDING_COMPATIBLE_RESOURCE_GROUPS`. The committed bundle uses
+  the `default` group. Bundles and Qdrant records use the same fingerprint
+  rule. The provider, embedding model, and endpoint must match, and a previous
+  resource group must be listed in the setting.
 - **What a missing corpus looks like.** The process keeps running, but no
   destination becomes ready: every SAP request answers `503` with the
   `ToolCorpusMissingError` message. Run the build step and restart.

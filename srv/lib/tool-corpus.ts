@@ -48,6 +48,36 @@ export function fingerprintHash(fp: EmbedderFingerprint): string {
   );
 }
 
+function resourceGroupFingerprints(
+  fp: EmbedderFingerprint,
+  resourceGroups: readonly string[],
+): EmbedderFingerprint[] {
+  return fp.provider === 'sap-ai-sdk'
+    ? resourceGroups.map((resourceGroup) => ({ ...fp, resourceGroup }))
+    : [];
+}
+
+/** Match hash-only records against the current fingerprint and configured AI Core groups. */
+export function compatibleFingerprintHashes(
+  fp: EmbedderFingerprint,
+  resourceGroups: readonly string[] = [],
+): ReadonlySet<string> {
+  return new Set(
+    [fp, ...resourceGroupFingerprints(fp, resourceGroups)].map(fingerprintHash),
+  );
+}
+
+/** Match a stored fingerprint or catalog hash against the compatible identities. */
+export function fingerprintMatches(
+  stored: EmbedderFingerprint | string,
+  runtime: EmbedderFingerprint,
+  resourceGroups?: readonly string[],
+): boolean {
+  const storedHash =
+    typeof stored === 'string' ? stored : fingerprintHash(stored);
+  return compatibleFingerprintHashes(runtime, resourceGroups).has(storedHash);
+}
+
 /** Split a shared corpus into its reader and writer collections. */
 export function corpusByRole(
   docs: SharedCorpusDoc[],
@@ -101,16 +131,22 @@ export function toolRecordAttributes(
 
 /**
  * Whether a record's attributes say its store holds `docs` embedded with `fp`
- * — both hashes equal. The build step skips on true; startup loads only on true.
+ * — compatible embedder and identical corpus. Both build and startup use it.
  */
 export function recordIsCurrent(
   attributes: unknown,
   fp: EmbedderFingerprint,
   docs: SharedCorpusDoc[],
+  resourceGroups?: readonly string[],
 ): boolean {
   if (!attributes || typeof attributes !== 'object') return false;
-  const a = attributes as Record<string, unknown>;
-  return a.fingerprint === fingerprintHash(fp) && a.corpus === corpusHash(docs);
+  return (
+    'fingerprint' in attributes &&
+    typeof attributes.fingerprint === 'string' &&
+    fingerprintMatches(attributes.fingerprint, fp, resourceGroups) &&
+    'corpus' in attributes &&
+    attributes.corpus === corpusHash(docs)
+  );
 }
 
 /**
@@ -123,4 +159,13 @@ export function bundleFileFor(fp: EmbedderFingerprint): string {
   return fingerprintHash(fp) === fingerprintHash(COMMITTED_BUNDLE_FINGERPRINT)
     ? 'tool-embeddings.json'
     : `tool-embeddings.${fingerprintHash(fp)}.json`;
+}
+
+/** Prefer the exact filename, then try the filenames for configured groups. */
+export function bundleFilesFor(
+  fp: EmbedderFingerprint,
+  resourceGroups: readonly string[] = [],
+): string[] {
+  const fingerprints = [fp, ...resourceGroupFingerprints(fp, resourceGroups)];
+  return [...new Set(fingerprints.map(bundleFileFor))];
 }

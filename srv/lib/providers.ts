@@ -292,6 +292,7 @@ export function agentQueryEmbedder(
 
 export interface Providers {
   embedding: Embedding | null;
+  compatibleEmbeddingResourceGroups?: readonly string[];
   stores: RagStoreFactory;
   /** The provider behind persistent collections; null unless that class is persistent. */
   collections?: IRagProvider | null;
@@ -308,6 +309,8 @@ export async function startProviders(
   setDestinationSource(destinations);
   return {
     embedding,
+    compatibleEmbeddingResourceGroups:
+      cfg.rag.compatibleEmbeddingResourceGroups,
     stores: createRagStoreFactory(cfg.rag, embedding),
     collections: embedding
       ? createCollectionProvider(cfg.rag, embedding)
