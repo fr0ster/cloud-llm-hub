@@ -3010,7 +3010,7 @@ export async function configureDestinationAgentBuilder(
   const mainLlm = await mainLlmPromise;
   const classifierLlm = await classifierLlmPromise;
 
-  // Skip SAP AI SDK model validation for non-SAP providers (openai, anthropic, deepseek)
+  // Keep the builder's startup chat probe specific to orchestration.
   const skipModelValidation = config.llm.provider !== 'sap-ai-sdk';
 
   const roleResolver = resolverFor(getCollectionRegistry());

@@ -1,8 +1,5 @@
 /**
- * SAP AI Core Embedder — IEmbedder implementation using @sap-ai-sdk/orchestration.
- *
- * Generates text embeddings via SAP AI Core embedding model deployments.
- * Authentication: reads AICORE_SERVICE_KEY env var automatically (same as LLM provider).
+ * Text embeddings through SAP AI Core orchestration or a foundation-models deployment.
  */
 
 import {
@@ -12,28 +9,37 @@ import {
   type IUsageRecorder,
   startOperation,
 } from '@mcp-abap-adt/llm-agent';
+import { buildDestination } from '@mcp-abap-adt/sap-aicore-llm';
+import {
+  AzureOpenAiEmbeddingClient,
+  type AzureOpenAiEmbeddingModel,
+} from '@sap-ai-sdk/foundation-models';
 import {
   type EmbeddingModel,
   OrchestrationEmbeddingClient,
 } from '@sap-ai-sdk/orchestration';
+import { getAiCoreAccess } from './llm-factory';
 
 export interface SapAiCoreEmbedderConfig {
   /** Embedding model name (e.g. 'text-embedding-3-small') */
   model: string;
   /** SAP AI Core resource group (optional) */
   resourceGroup?: string;
+  scenario?: 'foundation-models';
   usage?: IUsageRecorder;
 }
 
 export class SapAiCoreEmbedder implements IEmbedder {
   private readonly model: string;
   private readonly resourceGroup?: string;
+  private readonly scenario?: SapAiCoreEmbedderConfig['scenario'];
   private readonly usage?: IUsageRecorder;
 
   constructor(config: SapAiCoreEmbedderConfig) {
     this.usage = config.usage;
     this.model = config.model;
     this.resourceGroup = config.resourceGroup;
+    this.scenario = config.scenario;
   }
 
   async embed(
@@ -43,22 +49,19 @@ export class SapAiCoreEmbedder implements IEmbedder {
     vector: number[];
     usage?: { promptTokens: number; totalTokens: number };
   }> {
-    const createClient = (): OrchestrationEmbeddingClient =>
-      new OrchestrationEmbeddingClient(
-        { embeddings: { model: { name: this.model as EmbeddingModel } } },
-        this.resourceGroup ? { resourceGroup: this.resourceGroup } : undefined,
-      );
     if (!(options?.usage ?? this.usage)) {
-      const client = createClient();
-      const response = await client.embed({ input: text });
-      return this.decode(response);
+      const { embedding } = await this.requestEmbedding(text, options?.signal);
+      return this.decode(embedding);
     }
 
     const request = beginEmbeddingRequest(
       options,
       startOperation(options),
       {
-        provider: 'sap-ai-sdk',
+        provider:
+          this.scenario === 'foundation-models'
+            ? 'sap-aicore-foundation'
+            : 'sap-ai-sdk',
         model: this.model,
         inputs: 1,
         inputChars: text.length,
@@ -71,10 +74,9 @@ export class SapAiCoreEmbedder implements IEmbedder {
     let failure: Error | undefined;
     let inputTokens: number | undefined;
     try {
-      const client = createClient();
-      const response = await client.embed({ input: text });
-      inputTokens = response.getTokenUsage()?.prompt_tokens;
-      const result = this.decode(response);
+      const response = await this.requestEmbedding(text, options?.signal);
+      inputTokens = response.inputTokens;
+      const result = this.decode(response.embedding);
       outcome = 'ok';
       return result;
     } catch (error) {
@@ -96,15 +98,47 @@ export class SapAiCoreEmbedder implements IEmbedder {
     }
   }
 
-  private decode(
-    response: Awaited<ReturnType<OrchestrationEmbeddingClient['embed']>>,
-  ): { vector: number[] } {
-    const embeddings = response.getEmbeddings();
-    if (!embeddings || embeddings.length === 0) {
+  private async requestEmbedding(text: string, signal?: AbortSignal) {
+    if (this.scenario === 'foundation-models') {
+      signal?.throwIfAborted();
+      const destination = await buildDestination(getAiCoreAccess());
+      const client = new AzureOpenAiEmbeddingClient(
+        {
+          modelName: this.model as AzureOpenAiEmbeddingModel,
+          resourceGroup: this.resourceGroup,
+        },
+        destination,
+      );
+      const response = await client.run({ input: text }, { signal });
+      return {
+        get embedding() {
+          return response.getEmbedding();
+        },
+        get inputTokens() {
+          return response._data.usage?.prompt_tokens;
+        },
+      };
+    }
+    const client = new OrchestrationEmbeddingClient(
+      { embeddings: { model: { name: this.model as EmbeddingModel } } },
+      this.resourceGroup ? { resourceGroup: this.resourceGroup } : undefined,
+    );
+    const response = await client.embed({ input: text });
+    return {
+      get embedding() {
+        return response.getEmbeddings()?.[0]?.embedding;
+      },
+      get inputTokens() {
+        return response.getTokenUsage()?.prompt_tokens;
+      },
+    };
+  }
+
+  private decode(embedding?: number[] | string): { vector: number[] } {
+    if (embedding === undefined) {
       throw new Error('No embeddings returned from SAP AI Core');
     }
 
-    const embedding = embeddings[0].embedding;
     // Handle base64-encoded embeddings
     if (typeof embedding === 'string') {
       const buffer = Buffer.from(embedding, 'base64');

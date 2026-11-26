@@ -9,6 +9,8 @@
 import cds from '@sap/cds';
 import type { AgentConfig } from '../agent-config';
 import { getServiceCredentials, getToken } from './btp-oauth';
+import { makeHubFoundationProvider } from './llm-factory';
+import { foundationChatFamily } from './model-capabilities';
 
 /** The LLM settings the model list depends on, handed in by the caller. */
 export type ModelListConfig = Pick<
@@ -50,6 +52,24 @@ const EXCLUDED_CONFIG_PREFIXES = ['defaultOrchestrationConfig'];
 let cachedModels: AiCoreModelEntry[] | null = null;
 let cacheTimestamp = 0;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+export async function getFoundationModels(
+  llm: Pick<ModelListConfig, 'model' | 'resourceGroup'>,
+): Promise<AiCoreModelEntry[]> {
+  const models = await makeHubFoundationProvider({
+    model: llm.model,
+    resourceGroup: llm.resourceGroup,
+  }).getModels();
+  return models
+    .filter(({ id }) => foundationChatFamily(id) !== undefined)
+    .map(({ id }) => ({
+      id,
+      object: 'model' as const,
+      created: 0,
+      owned_by: 'sap-ai-core',
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
 
 /**
  * Fetch RUNNING deployments from AI Core and filter to LLM models.
@@ -187,6 +207,7 @@ async function fetchOpenAiModels(
 export async function getAvailableModels(
   llm: ModelListConfig,
 ): Promise<AiCoreModelEntry[]> {
+  if (llm.provider === 'sap-aicore-foundation') return getFoundationModels(llm);
   if (cachedModels && Date.now() - cacheTimestamp < CACHE_TTL_MS) {
     return cachedModels;
   }

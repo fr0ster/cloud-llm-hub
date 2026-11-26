@@ -14,10 +14,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { IntentEnricher } from '@mcp-abap-adt/llm-agent';
+import type { LlmProvider } from '../srv/agent-config';
 import { baseToolText, listToolDefsFromExporter } from '../srv/agent-manager';
+import { deployModel } from '../srv/lib/deploy-model';
 import { makeHubLlm } from '../srv/lib/llm-factory';
-
-type LlmProvider = 'sap-ai-sdk' | 'openai' | 'anthropic' | 'deepseek';
 
 // Load default-env.json (VCAP_SERVICES) for SAP AI SDK — same as cds watch
 const defaultEnvPath = path.resolve(__dirname, '../default-env.json');
@@ -28,16 +28,11 @@ if (fs.existsSync(defaultEnvPath)) {
   }
 }
 
-const MODEL = process.env.LLM_AGENT_CLASSIFIER_MODEL || 'gpt-4.1-mini';
 const PROVIDER = (process.env.LLM_AGENT_PROVIDER ||
   'sap-ai-sdk') as LlmProvider;
 const OUTPUT = path.resolve(__dirname, '../srv/tool-intents.json');
 
 async function main() {
-  console.log(
-    `Generating tool intents with model=${MODEL}, provider=${PROVIDER}`,
-  );
-
   const tools = listToolDefsFromExporter().map((tool) => ({
     name: tool.name,
     text: baseToolText(tool),
@@ -65,12 +60,18 @@ async function main() {
   }
 
   // Create LLM for enrichment
+  const model =
+    process.env.LLM_AGENT_CLASSIFIER_MODEL?.trim() ||
+    (PROVIDER === 'sap-aicore-foundation' ? deployModel() : 'gpt-4.1-mini');
+  console.log(
+    `Generating tool intents with model=${model}, provider=${PROVIDER}`,
+  );
   const llm = await makeHubLlm(
     {
       provider: PROVIDER,
       apiKey: process.env.LLM_AGENT_API_KEY,
       baseURL: process.env.LLM_AGENT_BASE_URL,
-      model: MODEL,
+      model,
       resourceGroup: process.env.LLM_AGENT_RESOURCE_GROUP || 'default',
     },
     0.1,

@@ -69,8 +69,8 @@ goal sizes, states, durations and hashed session keys. They never contain goal t
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `LLM_AGENT_PROVIDER` | `sap-ai-sdk` | `sap-ai-sdk`, `openai`, `anthropic` or `deepseek` |
-| `LLM_AGENT_MODEL` | `gpt-4o-mini` | Model id; for SAP AI Core it must be deployed in AI Launchpad |
+| `LLM_AGENT_PROVIDER` | `sap-ai-sdk` | `sap-ai-sdk`, `sap-aicore-foundation`, `openai`, `anthropic` or `deepseek` |
+| `LLM_AGENT_MODEL` | `gpt-4o-mini` for existing providers. Required for `sap-aicore-foundation` | Model ID. For `sap-aicore-foundation`, use the name of a running deployment's model. |
 | `LLM_AGENT_API_KEY` | — | Non-SAP providers only. Set with `cf set-env`, never in `.mtaext` |
 | `LLM_AGENT_BASE_URL` | — | Non-SAP providers only. Also used for the embedder |
 | `LLM_AGENT_RESOURCE_GROUP` | `default` | SAP AI Core resource group |
@@ -81,8 +81,8 @@ goal sizes, states, durations and hashed session keys. They never contain goal t
 | `LLM_AGENT_TOOLS_K_READER` | `5` | Reader collection seed tools per query; positive integer |
 | `LLM_AGENT_TOOLS_K_WRITER` | `2` | Writer collection seed tools per query; positive integer. Write roles expand found object clusters within their allowed tools |
 | `LLM_AGENT_TOOLS_SELECTION` | `step-kind` | `per-collection`: reader top-k plus writer clusters; `step-kind`: RO reader top-k, RW writer clusters, UNKNOWN union. Invalid values refuse startup. |
-| `LLM_AGENT_EMBEDDER` | `sap-ai-core` if `LLM_AGENT_PROVIDER=sap-ai-sdk`, else `openai` | `sap-ai-core` \| `openai` \| `ollama`. Only accepted when at least one RAG class below is not `in-memory` |
-| `LLM_AGENT_EMBEDDING_MODEL` | `text-embedding-3-small` (`ollama`: none — required) | Embedding model id |
+| `LLM_AGENT_EMBEDDER` | `sap-ai-core` for SAP AI Core providers, otherwise `openai` | `sap-ai-core` \| `openai` \| `ollama`. Only accepted when at least one RAG class below is not `in-memory` |
+| `LLM_AGENT_EMBEDDING_MODEL` | `text-embedding-3-small`. Required for `ollama` and for `sap-ai-core` with `sap-aicore-foundation`. | Embedding model ID |
 | `LLM_AGENT_EMBEDDING_DIMENSION` | ? | Optional positive integer for Qdrant task-result vectors. Otherwise resolved once per provider/embedder from existing hub collections with the same embedder (dimensions must agree), then from one constant-text embedding probe. Target collection 404 is expected for a new session. HANA/Postgres retain 1536. |
 | `LLM_AGENT_EMBEDDER_URL` | `openai`: `LLM_AGENT_BASE_URL`; `ollama`: `http://localhost:11434` | Embedder base URL |
 | `LLM_AGENT_EMBEDDER_API_KEY` | `openai`: `LLM_AGENT_API_KEY` | Embedder API key. Secret — set with `cf set-env`, never in `.mtaext` |
@@ -479,14 +479,51 @@ Skill front matter accepts `kind: base` or `kind: informational` (default) and a
 An **assistant** is the future memory-and-learning entity; an **agent** performs a role described by a **profile**, within a **pipeline**.
 
 
+## SAP AI Core foundation-models
+
+Use `sap-aicore-foundation` for SAP AI Core where chat models run as individual
+`foundation-models` deployments. Set the resource group and the exact name of
+the deployed chat model:
+
+```dotenv
+LLM_AGENT_PROVIDER=sap-aicore-foundation
+LLM_AGENT_RESOURCE_GROUP=<resource-group>
+LLM_AGENT_MODEL=<deployed-chat-model>
+LLM_AGENT_MODELS=catalog
+```
+
+The Hub uses the SAP AI Core service binding in `VCAP_SERVICES` first, then
+`AICORE_SERVICE_KEY`, then `AICORE_AUTH_URL`, `AICORE_CLIENT_ID`,
+`AICORE_CLIENT_SECRET` and `AICORE_BASE_URL`. Supply credentials through the
+binding or environment.
+
+Role, classifier, helper and LLM tool-retrieval models use deployments in
+the same resource group. For `anthropic--*` models the Hub supplies Bedrock's
+required `max_tokens` from the model's documented output maximum in
+`srv/lib/model-capabilities.ts`. A configured model with no entry fails
+configuration validation.
+
+For vector RAG, deploy an Azure OpenAI embedding model in the same group under
+`foundation-models` and add these settings:
+
+```dotenv
+LLM_AGENT_RAG_TYPE=vector
+LLM_AGENT_EMBEDDER=sap-ai-core
+LLM_AGENT_EMBEDDING_MODEL=text-embedding-3-small
+```
+
+The SAP AI Core embedder selects the `foundation-models` REST path automatically
+with this LLM provider. For keyword-only RAG, omit the embedder settings.
+
 ## Model selection
 
 `LLM_AGENT_MODELS` is a comma-separated allowlist for request and agent model choices.
 
-Use `catalog` or `catalog,extra-model` with `LLM_AGENT_PROVIDER=sap-ai-sdk`
-(the default) or `LLM_AGENT_PROVIDER=anthropic` to load models available to the
-configured provider credential. SAP AI Core includes foundation models eligible
-for orchestration chat: text generation, orchestration scenario, and not deprecated.
+Use `catalog` or `catalog,extra-model` with `LLM_AGENT_PROVIDER=sap-ai-sdk`,
+`sap-aicore-foundation` or `anthropic` to load models available to the configured
+provider credential. `sap-ai-sdk` includes current models eligible for orchestration
+chat. `sap-aicore-foundation` lists chat model names from running `foundation-models`
+deployments in `LLM_AGENT_RESOURCE_GROUP`.
 Anthropic uses the provider's model list with the same API key and base URL as chat;
 entries with capabilities are limited to text generation, while entries without
 capability metadata are included by id. Other providers reject this token at startup.

@@ -1,6 +1,8 @@
 import { isOrchestrationChatModel } from '@mcp-abap-adt/sap-aicore-llm';
 import cds from '@sap/cds';
+import { getFoundationModels } from './ai-core-models';
 import { BuildValidationError } from './build-validation-error';
+import { deployModel } from './deploy-model';
 import {
   makeHubAnthropicCatalogProvider,
   makeHubCatalogProvider,
@@ -23,10 +25,11 @@ export function validateModelCatalogProvider(
   if (
     usesModelCatalog(env) &&
     provider !== 'sap-ai-sdk' &&
+    provider !== 'sap-aicore-foundation' &&
     provider !== 'anthropic'
   )
     throw new BuildValidationError(
-      'Invalid LLM_AGENT_MODELS: catalog requires LLM_AGENT_PROVIDER=sap-ai-sdk or anthropic',
+      'Invalid LLM_AGENT_MODELS: catalog requires LLM_AGENT_PROVIDER=sap-ai-sdk, sap-aicore-foundation or anthropic',
     );
 }
 
@@ -53,7 +56,13 @@ export function withModelCatalog<T>(run: () => Promise<T>): Promise<T> {
 
 async function loadCatalog(): Promise<void> {
   try {
-    if (process.env.LLM_AGENT_PROVIDER === 'anthropic') {
+    if (process.env.LLM_AGENT_PROVIDER === 'sap-aicore-foundation') {
+      const catalog = await getFoundationModels({
+        model: deployModel(),
+        resourceGroup: process.env.LLM_AGENT_RESOURCE_GROUP,
+      });
+      setModelCatalogSnapshot(catalog.map(({ id }) => id));
+    } else if (process.env.LLM_AGENT_PROVIDER === 'anthropic') {
       const catalog = await makeHubAnthropicCatalogProvider().getModels();
       setModelCatalogSnapshot(
         catalog

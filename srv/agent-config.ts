@@ -12,7 +12,9 @@ import {
 import type { ExecutionLimits } from './lib/execution-limits';
 import { type ExternalMcpConfig, parseExternalMcp } from './lib/external-mcp';
 import { configuredMaxTokens } from './lib/max-tokens-config';
+import { foundationMaxTokens } from './lib/model-capabilities';
 import { validateModelCatalogProvider } from './lib/model-catalog';
+import { parseModelAllowlist } from './lib/model-policy';
 import { configuredTemperature } from './lib/temperature-config';
 import { parseTrustDefaults, type TrustDefaults } from './lib/trust';
 /**
@@ -63,7 +65,12 @@ import { WaitAsNeeded, WaitIfShortEnough } from './lib/throttle-strategy';
 export type SmartAgentMode = 'smart' | 'pass' | 'hard';
 export type RagType = 'in-memory' | 'ollama';
 
-export type LlmProvider = 'sap-ai-sdk' | 'openai' | 'anthropic' | 'deepseek';
+export type LlmProvider =
+  | 'sap-ai-sdk'
+  | 'sap-aicore-foundation'
+  | 'openai'
+  | 'anthropic'
+  | 'deepseek';
 
 export type ToolRetrievalConfig =
   | { strategy: 'rag'; model?: string }
@@ -83,6 +90,7 @@ export interface EmbedderConfig {
   url?: string;
   apiKey?: string;
   resourceGroup?: string;
+  scenario?: 'foundation-models';
 }
 export interface QdrantConfig {
   url: string;
@@ -197,7 +205,7 @@ export interface AgentConfig {
    */
   llm: {
     contextCapture?: 'off' | 'stats' | 'full';
-    /** LLM provider: 'sap-ai-sdk' (default), 'openai', 'anthropic', 'deepseek' */
+    /** LLM provider. The default is sap-ai-sdk. */
     provider: LlmProvider;
 
     /** Model name (e.g., 'gpt-4o-mini', 'claude-3-5-sonnet') */
@@ -229,7 +237,7 @@ export interface AgentConfig {
     /** Base URL for openai-compatible providers (e.g., https://api.openai.com/v1) */
     baseUrl?: string;
 
-    /** SAP AI Core resource group (sap-ai-sdk only) */
+    /** SAP AI Core resource group */
     resourceGroup?: string;
 
     /**
@@ -420,15 +428,30 @@ export function parseRagConfig(
   }
   const kind =
     (kindRaw as EmbedderKind | undefined) ??
-    (llm.provider === 'sap-ai-sdk' ? 'sap-ai-core' : 'openai');
+    (llm.provider === 'sap-ai-sdk' || llm.provider === 'sap-aicore-foundation'
+      ? 'sap-ai-core'
+      : 'openai');
   const model = set(env, 'LLM_AGENT_EMBEDDING_MODEL');
   let embedder: EmbedderConfig;
   if (kind === 'sap-ai-core') {
-    embedder = {
-      kind,
-      model: model ?? DEFAULT_EMBEDDING_MODEL,
-      resourceGroup: llm.resourceGroup,
-    };
+    if (llm.provider === 'sap-aicore-foundation') {
+      if (!model)
+        throw new BuildValidationError(
+          'LLM_AGENT_EMBEDDING_MODEL must name a deployed embedding model for sap-ai-core with sap-aicore-foundation.',
+        );
+      embedder = {
+        kind,
+        model,
+        resourceGroup: llm.resourceGroup,
+        scenario: 'foundation-models',
+      };
+    } else {
+      embedder = {
+        kind,
+        model: model ?? DEFAULT_EMBEDDING_MODEL,
+        resourceGroup: llm.resourceGroup,
+      };
+    }
   } else if (kind === 'openai') {
     embedder = {
       kind,
@@ -664,7 +687,8 @@ export function loadAgentConfig(): AgentConfig {
   ] as const)
     configuredPromptCaching(role);
   const maxTokens = configuredMaxTokens();
-  const resourceGroup = process.env.LLM_AGENT_RESOURCE_GROUP;
+  const resourceGroup =
+    process.env.LLM_AGENT_RESOURCE_GROUP?.trim() || undefined;
   const apiKey = process.env.LLM_AGENT_API_KEY || '';
   const baseUrl = process.env.LLM_AGENT_BASE_URL || '';
 
@@ -717,7 +741,7 @@ export function loadAgentConfig(): AgentConfig {
       contextCapture: parseContextCapture(),
       provider,
       model,
-      classifierModel: process.env.LLM_AGENT_CLASSIFIER_MODEL || model,
+      classifierModel: process.env.LLM_AGENT_CLASSIFIER_MODEL?.trim() || model,
       executorModel: configuredRoleModel('executor'),
       checkerModel: configuredRoleModel('checker'),
       plannerModel: process.env.LLM_AGENT_PLANNER_MODEL?.trim() || undefined,
@@ -786,6 +810,21 @@ export function loadAgentConfig(): AgentConfig {
     rag,
     destinations,
   };
+
+  if (provider === 'sap-aicore-foundation') {
+    for (const model of new Set([
+      ...parseModelAllowlist(),
+      config.llm.model,
+      config.llm.classifierModel,
+      config.llm.plannerModel,
+      config.llm.coordinatorModel,
+      config.llm.executorModel,
+      config.llm.checkerModel,
+      toolRetrieval.model,
+    ])) {
+      if (model) foundationMaxTokens(model);
+    }
+  }
 
   log.info('Agent configuration loaded', {
     provider: config.llm.provider,
