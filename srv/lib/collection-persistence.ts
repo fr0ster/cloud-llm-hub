@@ -95,6 +95,10 @@ export function catalogOwner(meta: CollectionMeta): RagCollectionOwner {
   return { scope: 'user', userId: meta.owner };
 }
 
+export function encodeEmbedderAttribute(embedderFp: string) {
+  return { embedder: embedderFp };
+}
+
 /** Record attributes: JSON only, no undefined values. */
 export function encodeAttributes(
   meta: CollectionMeta,
@@ -115,7 +119,7 @@ export function encodeAttributes(
       : {}),
     ...(meta.collectionKind ? { collectionKind: meta.collectionKind } : {}),
     ...(meta.agentsCopyPending ? { agentsCopyPending: true } : {}),
-    embedder: embedderFp,
+    ...encodeEmbedderAttribute(embedderFp),
     createdAt: meta.createdAt,
     ...(meta.expiresAt !== undefined ? { expiresAt: meta.expiresAt } : {}),
     hubOwner: {
