@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
+const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { splitDotenvValue } = require('./set-env-from-dotenv.js');
 
 // CAP already depends on the source-preserving YAML parser.
 const yaml = require(
@@ -120,6 +122,17 @@ function lineEnding(source) {
   return source.match(/\r?\n/)?.[0] || '\n';
 }
 
+function formatDotenvValue(value, { leading, quote, trailing }) {
+  const unquoted = leading + value + trailing;
+  if (!quote && splitDotenvValue(unquoted).value === value) return unquoted;
+
+  const delimiter = quote || '"';
+  const escaped = value
+    .replaceAll('\\', '\\\\')
+    .replaceAll(delimiter, `\\${delimiter}`);
+  return `${leading}${delimiter}${escaped}${delimiter}${trailing}`;
+}
+
 function updateDotenv(source, entries) {
   const changes = new Map(Object.keys(entries).map((key) => [key, 'added']));
   const updated = source
@@ -132,9 +145,10 @@ function updateDotenv(source, entries) {
       const key = line.slice(0, eq).trim();
       if (!changes.has(key)) return line;
 
-      if (line.slice(eq + 1).trim() !== entries[key]) {
+      const current = splitDotenvValue(line.slice(eq + 1));
+      if (current.value !== entries[key]) {
         changes.set(key, 'updated');
-        return `${line.slice(0, eq + 1)}${entries[key]}`;
+        return line.slice(0, eq + 1) + formatDotenvValue(entries[key], current);
       }
       if (changes.get(key) === 'added') changes.set(key, 'unchanged');
       return line;
@@ -144,7 +158,13 @@ function updateDotenv(source, entries) {
   const eol = lineEnding(source);
   const added = [];
   for (const [key, status] of changes) {
-    if (status === 'added') added.push(`${key}=${entries[key]}${eol}`);
+    if (status === 'added') {
+      const value = formatDotenvValue(entries[key], {
+        leading: '',
+        trailing: '',
+      });
+      added.push(`${key}=${value}${eol}`);
+    }
   }
   const separator =
     added.length && updated && !updated.endsWith('\n') ? eol : '';
@@ -208,6 +228,46 @@ function replaceYamlValue(source, node, value) {
   );
 }
 
+function findYamlAlias(doc, node) {
+  let firstAlias;
+  yaml.visit(doc, {
+    Alias(_key, alias) {
+      if (alias.source === node.anchor && alias.resolve(doc) === node) {
+        firstAlias = alias;
+        return yaml.visit.BREAK;
+      }
+    },
+  });
+  return firstAlias;
+}
+
+function replaceSharedYamlValue(source, doc, pair, alias, value) {
+  // Move the old definition to the first use so subsequent aliases still resolve.
+  const original = pair.value.clone();
+  original.comment = undefined;
+  original.commentBefore = undefined;
+  if (typeof original.value === 'string') original.type = 'QUOTE_DOUBLE';
+  const definition = yaml
+    .stringify(original, {
+      schema: doc.schema,
+      collectionStyle: 'flow',
+      doubleQuotedMinMultiLineLength: Infinity,
+      lineWidth: 0,
+    })
+    .trimEnd();
+  const [start, end] = alias.range;
+  let updated = spliceSource(source, start, end, definition);
+  updated = replaceYamlValue(updated, pair.value, value);
+
+  for (const token of pair.srcToken.sep.toReversed()) {
+    if (token.type !== 'anchor' && token.type !== 'tag') continue;
+    const end = token.offset + token.source.length;
+    const padding = source.slice(end).match(/^[ \t]*/)[0];
+    updated = spliceSource(updated, token.offset, end + padding.length, '');
+  }
+  return updated;
+}
+
 function updateMtaProperty(source, key, value) {
   const doc = yaml.parseDocument(source, { keepSourceTokens: true });
   if (doc.errors.length || !yaml.isMap(doc.contents)) {
@@ -225,9 +285,12 @@ function updateMtaProperty(source, key, value) {
   if (!yaml.isSeq(modules))
     throw new CliError('Expected .mtaext modules to be a YAML sequence.');
 
-  const srv = modules.items.find(
-    (item) => yaml.isMap(item) && item.get('name') === SRV_MODULE,
-  );
+  const srv = modules.items.find((item) => {
+    if (!yaml.isMap(item)) return false;
+    const name = item.get('name', true);
+    const resolved = yaml.isAlias(name) ? name.resolve(doc) : name;
+    return yaml.isScalar(resolved) && resolved.value === SRV_MODULE;
+  });
   if (!srv) return [addYamlEntry(source, modules, [module]), 'added'];
 
   const properties = srv.get('properties', true);
@@ -239,12 +302,24 @@ function updateMtaProperty(source, key, value) {
   if (!yaml.isMap(properties))
     throw new CliError('Expected .mtaext srv properties to be a YAML mapping.');
 
-  const current = properties.get(key, true);
+  const pair = properties.items.find(
+    (item) => yaml.isScalar(item.key) && item.key.value === key,
+  );
+  const current = pair?.value;
   if (!current) return [addYamlEntry(source, properties, property), 'added'];
   if (!yaml.isScalar(current) && !yaml.isAlias(current)) {
     throw new CliError(
       `Expected ${key} in .mtaext srv properties to be a scalar.`,
     );
+  }
+  if (current.anchor) {
+    const alias = findYamlAlias(doc, current);
+    if (alias) {
+      return [
+        replaceSharedYamlValue(source, doc, pair, alias, value),
+        'updated',
+      ];
+    }
   }
   if (yaml.isScalar(current) && current.value === value)
     return [source, 'unchanged'];
@@ -276,15 +351,85 @@ function readTarget(file) {
   }
 }
 
-function saveTarget(file, source, { updated, changes }) {
-  if (source !== updated) {
-    try {
-      fs.writeFileSync(file, updated, { encoding: 'utf8', mode: 0o600 });
-    } catch {
-      throw new CliError(`Could not write ${file}.`);
+function saveTargets(targets) {
+  const pending = targets
+    .filter(({ source, update }) => source !== update.updated)
+    .map((target) => {
+      const staging = `${target.file}.${randomUUID()}`;
+      return {
+        ...target,
+        temp: `${staging}.tmp`,
+        backup: `${staging}.bak`,
+        replaced: false,
+      };
+    });
+
+  let completed = false;
+  let file;
+  try {
+    for (const target of pending) {
+      file = target.file;
+      const mode = target.source === undefined ? 0o600 : fs.statSync(file).mode;
+      fs.writeFileSync(target.temp, target.update.updated, {
+        encoding: 'utf8',
+        flag: 'wx',
+        mode,
+      });
+    }
+    for (const target of pending) {
+      file = target.file;
+      if (target.source !== undefined) {
+        fs.cpSync(file, target.backup, {
+          errorOnExist: true,
+          force: false,
+          preserveTimestamps: true,
+          verbatimSymlinks: true,
+        });
+      }
+    }
+    for (const target of pending) {
+      file = target.file;
+      fs.renameSync(target.temp, file);
+      target.replaced = true;
+    }
+    completed = true;
+  } catch {
+    let restored = true;
+    for (const target of pending.toReversed()) {
+      if (!target.replaced) continue;
+      try {
+        if (target.source === undefined) fs.unlinkSync(target.file);
+        else fs.renameSync(target.backup, target.file);
+        target.replaced = false;
+      } catch {
+        restored = false;
+      }
+    }
+    throw new CliError(
+      restored
+        ? `Could not write ${file}.`
+        : 'Could not restore deployment configuration. Available backups were retained.',
+    );
+  } finally {
+    for (const target of pending) {
+      removeStagedFile(target.temp);
+      if (completed || !target.replaced) removeStagedFile(target.backup);
     }
   }
-  for (const [key, status] of changes) console.log(`${file}: ${key} ${status}`);
+
+  for (const { file, update } of targets) {
+    for (const [key, status] of update.changes) {
+      console.log(`${file}: ${key} ${status}`);
+    }
+  }
+}
+
+function removeStagedFile(file) {
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    console.error('Could not remove a deployment staging file.');
+  }
 }
 
 function main(args = process.argv.slice(2)) {
@@ -292,17 +437,24 @@ function main(args = process.argv.slice(2)) {
     const { keyFile, dir, properties } = parseArgs(args);
     const credentials = readServiceKey(keyFile);
     const envFile = path.join(dir, '.env');
-    const envSource = readTarget(envFile) ?? '';
-    const envUpdate = updateDotenv(envSource, credentials);
+    const envSource = readTarget(envFile);
+    const envUpdate = updateDotenv(envSource ?? '', credentials);
     const mtaFile = path.join(dir, '.mtaext');
     const updateMta = Object.keys(properties).length > 0;
     const mtaSource = updateMta ? readTarget(mtaFile) : undefined;
-    const mtaUpdate =
-      mtaSource === undefined ? undefined : updateMtaext(mtaSource, properties);
+    const targets = [{ file: envFile, source: envSource, update: envUpdate }];
+    if (mtaSource !== undefined) {
+      targets.push({
+        file: mtaFile,
+        source: mtaSource,
+        update: updateMtaext(mtaSource, properties),
+      });
+    }
 
-    saveTarget(envFile, envSource, envUpdate);
-    if (mtaUpdate) saveTarget(mtaFile, mtaSource, mtaUpdate);
-    else if (updateMta) console.log(`${mtaFile}: missing, skipped`);
+    saveTargets(targets);
+    if (updateMta && mtaSource === undefined) {
+      console.log(`${mtaFile}: missing, skipped`);
+    }
   } catch (error) {
     // Parser and system errors can include input values. Report fixed messages only.
     console.error(
