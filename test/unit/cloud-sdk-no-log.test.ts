@@ -1,5 +1,7 @@
 import { registerDestination } from '@sap-cloud-sdk/connectivity';
+import { createLogger } from '@sap-cloud-sdk/util';
 import axios from 'axios';
+import Transport from 'winston-transport';
 import { CloudSdkAbapConnection } from '../../srv/connections/CloudSdkAbapConnection';
 import { applyLoggingConfig } from '../../srv/lib/logging-config';
 
@@ -8,10 +10,22 @@ it('keeps noLog request headers out of logs with SAP Cloud SDK debug enabled', a
   const destinationName = 'ABAP_GIT_LOG_TEST';
   const username = 'ABAP_GIT_USERNAME_SENTINEL';
   const password = 'ABAP_GIT_PASSWORD_SENTINEL';
-  const logOutput = [
-    jest.spyOn(process.stdout, 'write').mockReturnValue(true),
-    jest.spyOn(process.stderr, 'write').mockReturnValue(true),
+  const logRecords: string[] = [];
+  const loggers = [
+    createLogger('http-client'),
+    createLogger('csrf-middleware'),
   ];
+  const captures = loggers.map((logger) => {
+    // Inherit each logger's level so the HTTP logger's cap applies to the capture.
+    const transport = new Transport({
+      log(record: object, done: () => void) {
+        logRecords.push(JSON.stringify(record));
+        done();
+      },
+    });
+    logger.add(transport);
+    return { logger, transport };
+  });
   const request = jest.spyOn(axios, 'request').mockResolvedValue({
     status: 200,
     data: '',
@@ -47,13 +61,12 @@ it('keeps noLog request headers out of logs with SAP Cloud SDK debug enabled', a
         }),
       }),
     );
-    const logs = logOutput
-      .flatMap((output) => output.mock.calls.map(([chunk]) => String(chunk)))
-      .join('');
+    const logs = logRecords.join('\n');
     expect(logs).toContain('Method is GET no CSRF token needed.');
     expect(logs).not.toContain(username);
     expect(logs).not.toContain(password);
   } finally {
+    for (const { logger, transport } of captures) logger.remove(transport);
     connection.reset();
     jest.restoreAllMocks();
   }
