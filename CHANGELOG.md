@@ -13,10 +13,11 @@ All notable changes to this project will be documented in this file. The format 
 - Upgrade `@mcp-abap-adt/lib` to 24.2.1: read tools answer terse (TSV) by default and take `detail`; `HandlerUnlock` is now `HandlerLock` with `action: unlock`. The hub's tool texts, intents and dump parsing follow the new answers. The tool embedding bundle is rebuilt by `tools/deploy.sh` for the deployment's embedder.
 - Upgrade `@mcp-abap-adt/anthropic-llm` and `@mcp-abap-adt/sap-aicore-llm` to 31.2.1.
 - The SAP connection honours the `stateless`, `noLog` and `noResend` request options.
+- SAP Cloud SDK HTTP request header dumps are disabled even when SDK debug logging is enabled.
 
 ### Fixed
 
-- Anthropic models on SAP AI Core (Bedrock) report their input tokens; a later zero no longer overwrites them (llm-agent 31.2.1).
+- Anthropic models on SAP AI Core (Bedrock) report their input tokens; a later zero no longer overwrites them (`@mcp-abap-adt/anthropic-llm` and `@mcp-abap-adt/sap-aicore-llm` 31.2.1).
 - The SAP AI Core embedder returns the provider's token usage, so the embedding migration and other callers report embedding tokens instead of "not reported".
 
 ## [12.1.1] - 2026-11-27
