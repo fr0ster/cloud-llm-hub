@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [12.2.1] - 2026-11-27
+
+### Fixed
+
+- Chat history and other HANA-backed RAG reads work on HANA Cloud: `@mcp-abap-adt/hana-vector-rag` 33.0.4 uses `JSON_VALUE ... RETURNING DECIMAL` instead of the rejected `RETURNING DOUBLE` and plain DDL instead of `IF [NOT] EXISTS` (#244).
+
 ## [12.2.0] - 2026-11-27
 
 ### Added
