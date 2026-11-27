@@ -12,6 +12,8 @@ describe('needsSapConnection', () => {
     'resources/list',
     'resources/templates/list',
     'prompts/list',
+    'prompts/get',
+    'completion/complete',
     'logging/setLevel',
   ])('%s is answered without a SAP session', (method) => {
     expect(needsSapConnection({ jsonrpc: '2.0', id: 1, method })).toBe(false);
@@ -38,14 +40,12 @@ describe('needsSapConnection', () => {
   // The allowlist is the fail-safe: only methods known to stay inside the MCP
   // server skip the connection. A future SAP-backed method must not silently
   // inherit an unopened one.
-  it.each([
-    'resources/read',
-    'prompts/get',
-    'completion/complete',
-    'some/future/sap/method',
-  ])('%s is unknown, so it connects', (method) => {
-    expect(needsSapConnection({ jsonrpc: '2.0', id: 1, method })).toBe(true);
-  });
+  it.each(['resources/read', 'some/future/sap/method'])(
+    '%s is unknown, so it connects',
+    (method) => {
+      expect(needsSapConnection({ jsonrpc: '2.0', id: 1, method })).toBe(true);
+    },
+  );
 
   it('a batch opens the connection when ANY member needs SAP', () => {
     expect(

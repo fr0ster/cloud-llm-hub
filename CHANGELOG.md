@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- The raw MCP endpoint serves the abapGit tools of `@mcp-abap-adt/lib` 24.2: reads for `MCP_Reader`, link, pull, push, unlink and branch switch for `MCP_Developer` (`GetAbapGitBranchInfo` also needs `MCP_Developer`, it links the repository temporarily). Git credentials come per request in the `x-abapgit-remote`, `x-abapgit-user` and `x-abapgit-token` headers, are bound to that remote and masked in logs. The agent channel does not serve abapGit.
+
+### Changed
+
+- Upgrade `@mcp-abap-adt/lib` to 24.2.1: read tools answer terse (TSV) by default and take `detail`; `HandlerUnlock` is now `HandlerLock` with `action: unlock`. The hub's tool texts, intents and dump parsing follow the new answers. The tool embedding bundle is rebuilt by `tools/deploy.sh` for the deployment's embedder.
+- Upgrade `@mcp-abap-adt/anthropic-llm` and `@mcp-abap-adt/sap-aicore-llm` to 31.2.1.
+- The SAP connection honours the `stateless`, `noLog` and `noResend` request options.
+- SAP Cloud SDK HTTP request header dumps are disabled even when SDK debug logging is enabled.
+
+### Fixed
+
+- Anthropic models on SAP AI Core (Bedrock) report their input tokens; a later zero no longer overwrites them (`@mcp-abap-adt/anthropic-llm` and `@mcp-abap-adt/sap-aicore-llm` 31.2.1).
+- The SAP AI Core embedder returns the provider's token usage, so the embedding migration and other callers report embedding tokens instead of "not reported".
+
 ## [12.1.1] - 2026-11-27
 
 ### Fixed

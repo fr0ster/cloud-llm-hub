@@ -164,11 +164,13 @@
     "GetStructuresList": null,
     "GetTable": "table",
     "GetTableContents": null,
+    "GetTableSettings": null,
     "GetTableType": "tableType",
     "GetTableTypeVersions": "tableType",
     "GetTableVersionDiff": "table",
     "GetTableVersionSource": "table",
     "GetTableVersions": "table",
+    "GetTextElements": null,
     "GetTransaction": null,
     "GetTransport": "transport",
     "GetTypeInfo": null,
@@ -232,7 +234,9 @@
     "UpdateServiceDefinition": "serviceDefinition",
     "UpdateStructure": "structure",
     "UpdateTable": "table",
+    "UpdateTableSettings": "table",
     "UpdateTableType": "tableType",
+    "UpdateTextElements": null,
     "UpdateUnitTest": "unitTest",
     "ValidateServiceBinding": "service"
   }

@@ -1,5 +1,10 @@
 import cds from '@sap/cds';
-import { setGlobalLogLevel } from '@sap-cloud-sdk/util';
+import {
+  createLogger,
+  getLogger,
+  setGlobalLogLevel,
+  setLogLevel,
+} from '@sap-cloud-sdk/util';
 
 type Level = 'error' | 'warn' | 'info' | 'debug';
 function level(value: string, source: string): Level {
@@ -50,4 +55,11 @@ export function applyLoggingConfig(env: NodeJS.ProcessEnv = process.env): void {
     if (name === 'sap-cloud-sdk') setGlobalLogLevel(value);
     else cds.log(name, value);
   }
+
+  // The SDK ignores noLog and uses a fixed header mask that misses Username.
+  // Register its HTTP logger if needed and suppress header dumps after SDK-wide settings.
+  const httpClientLogger =
+    getLogger('http-client') ??
+    createLogger({ package: 'http-client', messageContext: 'http-client' });
+  if (httpClientLogger.isDebugEnabled()) setLogLevel('info', httpClientLogger);
 }

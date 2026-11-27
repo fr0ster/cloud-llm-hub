@@ -5,7 +5,12 @@ import {
   parseLoggingConfig,
 } from '../../srv/lib/logging-config';
 
-jest.mock('@sap-cloud-sdk/util', () => ({ setGlobalLogLevel: jest.fn() }));
+jest.mock('@sap-cloud-sdk/util', () => ({
+  ...jest.requireActual<typeof import('@sap-cloud-sdk/util')>(
+    '@sap-cloud-sdk/util',
+  ),
+  setGlobalLogLevel: jest.fn(),
+}));
 
 test('defaults and named levels parse strictly', () => {
   expect(parseLoggingConfig({})).toEqual({

@@ -14,10 +14,9 @@ and the temptation to fetch the whole thing.
 - **The dump list comes from the runtime feed.** To find dumps — the latest, or the ones
   for a given user / date / program — read the feed; it enumerates the available dumps and
   can be narrowed (e.g. by user). Start there, then pick the dump you want.
-- **A dump id from the feed is a URL, not a bare timestamp.** Each feed entry carries the
-  dump's id as a URI / path. The id you pass to fetch it is the **last path segment** of
-  that URL — the part after the final `/`. Passing the raw timestamp (e.g.
-  `20260717100828`) or the whole URL fails; normalize to the last segment first.
+- Call `RuntimeListFeeds` with `feed_type: dumps` and use the `dump_id` column from
+  its default TSV output. With `detail: medium` or `full`, use the entry's `dump_id`
+  field in the JSON result. Pass that value as `dump_id` to `GetDumpSection`.
 
 ## Reading one dump: index first, then chapters
 

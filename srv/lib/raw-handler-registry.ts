@@ -1,4 +1,5 @@
 import {
+  AbapGitHandlersGroup,
   BackgroundRunHandlersGroup,
   type BaseHandlerGroup,
   CompositeHandlersRegistry,
@@ -30,6 +31,11 @@ export function rawHandlerRegistry(exposition: ExpositionLevel[]) {
       new ReadOnlyHandlersGroup(context, overriding, new NoDedupStrategy()),
     );
   groups.push(...high);
+  if (exposition.includes('high')) {
+    groups.push(new AbapGitHandlersGroup(context));
+  } else if (exposition.includes('readonly')) {
+    groups.push(new AbapGitHandlersGroup(context, 'reads'));
+  }
   if (exposition.includes('system'))
     groups.push(
       new SystemHandlersGroup(context),

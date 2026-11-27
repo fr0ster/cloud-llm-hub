@@ -20,6 +20,8 @@ const SAP_FREE_METHODS = new Set([
   'resources/list',
   'resources/templates/list',
   'prompts/list',
+  'prompts/get',
+  'completion/complete',
   'logging/setLevel',
 ]);
 

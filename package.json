@@ -4,7 +4,7 @@
   "description": "A simple CAP project.",
   "dependencies": {
     "@mcp-abap-adt/adt-clients": "^45.5.2",
-    "@mcp-abap-adt/anthropic-llm": "^31.2.0",
+    "@mcp-abap-adt/anthropic-llm": "^31.2.1",
     "@mcp-abap-adt/auth-providers": "^6.0.2",
     "@mcp-abap-adt/connection": "^25.0.0",
     "@mcp-abap-adt/deepseek-llm": "^30.12.3",
@@ -13,7 +13,7 @@
     "@mcp-abap-adt/interfaces-adt-connection": "^5.1.0",
     "@mcp-abap-adt/interfaces-network": "^2.0.1",
     "@mcp-abap-adt/interfaces-utils": "^1.1.1",
-    "@mcp-abap-adt/lib": "^24.0.0",
+    "@mcp-abap-adt/lib": "^24.2.1",
     "@mcp-abap-adt/llm-agent": "^35.6.1",
     "@mcp-abap-adt/llm-agent-libs": "^38.1.0",
     "@mcp-abap-adt/llm-agent-mcp": "^30.10.8",
@@ -32,7 +32,7 @@
     "@mcp-abap-adt/qdrant-rag": "^33.1.1",
     "@mcp-abap-adt/sap-aicore-auth": "^30.9.2",
     "@mcp-abap-adt/sap-aicore-embedder": "^30.10.7",
-    "@mcp-abap-adt/sap-aicore-llm": "^31.2.0",
+    "@mcp-abap-adt/sap-aicore-llm": "^31.2.1",
     "@modelcontextprotocol/sdk": "^1.32.0",
     "@sap-ai-sdk/foundation-models": "^2.18.0",
     "@sap-ai-sdk/orchestration": "^2.18.0",
@@ -133,7 +133,10 @@
         "/cert/i",
         "/ssl/i",
         "/x-sap-password/i",
-        "/x-sap-login/i"
+        "/x-sap-login/i",
+        "/x-abapgit-remote/i",
+        "/x-abapgit-user/i",
+        "/x-abapgit-token/i"
       ]
     },
     "requires": {

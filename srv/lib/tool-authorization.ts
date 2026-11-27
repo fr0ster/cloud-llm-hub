@@ -121,6 +121,7 @@ export function isReadOnlyTool(
       'RuntimeRunClass',
       'RuntimeRunProgram',
       'RuntimeCreateProfilerTraceParameters',
+      'GetAbapGitBranchInfo',
       'UpdatePackage',
       'DeletePackage',
       'SortAndCompressTransportTask',

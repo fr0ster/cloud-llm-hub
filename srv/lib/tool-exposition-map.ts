@@ -12,6 +12,8 @@
  */
 
 import {
+  abapGitReadEntries,
+  abapGitWriteEntries,
   BackgroundRunHandlersGroup,
   HighLevelHandlersGroup,
   noConnectionContext,
@@ -93,6 +95,18 @@ export function buildToolExpositionMap(
   }
 
   map.set('DiscardBackgroundRun', 'high');
+  return map;
+}
+
+/** The raw MCP server also provides the admission required by abapGit. */
+export function buildRawToolExpositionMap(): Map<string, ExpositionLevel> {
+  const map = buildToolExpositionMap();
+  for (const { toolDefinition } of abapGitReadEntries()) {
+    map.set(toolDefinition.name, 'readonly');
+  }
+  for (const { toolDefinition } of abapGitWriteEntries()) {
+    map.set(toolDefinition.name, 'high');
+  }
   return map;
 }
 

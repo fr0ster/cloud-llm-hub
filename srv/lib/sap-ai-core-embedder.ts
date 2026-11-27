@@ -6,6 +6,7 @@ import {
   beginEmbeddingRequest,
   type CallOptions,
   type IEmbedder,
+  type IEmbedResult,
   type IUsageRecorder,
   startOperation,
 } from '@mcp-abap-adt/llm-agent';
@@ -42,16 +43,10 @@ export class SapAiCoreEmbedder implements IEmbedder {
     this.scenario = config.scenario;
   }
 
-  async embed(
-    text: string,
-    options?: CallOptions,
-  ): Promise<{
-    vector: number[];
-    usage?: { promptTokens: number; totalTokens: number };
-  }> {
+  async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
     if (!(options?.usage ?? this.usage)) {
-      const { embedding } = await this.requestEmbedding(text, options?.signal);
-      return this.decode(embedding);
+      const response = await this.requestEmbedding(text, options?.signal);
+      return this.decode(response.embedding, response.usage);
     }
 
     const request = beginEmbeddingRequest(
@@ -75,8 +70,9 @@ export class SapAiCoreEmbedder implements IEmbedder {
     let inputTokens: number | undefined;
     try {
       const response = await this.requestEmbedding(text, options?.signal);
-      inputTokens = response.inputTokens;
-      const result = this.decode(response.embedding);
+      const usage = response.usage;
+      inputTokens = usage?.prompt_tokens;
+      const result = this.decode(response.embedding, usage);
       outcome = 'ok';
       return result;
     } catch (error) {
@@ -114,8 +110,8 @@ export class SapAiCoreEmbedder implements IEmbedder {
         get embedding() {
           return response.getEmbedding();
         },
-        get inputTokens() {
-          return response._data.usage?.prompt_tokens;
+        get usage() {
+          return response._data.usage;
         },
       };
     }
@@ -128,18 +124,22 @@ export class SapAiCoreEmbedder implements IEmbedder {
       get embedding() {
         return response.getEmbeddings()?.[0]?.embedding;
       },
-      get inputTokens() {
-        return response.getTokenUsage()?.prompt_tokens;
+      get usage() {
+        return response.getTokenUsage();
       },
     };
   }
 
-  private decode(embedding?: number[] | string): { vector: number[] } {
+  private decode(
+    embedding: number[] | string | undefined,
+    usage?: { prompt_tokens?: number; total_tokens?: number },
+  ): IEmbedResult {
     if (embedding === undefined) {
       throw new Error('No embeddings returned from SAP AI Core');
     }
 
     // Handle base64-encoded embeddings
+    let vector: number[];
     if (typeof embedding === 'string') {
       const buffer = Buffer.from(embedding, 'base64');
       const float32 = new Float32Array(
@@ -147,8 +147,15 @@ export class SapAiCoreEmbedder implements IEmbedder {
         buffer.byteOffset,
         buffer.length / 4,
       );
-      return { vector: Array.from(float32) };
+      vector = Array.from(float32);
+    } else {
+      vector = embedding;
     }
-    return { vector: embedding };
+    const promptTokens = usage?.prompt_tokens;
+    if (typeof promptTokens !== 'number') return { vector };
+    return {
+      vector,
+      usage: { promptTokens, totalTokens: usage?.total_tokens ?? promptTokens },
+    };
   }
 }

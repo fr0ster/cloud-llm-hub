@@ -44,6 +44,65 @@ function lastOpts() {
 
 beforeEach(() => jest.clearAllMocks());
 
+it('sends a credential-bearing ADT request once, stateless and without logging its failure', async () => {
+  const connection = makeConn();
+  connection.setSessionType('stateful');
+  mockExec.mockResolvedValueOnce({
+    status: 200,
+    data: '',
+    headers: {
+      'set-cookie': ['sap-contextid=session', 'sap-usercontext=sap-client=600'],
+    },
+    request: {},
+  });
+  await connection.makeAdtRequest({
+    url: '/sap/bc/adt/discovery',
+    method: 'GET',
+    timeout: 0,
+  });
+  mockExec.mockClear();
+  const refusal = Object.assign(new Error('PROVIDER_SECRET'), {
+    response: { status: 403, data: 'PROVIDER_SECRET' },
+  });
+  mockExec.mockResolvedValueOnce({
+    status: 200,
+    data: '',
+    headers: { 'x-csrf-token': 'csrf-token' },
+    request: {},
+  });
+  mockExec.mockRejectedValueOnce(refusal);
+  const error = jest.spyOn(logger, 'error').mockImplementation(() => {});
+  try {
+    await expect(
+      connection.makeAdtRequest({
+        url: '/sap/bc/adt/abapgit/repos',
+        method: 'POST',
+        timeout: 0,
+        headers: { 'X-SAP-ADT-SessionType': 'stateful' },
+        noLog: true,
+        noResend: true,
+        stateless: true,
+      }),
+    ).rejects.toBe(refusal);
+    expect(mockExec).toHaveBeenCalledTimes(2);
+    const [, request, options] = mockExec.mock.calls[1];
+    expect(request).toMatchObject({
+      method: 'POST',
+      maxRedirects: 0,
+      headers: {
+        'x-sap-adt-sessiontype': 'stateless',
+        'x-csrf-token': 'csrf-token',
+        Cookie: 'sap-usercontext=sap-client=600',
+      },
+    });
+    expect(request?.headers).not.toHaveProperty('X-SAP-ADT-SessionType');
+    expect(options).toEqual({ fetchCsrfToken: false });
+    expect(error).not.toHaveBeenCalled();
+  } finally {
+    error.mockRestore();
+  }
+});
+
 describe('CloudSdkAbapConnection.makeAdtRequest deadline', () => {
   const send = (conn: CloudSdkAbapConnection, timeout: number | undefined) =>
     // Older callers can omit the timeout field.

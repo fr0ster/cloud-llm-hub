@@ -1798,8 +1798,8 @@ export function buildToolDocs(tools: ToolDocInput[]): {
  * The hub serves the read-only and high-level tools, plus search and system.
  * It has no use for the low-level API: it duplicates the high-level tools at a
  * finer grain, and exposing both lets the agent pick a low-level step for a
- * "create" the high-level tool does whole. (The compact facade left
- * `@mcp-abap-adt/lib` in 14.0.0 and is not served either.)
+ * "create" the high-level tool does whole. The agent uses the object-oriented
+ * API. abapGit is registered on the raw MCP server for upstream admission.
  */
 export function getHandlerExporterConfig() {
   return {

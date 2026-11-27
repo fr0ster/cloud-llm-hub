@@ -18,6 +18,7 @@ import {
   HEADER_SAP_PASSWORD,
 } from '@mcp-abap-adt/interfaces-network';
 import { EmbeddableMcpServer } from '@mcp-abap-adt/lib/embeddable';
+import { requestContextFromHeaders } from '@mcp-abap-adt/lib/request-context';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import cds from '@sap/cds';
 import type { Request } from 'express';
@@ -44,7 +45,7 @@ import {
 } from './lib/request-system-context';
 import { resolveSystemType, type SystemType } from './lib/system-type';
 import { assertToolAllowed } from './lib/tool-authorization';
-import { buildToolExpositionMap } from './lib/tool-exposition-map';
+import { buildRawToolExpositionMap } from './lib/tool-exposition-map';
 
 interface SapContext {
   sapConfig: SapConfig;
@@ -439,7 +440,7 @@ export async function createMCPServerForRequest(
         enableDnsRebindingProtection: false,
       });
 
-      const policyMap = buildToolExpositionMap();
+      const policyMap = buildRawToolExpositionMap();
       const allowedTool = (name: string) => {
         assertToolAllowed(name, policyMap.get(name), exposition);
       };
@@ -543,8 +544,13 @@ export async function createMCPServerForRequest(
             return Promise.resolve();
           }
         }
-        return runWithRequestSystem(resolveRequestSystem(httpReq.headers), () =>
-          transport.handleRequest(httpReq, res, body),
+        return runWithRequestSystem(
+          {
+            ...resolveRequestSystem(httpReq.headers),
+            abapGitRemote: requestContextFromHeaders(httpReq.headers)
+              .abapGitRemote,
+          },
+          () => transport.handleRequest(httpReq, res, body),
         );
       };
 

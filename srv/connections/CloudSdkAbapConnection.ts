@@ -10,7 +10,10 @@ import type {
 } from '@mcp-abap-adt/connection';
 import { CSRF_CONFIG, CSRF_ERROR_MESSAGES } from '@mcp-abap-adt/connection';
 import type { IAdtWireResponse } from '@mcp-abap-adt/interfaces-adt-connection';
-import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
+import {
+  executeHttpRequest,
+  type HttpRequestConfig,
+} from '@sap-cloud-sdk/http-client';
 import { redactContext } from '../lib/context-store';
 import { logErrorSafely, responseBodyText } from '../lib/errorUtils';
 import { logger } from '../lib/logger';
@@ -516,7 +519,10 @@ export class CloudSdkAbapConnection implements AbapConnection {
    * Parse Set-Cookie headers and merge into the cookie jar.
    * Extracts only name=value pairs, ignoring attributes (Path, Domain, HttpOnly, etc.).
    */
-  private mergeSetCookies(setCookie: string | string[] | undefined): void {
+  private mergeSetCookies(
+    setCookie: string | string[] | undefined,
+    stateless = false,
+  ): void {
     if (!setCookie) return;
     const headers = Array.isArray(setCookie) ? setCookie : [setCookie];
     for (const header of headers) {
@@ -526,7 +532,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
       const eqIdx = nameValue.indexOf('=');
       const name = nameValue.slice(0, eqIdx).trim();
       const value = nameValue.slice(eqIdx + 1).trim();
-      if (name) {
+      if (name && !(stateless && /^sap-contextid$/i.test(name))) {
         this.cookieJar.set(name, value);
       }
     }
@@ -574,11 +580,14 @@ export class CloudSdkAbapConnection implements AbapConnection {
    * a `SAP_SESSIONID` at the very moment the session is being handed back,
    * opening one more than it closes.
    */
-  private cookieHeader(): string | null {
+  private cookieHeader(stateless = false): string | null {
     if (this.cookieJar.size === 0) return null;
-    return [...this.cookieJar.entries()]
-      .map(([name, value]) => `${name}=${value}`)
-      .join('; ');
+    return (
+      [...this.cookieJar.entries()]
+        .filter(([name]) => !stateless || !/^sap-contextid$/i.test(name))
+        .map(([name, value]) => `${name}=${value}`)
+        .join('; ') || null
+    );
   }
 
   /**
@@ -900,7 +909,16 @@ export class CloudSdkAbapConnection implements AbapConnection {
     options: AbapRequestOptions,
   ): Promise<IAdtWireResponse<T, D>> {
     this.refuseIfClosed();
-    const { url, method, data, params, headers: optionHeaders } = options;
+    const {
+      url,
+      method,
+      data,
+      params,
+      headers: optionHeaders,
+      noLog,
+      noResend,
+      stateless,
+    } = options;
     const normalizedMethod = method.toUpperCase();
     // No deadline here, not even one the ADT client passes in `timeout`. A long
     // ADT request means a lot of data or a loaded system, and cutting it makes
@@ -924,7 +942,7 @@ export class CloudSdkAbapConnection implements AbapConnection {
 
     if (normalizedMethod === 'POST' || normalizedMethod === 'PUT') {
       // Pass endpoint (not full URL) for CSRF token fetch
-      await this.ensureFreshCsrfToken(url);
+      await this.ensureFreshCsrfToken(noLog ? CSRF_CONFIG.ENDPOINT : url);
     }
 
     // Merge headers: auth headers < library-provided headers (Content-Type, Accept, etc.)
@@ -939,7 +957,16 @@ export class CloudSdkAbapConnection implements AbapConnection {
     }
 
     // Add stateful session headers if stateful mode enabled
-    if (this.sessionType === 'stateful') {
+    if (stateless) {
+      for (const key of Object.keys(requestHeaders)) {
+        if (
+          /^(?:x-sap-adt-sessiontype|sap-adt-request-id|cookie)$/i.test(key)
+        ) {
+          delete requestHeaders[key];
+        }
+      }
+      requestHeaders['x-sap-adt-sessiontype'] = 'stateless';
+    } else if (this.sessionType === 'stateful') {
       requestHeaders['x-sap-adt-sessiontype'] = 'stateful';
       requestHeaders['sap-adt-request-id'] = randomUUID().replace(/-/g, '');
       requestHeaders['X-sap-adt-profiling'] = 'server-time';
@@ -952,7 +979,9 @@ export class CloudSdkAbapConnection implements AbapConnection {
       requestHeaders['x-csrf-token'] = this.csrfToken;
     }
 
-    const cookieHeader = this.getCookieHeader();
+    const cookieHeader = stateless
+      ? this.cookieHeader(true)
+      : this.getCookieHeader();
     if (cookieHeader) {
       requestHeaders.Cookie = cookieHeader;
     }
@@ -978,12 +1007,14 @@ export class CloudSdkAbapConnection implements AbapConnection {
       }
     }
 
-    logger.debug(`Executing ${normalizedMethod} request`, {
-      type: 'REQUEST_INFO',
-      url: this.redactLogText(requestUrl),
-      method: normalizedMethod,
-      destinationName: this.destinationName,
-    });
+    if (!noLog) {
+      logger.debug(`Executing ${normalizedMethod} request`, {
+        type: 'REQUEST_INFO',
+        url: this.redactLogText(requestUrl),
+        method: normalizedMethod,
+        destinationName: this.destinationName,
+      });
+    }
 
     try {
       // Use executeHttpRequest from SAP Cloud SDK
@@ -992,19 +1023,27 @@ export class CloudSdkAbapConnection implements AbapConnection {
       // - Authentication (Basic, OAuth2ClientCredentials, OAuth2SAMLBearerAssertion)
       // - Proxy configuration
       // - Token refresh
-      const response = await executeHttpRequest(await this.sdkDestination(), {
+      const destination = await this.sdkDestination();
+      const requestConfig: HttpRequestConfig = {
         method: normalizedMethod as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
         url: requestUrl,
         headers: requestHeaders,
         httpAgent: this.getHttpAgent(),
-        // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK params type is not fully typed
-        params: params as Record<string, any> | undefined,
-        // Keep original data type (string for XML, object for JSON).
-        // Casting string→Record causes axios to serialize as JSON,
-        // ignoring Content-Type and triggering 415 on ADT endpoints.
-        // biome-ignore lint/suspicious/noExplicitAny: SAP Cloud SDK data type accepts any
-        data: data as any,
-      });
+        ...(noResend
+          ? {
+              maxRedirects: 0,
+              validateStatus: (status: number) => status >= 200 && status < 400,
+            }
+          : {}),
+        params: params as HttpRequestConfig['params'],
+        data,
+      };
+      // A credentialed request must not be resent by the SDK's CSRF middleware.
+      const response = noResend
+        ? await executeHttpRequest(destination, requestConfig, {
+            fetchCsrfToken: false,
+          })
+        : await executeHttpRequest(destination, requestConfig);
 
       // Capture cookies from response to maintain session affinity
       // Critical for stateful sessions: lock → update → unlock → activate chain
@@ -1012,16 +1051,17 @@ export class CloudSdkAbapConnection implements AbapConnection {
         | string
         | string[]
         | undefined;
-      this.mergeSetCookies(rawSetCookie);
+      this.mergeSetCookies(rawSetCookie, stateless);
 
       // Convert Cloud SDK response to IAdtWireResponse format
       return this.convertToAdtResponse<T, D>(response, requestUrl);
-    } catch (error: unknown) {
+    } catch (error) {
+      if (noLog && noResend) throw error;
       // Anomaly log (INFO): a stateful request that lost its ADT session despite
       // the generated SAP_SESSIONID. This is the orphaned-lock symptom — normally
       // it never fires, so it's cheap and pinpoints the rare cases in production
       // (which request, on which destination, and the session context sent).
-      {
+      if (!noLog) {
         const e = error as {
           response?: { status?: number; data?: unknown };
         };
@@ -1044,19 +1084,18 @@ export class CloudSdkAbapConnection implements AbapConnection {
             hasSapSessionCookie,
           });
         }
+        logErrorSafely(
+          logger,
+          'ADT request',
+          error,
+          {
+            url: requestUrl,
+            method: normalizedMethod,
+            destinationName: this.destinationName,
+          },
+          (text) => this.redactLogText(text),
+        );
       }
-      // Use synchronized error handling from errorUtils
-      logErrorSafely(
-        logger,
-        'ADT request',
-        error,
-        {
-          url: requestUrl,
-          method: normalizedMethod,
-          destinationName: this.destinationName,
-        },
-        (text) => this.redactLogText(text),
-      );
 
       const errorObj = error as {
         response?: { status?: number };
@@ -1064,21 +1103,23 @@ export class CloudSdkAbapConnection implements AbapConnection {
       };
       // If CSRF token validation failed, try to refresh and retry once
       if (
+        !noResend &&
         (errorObj?.response?.status === 403 || errorObj?.statusCode === 403) &&
         (normalizedMethod === 'POST' || normalizedMethod === 'PUT')
       ) {
-        logger.info(
-          'CSRF token validation failed, refreshing token and retrying',
-          { url: this.redactLogText(requestUrl) },
-        );
+        if (!noLog)
+          logger.info(
+            'CSRF token validation failed, refreshing token and retrying',
+            { url: this.redactLogText(requestUrl) },
+          );
         // Shared refresh — if another parallel call is already refreshing, wait
         // for it. A failure here, or of the retry below, is the connect phase
         // against a system that may have gone since the first attempt: tagged
         // like every other failure, so the destination can close. Tagging
         // changes the message only; nothing here is retried again.
         try {
-          await this.refreshCsrf(requestUrl);
-        } catch (refreshError: unknown) {
+          await this.refreshCsrf(noLog ? CSRF_CONFIG.ENDPOINT : requestUrl);
+        } catch (refreshError) {
           await this.tagOutage(refreshError);
           throw refreshError;
         }
@@ -1090,7 +1131,9 @@ export class CloudSdkAbapConnection implements AbapConnection {
             throw new Error('CSRF token is required for retry');
           }
           retryHeaders['x-csrf-token'] = this.csrfToken;
-          const retryCookie = this.getCookieHeader();
+          const retryCookie = stateless
+            ? this.cookieHeader(true)
+            : this.getCookieHeader();
           if (retryCookie) {
             retryHeaders.Cookie = retryCookie;
           } else {
@@ -1117,18 +1160,19 @@ export class CloudSdkAbapConnection implements AbapConnection {
           );
 
           return this.convertToAdtResponse<T, D>(retryResponse, requestUrl);
-        } catch (retryError: unknown) {
-          logErrorSafely(
-            logger,
-            'ADT request retry',
-            retryError,
-            {
-              url: requestUrl,
-              method: normalizedMethod,
-              destinationName: this.destinationName,
-            },
-            (text) => this.redactLogText(text),
-          );
+        } catch (retryError) {
+          if (!noLog)
+            logErrorSafely(
+              logger,
+              'ADT request retry',
+              retryError,
+              {
+                url: requestUrl,
+                method: normalizedMethod,
+                destinationName: this.destinationName,
+              },
+              (text) => this.redactLogText(text),
+            );
           await this.tagOutage(retryError);
           throw retryError;
         }

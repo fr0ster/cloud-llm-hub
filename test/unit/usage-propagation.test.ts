@@ -959,6 +959,7 @@ test('SAP embedder records sdk calls once for success, error and abort; call rec
   try {
     expect(await sap.embed('DOCUMENT_SENTINEL', { usage })).toEqual({
       vector: [1, 2],
+      usage: { promptTokens: 1, totalTokens: 1 },
     });
     embed.mockRejectedValueOnce(
       Object.assign(new Error('SECRET_SENTINEL'), { code: 'ERR_SDK' }),
@@ -1134,12 +1135,13 @@ test('SAP usage off returns embeddings for an aborted caller without passing a s
   expect(await sap.embed('DOCUMENT_SENTINEL', { signal: ctrl.signal })).toEqual(
     {
       vector: [1, 2],
+      usage: { promptTokens: 1, totalTokens: 1 },
     },
   );
   expect(embed.mock.calls).toEqual([[{ input: 'DOCUMENT_SENTINEL' }]]);
   expect(operation).not.toHaveBeenCalled();
   expect(request).not.toHaveBeenCalled();
-  expect(tokenUsage).not.toHaveBeenCalled();
+  expect(tokenUsage).toHaveBeenCalledTimes(1);
   expect((await rows()).length).toBe(before);
 });
 
