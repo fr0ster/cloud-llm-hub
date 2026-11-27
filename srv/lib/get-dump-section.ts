@@ -73,7 +73,7 @@ export function extractMcpTextResult(result: unknown): string {
 /**
  * Parse a `RuntimeGetDumpById` (view: 'formatted') MCP result and return the
  * raw pipe-text payload. `RuntimeGetDumpById` wraps the payload in a JSON
- * envelope `{ success, dump_id, view, status, payload }`; the raw dump text is
+ * envelope with `{ success, dump_id, view, payload }`; the raw dump text is
  * `payload` (a string) only for the formatted view. Validates the envelope and
  * throws loudly on any deviation — never silently returns `''`, because a
  * wrong-format payload would corrupt every parsed section.

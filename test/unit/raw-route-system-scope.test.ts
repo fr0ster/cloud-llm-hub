@@ -112,6 +112,15 @@ jest.mock('../../srv/connections/connectionFactory', () => {
           if (!systemUser) throw { response: { status: 404 } };
           return { status: 200, headers: {}, data: { userName: systemUser } };
         }
+        if (o.url.endsWith('/discovery')) {
+          return {
+            status: 200,
+            headers: { 'content-type': 'application/atomsvc+xml' },
+            data: `<app:service xmlns:app="http://www.w3.org/2007/app">
+              <app:workspace><app:collection href="/sap/bc/adt/abapgit/repos"/></app:workspace>
+            </app:service>`,
+          };
+        }
         if (overlap.expected > 0 && o.method === 'POST') {
           overlap.arrived += 1;
           if (overlap.arrived === overlap.expected) overlap.release();
@@ -156,7 +165,11 @@ beforeEach(() => {
   systemUser = undefined;
 });
 
-async function createClass(headers: Record<string, string>) {
+async function callTool(
+  headers: Record<string, string>,
+  name: string,
+  args: Record<string, string>,
+) {
   const res = await fetch(base, {
     method: 'POST',
     headers: {
@@ -171,13 +184,54 @@ async function createClass(headers: Record<string, string>) {
       id: 1,
       method: 'tools/call',
       params: {
-        name: 'CreateClass',
-        arguments: { class_name: 'ZCL_SCOPE_PROBE', package_name: '$TMP' },
+        name,
+        arguments: args,
       },
     }),
   });
   return { status: res.status, text: await res.text() };
 }
+
+function createClass(headers: Record<string, string>) {
+  return callTool(headers, 'CreateClass', {
+    class_name: 'ZCL_SCOPE_PROBE',
+    package_name: '$TMP',
+  });
+}
+
+it('binds an abapGit credential to the approved remote for one request', async () => {
+  const url = 'https://git.invalid/team/repo.git';
+  const endpoint = '/sap/bc/adt/abapgit/externalrepoinfo';
+  const credentials = {
+    'x-sap-login': 'developer',
+    'x-abapgit-remote': url,
+    'x-abapgit-user': 'git-user',
+    'x-abapgit-token': 'git-token',
+  };
+  const admitted = await callTool(credentials, 'CheckAbapGitExternalRepo', {
+    url,
+  });
+  expect(admitted.status).toBe(200);
+  expect(
+    wire.find(({ url: requestUrl }) => requestUrl === endpoint)?.data,
+  ).toEqual(expect.stringContaining('git-token'));
+  expect(admitted.text).not.toContain('git-token');
+
+  wire.length = 0;
+  const anonymous = await callTool(
+    { 'x-sap-login': 'developer' },
+    'CheckAbapGitExternalRepo',
+    { url },
+  );
+  expect(anonymous.status).toBe(200);
+  const anonymousRequest = wire.find(
+    ({ url: requestUrl }) => requestUrl === endpoint,
+  );
+  expect(anonymousRequest?.data).toEqual(expect.stringContaining(url));
+  expect(anonymousRequest?.data).not.toEqual(
+    expect.stringContaining('git-token'),
+  );
+});
 
 describe('raw /mcp/stream/http create — the request system scope', () => {
   it('the uppercased x-sap-login reaches lib as the responsible person', async () => {

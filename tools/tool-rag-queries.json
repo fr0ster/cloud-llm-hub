@@ -121,9 +121,9 @@
   },
   {
     "q": "Які об'єкти в транспорті DEVK900001?",
-    "expect": ["GetTransport"],
-    "relevant": ["GetTransport"],
-    "required": [["GetTransport"]]
+    "expect": ["ReadTransportObjects"],
+    "relevant": ["ReadTransportObjects"],
+    "required": [["ReadTransportObjects"]]
   },
   {
     "q": "List my open transport requests",

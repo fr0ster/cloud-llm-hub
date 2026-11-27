@@ -37,6 +37,7 @@ export interface RequestSystem {
   /** The request's login (`x-sap-login`): a responsible hint when the endpoint has no user, including PP. */
   login?: string;
   masterSystem?: string;
+  abapGitRemote?: RequestContext['abapGitRemote'];
 }
 
 function pick(
@@ -82,6 +83,7 @@ export async function runWithRequestSystem<T>(
     responsible: values.responsible,
     login: values.login,
     masterSystem: values.masterSystem,
+    abapGitRemote: values.abapGitRemote,
     // Inside a scope lib takes `masterLanguage` from the scope alone, so a
     // scope without the key would drop the process language. Nothing sets the
     // language per request here, so the process value is carried in.
