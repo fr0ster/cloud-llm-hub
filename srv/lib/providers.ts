@@ -7,6 +7,7 @@ import {
   type CallOptions,
   CircuitBreaker,
   CircuitBreakerEmbedder,
+  CircuitBreakerEmbedderBase,
   type IEmbedder,
   type IEmbedResult,
   type IQueryEmbedder,
@@ -53,7 +54,7 @@ export interface EmbedderFingerprint {
 
 export interface Embedding {
   /** The provider behind the circuit breaker; wrappers go on this one. */
-  embedder: CircuitBreakerEmbedder;
+  embedder: CircuitBreakerEmbedderBase;
   /**
    * `embedder` in both retrieval roles — what a store takes. Every embedder the
    * hub builds is symmetric (one model embeds stored and search text alike).
@@ -62,7 +63,7 @@ export interface Embedding {
   /** Tool queries retry only rate limits; document writes retain composition. */
   toolSearchRetrieval?: IRetrievalEmbedder;
   userMcpToolSearchRetrieval?: IRetrievalEmbedder;
-  toolSearchEmbedder?: CircuitBreakerEmbedder;
+  toolSearchEmbedder?: CircuitBreakerEmbedderBase;
   breaker: CircuitBreaker;
   fingerprint: EmbedderFingerprint;
   /** Request-driven tool-search recovery can reach the provider even with an open breaker. */
@@ -100,6 +101,15 @@ export async function prefetchEmbedder(
   else
     OllamaConstructor = (await import('@mcp-abap-adt/ollama-embedder'))
       .OllamaEmbedder;
+}
+
+function wrapEmbeddingBreaker(
+  inner: IEmbedder,
+  breaker: CircuitBreaker,
+): CircuitBreakerEmbedderBase {
+  return isBatchEmbedder(inner)
+    ? new CircuitBreakerEmbedder(inner, breaker)
+    : new CircuitBreakerEmbedderBase(inner, breaker);
 }
 
 export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
@@ -176,7 +186,7 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
     failureThreshold: 30,
     recoveryWindowMs: 60_000,
   });
-  const embedder = new CircuitBreakerEmbedder(composed, breaker);
+  const embedder = wrapEmbeddingBreaker(composed, breaker);
   // Reuse composeEmbedder's input cap, with general retries disabled. Quota
   // waits sit inside the shared breaker so a 429 never counts as a failure.
   const toolSearch = composeEmbedder(raw, {
@@ -186,7 +196,7 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
       strategy: new WaitAsTold({ fallbackBackoffMs: 2000 }),
     },
   });
-  const toolSearchEmbedder = new CircuitBreakerEmbedder(toolSearch, breaker);
+  const toolSearchEmbedder = wrapEmbeddingBreaker(toolSearch, breaker);
   // Both readiness probes must reach the provider through an open shared breaker.
   async function probeEmbedding<T>(
     run: () => Promise<T>,
@@ -211,7 +221,9 @@ export function buildEmbedding(cfg: EmbedderConfig | null): Embedding | null {
           ).embed(text, options),
     getMaxInputChars: embedder.getMaxInputChars,
     maxBatchSize: embedder.maxBatchSize,
-    ...(isBatchEmbedder(toolSearch)
+    ...(isBatchEmbedder(toolSearch) &&
+    isBatchEmbedder(toolSearchEmbedder) &&
+    isBatchEmbedder(embedder)
       ? {
           embedBatch: (texts: string[], options?: CallOptions) =>
             sessionHistoryRepair.getStore()

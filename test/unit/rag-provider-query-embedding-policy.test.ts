@@ -1,7 +1,7 @@
 import { HanaVectorRagProvider } from '@mcp-abap-adt/hana-vector-rag';
 import {
   CircuitBreaker,
-  CircuitBreakerEmbedder,
+  CircuitBreakerEmbedderBase,
   type IRetrievalEmbedder,
   QueryEmbedding,
   staticLogin,
@@ -71,7 +71,7 @@ describe.each(backends)('%s query embedding policy', (backend) => {
         backends: { tools: backend, session: backend, persistent: backend },
       },
       {
-        embedder: new CircuitBreakerEmbedder({ embed }, breaker),
+        embedder: new CircuitBreakerEmbedderBase({ embed }, breaker),
         retrieval: { embedDocument: embed, embedQuery: embed },
         breaker,
         fingerprint: { provider: 'test', embeddingModel: 'test' },

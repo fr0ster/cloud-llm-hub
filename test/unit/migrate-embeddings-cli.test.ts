@@ -1,15 +1,22 @@
 import { createServer } from 'node:http';
 import {
   CircuitBreaker,
-  CircuitBreakerEmbedder,
+  CircuitBreakerEmbedderBase,
   InMemoryRag,
+  type IRagCatalogUpdater,
   type IRagProvider,
+  type RagCollectionRecord,
   RagError,
   symmetricEmbedder,
+  VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import { getAgentConfig } from '../../srv/agent-config';
 import { historyProvider, initProviders } from '../../srv/agent-manager';
-import { storeNameFor, WRITTEN_BY } from '../../srv/lib/collection-persistence';
+import {
+  storeNameFor,
+  unwrap,
+  WRITTEN_BY,
+} from '../../srv/lib/collection-persistence';
 import { EnvDestinationSource } from '../../srv/lib/destination-source';
 import {
   migrateEmbeddings,
@@ -25,6 +32,8 @@ import {
   createRagStoreFactory,
   type RagStoreFactory,
 } from '../../srv/lib/rag-store-factory';
+import { SapAiCoreEmbedder } from '../../srv/lib/sap-ai-core-embedder';
+import { historyCollectionName } from '../../srv/lib/session-history-collection';
 import { fingerprintHash } from '../../srv/lib/tool-corpus';
 import { main } from '../../srv/migrate-embeddings';
 
@@ -67,7 +76,7 @@ const breaker = new CircuitBreaker({
   recoveryWindowMs: 60_000,
 });
 const toolSearch = { embed: jest.fn(async () => ({ vector: [1, 0] })) };
-const embedder = new CircuitBreakerEmbedder(
+const embedder = new CircuitBreakerEmbedderBase(
   { embed: async () => ({ vector: [0, 1] }) },
   breaker,
 );
@@ -76,7 +85,7 @@ const embedding = {
   breaker,
   embedder,
   retrieval: symmetricEmbedder(embedder),
-  toolSearchEmbedder: new CircuitBreakerEmbedder(toolSearch, breaker),
+  toolSearchEmbedder: new CircuitBreakerEmbedderBase(toolSearch, breaker),
 };
 
 function provider(name: string): IRagProvider {
@@ -222,6 +231,93 @@ it('initializes providers, runs startup migrations, and logs store and token sum
     expect.stringContaining('h_history'),
   );
   expect(console.log).toHaveBeenCalledWith('tokens embedding-model: input 12');
+});
+
+it('re-embeds and restamps two stale session history records on CF with a non-batch provider', async () => {
+  const { buildEmbedding } = jest.requireActual<
+    typeof import('../../srv/lib/providers')
+  >('../../srv/lib/providers');
+  const { migrateEmbeddings: migrateActual } = jest.requireActual<
+    typeof import('../../srv/lib/embedder-migration')
+  >('../../srv/lib/embedder-migration');
+  migrate.mockImplementation(migrateActual);
+  const vector = new Array<number>(PROVIDER_DEFAULT_DIMENSION).fill(1);
+  const embed = jest
+    .spyOn(SapAiCoreEmbedder.prototype, 'embed')
+    .mockResolvedValue({ vector });
+  const embedding = buildEmbedding({
+    kind: 'sap-ai-core',
+    model: fingerprint.embeddingModel,
+    resourceGroup: fingerprint.resourceGroup,
+  });
+  if (!embedding) throw new Error('Expected AI Core embedding');
+  const sessionId = 'session-to-migrate';
+  const name = historyCollectionName(sessionId);
+  const record = {
+    scope: 'session',
+    sessionId,
+    name,
+    storeName: name,
+    attributes: { source: 'session-history', embedder: 'stale' },
+  } satisfies RagCollectionRecord;
+  const rag = new VectorRag(embedding.retrieval);
+  const oldVector = vector.map((_, index) => Number(index === 0));
+  for (const text of ['first turn', 'second turn']) {
+    unwrap(
+      await rag.upsertPrecomputed(text, oldVector, {
+        id: text,
+        embedder: 'stale',
+      }),
+      'seed session history',
+    );
+  }
+  const sessionHistory: IRagProvider & IRagCatalogUpdater = {
+    ...provider('pg-vector'),
+    supportedScopes: ['session'],
+    describeCollections: async () => ({
+      ok: true,
+      value: { records: [record], rejected: [] },
+    }),
+    openCollection: async () => ({
+      ok: true,
+      value: {
+        rag,
+        editor: {
+          upsert: async () => {
+            throw new Error('Unexpected editor upsert');
+          },
+          deleteById: rag.writer().deleteByIdRaw,
+        },
+      },
+    }),
+    updateCollection: jest.fn(async () => ({
+      ok: true as const,
+      value: undefined,
+    })),
+  };
+  jest.mocked(historyProvider).mockReturnValue(sessionHistory);
+  start.mockResolvedValue({ ...providers, embedding, collections: null });
+
+  const exitCode = await main(cf);
+
+  expect(console.error).not.toHaveBeenCalled();
+  expect(exitCode).toBe(0);
+  expect(embed.mock.calls.map(([text]) => text)).toEqual([
+    'dimension probe',
+    'first turn',
+    'second turn',
+  ]);
+  const current = fingerprintHash(fingerprint);
+  const { records } = unwrap(await rag.scan({}), 'scan migrated history');
+  expect(
+    records.map(({ text, metadata }) => [text, metadata.embedder]),
+  ).toEqual([
+    ['first turn', current],
+    ['second turn', current],
+  ]);
+  expect(sessionHistory.updateCollection).toHaveBeenCalledWith(name, {
+    attributes: { ...record.attributes, embedder: current },
+  });
 });
 
 it('checks the physical Qdrant dimension for history and unstamped registry collections', async () => {

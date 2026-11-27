@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- The embedding migration no longer fails on session-history stores with an embedder that has no batch API (SAP AI Core): the circuit breaker exposes batch embedding only when the provider supports it.
+
 ## [12.1.0] - 2026-11-27
 
 ### Added

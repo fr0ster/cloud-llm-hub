@@ -8,7 +8,7 @@ jest.mock(
 );
 
 import {
-  CircuitBreakerEmbedder,
+  CircuitBreakerEmbedderBase,
   FallbackRag,
   InMemoryRag,
   VectorRag,
@@ -35,7 +35,7 @@ describe('default configuration builds today objects', () => {
     process.env.LLM_AGENT_RAG_TYPE = 'vector';
     delete process.env.LLM_AGENT_PROVIDER;
     const p = await startProviders(loadAgentConfig());
-    expect(p.embedding?.embedder).toBeInstanceOf(CircuitBreakerEmbedder);
+    expect(p.embedding?.embedder).toBeInstanceOf(CircuitBreakerEmbedderBase);
     const tools = p.stores.create('tools', 'reader');
     expect(tools).toBeInstanceOf(VectorRag);
     expect(tools).not.toBeInstanceOf(FallbackRag);

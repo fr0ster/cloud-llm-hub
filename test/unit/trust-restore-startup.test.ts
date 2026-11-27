@@ -16,7 +16,7 @@ jest.mock(
 
 import {
   CircuitBreaker,
-  CircuitBreakerEmbedder,
+  CircuitBreakerEmbedderBase,
   InMemoryRag,
   type IRagBackendWriter,
   type IRagEditor,
@@ -62,7 +62,10 @@ test('Qdrant trust dimension discovery is lazy and retries after a transient emb
   const breaker = new CircuitBreaker();
   const providers = {
     embedding: {
-      embedder: new CircuitBreakerEmbedder({ embed: embedDocument }, breaker),
+      embedder: new CircuitBreakerEmbedderBase(
+        { embed: embedDocument },
+        breaker,
+      ),
       retrieval: { embedDocument, embedQuery: embedDocument },
       breaker,
       fingerprint: { provider: 'ollama', embeddingModel: 'bge-m3' },

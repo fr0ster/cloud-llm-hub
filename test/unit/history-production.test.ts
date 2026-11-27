@@ -12,7 +12,7 @@ jest.mock('@sap/cds', () => ({
 
 import {
   CircuitBreaker,
-  CircuitBreakerEmbedder,
+  CircuitBreakerEmbedderBase,
   type ILlm,
   InMemoryRag,
   type Message,
@@ -144,7 +144,7 @@ test.each(
     const providers = await startProviders(config);
     const breaker = new CircuitBreaker();
     const embed = jest.fn(async () => ({ vector: [1, 2] }));
-    const embedder = new CircuitBreakerEmbedder({ embed }, breaker);
+    const embedder = new CircuitBreakerEmbedderBase({ embed }, breaker);
     initProviders({
       ...providers,
       embedding: embedded
