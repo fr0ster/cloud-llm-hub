@@ -1023,30 +1023,27 @@ export class CloudSdkAbapConnection implements AbapConnection {
       // - Authentication (Basic, OAuth2ClientCredentials, OAuth2SAMLBearerAssertion)
       // - Proxy configuration
       // - Token refresh
-      const response = await executeHttpRequest(
-        await this.sdkDestination(),
-        {
-          method: normalizedMethod as
-            | 'GET'
-            | 'POST'
-            | 'PUT'
-            | 'DELETE'
-            | 'PATCH',
-          url: requestUrl,
-          headers: requestHeaders,
-          httpAgent: this.getHttpAgent(),
-          ...(noResend
-            ? {
-                maxRedirects: 0,
-                validateStatus: (status: number) =>
-                  status >= 200 && status < 400,
-              }
-            : {}),
-          params: params as HttpRequestConfig['params'],
-          data,
-        },
-        noResend ? { fetchCsrfToken: false } : undefined,
-      );
+      const destination = await this.sdkDestination();
+      const requestConfig: HttpRequestConfig = {
+        method: normalizedMethod as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
+        url: requestUrl,
+        headers: requestHeaders,
+        httpAgent: this.getHttpAgent(),
+        ...(noResend
+          ? {
+              maxRedirects: 0,
+              validateStatus: (status: number) => status >= 200 && status < 400,
+            }
+          : {}),
+        params: params as HttpRequestConfig['params'],
+        data,
+      };
+      // A credentialed request must not be resent by the SDK's CSRF middleware.
+      const response = noResend
+        ? await executeHttpRequest(destination, requestConfig, {
+            fetchCsrfToken: false,
+          })
+        : await executeHttpRequest(destination, requestConfig);
 
       // Capture cookies from response to maintain session affinity
       // Critical for stateful sessions: lock → update → unlock → activate chain
