@@ -11,6 +11,9 @@ channel). Read speed is now the critical path for this use case.
 
 ## Findings
 
+Evidence (anonymised per-call data, the run's time split, the concurrency test and the analysis script):
+[2026-11-27-large-read-throughput-evidence/](2026-11-27-large-read-throughput-evidence/README.md).
+
 Call time is explained almost fully by one formula: about 17 s plus 3.3 s per
 1 000 characters of the answer, so the hub delivers about 300 characters per
 second.
