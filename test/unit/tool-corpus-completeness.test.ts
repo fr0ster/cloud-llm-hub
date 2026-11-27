@@ -1,6 +1,6 @@
 import {
   CircuitBreaker,
-  CircuitBreakerEmbedder,
+  CircuitBreakerEmbedderBase,
   InMemoryRag,
   RagError,
   symmetricEmbedder,
@@ -62,7 +62,7 @@ const docs: SharedCorpusDoc[] = [
 ];
 const fingerprint = { provider: 'test', embeddingModel: 'test' };
 const breaker = new CircuitBreaker();
-const embedder = new CircuitBreakerEmbedder(
+const embedder = new CircuitBreakerEmbedderBase(
   { embed: async () => ({ vector: [1, 0] }) },
   breaker,
 );

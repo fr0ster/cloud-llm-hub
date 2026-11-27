@@ -1,9 +1,11 @@
 import {
   CircuitBreaker,
-  CircuitBreakerEmbedder,
+  CircuitBreakerEmbedderBase,
+  isBatchEmbedder,
   symmetricEmbedder,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
+import { NoopRequestLogger } from '@mcp-abap-adt/llm-agent-libs';
 import { z } from 'zod';
 import {
   agentQueryEmbedder,
@@ -83,8 +85,32 @@ describe('embedder from configuration', () => {
   ])('builds a breaker-wrapped embedder for %j', async (cfg) => {
     await prefetchEmbedder(cfg);
     const e = buildEmbedding(cfg);
-    expect(e?.embedder).toBeInstanceOf(CircuitBreakerEmbedder);
+    expect(e?.embedder).toBeInstanceOf(CircuitBreakerEmbedderBase);
     expect(e?.fingerprint).toEqual(embedderFingerprint(cfg));
+  });
+
+  it('preserves batch capability for both breaker-wrapped embedders', async () => {
+    const aiCore = buildEmbedding({
+      kind: 'sap-ai-core',
+      model: 'text-embedding-3-small',
+      resourceGroup: 'default',
+    });
+    if (!aiCore?.toolSearchEmbedder)
+      throw new Error('Expected AI Core embedders');
+    expect(isBatchEmbedder(aiCore.embedder)).toBe(false);
+    expect(isBatchEmbedder(aiCore.toolSearchEmbedder)).toBe(false);
+
+    const cfg = {
+      kind: 'openai',
+      model: 'text-embedding-3-small',
+      apiKey: 'k',
+    } as const;
+    await prefetchEmbedder(cfg);
+    const openai = buildEmbedding(cfg);
+    if (!openai?.toolSearchEmbedder)
+      throw new Error('Expected OpenAI embedders');
+    expect(isBatchEmbedder(openai.embedder)).toBe(true);
+    expect(isBatchEmbedder(openai.toolSearchEmbedder)).toBe(true);
   });
 });
 
@@ -100,7 +126,7 @@ describe('embedder roles (llm-agent 30)', () => {
       failureThreshold: 30,
       recoveryWindowMs: 60_000,
     });
-    const embedder = new CircuitBreakerEmbedder({ embed }, breaker);
+    const embedder = new CircuitBreakerEmbedderBase({ embed }, breaker);
     return {
       embed,
       embedding: {
@@ -167,9 +193,10 @@ describe('embedder roles (llm-agent 30)', () => {
 
   it("meters the agent's query embeddings in the request log", async () => {
     const { embed, embedding } = stub();
-    const logLlmCall = jest.fn();
+    const requestLogger = new NoopRequestLogger();
+    const logLlmCall = jest.spyOn(requestLogger, 'logLlmCall');
     const r = await agentQueryEmbedder(embedding).embedQuery('find a class', {
-      requestLogger: { logLlmCall } as never,
+      requestLogger,
     });
     expect(r.vector).toEqual([1, 2]);
     expect(embed).toHaveBeenCalledTimes(1);

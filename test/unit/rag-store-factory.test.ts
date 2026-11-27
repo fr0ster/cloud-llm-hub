@@ -1,6 +1,6 @@
 import {
   CircuitBreaker,
-  CircuitBreakerEmbedder,
+  CircuitBreakerEmbedderBase,
   FallbackRag,
   InMemoryRag,
   type IRagBackendWriter,
@@ -302,7 +302,7 @@ describe('RagStoreFactory', () => {
       failureThreshold: 30,
       recoveryWindowMs: 60_000,
     });
-    const embedder = new CircuitBreakerEmbedder(brokenEmbedder, breaker);
+    const embedder = new CircuitBreakerEmbedderBase(brokenEmbedder, breaker);
     const brokenEmbedding = {
       embedder,
       retrieval: symmetricEmbedder(embedder),
@@ -338,7 +338,7 @@ describe('RagStoreFactory', () => {
         );
       const raw = jest.fn(async () => ({ vector: [1, 0] }));
       const breaker = new CircuitBreaker({ failureThreshold: 30 });
-      const embedder = new CircuitBreakerEmbedder({ embed: raw }, breaker);
+      const embedder = new CircuitBreakerEmbedderBase({ embed: raw }, breaker);
       const embedding = {
         embedder,
         retrieval: symmetricEmbedder(embedder),

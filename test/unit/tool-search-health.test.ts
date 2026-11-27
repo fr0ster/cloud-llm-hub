@@ -1,7 +1,7 @@
 import type { Server } from 'node:http';
 import {
   CircuitBreaker,
-  CircuitBreakerEmbedder,
+  CircuitBreakerEmbedderBase,
   InMemoryRag,
   type IRag,
   QueryEmbedding,
@@ -308,7 +308,7 @@ test('the HTTP health endpoint stays DOWN until an agent request probes successf
 
 test('vector tools and history fail with an open embedder breaker; user stores retain keyword fallback', async () => {
   const breaker = new CircuitBreaker({ failureThreshold: 1 });
-  const embedder = new CircuitBreakerEmbedder(
+  const embedder = new CircuitBreakerEmbedderBase(
     { embed: async () => ({ vector: [1, 0] }) },
     breaker,
   );
