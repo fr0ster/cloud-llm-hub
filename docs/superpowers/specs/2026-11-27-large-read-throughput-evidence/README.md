@@ -152,3 +152,55 @@ by one succeeded.
   passed.
 - 21:03–21:44 UTC: no answers at all; 7 consecutive timeouts of 300 s.
 - From 21:44 UTC: normal again; no timeout in the remaining 6.9 hours of the run.
+
+## Second run (27.11.2026, newer client package; snapshot while the run continued)
+
+The same kind of task on the same hub, with a newer client package: no transport-table reads, one table per call,
+one hub read per object. `hub_calls_run2.csv` has the same columns. It holds 440 calls, 14:30–19:10 UTC, taken while
+the run was still going (5 of 9 objects done). Summed call time 4.3 h.
+
+**Call time.** The fit is the same as in the first run: **seconds ≈ 17.9 + 3.2 per 1,000 answer characters**.
+Of 3.9 h of successful calls, 2.1 h (54 %) are the fixed part.
+
+| Kind | Calls | Median s | p90 s | Max s | Sum h | Median answer chars |
+|---|---|---|---|---|---|---|
+| source read | 205 | 22 | 89 | 316 | 2.39 | 2,356 |
+| format tree nodes | 89 | 36 | 49 | 71 | 0.88 | 4,461 |
+| table read | 38 | 28 | 56 | 100 | 0.34 | 1,211 |
+| package listing | 38 | 18 | 34 | 59 | 0.22 | 1,558 |
+| other | 31 | 19 | 36 | 75 | 0.19 | 1,746 |
+| data dictionary | 17 | 21 | 29 | 34 | 0.10 | 2,109 |
+| message texts | 10 | 15 | 40 | 42 | 0.06 | 1,141 |
+
+| Answer size | Calls | Median s |
+|---|---|---|
+| < 2k chars | 175 | 15 |
+| 2–5k | 156 | 27 |
+| 5–10k | 66 | 41 |
+| 10–20k | 8 | 58 |
+| 20–40k | 10 | 91 |
+| > 40k | 8 | 213 |
+
+The slowest successful calls are again verbatim reads of large classes: 45,000–85,000 characters took 209–277 s.
+
+**Empty answers and timeouts (14 empty, 3 timeouts).** Only 4 of the 17 had another call of the client running, so
+they are not caused by parallel calls. They are caused by the wording of the request:
+
+| Count | Request | What worked afterwards |
+|---|---|---|
+| 5 empty | one task that joins tables: object directory of a package, then the transaction table, then the texts | one table per call |
+| 7 empty | next page of format tree nodes with `NODE_ID greater than '<last ID>'` | `NODE_ID >= '<last ID + 1>'` and "return exactly the first 50 rows" |
+| 2 empty | one message text (T100, one key) asked as a table read — the same form worked in the concurrency test | the same read written as `SELECT … FROM T100 WHERE …` |
+| 3 timeouts (300 s) | whole read of a mid-size class (twice), one enhancement read | the class read method by method |
+
+**Answers the client rejected and asked again** (not visible in the flags; from the client's log):
+
+- Format tree node pages: 21 of 69 in one session returned a summary, a statement of a tool limit, or rows that were
+  filtered locally and partly not in the table.
+- "First 100 rows scanned" instead of a database filter (3 reads).
+- A long "one of" list replaced by LIKE; 10 of 23 rows returned.
+- Counts that do not match the listed rows (90 claimed / 75 listed; 55 / 40).
+
+What the second run adds to the goal: the per-character cost and the fixed cost per call do not change with a more
+careful client; the remaining waste comes from the hub's interpretation of the request (joins, `>` filters, phrasing),
+not from parallel calls.
