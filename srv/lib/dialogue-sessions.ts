@@ -131,6 +131,7 @@ import {
   longSessionLlms,
   type SessionLlms,
 } from './session-llms';
+import { redactProviderOutput } from './session-log-data';
 import { sessionSlot as slot } from './session-slot';
 import { recordTurn, waitForSessionTurns } from './session-turns';
 import { cachedSystemIdentity } from './system-identity-cache';
@@ -1682,7 +1683,7 @@ async function open(
             sessionLogger: {
               logStep(name, data) {
                 if (!pipelineFailures.logStep(name, data))
-                  diagnostics.logStep(name, data);
+                  diagnostics.logStep(name, redactProviderOutput(data));
               },
             },
           };

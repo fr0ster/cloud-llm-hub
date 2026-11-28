@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { ILlm, IUsageRecorder, TokenUsage } from '@mcp-abap-adt/llm-agent';
 import {
+  addCacheTokenUsage,
   addTokenUsage,
   contextExceededError,
   EMBEDDING_CONTEXT_EXCEEDED,
@@ -63,12 +64,7 @@ export function attributeTokenUsage(
         completionTokens: usage.completionTokens,
         totalTokens: usage.totalTokens,
         requests: 1,
-        ...(usage.cachedInputTokens !== undefined
-          ? { cachedInputTokens: usage.cachedInputTokens }
-          : {}),
-        ...(usage.cacheCreationInputTokens !== undefined
-          ? { cacheCreationInputTokens: usage.cacheCreationInputTokens }
-          : {}),
+        ...addCacheTokenUsage(usage),
       },
     },
   };

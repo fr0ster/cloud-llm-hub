@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { text } from 'node:stream/consumers';
+import type { Message } from '@mcp-abap-adt/llm-agent';
 import { loadAgentConfig, parseRagConfig } from '../../srv/agent-config';
 import { getAvailableModels } from '../../srv/lib/ai-core-models';
 import { BuildValidationError } from '../../srv/lib/build-validation-error';
@@ -65,6 +66,8 @@ beforeEach(() => {
     LLM_AGENT_PROVIDER: provider,
     LLM_AGENT_RESOURCE_GROUP: resourceGroup,
     LLM_AGENT_MODEL: openAiModel,
+    LLM_AGENT_REASONING_EFFORT: undefined,
+    LLM_AGENT_EXECUTOR_REASONING_EFFORT: undefined,
   });
 });
 
@@ -93,6 +96,108 @@ it('selects the SAP AI Core direct deployment provider from Hub configuration', 
     ok: true,
   });
   expect(fetch).toHaveBeenCalledTimes(3);
+});
+
+it('uses role reasoning effort and replays provider output in the Responses tool round-trip', async () => {
+  process.env.LLM_AGENT_REASONING_EFFORT = 'low';
+  process.env.LLM_AGENT_EXECUTOR_REASONING_EFFORT = 'high';
+  const output = [
+    { type: 'reasoning', id: 'reasoning-1', encrypted_content: 'opaque' },
+    {
+      type: 'function_call',
+      call_id: 'call-1',
+      name: 'lookup',
+      arguments: '{}',
+    },
+  ];
+  let calls = 0;
+  mockAiCore((url, init) => {
+    if (url.pathname === '/v2/lm/deployments')
+      return Response.json({
+        resources: [
+          { ...deployment(openAiModel), configurationId: 'config-1' },
+        ],
+      });
+    if (url.pathname === '/v2/lm/configurations/config-1')
+      return Response.json({ executableId: 'azure-openai' });
+
+    expect(url.href).toBe(`${deploymentBaseUrl}/chat/responses`);
+    expect(init?.method).toBe('POST');
+    const body = JSON.parse(String(init?.body));
+    expect(body).toMatchObject({
+      reasoning: { effort: 'high' },
+      tools: [{ type: 'function', name: 'lookup' }],
+    });
+    if (calls++ > 0) {
+      expect(body).toMatchObject({
+        input: [
+          { role: 'user', content: 'Look this up' },
+          ...output,
+          { type: 'function_call_output', call_id: 'call-1', output: 'Found' },
+        ],
+      });
+      return Response.json({
+        status: 'completed',
+        output: [
+          { type: 'message', content: [{ type: 'output_text', text: 'Done' }] },
+        ],
+      });
+    }
+    return Response.json({
+      status: 'completed',
+      output,
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+        output_tokens_details: { reasoning_tokens: 3 },
+      },
+    });
+  });
+  const llm = await makeHubLlm(
+    { ...loadAgentConfig().llm, role: 'executor' },
+    undefined,
+  );
+  const user: Message = { role: 'user', content: 'Look this up' };
+  const tools = [
+    { name: 'lookup', description: 'Look up a record', inputSchema: {} },
+  ];
+  const answer = await llm.chat([user], tools);
+  expect(answer).toMatchObject({
+    ok: true,
+    value: {
+      finishReason: 'tool_calls',
+      toolCalls: [{ id: 'call-1', name: 'lookup', arguments: {} }],
+      providerOutput: { protocol: 'openai.responses', items: output },
+      usage: { reasoningTokens: 3 },
+    },
+  });
+  if (!answer.ok) throw answer.error;
+  const [call] = answer.value.toolCalls ?? [];
+  if (!call) throw new Error('Expected a tool call');
+  const continued = await llm.chat(
+    [
+      user,
+      {
+        role: 'assistant',
+        content: answer.value.content,
+        providerOutput: answer.value.providerOutput,
+        tool_calls: [
+          {
+            id: call.id,
+            type: 'function',
+            function: {
+              name: call.name,
+              arguments: JSON.stringify(call.arguments),
+            },
+          },
+        ],
+      },
+      { role: 'tool', tool_call_id: call.id, content: 'Found' },
+    ],
+    tools,
+  );
+  expect(continued).toMatchObject({ ok: true, value: { content: 'Done' } });
 });
 
 it('uses binding credentials ahead of the service key and individual variables', () => {

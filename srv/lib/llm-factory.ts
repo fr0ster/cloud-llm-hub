@@ -48,6 +48,7 @@ import { captureLlm } from './context-capture';
 import { deployModel } from './deploy-model';
 import {
   configuredPromptCaching,
+  configuredReasoningEffort,
   type PromptCachingRole,
 } from './deploy-role-config';
 import {
@@ -371,6 +372,14 @@ export function resetLlmCredentials(): void {
 const credentialIds = new WeakMap<object, number>();
 let nextCredentialId = 0;
 
+function configuredProviderOptions(role?: PromptCachingRole) {
+  const reasoningEffort = configuredReasoningEffort(role);
+  return {
+    promptCaching: configuredPromptCaching(role),
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+  };
+}
+
 /** Cache identity contains configuration and an opaque credential identity only. */
 export function hubLlmKey(
   cfg: HubLlmConfig,
@@ -391,7 +400,7 @@ export function hubLlmKey(
     baseURL: cfg.baseURL,
     resourceGroup: cfg.resourceGroup,
     temperature,
-    promptCaching: configuredPromptCaching(cfg.role),
+    ...configuredProviderOptions(cfg.role),
     maxTokens: cfg.maxTokens,
     component: cfg.component,
     quotaScope: cfg.quotaScope,
@@ -404,9 +413,9 @@ export async function makeHubLlm(
   cfg: HubLlmConfig,
   temperature: number | undefined,
 ): Promise<ILlm> {
-  const promptCaching = configuredPromptCaching(cfg.role);
+  const options = configuredProviderOptions(cfg.role);
   const key = hubLlmKey(cfg, temperature);
-  const llm = await createHubLlm(cfg, temperature, promptCaching);
+  const llm = await createHubLlm(cfg, temperature, options);
   return new Proxy(llm, {
     get(target, property) {
       if (property === 'chat')
@@ -414,11 +423,7 @@ export async function makeHubLlm(
           const owner = sessionLlms.getStore();
           const client = owner
             ? await owner.get(key, (quotaScope) =>
-                createHubLlm(
-                  { ...cfg, quotaScope },
-                  temperature,
-                  promptCaching,
-                ),
+                createHubLlm({ ...cfg, quotaScope }, temperature, options),
               )
             : target;
           return client.chat(...args);
@@ -428,11 +433,7 @@ export async function makeHubLlm(
           const owner = sessionLlms.getStore();
           const client = owner
             ? await owner.get(key, (quotaScope) =>
-                createHubLlm(
-                  { ...cfg, quotaScope },
-                  temperature,
-                  promptCaching,
-                ),
+                createHubLlm({ ...cfg, quotaScope }, temperature, options),
               )
             : target;
           yield* client.streamChat(...args);
@@ -446,7 +447,7 @@ export async function makeHubLlm(
 async function createHubLlm(
   cfg: HubLlmConfig,
   temperature: number | undefined,
-  promptCaching: boolean,
+  options: ReturnType<typeof configuredProviderOptions>,
 ): Promise<ILlm> {
   const modelMaximum =
     cfg.provider === 'sap-aicore-foundation' && cfg.model
@@ -458,7 +459,7 @@ async function createHubLlm(
   const common = {
     ...(usage ? { usage } : {}),
     model: cfg.model,
-    promptCaching,
+    ...options,
     ...(temperature === undefined ? {} : { temperature }),
     maxTokens,
     whenThrottled: cfg.whenThrottled,

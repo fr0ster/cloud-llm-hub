@@ -7,6 +7,7 @@ import {
   configuredExecutionLimits,
   configuredLimit,
   configuredPromptCaching,
+  configuredReasoningEffort,
   configuredRoleModel,
 } from './lib/deploy-role-config';
 import type { ExecutionLimits } from './lib/execution-limits';
@@ -692,14 +693,17 @@ export function loadAgentConfig(): AgentConfig {
   const model = deployModel();
   const temperature = configuredTemperature();
   configuredPromptCaching();
+  configuredReasoningEffort();
   for (const role of [
     'coordinator',
     'planner',
     'executor',
     'checker',
     'classifier',
-  ] as const)
+  ] as const) {
     configuredPromptCaching(role);
+    configuredReasoningEffort(role);
+  }
   const maxTokens = configuredMaxTokens();
   const resourceGroup =
     process.env.LLM_AGENT_RESOURCE_GROUP?.trim() || undefined;

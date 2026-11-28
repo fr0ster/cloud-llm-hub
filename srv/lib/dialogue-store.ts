@@ -101,6 +101,7 @@ const num = z.number().finite();
 const tokenUsage = z.object({
   cachedInputTokens: num.optional(),
   cacheCreationInputTokens: num.optional(),
+  reasoningTokens: num.optional(),
   promptTokens: num,
   completionTokens: num,
   totalTokens: num,
@@ -110,6 +111,7 @@ const tokenUsage = z.object({
       z.object({
         cachedInputTokens: num.optional(),
         cacheCreationInputTokens: num.optional(),
+        reasoningTokens: num.optional(),
         promptTokens: num,
         completionTokens: num,
         totalTokens: num,

@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- Deployment-wide reasoning effort and optional per-role overrides via `LLM_AGENT_REASONING_EFFORT` and the role-specific environment variables.
+
+### Fixed
+
+- OpenAI reasoning models on SAP AI Core can use tools through the Responses API after the llm-agent upgrade.
+
 ## [12.2.1] - 2026-11-27
 
 ### Fixed

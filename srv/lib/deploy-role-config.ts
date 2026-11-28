@@ -1,3 +1,8 @@
+import {
+  isReasoningEffort,
+  REASONING_EFFORTS,
+  type ReasoningEffort,
+} from '@mcp-abap-adt/llm-agent';
 import { BuildValidationError } from './build-validation-error';
 import type { ExecutionLimits, Limit } from './execution-limits';
 import { requireFoundationChatFamily } from './model-capabilities';
@@ -10,32 +15,37 @@ const ROLE_ENV = {
   coordinator: {
     model: 'LLM_AGENT_COORDINATOR_MODEL',
     promptCaching: 'LLM_AGENT_COORDINATOR_PROMPT_CACHING',
+    reasoningEffort: 'LLM_AGENT_COORDINATOR_REASONING_EFFORT',
     maxIterations: 'LLM_AGENT_COORDINATOR_MAX_ITERATIONS',
     maxToolCalls: 'LLM_AGENT_COORDINATOR_MAX_TOOL_CALLS',
   },
   planner: {
     model: 'LLM_AGENT_PLANNER_MODEL',
     promptCaching: 'LLM_AGENT_PLANNER_PROMPT_CACHING',
+    reasoningEffort: 'LLM_AGENT_PLANNER_REASONING_EFFORT',
   },
   executor: {
     model: 'LLM_AGENT_EXECUTOR_MODEL',
     promptCaching: 'LLM_AGENT_EXECUTOR_PROMPT_CACHING',
+    reasoningEffort: 'LLM_AGENT_EXECUTOR_REASONING_EFFORT',
     maxIterations: 'LLM_AGENT_EXECUTOR_MAX_ITERATIONS',
     maxToolCalls: 'LLM_AGENT_EXECUTOR_MAX_TOOL_CALLS',
   },
   checker: {
     model: 'LLM_AGENT_CHECKER_MODEL',
     promptCaching: 'LLM_AGENT_CHECKER_PROMPT_CACHING',
+    reasoningEffort: 'LLM_AGENT_CHECKER_REASONING_EFFORT',
     maxIterations: 'LLM_AGENT_CHECKER_MAX_ITERATIONS',
     maxToolCalls: 'LLM_AGENT_CHECKER_MAX_TOOL_CALLS',
   },
   classifier: {
     model: 'LLM_AGENT_CLASSIFIER_MODEL',
     promptCaching: 'LLM_AGENT_CLASSIFIER_PROMPT_CACHING',
+    reasoningEffort: 'LLM_AGENT_CLASSIFIER_REASONING_EFFORT',
   },
 } as const satisfies Record<
   PromptCachingRole,
-  { model: string; promptCaching: string }
+  { model: string; promptCaching: string; reasoningEffort: string }
 > &
   Record<
     Exclude<RoleName, 'planner'>,
@@ -67,6 +77,23 @@ export function configuredPromptCaching(
   return (
     (role ? parse(ROLE_ENV[role].promptCaching) : undefined) ?? global ?? true
   );
+}
+
+/** Role overrides global; omission uses the provider default. */
+export function configuredReasoningEffort(
+  role?: PromptCachingRole,
+  env: NodeJS.ProcessEnv = process.env,
+): ReasoningEffort | undefined {
+  const parse = (name: string): ReasoningEffort | undefined => {
+    const raw = env[name]?.trim();
+    if (!raw) return undefined;
+    if (isReasoningEffort(raw)) return raw;
+    throw new BuildValidationError(
+      `Invalid ${name}: expected ${REASONING_EFFORTS.join(', ')}, got ${JSON.stringify(raw)}`,
+    );
+  };
+  const global = parse('LLM_AGENT_REASONING_EFFORT');
+  return (role ? parse(ROLE_ENV[role].reasoningEffort) : undefined) ?? global;
 }
 
 /** Shared by startup validation and dependency-light runtime scopes. */

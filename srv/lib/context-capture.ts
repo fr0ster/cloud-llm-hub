@@ -215,6 +215,9 @@ export function captureLlm(
             ...(typeof usage?.completionTokens === 'number'
               ? { outputTokens: usage.completionTokens }
               : {}),
+            ...(typeof usage?.reasoningTokens === 'number'
+              ? { reasoningTokens: usage.reasoningTokens }
+              : {}),
           }),
         );
       } catch {
@@ -233,7 +236,11 @@ export function captureLlm(
     let options = '';
     if (mode === 'full') {
       try {
-        messages = contextJson(args[0]);
+        messages = contextJson(
+          args[0].map(
+            ({ providerOutput: _providerOutput, ...message }) => message,
+          ),
+        );
         tools = contextJson(args[1] ?? []);
         options = contextJson({
           temperature: args[2]?.temperature ?? defaults.temperature,

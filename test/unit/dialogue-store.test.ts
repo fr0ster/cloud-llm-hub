@@ -110,7 +110,7 @@ it('round-trips terminal request errors and terminal task error codes', async ()
   await store.save('alice', 'terminal', restored);
   expect(await store.load('alice', 'terminal')).toEqual(snapshot);
 });
-it('round-trips planner projection metadata, resolved failures and cache usage', async () => {
+it('round-trips planner projections and usage details', async () => {
   const store = new MemoryDialogueStore();
   const usage = {
     promptTokens: 10,
@@ -118,6 +118,7 @@ it('round-trips planner projection metadata, resolved failures and cache usage',
     totalTokens: 12,
     cachedInputTokens: 5,
     cacheCreationInputTokens: 3,
+    reasoningTokens: 1,
     models: {
       planner: {
         promptTokens: 10,
@@ -126,6 +127,7 @@ it('round-trips planner projection metadata, resolved failures and cache usage',
         requests: 1,
         cachedInputTokens: 5,
         cacheCreationInputTokens: 3,
+        reasoningTokens: 1,
       },
     },
   };
@@ -193,6 +195,33 @@ it('round-trips planner projection metadata, resolved failures and cache usage',
   if (!restored) throw new Error('missing restored state');
   await store.save('alice', 'projection', restored);
   expect(await store.load('alice', 'projection')).toEqual(snapshot);
+});
+it('does not persist opaque provider output', async () => {
+  const store = new MemoryDialogueStore();
+  const providerOutput = {
+    protocol: 'openai-responses',
+    items: [{ type: 'reasoning', encrypted_content: 'opaque' }],
+  };
+  const answer = { role: 'assistant' as const, content: 'Complete answer' };
+  await store.save('alice', 'provider-output', {
+    ...state,
+    conversation: [...state.conversation, { ...answer, providerOutput }],
+    requests: [
+      {
+        id: 'open',
+        openedAt: 1,
+        text: 'current',
+        transcript: [{ ...answer, providerOutput }],
+      },
+    ],
+  });
+  expect(await store.load('alice', 'provider-output')).toEqual({
+    ...state,
+    conversation: [...state.conversation, answer],
+    requests: [
+      { id: 'open', openedAt: 1, text: 'current', transcript: [answer] },
+    ],
+  });
 });
 it('strips legacy archives and preserves open and closed request transcripts', async () => {
   const store = new MemoryDialogueStore();

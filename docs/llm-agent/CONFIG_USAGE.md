@@ -135,6 +135,17 @@ Prompt caching is on or off; it is on by default. `LLM_AGENT_PROMPT_CACHING=on|o
 
 Usage records keep cache reads (`cachedInputTokens`) and cache writes (`cacheCreationInputTokens`) per model. Context capture stores the cache reads in `cached_tokens`.
 
+Set reasoning effort globally or per role. Empty or unset role values inherit the global value. If both are empty or unset, the model uses its default. The hub validates values against llm-agent's `REASONING_EFFORTS` at startup and passes the configured value to the provider. The provider and model determine which levels they support.
+
+| Environment variable | Default | Scope |
+| --- | --- | --- |
+| `LLM_AGENT_REASONING_EFFORT` | Model default | All LLM clients |
+| `LLM_AGENT_COORDINATOR_REASONING_EFFORT` | Inherit global | Coordinator, including LLM-only chat |
+| `LLM_AGENT_PLANNER_REASONING_EFFORT` | Inherit global | Plan author |
+| `LLM_AGENT_EXECUTOR_REASONING_EFFORT` | Inherit global | Executors |
+| `LLM_AGENT_CHECKER_REASONING_EFFORT` | Inherit global | Checkers |
+| `LLM_AGENT_CLASSIFIER_REASONING_EFFORT` | Inherit global | Classifier and helpers, including query analysis and translation |
+
 Tool selection uses explicit read-only effects, independently of exposition permissions and retrieval backend. Defaults: `step-kind`, reader k=5, writer k=2. Only writer seeds expand object clusters; cluster members retain permission filtering. Without write rights both strategies return readers only. The analyzer returns strict `writes` in its existing call; missing or invalid responses mean UNKNOWN. `per-collection` ignores step kind; `step-kind` uses it and adds no independent reader seeds to RW.
 
 The session history router embeds text-only vector queries independently, so coordinator history recall does not create or vectorize a tools store. Keyword history works without an embedder. Queries wait for pending writes from other calls; a query inside a write for the same session reads committed history without waiting on itself.

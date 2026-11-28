@@ -7,14 +7,23 @@ import { unwrapBuilderResult } from '@mcp-abap-adt/llm-agent-libs';
 import { reportLlmSpend } from '../../srv/lib/llm-failure';
 import { bindCaller } from '../../srv/lib/rag-caller';
 import * as sessionTurns from '../../srv/lib/session-turns';
+import * as toolCallDiagnostics from '../../srv/lib/tool-call-diagnostics';
 import { testAccess } from './helpers/test-rag-access';
 
+const mockInfo = jest.fn();
 jest.mock(
   '@sap/cds',
   () => ({
     __esModule: true,
     default: {
-      log: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
+      log: (area: string) => ({
+        info(...args: Parameters<typeof mockInfo>) {
+          if (area === 'agent-mcp') mockInfo(...args);
+        },
+        warn() {},
+        error() {},
+        debug() {},
+      }),
       get context() {
         return { user: require('./helpers/channel-harness').harness.user };
       },
@@ -187,6 +196,39 @@ it('execute_step with session reuses one connection across two calls', async () 
     harness.seenOptions[1].trace,
   );
 });
+it('strips provider output from execute_step diagnostics and skill logs', async () => {
+  const diagnostics = jest.spyOn(toolCallDiagnostics, 'logToolCallDiagnostics');
+  const session = await opened();
+  const step = 'llm_request_iter_2';
+  const message = { role: 'assistant', content: 'Worker reply' };
+  const expected = { messages: [message], tools: [] };
+  const data = {
+    ...expected,
+    messages: [{ ...message, providerOutput: { items: ['opaque'] } }],
+  };
+  mockInfo.mockClear();
+  harness.process = async (_messages, options) => {
+    options.sessionLogger?.logStep(step, data, 'llm');
+    options.sessionLogger?.logStep('skills_selected', data);
+    return { ok: true, value: { content: 'done' } };
+  };
+
+  try {
+    await executeStep(req, caller, { session, task: 'Run' });
+    expect(diagnostics).toHaveBeenCalledWith(step, expected, {
+      channel: 'execute_step',
+      destination: 'DEST',
+    });
+    expect(
+      mockInfo.mock.calls.filter(([name]) => name === 'skills_selected'),
+    ).toStrictEqual([
+      ['skills_selected', { destination: 'DEST', data: expected }],
+    ]);
+  } finally {
+    diagnostics.mockRestore();
+  }
+});
+
 it('execute_step calls of one session run one after another', async () => {
   const session = await opened();
   const gate = deferred();
