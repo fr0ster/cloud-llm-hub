@@ -134,6 +134,7 @@ import {
   setSessionAgentsCollection,
   takeRevivalNotice,
 } from './lib/session-lifecycle';
+import { redactProviderOutput } from './lib/session-log-data';
 import { recordTurn, waitForSessionTurns } from './lib/session-turns';
 import {
   destinationClosedText,
@@ -635,7 +636,8 @@ async function executeStepRun(
           data: Parameters<typeof pipelineFailures.logStep>[1],
         ) {
           if (pipelineFailures.logStep(name, data)) return;
-          logToolCallDiagnostics(name, data, {
+          const logData = redactProviderOutput(data);
+          logToolCallDiagnostics(name, logData, {
             channel: 'execute_step',
             destination: targetDestination,
           });
@@ -643,7 +645,7 @@ async function executeStepRun(
             name === 'skills_selected' ||
             name === 'skill_select_rag_fallback'
           ) {
-            log.info(name, { destination: targetDestination, data });
+            log.info(name, { destination: targetDestination, data: logData });
           }
         },
       },

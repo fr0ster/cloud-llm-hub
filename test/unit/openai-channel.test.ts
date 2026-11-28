@@ -155,6 +155,36 @@ function call(
 beforeEach(() => harness.reset());
 afterEach(() => configure());
 
+it('logs LLM requests without provider output from nested messages', async () => {
+  const providerOutput = { items: [{ encrypted_content: 'opaque reasoning' }] };
+  const kept = { role: 'assistant', content: 'Answer', name: undefined };
+  const data = {
+    messages: [{ ...kept, providerOutput }],
+    options: { details: [{ providerOutput, temperature: 0 }] },
+    model: 'm',
+  };
+  const step = 'llm_request_iter_2';
+  mockInfo.mockClear();
+  harness.process = async (_messages, options) => {
+    options.sessionLogger?.logStep(step, data, 'llm');
+    return { ok: true, value: { content: 'done', stopReason: 'stop' } };
+  };
+
+  await call(body()).done;
+
+  expect(mockInfo.mock.calls.filter(([name]) => name === step)).toStrictEqual([
+    [
+      step,
+      {
+        messages: [kept],
+        options: { details: [{ temperature: 0 }] },
+        model: 'm',
+      },
+    ],
+  ]);
+  expect(data.messages[0].providerOutput).toBe(providerOutput);
+});
+
 it.each([
   { stream: false, throws: false },
   { stream: false, throws: true },

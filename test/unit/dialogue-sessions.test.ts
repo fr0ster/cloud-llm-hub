@@ -51,6 +51,7 @@ import {
   roleOfProfile,
 } from '../../srv/lib/role-models-scope';
 import { systemToolTrust } from '../../srv/lib/system-tool-trust';
+import * as toolCallDiagnostics from '../../srv/lib/tool-call-diagnostics';
 import type { TrustResolver } from '../../srv/lib/trust-resolver';
 import { sumPlannerUsage } from '../../srv/lib/usage-wire';
 import {
@@ -513,6 +514,33 @@ afterEach(async () => {
   await closeDialogue('alice', 'key', 'ttl');
   await closeDialogue('bob', 'bob-key', 'ttl');
   setLongSessionsForTest(undefined);
+});
+
+test('passes LLM requests to dialogue diagnostics without provider output', async () => {
+  const logStep = jest.fn();
+  const diagnostics = jest
+    .spyOn(toolCallDiagnostics, 'toolCallDiagnosticsLogger')
+    .mockReturnValue({ logStep });
+  const message = { role: 'assistant', content: 'Worker reply' };
+  const step = 'llm_request_iter_2';
+  mockRun.mockImplementation(async (input) => {
+    input.sessionLogger?.logStep(step, {
+      messages: [{ ...message, providerOutput: { items: ['opaque'] } }],
+      tools: [],
+    });
+    return { output: 'read done' };
+  });
+
+  try {
+    const { h } = await ready();
+    await h.session.send('go');
+    await until(() => mockRun.mock.calls.length > 0);
+    expect(logStep.mock.calls).toStrictEqual([
+      [step, { messages: [message], tools: [] }],
+    ]);
+  } finally {
+    diagnostics.mockRestore();
+  }
 });
 
 test.each([false, true])(

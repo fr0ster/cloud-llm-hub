@@ -47,6 +47,7 @@ import {
   withRoleModels,
 } from './lib/role-models-scope';
 import { runWithRequestLlms } from './lib/session-llms';
+import { redactProviderOutput } from './lib/session-log-data';
 import { summarizeToolResult } from './lib/tool-result-summary';
 import {
   assertToolSearchHealthy,
@@ -1232,7 +1233,7 @@ async function serveChatCompletions(
             name.startsWith('llm_response') ||
             name.startsWith('external_tools')
           ) {
-            pipelineLog.info(name, data);
+            pipelineLog.info(name, redactProviderOutput(data));
           }
         },
       },

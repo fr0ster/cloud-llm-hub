@@ -149,7 +149,20 @@ describe('pipeline stage failure logging', () => {
 
   it('uses structured stage error payload fields', () => {
     const logged = jest.spyOn(log, 'error').mockImplementation(() => {});
-    pipelineFailureLogger('test-trace').logStep('stage_error_retrieval', {
+    const logger = pipelineFailureLogger('test-trace');
+    const request = {
+      messages: [
+        {
+          role: 'assistant',
+          content: 'Answer',
+          providerOutput: { items: ['opaque'] },
+        },
+      ],
+    };
+
+    expect(logger.logStep('llm_request_iter_2', request)).toBe(false);
+    logger.logStep('stage_error_retrieval', {
+      ...request,
       code: 'QUERY_ERROR',
       status: 503,
       stepId: 'retrieval-step',
