@@ -101,6 +101,7 @@ const num = z.number().finite();
 const tokenUsage = z.object({
   cachedInputTokens: num.optional(),
   cacheCreationInputTokens: num.optional(),
+  reasoningTokens: num.optional(),
   promptTokens: num,
   completionTokens: num,
   totalTokens: num,
@@ -110,6 +111,7 @@ const tokenUsage = z.object({
       z.object({
         cachedInputTokens: num.optional(),
         cacheCreationInputTokens: num.optional(),
+        reasoningTokens: num.optional(),
         promptTokens: num,
         completionTokens: num,
         totalTokens: num,
@@ -135,6 +137,9 @@ const plannerUsage = z.object({
 const message = z.object({
   role: z.enum(['user', 'assistant', 'system', 'tool']),
   content: str.nullable(),
+  providerOutput: z
+    .object({ protocol: str, items: z.array(z.record(str, z.json())) })
+    .optional(),
   tool_call_id: str.optional(),
   tool_calls: z
     .array(

@@ -138,6 +138,46 @@ test.each([
   );
 });
 
+test('keeps provider output out of full captures of chat and streams', async () => {
+  const providerOutput = {
+    protocol: 'openai-responses',
+    items: [{ type: 'reasoning', encrypted_content: 'opaque-reasoning' }],
+  };
+  const input: Message[] = [
+    { role: 'assistant', content: 'Thinking', providerOutput },
+  ];
+  const value = {
+    content: 'Answer',
+    finishReason: 'stop',
+    providerOutput,
+  } as const;
+  const wrapped = captureLlm(
+    {
+      model: 'test',
+      async chat() {
+        return { ok: true, value };
+      },
+      async *streamChat() {
+        yield { ok: true, value };
+      },
+    },
+    'chat',
+    'full',
+  );
+  await expect(wrapped.chat(input)).resolves.toEqual({ ok: true, value });
+  for await (const chunk of wrapped.streamChat(input))
+    expect(chunk).toEqual({ ok: true, value });
+  await drainContext();
+  const data = rows();
+  expect(data).toHaveLength(2);
+  for (const row of data) {
+    expect(JSON.parse(String(row.messages))).toEqual([
+      { role: 'assistant', content: 'Thinking' },
+    ]);
+    expect(JSON.parse(String(row.response))).toEqual({ content: 'Answer' });
+  }
+});
+
 test('URL credentials are redacted in persisted messages and tool arguments', async () => {
   const url = 'https://alice:MY_PRIVATE_PASSWORD@example.com/path';
   const tokenUrl = 'https://MY_PRIVATE_TOKEN@example.com/path';

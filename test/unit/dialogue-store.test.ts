@@ -110,7 +110,7 @@ it('round-trips terminal request errors and terminal task error codes', async ()
   await store.save('alice', 'terminal', restored);
   expect(await store.load('alice', 'terminal')).toEqual(snapshot);
 });
-it('round-trips planner projection metadata, resolved failures and cache usage', async () => {
+it('round-trips planner projections, provider output and usage details', async () => {
   const store = new MemoryDialogueStore();
   const usage = {
     promptTokens: 10,
@@ -118,6 +118,7 @@ it('round-trips planner projection metadata, resolved failures and cache usage',
     totalTokens: 12,
     cachedInputTokens: 5,
     cacheCreationInputTokens: 3,
+    reasoningTokens: 1,
     models: {
       planner: {
         promptTokens: 10,
@@ -126,11 +127,20 @@ it('round-trips planner projection metadata, resolved failures and cache usage',
         requests: 1,
         cachedInputTokens: 5,
         cacheCreationInputTokens: 3,
+        reasoningTokens: 1,
       },
     },
   };
+  const providerOutput = {
+    protocol: 'openai-responses',
+    items: [{ type: 'reasoning', encrypted_content: 'opaque' }],
+  };
   const snapshot: DialogueState = {
     ...state,
+    conversation: [
+      ...state.conversation,
+      { role: 'assistant', content: 'Complete answer', providerOutput },
+    ],
     conversationLeadingActions: [0],
     requests: [
       {
@@ -151,6 +161,7 @@ it('round-trips planner projection metadata, resolved failures and cache usage',
           {
             role: 'assistant',
             content: 'Complete answer',
+            providerOutput,
             plannerReference: 'Delivered answer',
           },
           { role: 'user', content: '[actions] none', internalKind: 'actions' },

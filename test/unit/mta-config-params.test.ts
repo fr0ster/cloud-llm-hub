@@ -2,10 +2,16 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { load } from 'js-yaml';
 
-// Non-secret settings parsed by parseRagConfig / parseDestinationConfig.
-// Secrets (LLM_AGENT_EMBEDDER_API_KEY, LLM_AGENT_QDRANT_API_KEY, LLM_AGENT_PG_USER,
-// LLM_AGENT_PG_PASSWORD) go through
-// .env → cf set-env (tools/deploy.sh), never through mta.yaml.
+const REASONING_EFFORT_PARAMS = [
+  'LLM_AGENT_REASONING_EFFORT',
+  'LLM_AGENT_COORDINATOR_REASONING_EFFORT',
+  'LLM_AGENT_PLANNER_REASONING_EFFORT',
+  'LLM_AGENT_EXECUTOR_REASONING_EFFORT',
+  'LLM_AGENT_CHECKER_REASONING_EFFORT',
+  'LLM_AGENT_CLASSIFIER_REASONING_EFFORT',
+];
+
+// Secrets go through .env → cf set-env (tools/deploy.sh), never through mta.yaml.
 const CARRIED = [
   'LLM_AGENT_CLIENT_HISTORY',
   'LLM_AGENT_PROMPT_CACHING',
@@ -14,6 +20,7 @@ const CARRIED = [
   'LLM_AGENT_EXECUTOR_PROMPT_CACHING',
   'LLM_AGENT_CHECKER_PROMPT_CACHING',
   'LLM_AGENT_CLASSIFIER_PROMPT_CACHING',
+  ...REASONING_EFFORT_PARAMS,
   'LLM_AGENT_LOG_LEVEL',
   'LLM_AGENT_LOG_LEVELS',
   'LLM_AGENT_EMBEDDER',
@@ -35,7 +42,7 @@ const CARRIED = [
   'LLM_AGENT_PLAIN_MCP',
 ];
 
-it('every non-secret RAG/destination setting reaches cloud-llm-hub-srv', () => {
+it('every listed non-secret setting reaches cloud-llm-hub-srv', () => {
   const mta = load(
     fs.readFileSync(path.resolve(__dirname, '../../mta.yaml'), 'utf8'),
   ) as {
@@ -55,6 +62,7 @@ const NEW = [
   'LLM_AGENT_EXECUTOR_PROMPT_CACHING',
   'LLM_AGENT_CHECKER_PROMPT_CACHING',
   'LLM_AGENT_CLASSIFIER_PROMPT_CACHING',
+  ...REASONING_EFFORT_PARAMS,
   'LLM_AGENT_EMBEDDER',
   'LLM_AGENT_EMBEDDER_URL',
   'LLM_AGENT_TOOLS_RAG_BACKEND',
