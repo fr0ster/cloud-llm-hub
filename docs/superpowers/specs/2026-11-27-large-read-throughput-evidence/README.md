@@ -153,45 +153,50 @@ by one succeeded.
 - 21:03–21:44 UTC: no answers at all; 7 consecutive timeouts of 300 s.
 - From 21:44 UTC: normal again; no timeout in the remaining 6.9 hours of the run.
 
-## Second run (27.11.2026, newer client package; snapshot while the run continued)
+## Second run (27.11.2026, newer client package)
 
 The same kind of task on the same hub, with a newer client package: no transport-table reads, one table per call,
-one hub read per object. `hub_calls_run2.csv` has the same columns. It holds 440 calls, 14:30–19:10 UTC, taken while
-the run was still going (5 of 9 objects done). Summed call time 4.3 h.
+one hub read per object. `hub_calls_run2.csv` has the same columns. It holds all 694 calls of the run (9 RICEFW
+objects), 14:30–21:39 UTC. The run took 7.3 h; the summed call time is 6.1 h.
 
-**Call time.** The fit is the same as in the first run: **seconds ≈ 17.9 + 3.2 per 1,000 answer characters**.
-Of 3.9 h of successful calls, 2.1 h (54 %) are the fixed part.
+**Call time.** The fit is the same as in the first run: **seconds ≈ 15.9 + 3.2 per 1,000 answer characters**.
+Of 5.5 h of successful calls, 3.0 h (54 %) are the fixed part.
 
 | Kind | Calls | Median s | p90 s | Max s | Sum h | Median answer chars |
 |---|---|---|---|---|---|---|
-| source read | 205 | 22 | 89 | 316 | 2.39 | 2,356 |
+| source read | 337 | 22 | 79 | 316 | 3.67 | 2,213 |
 | format tree nodes | 89 | 36 | 49 | 71 | 0.88 | 4,461 |
-| table read | 38 | 28 | 56 | 100 | 0.34 | 1,211 |
-| package listing | 38 | 18 | 34 | 59 | 0.22 | 1,558 |
-| other | 31 | 19 | 36 | 75 | 0.19 | 1,746 |
-| data dictionary | 17 | 21 | 29 | 34 | 0.10 | 2,109 |
-| message texts | 10 | 15 | 40 | 42 | 0.06 | 1,141 |
+| other | 82 | 12 | 25 | 75 | 0.38 | 1,150 |
+| table read | 40 | 26 | 56 | 100 | 0.35 | 1,211 |
+| data dictionary | 47 | 17 | 30 | 48 | 0.26 | 1,542 |
+| package listing | 43 | 16 | 32 | 59 | 0.23 | 1,376 |
+| short dump | 12 | 36 | 60 | 80 | 0.13 | 2,995 |
+| message texts | 26 | 12 | 27 | 42 | 0.11 | 924 |
+| existence check | 11 | 14 | 46 | 52 | 0.06 | 1,114 |
+| format tree head | 6 | 21 | 30 | 53 | 0.04 | 1,956 |
 
 | Answer size | Calls | Median s |
 |---|---|---|
-| < 2k chars | 175 | 15 |
-| 2–5k | 156 | 27 |
-| 5–10k | 66 | 41 |
-| 10–20k | 8 | 58 |
-| 20–40k | 10 | 91 |
-| > 40k | 8 | 213 |
+| < 2k chars | 321 | 12 |
+| 2–5k | 221 | 26 |
+| 5–10k | 86 | 39 |
+| 10–20k | 20 | 50 |
+| 20–40k | 16 | 89 |
+| > 40k | 9 | 211 |
 
-The slowest successful calls are again verbatim reads of large classes: 45,000–85,000 characters took 209–277 s.
+The slowest successful calls are again verbatim reads of large classes: 45,000–85,000 characters took 165–277 s.
 
-**Empty answers and timeouts (14 empty, 3 timeouts).** Only 4 of the 17 had another call of the client running, so
-they are not caused by parallel calls. They are caused by the wording of the request:
+**Empty answers and timeouts (15 empty, 6 timeouts).** Only 5 of the 21 had another call of the client running, so
+they are not caused by parallel calls. They are caused by the wording of the request or by one object kind:
 
 | Count | Request | What worked afterwards |
 |---|---|---|
 | 5 empty | one task that joins tables: object directory of a package, then the transaction table, then the texts | one table per call |
 | 7 empty | next page of format tree nodes with `NODE_ID greater than '<last ID>'` | `NODE_ID >= '<last ID + 1>'` and "return exactly the first 50 rows" |
 | 2 empty | one message text (T100, one key) asked as a table read — the same form worked in the concurrency test | the same read written as `SELECT … FROM T100 WHERE …` |
-| 3 timeouts (300 s) | whole read of a mid-size class (twice), one enhancement read | the class read method by method |
+| 1 empty | a configuration table read where the client guessed the table names | the right table names |
+| 3 timeouts (300 s) | whole read of a mid-size class (twice), one function module with its metadata | the class read method by method |
+| 3 timeouts (300 s) | source of an enhancement implementation (two objects; one of them twice) | for one: the enhancement tables plus a code answer; the other stayed unread |
 
 **Answers the client rejected and asked again** (not visible in the flags; from the client's log):
 

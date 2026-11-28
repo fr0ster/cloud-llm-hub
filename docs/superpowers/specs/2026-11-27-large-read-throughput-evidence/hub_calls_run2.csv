@@ -439,3 +439,257 @@ when_utc,request,kind,seconds,parallel,answer_chars,code_lines,hub_steps,flags,t
 2026-11-27 19:09:24,src,source read,19.8,1,2242,59,1,-,False,False,396
 2026-11-27 19:09:47,dd,data dictionary,14.8,1,2321,0,1,-,False,False,364
 2026-11-27 19:09:48,src,source read,41.6,1,6189,185,1,-,False,False,356
+2026-11-27 19:12:11,src,source read,127.2,0,37856,1165,1,-,False,False,510
+2026-11-27 19:14:23,src,source read,26.2,0,6177,155,1,-,False,False,536
+2026-11-27 19:14:51,src,source read,17.9,0,2697,75,1,-,False,False,534
+2026-11-27 19:15:11,src,source read,15.3,0,4807,124,1,-,False,False,495
+2026-11-27 19:15:28,src,source read,25.3,0,5732,90,3,-,False,False,509
+2026-11-27 19:15:58,src,source read,10.1,0,1149,30,1,-,False,False,519
+2026-11-27 19:16:10,src,source read,32.4,0,9198,251,1,-,False,False,505
+2026-11-27 19:16:45,src,source read,41.2,0,13441,341,2,-,False,False,506
+2026-11-27 19:17:29,src,source read,70.6,0,15178,416,1,-,False,False,507
+2026-11-27 19:18:43,src,source read,300.0,0,67,0,0,"TIMEOUT,ERROR,NO_CODE",True,False,485
+2026-11-27 19:23:45,src,source read,300.0,0,67,0,0,"TIMEOUT,ERROR,NO_CODE",True,False,361
+2026-11-27 19:28:48,tab,other,61.0,0,1001,0,1,-,False,False,245
+2026-11-27 19:29:53,src,source read,31.5,0,2137,8,10,-,False,False,440
+2026-11-27 19:30:27,tab,other,9.3,0,754,0,1,-,False,False,302
+2026-11-27 19:30:38,tab,other,8.1,0,494,0,1,-,False,False,213
+2026-11-27 19:30:51,tab,other,10.9,1,890,0,1,-,False,False,205
+2026-11-27 19:30:52,tab,other,19.4,1,645,0,1,-,False,False,203
+2026-11-27 19:31:13,tab,other,13.1,0,1969,0,1,-,False,False,241
+2026-11-27 19:31:30,tab,other,9.8,0,851,0,1,-,False,False,244
+2026-11-27 19:31:43,dd,data dictionary,11.0,0,1317,0,1,-,False,False,305
+2026-11-27 19:31:55,msg,message texts,11.5,0,1933,0,1,-,False,False,242
+2026-11-27 19:32:10,msg,message texts,8.6,1,512,0,1,-,False,False,247
+2026-11-27 19:32:11,msg,message texts,16.2,1,472,0,1,-,False,False,243
+2026-11-27 19:32:28,msg,message texts,9.9,0,767,0,1,-,False,False,240
+2026-11-27 19:32:57,src,source read,8.2,0,1269,0,0,NO_CODE,False,False,377
+2026-11-27 19:33:07,tadir,package listing,10.5,0,759,0,1,-,False,False,331
+2026-11-27 19:33:20,tadir,package listing,9.3,0,679,0,1,-,False,False,265
+2026-11-27 19:33:34,tab,source read,22.2,0,3461,0,1,-,False,False,326
+2026-11-27 19:33:59,tab,other,10.5,0,1000,0,1,-,False,False,350
+2026-11-27 19:34:11,tab,other,11.2,0,1215,0,1,-,False,False,207
+2026-11-27 19:34:25,tab,other,10.8,0,1186,0,1,-,False,False,366
+2026-11-27 19:34:54,bal,other,8.5,0,549,0,1,-,False,False,221
+2026-11-27 19:35:12,msg,message texts,12.7,0,2490,0,1,-,False,False,260
+2026-11-27 19:35:26,job,other,9.8,1,864,0,1,-,False,False,209
+2026-11-27 19:35:27,job,other,19.4,1,846,0,1,-,False,False,213
+2026-11-27 19:35:49,dd,data dictionary,10.5,1,1002,0,1,-,False,False,298
+2026-11-27 19:35:50,dd,data dictionary,20.4,1,901,0,1,-,False,False,306
+2026-11-27 19:36:13,src,source read,57.0,0,12831,308,1,-,False,False,513
+2026-11-27 19:37:15,tcode,other,9.1,0,629,0,1,-,False,False,232
+2026-11-27 19:40:51,tab,source read,12.8,0,1388,0,5,-,False,False,395
+2026-11-27 19:44:53,src,source read,115.6,0,27235,623,1,CONDENSED?,False,False,545
+2026-11-27 19:46:58,src,source read,12.2,0,1277,35,1,-,False,False,372
+2026-11-27 19:47:12,src,source read,14.6,1,2367,60,2,-,False,False,392
+2026-11-27 19:47:13,src,source read,26.5,1,1437,39,2,-,False,False,394
+2026-11-27 19:47:42,src,source read,19.4,1,2421,61,2,-,False,False,368
+2026-11-27 19:47:43,src,source read,37.9,1,2678,77,2,-,False,False,388
+2026-11-27 19:48:24,src,source read,10.7,1,788,18,2,-,False,False,366
+2026-11-27 19:48:25,src,source read,19.7,1,618,14,2,-,False,False,366
+2026-11-27 19:48:49,src,source read,57.2,1,13258,332,1,CONDENSED?,False,False,368
+2026-11-27 19:48:50,src,source read,76.7,1,2426,79,2,-,False,False,384
+2026-11-27 19:50:13,src,source read,16.8,1,2382,68,2,-,False,False,394
+2026-11-27 19:50:14,src,source read,30.0,1,2249,55,2,-,False,False,394
+2026-11-27 19:50:48,src,source read,31.3,1,5812,154,2,-,False,False,360
+2026-11-27 19:50:49,src,source read,41.8,1,872,23,2,-,False,False,374
+2026-11-27 19:51:33,src,source read,21.3,1,3110,81,2,-,False,False,364
+2026-11-27 19:51:34,src,source read,34.1,1,1377,53,2,-,False,False,360
+2026-11-27 19:52:11,src,source read,8.1,1,336,6,2,-,False,False,378
+2026-11-27 19:52:12,src,source read,50.9,1,10922,285,2,-,False,False,390
+2026-11-27 19:53:06,src,source read,11.4,1,961,23,2,-,False,False,370
+2026-11-27 19:53:07,src,source read,26.6,1,1696,49,1,-,False,False,380
+2026-11-27 19:53:36,src,source read,11.6,1,987,30,2,-,False,False,374
+2026-11-27 19:53:38,src,source read,19.6,1,709,17,2,-,False,False,376
+2026-11-27 19:54:00,src,source read,15.8,1,1476,47,2,-,False,False,380
+2026-11-27 19:54:01,src,source read,40.5,1,4661,133,2,-,False,False,382
+2026-11-27 19:54:45,src,source read,10.5,0,1026,28,2,-,False,False,382
+2026-11-27 19:55:14,tab,data dictionary,47.8,0,59,0,0,EMPTY,False,True,620
+2026-11-27 19:56:05,tab,data dictionary,13.6,0,1329,0,2,EMPTY,False,False,286
+2026-11-27 19:56:21,tab,data dictionary,20.2,0,3271,0,1,-,False,False,298
+2026-11-27 19:56:47,tab,search,55.6,0,2054,0,24,-,False,False,518
+2026-11-27 19:57:49,tab,data dictionary,21.0,0,2512,0,7,-,False,False,448
+2026-11-27 19:58:14,tab,table read,11.9,0,1043,0,5,-,False,False,453
+2026-11-27 19:58:30,src,source read,11.9,0,2027,55,3,CONDENSED?,False,False,459
+2026-11-27 19:58:51,tab,other,14.5,1,2833,0,1,-,False,False,285
+2026-11-27 19:58:52,dd,data dictionary,26.1,1,1329,0,2,-,False,False,245
+2026-11-27 19:59:23,dd,data dictionary,13.9,1,1542,0,1,-,False,False,527
+2026-11-27 19:59:24,dd,data dictionary,27.7,1,1641,0,1,-,False,False,477
+2026-11-27 19:59:58,msg,message texts,10.7,1,625,0,1,-,False,False,262
+2026-11-27 19:59:58,src,source read,39.9,1,6556,163,1,-,False,False,399
+2026-11-27 20:00:42,msg,message texts,12.3,0,2445,0,1,-,False,False,383
+2026-11-27 20:00:58,src,source read,27.2,1,4664,128,1,-,False,False,469
+2026-11-27 20:00:59,src,source read,36.4,1,1172,18,1,-,False,False,476
+2026-11-27 20:01:40,tab,other,10.1,1,1173,0,1,-,False,False,250
+2026-11-27 20:01:41,dd,data dictionary,25.0,1,2469,0,1,-,False,False,379
+2026-11-27 20:02:11,tab,other,12.4,0,1928,0,1,-,False,False,367
+2026-11-27 20:02:27,src,source read,32.0,0,9899,229,1,-,False,False,495
+2026-11-27 20:03:02,src,source read,30.4,0,9009,239,1,-,False,False,483
+2026-11-27 20:03:37,src,source read,30.8,0,9501,265,1,-,False,False,499
+2026-11-27 20:04:11,src,source read,44.2,0,13162,351,1,-,False,False,499
+2026-11-27 20:04:59,src,source read,17.8,0,6515,130,1,CONDENSED?,False,False,499
+2026-11-27 20:08:18,src,source read,17.3,0,3129,83,1,-,False,False,411
+2026-11-27 20:08:39,src,source read,36.4,0,11030,217,1,-,False,False,334
+2026-11-27 20:09:17,src,source read,49.9,0,13950,272,1,-,False,False,334
+2026-11-27 20:10:09,src,source read,35.0,0,8770,178,1,-,False,False,342
+2026-11-27 20:10:46,src,source read,25.6,0,7141,150,1,-,False,False,334
+2026-11-27 20:11:14,src,source read,29.0,0,8032,171,1,-,False,False,334
+2026-11-27 20:11:46,src,source read,16.4,1,2159,47,1,-,False,False,336
+2026-11-27 20:11:47,src,source read,24.1,1,344,4,1,-,False,False,332
+2026-11-27 20:12:14,src,source read,59.7,1,26594,750,1,-,False,False,346
+2026-11-27 20:12:15,src,source read,77.4,1,3187,109,1,-,False,False,340
+2026-11-27 20:13:46,src,source read,15.0,0,2001,54,1,-,False,False,444
+2026-11-27 20:14:03,src,source read,8.8,1,528,10,1,-,False,False,336
+2026-11-27 20:14:04,src,source read,20.2,1,1633,36,1,-,False,False,350
+2026-11-27 20:14:27,src,source read,13.7,1,1548,31,1,-,False,False,366
+2026-11-27 20:14:28,src,source read,29.4,1,2196,57,1,-,False,False,348
+2026-11-27 20:15:01,src,source read,9.0,0,418,9,2,-,False,False,358
+2026-11-27 20:15:14,src,source read,14.9,0,2108,41,2,-,False,False,437
+2026-11-27 20:15:32,src,source read,19.1,0,3086,72,1,-,False,False,483
+2026-11-27 20:16:04,src,source read,8.2,1,461,6,1,-,False,False,364
+2026-11-27 20:16:05,src,source read,17.3,1,784,15,1,-,False,False,358
+2026-11-27 20:16:26,src,source read,7.9,1,527,10,1,-,False,False,370
+2026-11-27 20:16:27,src,source read,14.7,1,592,6,1,-,False,False,447
+2026-11-27 20:16:47,src,source read,12.3,1,1166,15,2,-,False,False,454
+2026-11-27 20:16:48,src,source read,19.1,1,463,5,1,-,False,False,341
+2026-11-27 20:17:10,src,source read,9.1,1,776,12,2,-,False,False,349
+2026-11-27 20:17:11,src,source read,28.2,1,3423,73,1,-,False,False,422
+2026-11-27 20:17:44,src,source read,20.3,1,3647,80,1,-,False,False,335
+2026-11-27 20:17:45,src,source read,36.8,1,3123,73,2,-,False,False,341
+2026-11-27 20:18:25,src,source read,9.2,1,690,12,2,-,False,False,327
+2026-11-27 20:18:26,src,source read,21.4,1,1453,32,1,-,False,False,329
+2026-11-27 20:18:50,src,source read,20.8,1,4089,115,1,-,False,False,323
+2026-11-27 20:18:51,src,source read,39.6,1,3552,99,2,-,False,False,336
+2026-11-27 20:19:35,src,source read,20.1,1,3436,94,1,-,False,False,328
+2026-11-27 20:19:36,src,source read,33.5,1,2096,52,1,-,False,False,361
+2026-11-27 20:20:13,src,source read,15.1,1,4889,149,1,-,False,False,471
+2026-11-27 20:20:14,src,source read,27.1,1,3261,109,2,CONDENSED?,False,False,479
+2026-11-27 20:20:45,src,source read,87.5,1,21491,593,2,-,False,False,497
+2026-11-27 20:20:46,src,source read,102.1,1,5208,132,1,-,False,False,499
+2026-11-27 20:22:39,tab,data dictionary,17.2,0,1015,0,1,-,False,False,300
+2026-11-27 20:23:00,tab,data dictionary,9.7,0,1045,0,1,-,False,False,327
+2026-11-27 20:23:13,src,source read,9.0,0,708,7,1,-,False,False,454
+2026-11-27 20:23:26,dd,data dictionary,13.7,0,2378,0,1,-,False,False,300
+2026-11-27 20:23:43,dd,data dictionary,14.0,1,2447,0,1,-,False,False,301
+2026-11-27 20:23:43,cnt,other,19.4,1,5,0,0,EMPTY,False,False,150
+2026-11-27 20:24:07,dd,data dictionary,16.9,1,2914,0,1,-,False,False,311
+2026-11-27 20:24:08,dd,data dictionary,36.9,1,4234,0,1,-,False,False,311
+2026-11-27 20:24:59,tab,data dictionary,11.3,1,1109,0,2,-,False,False,293
+2026-11-27 20:25:00,tab,data dictionary,32.5,1,4173,0,3,-,False,False,295
+2026-11-27 20:25:36,tab,data dictionary,18.3,1,3219,0,2,-,False,False,291
+2026-11-27 20:25:37,tab,data dictionary,29.7,1,1309,0,2,-,False,False,311
+2026-11-27 20:26:10,cnt,other,8.7,1,173,0,2,-,False,False,200
+2026-11-27 20:26:11,dd,data dictionary,22.7,1,2714,0,1,-,False,False,366
+2026-11-27 20:26:37,msg,message texts,10.7,1,1536,0,1,-,False,False,344
+2026-11-27 20:26:38,msg,message texts,19.6,1,936,0,1,-,False,False,343
+2026-11-27 20:27:02,msg,message texts,10.1,1,709,0,1,-,False,False,288
+2026-11-27 20:27:03,msg,message texts,18.1,1,591,0,1,-,False,False,280
+2026-11-27 20:27:25,cnt,other,8.1,0,332,0,1,-,False,False,255
+2026-11-27 20:29:19,src,source read,14.3,1,1048,19,4,-,False,False,335
+2026-11-27 20:29:20,src,source read,25.2,1,1293,26,1,-,False,False,339
+2026-11-27 20:29:49,src,source read,9.4,2,903,22,1,-,False,False,351
+2026-11-27 20:29:50,src,source read,46.9,2,8357,205,1,-,False,False,325
+2026-11-27 20:29:51,src,source read,55.6,2,933,27,2,-,False,False,357
+2026-11-27 20:30:52,src,source read,7.7,1,410,9,1,-,False,False,327
+2026-11-27 20:30:53,src,source read,18.2,1,1521,38,1,-,False,False,348
+2026-11-27 20:33:03,src,source read,8.4,1,283,4,1,-,False,False,333
+2026-11-27 20:33:04,src,source read,17.3,1,908,13,2,-,False,False,357
+2026-11-27 20:33:25,src,source read,9.5,2,288,6,2,-,False,False,337
+2026-11-27 20:33:26,src,source read,16.6,2,280,6,1,-,False,False,329
+2026-11-27 20:33:27,src,source read,28.2,2,289,4,2,-,False,False,343
+2026-11-27 20:38:22,src,source read,9.8,0,1319,20,1,-,False,False,494
+2026-11-27 20:38:38,src,source read,11.3,0,1740,26,2,-,False,False,429
+2026-11-27 20:38:51,src,source read,8.9,0,1657,50,1,-,False,False,320
+2026-11-27 20:39:02,src,source read,8.2,0,1911,30,1,-,False,False,320
+2026-11-27 20:39:13,src,source read,79.0,0,25516,564,1,-,False,False,331
+2026-11-27 20:40:40,dd,data dictionary,16.8,0,3026,0,1,-,False,False,286
+2026-11-27 20:41:00,tcode,table read,13.4,0,1383,0,2,-,False,False,233
+2026-11-27 20:41:15,tcode,other,9.3,0,511,0,1,-,False,False,205
+2026-11-27 20:41:27,tcode,other,7.9,0,569,0,1,-,False,False,211
+2026-11-27 20:41:37,txt,other,9.7,0,1109,0,2,-,False,False,400
+2026-11-27 20:41:49,txt,other,9.1,0,638,0,1,-,False,False,301
+2026-11-27 20:42:01,tab,other,9.9,0,1080,0,1,-,False,False,260
+2026-11-27 20:42:14,src,source read,23.1,0,2029,4,4,-,False,False,552
+2026-11-27 20:42:41,msg,message texts,8.1,1,575,0,1,-,False,False,230
+2026-11-27 20:42:42,msg,message texts,15.6,1,563,0,1,-,False,False,232
+2026-11-27 20:43:05,job,other,9.3,0,894,0,1,-,False,False,240
+2026-11-27 20:44:19,tab,data dictionary,11.2,0,932,0,1,-,False,False,429
+2026-11-27 20:49:01,src,source read,165.3,0,49190,1261,1,CONDENSED?,False,False,506
+2026-11-27 20:51:53,src,source read,16.9,0,1320,13,4,-,False,False,509
+2026-11-27 20:52:12,src,source read,47.0,0,16342,397,2,-,False,False,509
+2026-11-27 20:53:02,src,source read,23.1,0,9613,266,1,-,False,False,364
+2026-11-27 20:53:27,src,source read,7.9,0,1310,32,1,-,False,False,364
+2026-11-27 20:53:38,src,source read,300.0,0,67,0,0,"TIMEOUT,ERROR,NO_CODE",True,False,504
+2026-11-27 20:58:42,tab,package listing,10.7,0,785,0,1,-,False,False,318
+2026-11-27 20:59:08,src,source read,90.0,0,24930,709,1,"TIMEOUT,ERROR,NO_CODE",False,False,497
+2026-11-27 21:00:52,src,source read,10.1,0,1671,23,1,CONDENSED?,False,False,418
+2026-11-27 21:01:05,src,source read,6.5,0,459,8,1,-,False,False,293
+2026-11-27 21:01:14,src,source read,41.5,0,14765,567,1,-,False,False,301
+2026-11-27 21:01:59,src,source read,7.7,0,1150,22,1,-,False,False,301
+2026-11-27 21:02:09,src,source read,16.3,0,2165,65,1,-,False,False,549
+2026-11-27 21:02:28,src,source read,15.5,0,1884,53,2,-,False,False,547
+2026-11-27 21:02:50,tab,other,72.6,0,3240,0,26,-,False,False,579
+2026-11-27 21:04:08,tab,other,10.4,0,1126,0,1,-,False,False,250
+2026-11-27 21:04:24,tab,existence check,45.9,0,4665,0,19,-,False,False,632
+2026-11-27 21:05:30,tcode,other,9.2,0,588,0,1,-,False,False,228
+2026-11-27 21:05:41,tcode,other,8.5,0,558,0,1,-,False,False,231
+2026-11-27 21:05:53,tcode,other,8.1,0,464,0,1,-,False,False,268
+2026-11-27 21:06:04,src,source read,35.3,0,10343,304,1,-,False,False,492
+2026-11-27 21:06:53,src,source read,13.7,0,1853,53,2,-,False,False,505
+2026-11-27 21:07:12,dd,data dictionary,11.6,0,1148,0,1,-,False,False,306
+2026-11-27 21:07:28,tab,other,10.4,0,760,0,1,-,False,False,312
+2026-11-27 21:07:41,dd,data dictionary,10.5,0,1012,0,1,-,False,False,306
+2026-11-27 21:07:54,tab,other,6.7,0,76,0,1,-,False,False,182
+2026-11-27 21:08:04,tab,other,9.6,0,826,0,1,-,False,False,252
+2026-11-27 21:08:17,dd,data dictionary,12.1,0,1761,0,1,-,False,False,301
+2026-11-27 21:08:33,tab,other,24.2,0,2055,0,4,-,False,False,496
+2026-11-27 21:09:00,msg,message texts,10.9,0,1263,0,1,-,False,False,283
+2026-11-27 21:09:16,txt,other,14.9,0,2031,0,4,-,False,False,438
+2026-11-27 21:09:35,txt,source read,7.7,0,545,0,2,-,False,False,432
+2026-11-27 21:09:45,src,source read,35.7,0,6879,183,3,CONDENSED?,False,False,508
+2026-11-27 21:10:32,tadir,package listing,8.9,0,618,0,1,-,False,False,279
+2026-11-27 21:10:44,tadir,package listing,9.9,0,857,0,1,-,False,False,331
+2026-11-27 21:10:57,job,other,9.3,0,913,0,1,-,False,False,263
+2026-11-27 21:11:10,tab,other,8.6,0,600,0,1,-,False,False,247
+2026-11-27 21:11:22,var,other,8.4,0,780,0,1,-,False,False,426
+2026-11-27 21:11:35,var,other,12.7,0,1468,0,1,-,False,False,389
+2026-11-27 21:11:51,bal,other,10.9,0,1362,0,1,-,False,False,244
+2026-11-27 21:12:05,tab,other,8.8,0,678,0,1,-,False,False,253
+2026-11-27 21:12:22,msg,message texts,8.8,0,749,0,1,-,False,False,256
+2026-11-27 21:12:33,msg,message texts,9.8,0,1010,0,1,-,False,False,242
+2026-11-27 21:12:48,dd,data dictionary,9.0,0,915,0,1,-,False,False,297
+2026-11-27 21:14:40,dom,other,11.1,0,1089,0,1,-,False,False,270
+2026-11-27 21:17:37,src,source read,7.2,0,769,12,1,-,False,False,301
+2026-11-27 21:22:14,pre,existence check,8.3,0,407,0,1,-,False,False,198
+2026-11-27 21:22:26,src,source read,32.1,0,6569,183,1,-,False,False,497
+2026-11-27 21:23:00,src,source read,43.8,0,10579,273,1,-,False,False,505
+2026-11-27 21:23:46,src,source read,11.8,0,1500,31,3,-,False,False,497
+2026-11-27 21:24:00,src,source read,16.6,0,4303,112,1,-,False,False,536
+2026-11-27 21:24:20,src,source read,11.7,0,2139,0,0,NO_CODE,False,False,422
+2026-11-27 21:24:35,tab,other,12.5,0,1677,0,1,-,False,False,401
+2026-11-27 21:24:51,src,source read,24.9,0,7179,0,1,NO_CODE,False,False,324
+2026-11-27 21:25:22,src,other,4.0,0,140,0,0,NO_CODE,False,False,357
+2026-11-27 21:25:29,tab,other,9.5,0,658,0,1,-,False,False,298
+2026-11-27 21:25:41,tab,source read,11.2,0,1103,0,1,-,False,False,366
+2026-11-27 21:25:56,tab,existence check,13.9,0,1114,0,4,-,False,False,288
+2026-11-27 21:26:14,tab,other,14.3,0,1036,0,3,-,False,False,310
+2026-11-27 21:26:33,dd,data dictionary,12.0,0,1921,0,1,-,False,False,321
+2026-11-27 21:26:47,dd,data dictionary,10.2,0,917,0,1,-,False,False,329
+2026-11-27 21:27:00,tab,other,15.8,0,2601,0,2,-,False,False,223
+2026-11-27 21:27:20,tab,other,9.9,0,946,0,1,-,False,False,251
+2026-11-27 21:27:32,tab,other,9.6,0,965,0,1,-,False,False,247
+2026-11-27 21:27:45,tab,other,15.0,0,2193,0,2,-,False,False,334
+2026-11-27 21:32:32,dump,short dump,10.2,0,968,0,1,-,False,False,240
+2026-11-27 21:32:45,dump,short dump,24.3,0,5993,0,3,-,False,False,454
+2026-11-27 21:33:13,dump,short dump,19.5,1,4560,0,3,-,False,False,454
+2026-11-27 21:33:14,dump,short dump,37.1,1,3705,0,2,-,False,False,454
+2026-11-27 21:33:55,dump,short dump,18.7,1,4448,0,3,-,False,False,454
+2026-11-27 21:33:56,dump,short dump,41.5,1,6582,0,3,-,False,False,454
+2026-11-27 21:34:49,dump,short dump,46.7,1,3315,0,9,CONDENSED?,False,False,539
+2026-11-27 21:34:50,dump,short dump,79.7,1,2320,0,9,CONDENSED?,False,False,546
+2026-11-27 21:36:15,dump,short dump,27.4,1,1846,0,7,CONDENSED?,False,False,544
+2026-11-27 21:36:16,dump,short dump,59.8,1,2675,0,9,CONDENSED?,False,False,542
+2026-11-27 21:37:20,dump,short dump,35.4,1,2533,0,8,CONDENSED?,False,False,536
+2026-11-27 21:37:21,dump,short dump,64.6,1,2478,0,10,CONDENSED?,False,False,536
+2026-11-27 21:39:03,pre,existence check,31.1,1,4734,0,3,-,False,False,436
+2026-11-27 21:39:04,pre,existence check,51.6,1,2449,0,2,-,False,False,425
