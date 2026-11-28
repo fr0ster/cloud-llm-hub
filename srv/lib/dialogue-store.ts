@@ -137,9 +137,6 @@ const plannerUsage = z.object({
 const message = z.object({
   role: z.enum(['user', 'assistant', 'system', 'tool']),
   content: str.nullable(),
-  providerOutput: z
-    .object({ protocol: str, items: z.array(z.record(str, z.json())) })
-    .optional(),
   tool_call_id: str.optional(),
   tool_calls: z
     .array(
