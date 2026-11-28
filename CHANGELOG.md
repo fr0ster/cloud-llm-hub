@@ -13,6 +13,7 @@ All notable changes to this project will be documented in this file. The format 
 ### Fixed
 
 - OpenAI reasoning models on SAP AI Core can use tools through the Responses API after the llm-agent upgrade to 35.7.0; opaque provider reasoning stays out of dialogue state, logs and context capture (#247).
+- Sampling parameters reach every model as configured; a SAP AI Core deployment that rejects one is remembered and served without it, and llm-agent session logs no longer carry opaque provider reasoning (llm-agent-libs 38.3.1, openai-llm 30.16.1, sap-aicore-llm 31.3.1, llm-agent-server-libs 34.4.1).
 
 ### Changed
 
